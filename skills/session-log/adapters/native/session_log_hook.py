@@ -23,6 +23,8 @@ WORKSPACE_NAME_LIMIT = 64
 WORKSPACE_DIGEST_LENGTH = 12
 NONCE_BYTES = 16
 SAFE_ID = re.compile(rf"^[A-Za-z0-9._-]{{1,{MAX_SESSION_ID_LENGTH}}}$")
+TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+TOKENS_SUFFIX = ".tokens.jsonl"
 
 
 def fail(message):
@@ -188,6 +190,18 @@ def event_text(payload, event):
     return None
 
 
+def is_token_count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def token_record(payload) -> Optional[dict]:
+    generation = payload.get("generation_id")
+    if not isinstance(generation, str) or not SAFE_ID.fullmatch(generation):
+        return None
+    tokens = {key: payload[key] for key in TOKEN_FIELDS if is_token_count(payload.get(key))}
+    return {"generation_id": generation, **tokens} if tokens else None
+
+
 def respond(harness, event):
     value = {"continue": True} if harness == "cursor" and event == "user-prompt" else {}
     print(json.dumps(value, separators=(",", ":")))
@@ -230,10 +244,15 @@ def process_payload(request, hooks=RuntimeHooks()):
         "pid": pid,
         "process_start": hooks.process_start_lookup(pid),
     }, harness)
+    log_dir = root / "prompt-logs" / workspace_key(payload)
+    # Cursor reports identical per-turn totals on afterAgentResponse and stop; recording stop alone avoids double counting.
+    record = token_record(payload) if harness == "cursor" and event == "stop" else None
+    if record:
+        append_private(log_dir / f"session_{sid}{TOKENS_SUFFIX}", json.dumps(record, separators=(",", ":")) + "\n", harness)
     content = event_text(payload, event)
     if content:
         label, text = content
-        log = root / "prompt-logs" / workspace_key(payload) / f"session_{sid}.md"
+        log = log_dir / f"session_{sid}.md"
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(loaded_at))
         append_private(log, f"\n### {timestamp} {label}\n\n{text}\n", harness)
     respond(harness, event)

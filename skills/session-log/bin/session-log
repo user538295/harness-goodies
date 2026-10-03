@@ -48,6 +48,7 @@ declare -rA ADAPTER_SOURCES=(
   [cursor:configurator]="adapters/native/install_hooks.py"
   [codex:configurator]="adapters/native/install_hooks.py"
   [codex:usage]="adapters/codex/session_log_usage.py"
+  [cursor:usage]="adapters/cursor/session_log_usage.py"
 )
 declare -rA ADAPTER_TARGETS=(
   [opencode:plugin]="plugins/session-log.js"
@@ -57,7 +58,7 @@ declare -rA ADAPTER_TARGETS=(
 )
 declare -rA HARNESS_KINDS=(
   [claude]="hook"
-  [cursor]="hook configurator"
+  [cursor]="hook configurator usage"
   [codex]="hook configurator usage"
   [opencode]="plugin usage"
   [omp]="extension usage"
@@ -355,6 +356,8 @@ validate_usage_args() {
       /*|*/*)
         [[ "$HARNESS" != opencode ]] ||
           fail "OpenCode usage accepts only a session ID or --latest"
+        [[ "$HARNESS" != cursor ]] ||
+          fail "Cursor usage accepts only a session ID or --latest"
         [[ -f "$arg" ]] || fail "session transcript does not exist: $arg"
         target_count=$((target_count + 1))
         ;;
@@ -369,17 +372,12 @@ validate_usage_args() {
 }
 run_usage() {
   validate_usage_args
-  if [[ "$HARNESS" == cursor ]]; then
-    printf '%s: usage\n' "$HARNESS_LABEL"
-    printf 'native token usage unavailable: Cursor hooks and transcripts do not expose token totals\n'
-    return
-  fi
   local parser runner output_file error_file
   parser=""
   runner=""
   case "$HARNESS" in
     claude) parser="$PACKAGE_ROOT/adapters/claude/scripts/prompt_log_usage.sh"; runner=bash; require_command jq ;;
-    codex) parser="$(source_for usage)"; runner=python3; require_command python3 ;;
+    codex|cursor) parser="$(source_for usage)"; runner=python3; require_command python3 ;;
     opencode) parser="$(source_for usage)"; runner=bash; require_command jq; require_command sqlite3 ;;
     omp) parser="$(source_for usage)"; runner=bun; require_command bun ;;
   esac

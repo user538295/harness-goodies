@@ -515,6 +515,7 @@ adapters/claude/scripts/prompt_log_subagent.sh
 adapters/claude/scripts/prompt_log_usage.jq
 adapters/claude/scripts/prompt_log_usage.sh
 adapters/codex/session_log_usage.py
+adapters/cursor/session_log_usage.py
 adapters/native/session_log_hook.py
 adapters/native/install_hooks.py
 adapters/opencode/session-log.js

@@ -152,6 +152,7 @@ adapters/claude/scripts/prompt_log_subagent.sh
 adapters/claude/scripts/prompt_log_usage.jq
 adapters/claude/scripts/prompt_log_usage.sh
 adapters/codex/session_log_usage.py
+adapters/cursor/session_log_usage.py
 adapters/native/session_log_hook.py
 adapters/native/install_hooks.py
 adapters/opencode/session-log.js
@@ -368,10 +369,19 @@ set -e
 assert_contains "native hook HOME error is explicit" "HOME is not set" "$home_unset_output"
 assert_exact "native hook writes no log under cwd when HOME unset" "" \
   "$(find "$PWD/.codex/prompt-logs" -name 'session_codex-session.md' -print 2>/dev/null)"
+printf '{"conversation_id":"cursor-usage","generation_id":"cursor-usage-generation","workspace_roots":["%s"],"input_tokens":5,"output_tokens":2,"cache_read_tokens":3,"cache_write_tokens":1,"status":"completed"}\n' "$PWD" |
+  HOME="$CURSOR_HOME" python3 "$CURSOR_HOOK" cursor stop >/dev/null
 cursor_usage="$(run_skill_entrypoint "$CURSOR_HOME/.cursor/skills/session-log/SKILL.md" "$CURSOR_HOME" cursor 'usage --latest' 2>&1)"
 assert_contains "source skill forwards usage --latest" "Cursor: usage" "$cursor_usage"
-assert_contains "Cursor usage states native token limitation" "native token usage unavailable" "$cursor_usage"
-assert_not_contains "Cursor usage does not invent totals" "TOTAL" "$cursor_usage"
+assert_not_contains "Cursor usage no longer claims tokens are unavailable" "native token usage unavailable" "$cursor_usage"
+assert_contains "Cursor usage reports stop hook totals" "TOTAL" "$cursor_usage"
+assert_contains "Cursor total is input plus output" "total_tokens: 7" "$cursor_usage"
+set +e
+cursor_tokenless="$(run_harness_at_home "$CURSOR_HOME" cursor usage cursor-session 2>&1)"
+cursor_tokenless_rc=$?
+set -e
+[[ "$cursor_tokenless_rc" -ne 0 ]] && pass "Cursor usage fails for a session without token fields" || fail "Cursor usage fails for a session without token fields"
+assert_contains "Cursor tokenless failure is explicit" "Cursor session has no token usage records" "$cursor_tokenless"
 set +e
 codex_check="$(HOME="$CODEX_HOME" bash "$CODEX_HOME/.codex/skills/session-log/install.sh" --harness codex --arguments 'usage --check' 2>&1)"
 codex_check_rc=$?

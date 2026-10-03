@@ -24,4 +24,4 @@ else
 fi
 ```
 
-Keep arguments exact and shell-quote the assignment as one data value; never evaluate invocation text as shell syntax. For example, forward `usage --latest` as both words and preserve quoted values. Cursor native hooks/transcripts do not expose token totals, so Cursor usage reports that limitation rather than inventing totals. Codex user hooks require trust review after installation.
+Keep arguments exact and shell-quote the assignment as one data value; never evaluate invocation text as shell syntax. For example, forward `usage --latest` as both words and preserve quoted values. Cursor usage sums the parent agent's token counts recorded from Cursor `stop` hooks while logging is on; it fails rather than inventing totals when none exist. Codex user hooks require trust review after installation.

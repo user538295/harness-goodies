@@ -14,6 +14,7 @@ REPO = Path(__file__).resolve().parents[3]
 USAGE_PATH = REPO / "skills/session-log/adapters/codex/session_log_usage.py"
 INSTALL_PATH = REPO / "skills/session-log/adapters/native/install_hooks.py"
 HOOK_PATH = REPO / "skills/session-log/adapters/native/session_log_hook.py"
+CURSOR_USAGE_PATH = REPO / "skills/session-log/adapters/cursor/session_log_usage.py"
 CLAUDE_SETTINGS_PATH = REPO / "skills/session-log/lib/claude_settings.py"
 
 EMPTY_TOTALS = {
@@ -545,6 +546,204 @@ class NativeHookTests(unittest.TestCase):
             runtime = json.loads((root / "session-log" / "runtime.json").read_text())
         self.assertEqual(stdout.getvalue(), "{}\n")
         self.assertIsNone(runtime["process_start"])
+
+
+CURSOR_SESSION_ID = "cursor-usage-session"
+CURSOR_TURNS = (
+    {"generation_id": "generation-one", "input_tokens": 1000, "output_tokens": 50,
+     "cache_read_tokens": 600, "cache_write_tokens": 300},
+    {"generation_id": "generation-two", "input_tokens": 2000, "output_tokens": 70,
+     "cache_read_tokens": 1500, "cache_write_tokens": 400},
+)
+EXPECTED_CURSOR_TOTALS = [
+    "input_tokens: 3000", "cache_read_tokens: 2100", "cache_write_tokens: 700",
+    "output_tokens: 120", "total_tokens: 3120",
+]
+CURSOR_TOKENS_SUFFIX = ".tokens.jsonl"
+INVALID_CURSOR_TOKEN_LINES = (
+    "{not json",
+    "[1, 2]",
+    json.dumps({"input_tokens": 9}),
+    json.dumps({"generation_id": "../escape", "input_tokens": 9}),
+    json.dumps({"generation_id": "generation-invalid", "input_tokens": -1, "output_tokens": True,
+                "cache_read_tokens": "7", "cache_write_tokens": 1.5}),
+)
+SUBPROCESS_TIMEOUT_SECONDS = 10
+OPEN_TOKEN_FILE_SCRIPT = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("cursor_usage", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.open_token_file(sys.argv[2]).close()
+"""
+
+
+class CursorUsageAggregationTests(unittest.TestCase):
+    def setUp(self):
+        self.usage = load_module(CURSOR_USAGE_PATH, "cursor_session_log_usage_under_test")
+
+    def aggregate(self, *lines):
+        return self.usage.aggregate_tokens(io.StringIO("".join(f"{line}\n" for line in lines)))
+
+    def test_aggregate_tokens_sums_valid_records_and_skips_invalid_lines(self):
+        records, totals = self.aggregate(
+            json.dumps(CURSOR_TURNS[0]), *INVALID_CURSOR_TOKEN_LINES,
+            json.dumps({"generation_id": "generation-partial", "input_tokens": -4, "output_tokens": 5}),
+        )
+        self.assertEqual(records, 2)
+        self.assertEqual(totals, {"input_tokens": 1000, "cache_read_tokens": 600, "cache_write_tokens": 300,
+                                  "output_tokens": 55, "total_tokens": 1055})
+
+    def test_aggregate_tokens_keeps_last_valid_record_per_generation(self):
+        corrected = {"generation_id": "generation-one", "input_tokens": 10, "output_tokens": 1}
+        records, totals = self.aggregate(
+            json.dumps(CURSOR_TURNS[0]), json.dumps(CURSOR_TURNS[0]), json.dumps(corrected),
+            json.dumps({"generation_id": "generation-one", "input_tokens": -1}),
+        )
+        self.assertEqual(records, 1)
+        self.assertEqual(totals, {"input_tokens": 10, "cache_read_tokens": 0, "cache_write_tokens": 0,
+                                  "output_tokens": 1, "total_tokens": 11})
+
+    def test_aggregate_tokens_reports_zero_records_for_invalid_input(self):
+        records, _ = self.aggregate(*INVALID_CURSOR_TOKEN_LINES)
+        self.assertEqual(records, 0)
+
+    def test_open_token_file_refuses_fifo_and_symlink_without_blocking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fifo = Path(directory) / f"session_fifo{CURSOR_TOKENS_SUFFIX}"
+            os.mkfifo(fifo)
+            regular = Path(directory) / f"session_regular{CURSOR_TOKENS_SUFFIX}"
+            regular.write_text(json.dumps(CURSOR_TURNS[0]) + "\n")
+            link = Path(directory) / f"session_link{CURSOR_TOKENS_SUFFIX}"
+            link.symlink_to(regular)
+            for target, message in ((fifo, "unsafe Cursor token usage file"),
+                                    (link, "cannot read Cursor token usage records")):
+                result = subprocess.run(
+                    [sys.executable, "-c", OPEN_TOKEN_FILE_SCRIPT, str(CURSOR_USAGE_PATH), str(target)],
+                    text=True, capture_output=True, timeout=SUBPROCESS_TIMEOUT_SECONDS,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+
+
+class CursorUsageTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        self.home = root / "home"
+        self.project = root / "project"
+        self.home.mkdir()
+        self.project.mkdir()
+        enabled = self.run_session_log("on")
+        self.assertEqual(enabled.returncode, 0, enabled.stderr)
+        self.feed_session()
+
+    def run_session_log(self, *arguments, cwd=None):
+        return subprocess.run(
+            [str(REPO / "skills/session-log/bin/session-log"),
+             "--entrypoint", "cursor", "--harness", "cursor", *arguments],
+            cwd=cwd or self.project, env={**os.environ, "HOME": str(self.home)},
+            text=True, capture_output=True,
+        )
+
+    def token_file(self, session=CURSOR_SESSION_ID):
+        recorded = next(self.home.glob(f".cursor/prompt-logs/*/session_{CURSOR_SESSION_ID}{CURSOR_TOKENS_SUFFIX}"))
+        return recorded.parent / f"session_{session}{CURSOR_TOKENS_SUFFIX}"
+
+    def append_token_lines(self, *lines, session=CURSOR_SESSION_ID):
+        with self.token_file(session).open("a", encoding="utf-8") as handle:
+            handle.writelines(f"{line}\n" for line in lines)
+
+    def send_hook(self, event, payload):
+        base = {
+            "conversation_id": CURSOR_SESSION_ID, "session_id": CURSOR_SESSION_ID,
+            "model": "claude-opus-5-5-medium", "workspace_roots": [str(self.project)],
+        }
+        result = subprocess.run(
+            [sys.executable, str(HOOK_PATH), "cursor", event],
+            input=json.dumps({**base, **payload}), env={**os.environ, "HOME": str(self.home)},
+            text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def feed_session(self):
+        self.send_hook("session-start", {})
+        for number, turn in enumerate(CURSOR_TURNS, start=1):
+            self.send_hook("user-prompt", {"generation_id": turn["generation_id"], "prompt": f"prompt {number}"})
+            self.send_hook("assistant-response", {**turn, "text": f"response {number}"})
+            self.send_hook("stop", {**turn, "status": "completed"})
+
+    def assert_totals_report(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("native token usage unavailable", result.stdout)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], "Cursor: usage", result.stdout)
+        self.assertIn("TOTAL", lines, result.stdout)
+        start = lines.index("TOTAL") + 1
+        self.assertEqual(lines[start:start + len(EXPECTED_CURSOR_TOTALS)], EXPECTED_CURSOR_TOTALS, result.stdout)
+
+    def test_cursor_usage_reports_totals_from_stop_hook_tokens(self):
+        self.assert_totals_report(self.run_session_log("usage"))
+        self.assert_totals_report(self.run_session_log("usage", "--latest"))
+        self.assert_totals_report(self.run_session_log("usage", CURSOR_SESSION_ID))
+
+    def test_cursor_usage_ignores_redelivered_stop_for_same_generation(self):
+        self.send_hook("stop", {**CURSOR_TURNS[0], "status": "completed"})
+        self.assert_totals_report(self.run_session_log("usage", CURSOR_SESSION_ID))
+
+    def test_cursor_stop_without_token_fields_records_nothing(self):
+        self.send_hook("stop", {"session_id": "tokenless", "conversation_id": "tokenless",
+                                "generation_id": "generation-three", "status": "completed"})
+        result = self.run_session_log("usage", "tokenless")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Cursor session has no token usage records: tokenless", result.stderr)
+
+    def test_cursor_usage_fails_for_unknown_session(self):
+        result = self.run_session_log("usage", "missing-session")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Cursor session has no token usage records: missing-session", result.stderr)
+
+    def test_cursor_usage_latest_fails_without_project_records(self):
+        other = self.project.parent / "other"
+        other.mkdir()
+        result = self.run_session_log("usage", "--latest", cwd=other)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("no Cursor token usage records found for the current project", result.stderr)
+
+    def test_cursor_stop_hook_appends_despite_corrupt_tokens_file(self):
+        self.append_token_lines("{not json", json.dumps({"input_tokens": 9}))
+        third = {"generation_id": "generation-three", "input_tokens": 5, "output_tokens": 2}
+        self.send_hook("stop", {**third, "status": "completed"})
+        last_line = self.token_file().read_text(encoding="utf-8").splitlines()[-1]
+        self.assertEqual(json.loads(last_line), third)
+
+    def test_cursor_usage_skips_corrupt_token_lines(self):
+        self.append_token_lines(*INVALID_CURSOR_TOKEN_LINES)
+        self.assert_totals_report(self.run_session_log("usage", CURSOR_SESSION_ID))
+
+    def test_cursor_usage_counts_duplicate_generation_lines_once(self):
+        self.append_token_lines(*(json.dumps(turn) for turn in CURSOR_TURNS))
+        self.assert_totals_report(self.run_session_log("usage", CURSOR_SESSION_ID))
+
+    def test_cursor_usage_fails_when_all_token_lines_are_invalid(self):
+        self.append_token_lines(*INVALID_CURSOR_TOKEN_LINES, session="corrupt-only")
+        result = self.run_session_log("usage", "corrupt-only")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(f"Cursor session has no token usage records: {self.token_file('corrupt-only')}", result.stderr)
+        self.assertNotIn("total_tokens", result.stdout)
+
+    def test_cursor_usage_latest_resolves_workspace_from_subdirectory(self):
+        subdirectory = self.project / "src" / "nested"
+        subdirectory.mkdir(parents=True)
+        self.assert_totals_report(self.run_session_log("usage", "--latest", cwd=subdirectory))
+
+    def test_cursor_usage_rejects_path_targets(self):
+        transcript = self.token_file()
+        for target in (str(transcript), f"./{transcript.name}"):
+            result = self.run_session_log("usage", target, cwd=transcript.parent)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("Cursor usage accepts only a session ID or --latest", result.stderr)
 
 
 if __name__ == "__main__":
