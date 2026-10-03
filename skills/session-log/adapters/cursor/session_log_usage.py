@@ -2,7 +2,9 @@
 # universal-session-log: managed
 import json
 import os
+import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 NATIVE_PATH = str(Path(__file__).resolve().parents[1] / "native")
@@ -12,6 +14,24 @@ from session_log_hook import SAFE_ID, TOKENS_SUFFIX, is_untrusted_descriptor, to
 
 REPORTED_FIELDS = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")
 READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
+TOKEN_FILE_PREFIX = "session_"
+STATE_DB_PATHS = {
+    "darwin": Path("Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
+    "linux": Path(".config/Cursor/User/globalStorage/state.vscdb"),
+}
+SUBAGENTS_HEADER = "SUBAGENTS (final context tokens each, not billed totals)"
+# Cursor stores no subagent token usage; each subagent's final context size is a floor, not a billed total.
+SUBAGENT_CONTEXT_QUERY = """
+select count(*), coalesce(sum(case
+    when json_type(value, '$.contextTokensUsed') = 'integer' and json_extract(value, '$.contextTokensUsed') >= 0
+    then json_extract(value, '$.contextTokensUsed') end), 0)
+from cursorDiskKV
+where key like 'composerData:%' and json_extract(value, '$.subagentInfo.rootParentConversationId') = ?
+"""
+
+
+class SubagentsUnavailable(Exception):
+    pass
 
 
 def fail(message):
@@ -21,7 +41,7 @@ def fail(message):
 
 def latest_token_file(logs_root, workspace="*", session="*"):
     files = [
-        path for path in logs_root.glob(f"{workspace}/session_{session}{TOKENS_SUFFIX}")
+        path for path in logs_root.glob(f"{workspace}/{TOKEN_FILE_PREFIX}{session}{TOKENS_SUFFIX}")
         if path.is_file() and not path.is_symlink()
     ]
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
@@ -81,6 +101,32 @@ def aggregate_tokens(handle):
     return len(generations), totals
 
 
+def state_db_path(platform):
+    relative = STATE_DB_PATHS.get(platform)
+    if relative is None:
+        raise SubagentsUnavailable(f"unsupported platform: {platform}")
+    path = Path.home() / relative
+    if not path.is_file():
+        raise SubagentsUnavailable(f"Cursor state database not found: {path}")
+    return path
+
+
+def subagent_context_tokens(db_path, session_id):
+    try:
+        with closing(sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)) as connection:
+            return connection.execute(SUBAGENT_CONTEXT_QUERY, (session_id,)).fetchone()
+    except sqlite3.Error as error:
+        raise SubagentsUnavailable(f"cannot read Cursor state database: {error}") from error
+
+
+def subagent_lines(session_id, platform=sys.platform):
+    try:
+        count, tokens = subagent_context_tokens(state_db_path(platform), session_id)
+    except SubagentsUnavailable as error:
+        return [f"subagents: unavailable: {error}"]
+    return [f"subagents: {count}", f"final_context_tokens: {tokens}"]
+
+
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
     args = args or ["--latest"]
@@ -95,6 +141,10 @@ def main(argv=None):
     print("TOTAL")
     for key, value in totals.items():
         print(f"{key}: {value}")
+    print(SUBAGENTS_HEADER)
+    session_id = token_file.name[len(TOKEN_FILE_PREFIX):-len(TOKENS_SUFFIX)]
+    for line in subagent_lines(session_id):
+        print(line)
 
 
 if __name__ == "__main__":

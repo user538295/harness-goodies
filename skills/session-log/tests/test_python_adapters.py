@@ -2,10 +2,12 @@ import importlib.util
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -568,6 +570,12 @@ INVALID_CURSOR_TOKEN_LINES = (
     json.dumps({"generation_id": "generation-invalid", "input_tokens": -1, "output_tokens": True,
                 "cache_read_tokens": "7", "cache_write_tokens": 1.5}),
 )
+CURSOR_STATE_DB_PATHS = {
+    "darwin": Path("Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
+    "linux": Path(".config/Cursor/User/globalStorage/state.vscdb"),
+}
+SUBAGENTS_HEADER = "SUBAGENTS (final context tokens each, not billed totals)"
+NO_SUBAGENTS = ["subagents: 0", "final_context_tokens: 0"]
 SUBPROCESS_TIMEOUT_SECONDS = 10
 OPEN_TOKEN_FILE_SCRIPT = """
 import importlib.util, sys
@@ -624,6 +632,16 @@ class CursorUsageAggregationTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn(message, result.stderr)
+
+    def test_subagent_lines_reports_unavailable_on_unsupported_platform(self):
+        self.assertEqual(self.usage.subagent_lines(CURSOR_SESSION_ID, platform="win32"),
+                         ["subagents: unavailable: unsupported platform: win32"])
+
+
+def composer(context_tokens, root=CURSOR_SESSION_ID, parent=CURSOR_SESSION_ID):
+    return {"contextTokensUsed": context_tokens,
+            "subagentInfo": {"parentComposerId": parent, "rootParentConversationId": root,
+                             "subagentTypeName": "explore"}}
 
 
 class CursorUsageTests(unittest.TestCase):
@@ -682,6 +700,61 @@ class CursorUsageTests(unittest.TestCase):
         self.assertIn("TOTAL", lines, result.stdout)
         start = lines.index("TOTAL") + 1
         self.assertEqual(lines[start:start + len(EXPECTED_CURSOR_TOTALS)], EXPECTED_CURSOR_TOTALS, result.stdout)
+
+    def state_db(self):
+        path = self.home / CURSOR_STATE_DB_PATHS[sys.platform]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def create_state_db(self, composers):
+        path = self.state_db()
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute("create table cursorDiskKV (key text unique on conflict replace, value blob)")
+            connection.executemany("insert into cursorDiskKV values (?, ?)",
+                                   [(key, json.dumps(value)) for key, value in composers.items()])
+            connection.commit()
+        return path
+
+    def assert_subagents_report(self, expected):
+        result = self.run_session_log("usage", CURSOR_SESSION_ID)
+        self.assert_totals_report(result)
+        lines = result.stdout.rstrip("\n").splitlines()
+        self.assertIn(SUBAGENTS_HEADER, lines, result.stdout)
+        start = lines.index(SUBAGENTS_HEADER)
+        self.assertEqual(lines.index("TOTAL") + len(EXPECTED_CURSOR_TOTALS) + 1, start, result.stdout)
+        self.assertEqual(lines[start + 1:], expected, result.stdout)
+
+    def test_cursor_usage_sums_final_context_of_session_subagents_without_writing_db(self):
+        path = self.create_state_db({
+            "composerData:child-one": composer(1000),
+            "composerData:child-nested": composer(250, parent="child-one"),
+            "composerData:child-other-session": composer(9000, root="other-session", parent="other-session"),
+            f"composerData:{CURSOR_SESSION_ID}": {"contextTokensUsed": 5000},
+        })
+        before = path.read_bytes()
+        self.assert_subagents_report(["subagents: 2", "final_context_tokens: 1250"])
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_cursor_usage_ignores_invalid_subagent_context_tokens(self):
+        invalid_values = (-1, "7", True, 1.5, None)
+        self.create_state_db({
+            "composerData:child-valid": composer(1000),
+            **{f"composerData:child-invalid-{index}": composer(value) for index, value in enumerate(invalid_values)},
+        })
+        self.assert_subagents_report([f"subagents: {1 + len(invalid_values)}", "final_context_tokens: 1000"])
+
+    def test_cursor_usage_reports_zero_subagents(self):
+        self.create_state_db({f"composerData:{CURSOR_SESSION_ID}": {"contextTokensUsed": 5000}})
+        self.assert_subagents_report(NO_SUBAGENTS)
+
+    def test_cursor_usage_reports_subagents_unavailable_without_state_db(self):
+        self.assert_subagents_report(
+            [f"subagents: unavailable: Cursor state database not found: {self.home / CURSOR_STATE_DB_PATHS[sys.platform]}"])
+
+    def test_cursor_usage_reports_subagents_unavailable_for_corrupt_state_db(self):
+        self.state_db().write_bytes(b"not a sqlite database" * 100)
+        self.assert_subagents_report(
+            ["subagents: unavailable: cannot read Cursor state database: file is not a database"])
 
     def test_cursor_usage_reports_totals_from_stop_hook_tokens(self):
         self.assert_totals_report(self.run_session_log("usage"))
