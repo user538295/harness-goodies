@@ -279,10 +279,10 @@ runtime_current() {
       ((loaded_at <= now)) || continue
     fi
     pid="$(jq -r '.pid // empty' "$candidate" 2>/dev/null)"
-    expected_start="$(jq -r '.process_start // empty' "$candidate" 2>/dev/null)"
+    expected_start="$(jq -r '.process_start // empty' "$candidate" 2>/dev/null | sed 's/[[:space:]]*$//')"
     [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$expected_start" ]] || continue
     kill -0 "$pid" 2>/dev/null || continue
-    actual_start="$(ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^ *//')"
+    actual_start="$(ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
     [[ -n "$actual_start" && "$actual_start" == "$expected_start" ]] || continue
     [[ -n "$(jq -r '.nonce // empty' "$candidate" 2>/dev/null)" ]] || continue
     return 0
