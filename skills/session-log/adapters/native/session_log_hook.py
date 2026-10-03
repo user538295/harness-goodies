@@ -25,6 +25,7 @@ NONCE_BYTES = 16
 SAFE_ID = re.compile(rf"^[A-Za-z0-9._-]{{1,{MAX_SESSION_ID_LENGTH}}}$")
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 TOKENS_SUFFIX = ".tokens.jsonl"
+PROMPT_HEAD_LENGTH = 60
 
 
 def fail(message):
@@ -190,16 +191,70 @@ def event_text(payload, event):
     return None
 
 
-def is_token_count(value):
+def is_count(value):
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def token_record(payload) -> Optional[dict]:
-    generation = payload.get("generation_id")
-    if not isinstance(generation, str) or not SAFE_ID.fullmatch(generation):
+def safe_id(payload, key) -> Optional[str]:
+    value = payload.get(key)
+    return value if isinstance(value, str) and SAFE_ID.fullmatch(value) else None
+
+
+def string_fields(payload, *keys):
+    return {key: payload[key] for key in keys if isinstance(payload.get(key), str)}
+
+
+def model_param(payload, name) -> Optional[str]:
+    params = payload.get("model_params")
+    for param in params if isinstance(params, list) else ():
+        if isinstance(param, dict) and param.get("id") == name and isinstance(param.get("value"), str):
+            return param["value"]
+    return None
+
+
+# Same normalization as head_text in adapters/claude/scripts/prompt_log_usage.jq.
+def head_text(text):
+    text = re.sub(r" +", " ", re.sub(r"[\r\n\t]", " ", re.sub(r"<[^>]*>", " ", text)))
+    return text.lstrip(" ")[:PROMPT_HEAD_LENGTH].rstrip(" ")
+
+
+def prompt_record(payload, now) -> Optional[dict]:
+    generation = safe_id(payload, "generation_id")
+    if generation is None:
         return None
-    tokens = {key: payload[key] for key in TOKEN_FIELDS if is_token_count(payload.get(key))}
-    return {"generation_id": generation, **tokens} if tokens else None
+    prompt = payload.get("prompt")
+    return {"event": "prompt", "generation_id": generation, "started_at": int(now),
+            "head": head_text(prompt if isinstance(prompt, str) else "")}
+
+
+def stop_record(payload, now) -> Optional[dict]:
+    generation = safe_id(payload, "generation_id")
+    if generation is None:
+        return None
+    record = {"event": "stop", "generation_id": generation, "ended_at": int(now),
+              **{key: payload[key] for key in TOKEN_FIELDS if is_count(payload.get(key))},
+              **string_fields(payload, "model", "transcript_path")}
+    effort = model_param(payload, "effort")
+    if effort is not None:
+        record["effort"] = effort
+    if model_param(payload, "fast") == "true":
+        record["fast"] = True
+    return record
+
+
+def subagent_record(payload, _now) -> Optional[dict]:
+    child = safe_id(payload, "child_conversation_id")
+    if child is None:
+        return None
+    record = {"event": "subagent", "child_conversation_id": child,
+              **string_fields(payload, "subagent_type", "agent_transcript_path")}
+    if is_count(payload.get("duration_ms")):
+        record["duration_ms"] = payload["duration_ms"]
+    return record
+
+
+# Cursor reports identical per-turn totals on afterAgentResponse and stop; recording stop alone avoids double counting.
+USAGE_RECORDS = {"user-prompt": prompt_record, "stop": stop_record, "subagent-stop": subagent_record}
 
 
 def respond(harness, event):
@@ -245,8 +300,8 @@ def process_payload(request, hooks=RuntimeHooks()):
         "process_start": hooks.process_start_lookup(pid),
     }, harness)
     log_dir = root / "prompt-logs" / workspace_key(payload)
-    # Cursor reports identical per-turn totals on afterAgentResponse and stop; recording stop alone avoids double counting.
-    record = token_record(payload) if harness == "cursor" and event == "stop" else None
+    build_record = USAGE_RECORDS.get(event) if harness == "cursor" else None
+    record = build_record(payload, loaded_at) if build_record else None
     if record:
         append_private(log_dir / f"session_{sid}{TOKENS_SUFFIX}", json.dumps(record, separators=(",", ":")) + "\n", harness)
     content = event_text(payload, event)

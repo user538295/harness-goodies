@@ -374,14 +374,16 @@ printf '{"conversation_id":"cursor-usage","generation_id":"cursor-usage-generati
 cursor_usage="$(run_skill_entrypoint "$CURSOR_HOME/.cursor/skills/session-log/SKILL.md" "$CURSOR_HOME" cursor 'usage --latest' 2>&1)"
 assert_contains "source skill forwards usage --latest" "Cursor: usage" "$cursor_usage"
 assert_not_contains "Cursor usage no longer claims tokens are unavailable" "native token usage unavailable" "$cursor_usage"
-assert_contains "Cursor usage reports stop hook totals" "TOTAL" "$cursor_usage"
-assert_contains "Cursor total is input plus output" "total_tokens: 7" "$cursor_usage"
+assert_contains "Cursor usage reports stop hook totals" "TOTAL (1 requests, 0 sub-agents)" "$cursor_usage"
+assert_contains "Cursor usage uses the Claude est. line" \
+  'est. used token: input: 1, output: 2, cache_create: 1, cache_read: 3, total_tokens: 7, price: $0.00, model: ?, effort: unknown' "$cursor_usage"
 set +e
 cursor_tokenless="$(run_harness_at_home "$CURSOR_HOME" cursor usage cursor-session 2>&1)"
 cursor_tokenless_rc=$?
 set -e
-[[ "$cursor_tokenless_rc" -ne 0 ]] && pass "Cursor usage fails for a session without token fields" || fail "Cursor usage fails for a session without token fields"
-assert_contains "Cursor tokenless failure is explicit" "Cursor session has no token usage records" "$cursor_tokenless"
+[[ "$cursor_tokenless_rc" -eq 0 ]] && pass "Cursor usage reports a prompt without stop tokens" || fail "Cursor usage reports a prompt without stop tokens"
+assert_contains "Cursor tokenless turn has an empty est. line" \
+  'est. used token: input: 0, output: 0, cache_create: 0, cache_read: 0, total_tokens: 0, price: $0.00, model: -, effort: -' "$cursor_tokenless"
 set +e
 codex_check="$(HOME="$CODEX_HOME" bash "$CODEX_HOME/.codex/skills/session-log/install.sh" --harness codex --arguments 'usage --check' 2>&1)"
 codex_check_rc=$?

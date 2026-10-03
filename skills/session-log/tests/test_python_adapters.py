@@ -551,31 +551,21 @@ class NativeHookTests(unittest.TestCase):
 
 
 CURSOR_SESSION_ID = "cursor-usage-session"
-CURSOR_TURNS = (
-    {"generation_id": "generation-one", "input_tokens": 1000, "output_tokens": 50,
-     "cache_read_tokens": 600, "cache_write_tokens": 300},
-    {"generation_id": "generation-two", "input_tokens": 2000, "output_tokens": 70,
-     "cache_read_tokens": 1500, "cache_write_tokens": 400},
-)
-EXPECTED_CURSOR_TOTALS = [
-    "input_tokens: 3000", "cache_read_tokens: 2100", "cache_write_tokens: 700",
-    "output_tokens: 120", "total_tokens: 3120",
-]
 CURSOR_TOKENS_SUFFIX = ".tokens.jsonl"
-INVALID_CURSOR_TOKEN_LINES = (
+OPUS_MODEL = "claude-opus-5-5-medium"
+INVALID_CURSOR_RECORD_LINES = (
     "{not json",
     "[1, 2]",
-    json.dumps({"input_tokens": 9}),
-    json.dumps({"generation_id": "../escape", "input_tokens": 9}),
-    json.dumps({"generation_id": "generation-invalid", "input_tokens": -1, "output_tokens": True,
-                "cache_read_tokens": "7", "cache_write_tokens": 1.5}),
+    json.dumps({"generation_id": "generation-legacy", "input_tokens": 9}),
+    json.dumps({"event": "stop", "generation_id": "../escape", "input_tokens": 9}),
+    json.dumps({"event": "unknown", "generation_id": "generation-unknown"}),
+    json.dumps({"event": "subagent", "child_conversation_id": "../escape"}),
 )
 CURSOR_STATE_DB_PATHS = {
     "darwin": Path("Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
     "linux": Path(".config/Cursor/User/globalStorage/state.vscdb"),
 }
-SUBAGENTS_HEADER = "SUBAGENTS (final context tokens each, not billed totals)"
-NO_SUBAGENTS = ["subagents: 0", "final_context_tokens: 0"]
+HOOK_CLOCK = 1_700_000_000
 SUBPROCESS_TIMEOUT_SECONDS = 10
 OPEN_TOKEN_FILE_SCRIPT = """
 import importlib.util, sys
@@ -586,42 +576,118 @@ module.open_token_file(sys.argv[2]).close()
 """
 
 
-class CursorUsageAggregationTests(unittest.TestCase):
+def run_cursor_hook(hook, root, event, payload, now=HOOK_CLOCK):
+    with patch("sys.stdout", new_callable=io.StringIO):
+        hook.process_payload(
+            hook.HookRequest("cursor", event, payload, root),
+            hook.RuntimeHooks(now=lambda: now, nonce_factory=lambda: "nonce",
+                              process_start_lookup=lambda _pid: "started"),
+        )
+
+
+def usage_records(harness_root):
+    return [json.loads(line)
+            for path in harness_root.glob(f"prompt-logs/*/session_*{CURSOR_TOKENS_SUFFIX}")
+            for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+class CursorHookRecordTests(unittest.TestCase):
+    def setUp(self):
+        self.hook = load_module(HOOK_PATH, "cursor_hook_records_under_test")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name).resolve()
+        self.root = self.directory / ".cursor"
+        self.base = {"session_id": CURSOR_SESSION_ID, "workspace_roots": [str(self.directory)]}
+
+    def send(self, event, now=HOOK_CLOCK, **payload):
+        run_cursor_hook(self.hook, self.root, event, {**self.base, **payload}, now=now)
+
+    def test_cursor_hook_records_prompt_stop_and_subagent_events(self):
+        self.send("user-prompt", generation_id="generation-one",
+                  prompt="<cmd>run</cmd>\n  the   tests " + "a" * 80)
+        self.send("stop", now=HOOK_CLOCK + 5, generation_id="generation-one", model=OPUS_MODEL,
+                  model_params=[{"id": "effort", "value": "high"}, {"id": "fast", "value": "true"}],
+                  input_tokens=10, output_tokens=2, cache_read_tokens=True, cache_write_tokens=-1,
+                  transcript_path="/transcripts/parent.jsonl")
+        self.send("subagent-stop", child_conversation_id="child-one", subagent_type="explore",
+                  duration_ms=1500, agent_transcript_path=None)
+        self.assertEqual(usage_records(self.root), [
+            {"event": "prompt", "generation_id": "generation-one", "started_at": HOOK_CLOCK,
+             "head": "run the tests " + "a" * 46},
+            {"event": "stop", "generation_id": "generation-one", "ended_at": HOOK_CLOCK + 5,
+             "input_tokens": 10, "output_tokens": 2, "model": OPUS_MODEL,
+             "transcript_path": "/transcripts/parent.jsonl", "effort": "high", "fast": True},
+            {"event": "subagent", "child_conversation_id": "child-one", "subagent_type": "explore",
+             "duration_ms": 1500},
+        ])
+
+    def test_cursor_hook_records_tokenless_stop_and_skips_unsafe_ids(self):
+        self.send("user-prompt", generation_id="../escape", prompt="unsafe")
+        self.send("subagent-stop", child_conversation_id="../escape", duration_ms=1)
+        self.send("stop", generation_id="generation-two", model_params=None, status="completed")
+        self.assertEqual(usage_records(self.root), [
+            {"event": "stop", "generation_id": "generation-two", "ended_at": HOOK_CLOCK},
+        ])
+
+    def test_codex_hook_writes_no_usage_records(self):
+        root = self.directory / ".codex"
+        with patch("sys.stdout", new_callable=io.StringIO):
+            self.hook.process_payload(
+                self.hook.HookRequest("codex", "stop", {
+                    "session_id": CURSOR_SESSION_ID, "cwd": str(self.directory),
+                    "generation_id": "generation-one", "input_tokens": 5,
+                }, root),
+                self.hook.RuntimeHooks(now=lambda: HOOK_CLOCK, nonce_factory=lambda: "nonce",
+                                       process_start_lookup=lambda _pid: "started"),
+            )
+        self.assertEqual(usage_records(root), [])
+
+
+class CursorUsageParserTests(unittest.TestCase):
     def setUp(self):
         self.usage = load_module(CURSOR_USAGE_PATH, "cursor_session_log_usage_under_test")
 
-    def aggregate(self, *lines):
-        return self.usage.aggregate_tokens(io.StringIO("".join(f"{line}\n" for line in lines)))
+    def read(self, *lines):
+        return self.usage.read_records(io.StringIO("".join(f"{line}\n" for line in lines)))
 
-    def test_aggregate_tokens_sums_valid_records_and_skips_invalid_lines(self):
-        records, totals = self.aggregate(
-            json.dumps(CURSOR_TURNS[0]), *INVALID_CURSOR_TOKEN_LINES,
-            json.dumps({"generation_id": "generation-partial", "input_tokens": -4, "output_tokens": 5}),
-        )
-        self.assertEqual(records, 2)
-        self.assertEqual(totals, {"input_tokens": 1000, "cache_read_tokens": 600, "cache_write_tokens": 300,
-                                  "output_tokens": 55, "total_tokens": 1055})
+    def test_read_records_keeps_last_valid_record_per_event_and_skips_invalid_lines(self):
+        first_stop = {"event": "stop", "generation_id": "generation-one", "output_tokens": 1}
+        last_stop = {**first_stop, "output_tokens": 2}
+        prompt = {"event": "prompt", "generation_id": "generation-one", "head": "first"}
+        later = {"event": "prompt", "generation_id": "generation-two", "head": "later"}
+        child = {"event": "subagent", "child_conversation_id": "child-one"}
+        records = self.read(json.dumps(first_stop), *INVALID_CURSOR_RECORD_LINES, json.dumps(prompt),
+                            json.dumps(later), json.dumps(last_stop), json.dumps(child))
+        self.assertEqual(records.generations, ["generation-one", "generation-two"])
+        self.assertEqual(records.prompts, {"generation-one": prompt, "generation-two": later})
+        self.assertEqual(records.stops, {"generation-one": last_stop})
+        self.assertEqual(records.subagents, {"child-one": child})
 
-    def test_aggregate_tokens_keeps_last_valid_record_per_generation(self):
-        corrected = {"generation_id": "generation-one", "input_tokens": 10, "output_tokens": 1}
-        records, totals = self.aggregate(
-            json.dumps(CURSOR_TURNS[0]), json.dumps(CURSOR_TURNS[0]), json.dumps(corrected),
-            json.dumps({"generation_id": "generation-one", "input_tokens": -1}),
-        )
-        self.assertEqual(records, 1)
-        self.assertEqual(totals, {"input_tokens": 10, "cache_read_tokens": 0, "cache_write_tokens": 0,
-                                  "output_tokens": 1, "total_tokens": 11})
+    def test_read_records_reports_no_generations_for_invalid_input(self):
+        self.assertEqual(self.read(*INVALID_CURSOR_RECORD_LINES).generations, [])
 
-    def test_aggregate_tokens_reports_zero_records_for_invalid_input(self):
-        records, _ = self.aggregate(*INVALID_CURSOR_TOKEN_LINES)
-        self.assertEqual(records, 0)
+    def test_money_rounds_cents_half_up_like_claude(self):
+        self.assertEqual([self.usage.money(cents) for cents in (0, 7, 204.5, 1234.49)],
+                         ["$0.00", "$0.07", "$2.05", "$12.34"])
+
+    def test_rate_uses_fast_table_then_longest_contained_price_key(self):
+        prices = {"per_mtok": {"opus-5": {"in": 5}, "opus-5-5": {"in": 6}}, "fast": {"in": 10}}
+        bucket = self.usage.Bucket
+        self.assertEqual(self.usage.rate(bucket("us.claude-opus-5-5-medium"), prices), {"in": 6})
+        self.assertEqual(self.usage.rate(bucket("claude-opus-5", fast=True), prices), {"in": 10})
+        self.assertIsNone(self.usage.rate(bucket("composer-2.5-fast"), prices))
+
+    def test_state_subagents_reports_unsupported_platform(self):
+        with self.assertRaisesRegex(self.usage.SubagentsUnavailable, "unsupported platform: win32"):
+            self.usage.state_subagents(CURSOR_SESSION_ID, platform="win32")
 
     def test_open_token_file_refuses_fifo_and_symlink_without_blocking(self):
         with tempfile.TemporaryDirectory() as directory:
             fifo = Path(directory) / f"session_fifo{CURSOR_TOKENS_SUFFIX}"
             os.mkfifo(fifo)
             regular = Path(directory) / f"session_regular{CURSOR_TOKENS_SUFFIX}"
-            regular.write_text(json.dumps(CURSOR_TURNS[0]) + "\n")
+            regular.write_text(json.dumps({"event": "prompt", "generation_id": "generation-one"}) + "\n")
             link = Path(directory) / f"session_link{CURSOR_TOKENS_SUFFIX}"
             link.symlink_to(regular)
             for target, message in ((fifo, "unsafe Cursor token usage file"),
@@ -633,15 +699,69 @@ class CursorUsageAggregationTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn(message, result.stderr)
 
-    def test_subagent_lines_reports_unavailable_on_unsupported_platform(self):
-        self.assertEqual(self.usage.subagent_lines(CURSOR_SESSION_ID, platform="win32"),
-                         ["subagents: unavailable: unsupported platform: win32"])
 
-
-def composer(context_tokens, root=CURSOR_SESSION_ID, parent=CURSOR_SESSION_ID):
+def composer(context_tokens, type_name, root=CURSOR_SESSION_ID, parent=CURSOR_SESSION_ID):
     return {"contextTokensUsed": context_tokens,
             "subagentInfo": {"parentComposerId": parent, "rootParentConversationId": root,
-                             "subagentTypeName": "explore"}}
+                             "subagentTypeName": type_name}}
+
+
+SESSION_START = 1_787_911_200  # 2026-08-28T10:00:00Z
+SESSION_COMPOSERS = {
+    "composerData:child-a": composer(42000, "generalPurpose"),
+    "composerData:child-b": composer(9000, "explore", parent="child-a"),
+    "composerData:child-other-session": composer(7000, "explore", root="other-session", parent="other-session"),
+    f"composerData:{CURSOR_SESSION_ID}": {"contextTokensUsed": 5000},
+}
+UNTRACKED = "(not added to TOTAL; token usage not recorded client-side)"
+GOLDEN_WITH_STATE = """\
+Cursor: usage
+session: <home>/.cursor/projects/project/agent-transcripts/cursor-usage-session/cursor-usage-session.jsonl
+
+1. 10:00:00 (working time 00:00:11) "first prompt with tags"
+est. used token: input: 80000, output: 55000, cache_create: 20000, cache_read: 300000, total_tokens: 455000, price: $2.05, model: claude-opus-5-5-medium, effort: high
+2. 10:01:00 (working time 00:00:21) "second prompt unknown model"
+est. used token: input: 1500, output: 500, cache_create: 500, cache_read: 1000, total_tokens: 3500, price: $0.00, model: composer-2.5-fast?, effort: unknown
+3. 10:02:00 (working time 00:00:30) "third prompt fast"
+est. used token: input: 50000, output: 10000, cache_create: 0, cache_read: 0, total_tokens: 60000, price: $1.00, model: claude-opus-5-5-medium:fast, effort: max
+4. 10:03:00 (working time 00:00:00) "fourth prompt no answer"
+est. used token: input: 0, output: 0, cache_create: 0, cache_read: 0, total_tokens: 0, price: $0.00, model: -, effort: -
+
+sub-agent: general-purpose (child-a), working time: 00:02:05, jsonl: <home>/.cursor/projects/project/agent-transcripts/cursor-usage-session/subagents/child-a.jsonl
+final context: 42000 tokens (not added to TOTAL; token usage not recorded client-side)
+sub-agent: explore (child-b), working time: 00:00:00, jsonl: <home>/.cursor/projects/project/agent-transcripts/cursor-usage-session/subagents/child-b.jsonl
+final context: 9000 tokens (not added to TOTAL; token usage not recorded client-side)
+sub-agent: shell (child-c), working time: 00:01:01, jsonl: -
+final context: unavailable: no contextTokensUsed in Cursor state database (not added to TOTAL; token usage not recorded client-side)
+
+TOTAL (4 requests, 3 sub-agents)
+working time: 00:01:02
+est. used token: input: 131500, output: 65500, cache_create: 20500, cache_read: 301000, total_tokens: 518500, price: $3.05, model: claude-opus-5-5-medium+claude-opus-5-5-medium:fast+composer-2.5-fast?, effort: high+max+unknown
+
+"""
+GOLDEN_WITHOUT_STATE = """\
+Cursor: usage
+session: <home>/.cursor/projects/project/agent-transcripts/cursor-usage-session/cursor-usage-session.jsonl
+
+1. 10:00:00 (working time 00:00:11) "first prompt with tags"
+est. used token: input: 80000, output: 55000, cache_create: 20000, cache_read: 300000, total_tokens: 455000, price: $2.05, model: claude-opus-5-5-medium, effort: high
+2. 10:01:00 (working time 00:00:21) "second prompt unknown model"
+est. used token: input: 1500, output: 500, cache_create: 500, cache_read: 1000, total_tokens: 3500, price: $0.00, model: composer-2.5-fast?, effort: unknown
+3. 10:02:00 (working time 00:00:30) "third prompt fast"
+est. used token: input: 50000, output: 10000, cache_create: 0, cache_read: 0, total_tokens: 60000, price: $1.00, model: claude-opus-5-5-medium:fast, effort: max
+4. 10:03:00 (working time 00:00:00) "fourth prompt no answer"
+est. used token: input: 0, output: 0, cache_create: 0, cache_read: 0, total_tokens: 0, price: $0.00, model: -, effort: -
+
+sub-agent: general-purpose (child-a), working time: 00:02:05, jsonl: <home>/.cursor/projects/project/agent-transcripts/cursor-usage-session/subagents/child-a.jsonl
+final context: unavailable: Cursor state database not found: <home>/<state-db> (not added to TOTAL; token usage not recorded client-side)
+sub-agent: shell (child-c), working time: 00:01:01, jsonl: -
+final context: unavailable: Cursor state database not found: <home>/<state-db> (not added to TOTAL; token usage not recorded client-side)
+
+TOTAL (4 requests, 2 sub-agents)
+working time: 00:01:02
+est. used token: input: 131500, output: 65500, cache_create: 20500, cache_read: 301000, total_tokens: 518500, price: $3.05, model: claude-opus-5-5-medium+claude-opus-5-5-medium:fast+composer-2.5-fast?, effort: high+max+unknown
+
+"""
 
 
 class CursorUsageTests(unittest.TestCase):
@@ -655,15 +775,27 @@ class CursorUsageTests(unittest.TestCase):
         self.project.mkdir()
         enabled = self.run_session_log("on")
         self.assertEqual(enabled.returncode, 0, enabled.stderr)
+        self.hook = load_module(HOOK_PATH, "cursor_usage_hook_under_test")
+        self.transcript = (self.home / ".cursor/projects/project/agent-transcripts"
+                           / CURSOR_SESSION_ID / f"{CURSOR_SESSION_ID}.jsonl")
+        self.subagent_dir = self.transcript.parent / "subagents"
+        self.subagent_dir.mkdir(parents=True)
+        for path in (self.transcript, self.subagent_dir / "child-a.jsonl", self.subagent_dir / "child-b.jsonl"):
+            path.touch()
         self.feed_session()
 
     def run_session_log(self, *arguments, cwd=None):
         return subprocess.run(
             [str(REPO / "skills/session-log/bin/session-log"),
              "--entrypoint", "cursor", "--harness", "cursor", *arguments],
-            cwd=cwd or self.project, env={**os.environ, "HOME": str(self.home)},
+            cwd=cwd or self.project, env={**os.environ, "HOME": str(self.home), "TZ": "UTC"},
             text=True, capture_output=True,
         )
+
+    def usage_output(self, *arguments, cwd=None):
+        result = self.run_session_log("usage", *arguments, cwd=cwd)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.replace(str(self.home), "<home>")
 
     def token_file(self, session=CURSOR_SESSION_ID):
         recorded = next(self.home.glob(f".cursor/prompt-logs/*/session_{CURSOR_SESSION_ID}{CURSOR_TOKENS_SUFFIX}"))
@@ -673,33 +805,39 @@ class CursorUsageTests(unittest.TestCase):
         with self.token_file(session).open("a", encoding="utf-8") as handle:
             handle.writelines(f"{line}\n" for line in lines)
 
-    def send_hook(self, event, payload):
+    def send_hook(self, event, offset, **payload):
         base = {
             "conversation_id": CURSOR_SESSION_ID, "session_id": CURSOR_SESSION_ID,
-            "model": "claude-opus-5-5-medium", "workspace_roots": [str(self.project)],
+            "model": OPUS_MODEL, "workspace_roots": [str(self.project)],
         }
-        result = subprocess.run(
-            [sys.executable, str(HOOK_PATH), "cursor", event],
-            input=json.dumps({**base, **payload}), env={**os.environ, "HOME": str(self.home)},
-            text=True, capture_output=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
+        run_cursor_hook(self.hook, self.home / ".cursor", event, {**base, **payload}, now=SESSION_START + offset)
+
+    def send_stop(self, generation, offset, **payload):
+        self.send_hook("stop", offset, generation_id=generation, transcript_path=str(self.transcript),
+                       status="completed", **payload)
 
     def feed_session(self):
-        self.send_hook("session-start", {})
-        for number, turn in enumerate(CURSOR_TURNS, start=1):
-            self.send_hook("user-prompt", {"generation_id": turn["generation_id"], "prompt": f"prompt {number}"})
-            self.send_hook("assistant-response", {**turn, "text": f"response {number}"})
-            self.send_hook("stop", {**turn, "status": "completed"})
+        self.send_hook("session-start", 0)
+        self.send_hook("user-prompt", 0, generation_id="generation-one", prompt="first <b>prompt</b>\n  with\ttags")
+        first_stop = {"model_params": [{"id": "effort", "value": "high"}], "input_tokens": 400000,
+                      "output_tokens": 55000, "cache_read_tokens": 300000, "cache_write_tokens": 20000}
+        self.send_stop("generation-one", 11, **first_stop)
+        self.send_stop("generation-one", 11, **first_stop)
+        self.send_hook("subagent-stop", 50, child_conversation_id="child-a", subagent_type="general-purpose",
+                       duration_ms=125000, agent_transcript_path=str(self.subagent_dir / "child-a.jsonl"))
+        self.send_hook("user-prompt", 60, generation_id="generation-two", prompt="second prompt unknown model")
+        self.send_stop("generation-two", 81, model="composer-2.5-fast", model_params=None, input_tokens=3000,
+                       output_tokens=500, cache_read_tokens=1000, cache_write_tokens=500)
+        self.send_hook("user-prompt", 120, generation_id="generation-three", prompt="third prompt fast")
+        self.send_hook("subagent-stop", 140, child_conversation_id="child-c", subagent_type="shell",
+                       duration_ms=61500, agent_transcript_path=None)
+        self.send_stop("generation-three", 150,
+                       model_params=[{"id": "effort", "value": "max"}, {"id": "fast", "value": "true"}],
+                       input_tokens=50000, output_tokens=10000, cache_read_tokens=0, cache_write_tokens=0)
+        self.send_hook("user-prompt", 180, generation_id="generation-four", prompt="fourth prompt no answer")
 
-    def assert_totals_report(self, result):
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("native token usage unavailable", result.stdout)
-        lines = result.stdout.splitlines()
-        self.assertEqual(lines[0], "Cursor: usage", result.stdout)
-        self.assertIn("TOTAL", lines, result.stdout)
-        start = lines.index("TOTAL") + 1
-        self.assertEqual(lines[start:start + len(EXPECTED_CURSOR_TOTALS)], EXPECTED_CURSOR_TOTALS, result.stdout)
+    def golden_without_state(self):
+        return GOLDEN_WITHOUT_STATE.replace("<state-db>", str(CURSOR_STATE_DB_PATHS[sys.platform]))
 
     def state_db(self):
         path = self.home / CURSOR_STATE_DB_PATHS[sys.platform]
@@ -715,62 +853,60 @@ class CursorUsageTests(unittest.TestCase):
             connection.commit()
         return path
 
-    def assert_subagents_report(self, expected):
-        result = self.run_session_log("usage", CURSOR_SESSION_ID)
-        self.assert_totals_report(result)
-        lines = result.stdout.rstrip("\n").splitlines()
-        self.assertIn(SUBAGENTS_HEADER, lines, result.stdout)
-        start = lines.index(SUBAGENTS_HEADER)
-        self.assertEqual(lines.index("TOTAL") + len(EXPECTED_CURSOR_TOTALS) + 1, start, result.stdout)
-        self.assertEqual(lines[start + 1:], expected, result.stdout)
-
-    def test_cursor_usage_sums_final_context_of_session_subagents_without_writing_db(self):
-        path = self.create_state_db({
-            "composerData:child-one": composer(1000),
-            "composerData:child-nested": composer(250, parent="child-one"),
-            "composerData:child-other-session": composer(9000, root="other-session", parent="other-session"),
-            f"composerData:{CURSOR_SESSION_ID}": {"contextTokensUsed": 5000},
-        })
+    def test_cursor_usage_matches_claude_layout_golden_without_writing_db(self):
+        path = self.create_state_db(SESSION_COMPOSERS)
         before = path.read_bytes()
-        self.assert_subagents_report(["subagents: 2", "final_context_tokens: 1250"])
+        self.assertEqual(self.usage_output(CURSOR_SESSION_ID), GOLDEN_WITH_STATE)
         self.assertEqual(path.read_bytes(), before)
 
-    def test_cursor_usage_ignores_invalid_subagent_context_tokens(self):
-        invalid_values = (-1, "7", True, 1.5, None)
-        self.create_state_db({
-            "composerData:child-valid": composer(1000),
-            **{f"composerData:child-invalid-{index}": composer(value) for index, value in enumerate(invalid_values)},
-        })
-        self.assert_subagents_report([f"subagents: {1 + len(invalid_values)}", "final_context_tokens: 1000"])
+    def test_cursor_usage_lists_hook_subagents_as_unavailable_without_state_db(self):
+        self.assertEqual(self.usage_output(CURSOR_SESSION_ID), self.golden_without_state())
 
-    def test_cursor_usage_reports_zero_subagents(self):
-        self.create_state_db({f"composerData:{CURSOR_SESSION_ID}": {"contextTokensUsed": 5000}})
-        self.assert_subagents_report(NO_SUBAGENTS)
-
-    def test_cursor_usage_reports_subagents_unavailable_without_state_db(self):
-        self.assert_subagents_report(
-            [f"subagents: unavailable: Cursor state database not found: {self.home / CURSOR_STATE_DB_PATHS[sys.platform]}"])
-
-    def test_cursor_usage_reports_subagents_unavailable_for_corrupt_state_db(self):
+    def test_cursor_usage_reports_unreadable_state_db_on_each_subagent(self):
         self.state_db().write_bytes(b"not a sqlite database" * 100)
-        self.assert_subagents_report(
-            ["subagents: unavailable: cannot read Cursor state database: file is not a database"])
+        line = f"final context: unavailable: cannot read Cursor state database: file is not a database {UNTRACKED}"
+        self.assertEqual(self.usage_output(CURSOR_SESSION_ID).splitlines().count(line), 2)
 
-    def test_cursor_usage_reports_totals_from_stop_hook_tokens(self):
-        self.assert_totals_report(self.run_session_log("usage"))
-        self.assert_totals_report(self.run_session_log("usage", "--latest"))
-        self.assert_totals_report(self.run_session_log("usage", CURSOR_SESSION_ID))
+    def test_cursor_usage_marks_invalid_subagent_context_unavailable(self):
+        self.create_state_db({**SESSION_COMPOSERS, "composerData:child-b": composer("7", "explore")})
+        lines = self.usage_output(CURSOR_SESSION_ID).splitlines()
+        header = next(index for index, line in enumerate(lines) if line.startswith("sub-agent: explore (child-b)"))
+        self.assertEqual(lines[header + 1],
+                         f"final context: unavailable: no contextTokensUsed in Cursor state database {UNTRACKED}")
 
-    def test_cursor_usage_ignores_redelivered_stop_for_same_generation(self):
-        self.send_hook("stop", {**CURSOR_TURNS[0], "status": "completed"})
-        self.assert_totals_report(self.run_session_log("usage", CURSOR_SESSION_ID))
+    def test_cursor_usage_resolves_latest_and_session_targets_identically(self):
+        self.create_state_db(SESSION_COMPOSERS)
+        subdirectory = self.project / "src" / "nested"
+        subdirectory.mkdir(parents=True)
+        self.assertEqual(self.usage_output(), GOLDEN_WITH_STATE)
+        self.assertEqual(self.usage_output("--latest"), GOLDEN_WITH_STATE)
+        self.assertEqual(self.usage_output("--latest", cwd=subdirectory), GOLDEN_WITH_STATE)
 
-    def test_cursor_stop_without_token_fields_records_nothing(self):
-        self.send_hook("stop", {"session_id": "tokenless", "conversation_id": "tokenless",
-                                "generation_id": "generation-three", "status": "completed"})
-        result = self.run_session_log("usage", "tokenless")
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn("Cursor session has no token usage records: tokenless", result.stderr)
+    def test_cursor_usage_ignores_invalid_and_duplicate_record_lines(self):
+        self.create_state_db(SESSION_COMPOSERS)
+        recorded = self.token_file().read_text(encoding="utf-8").splitlines()
+        self.append_token_lines(*INVALID_CURSOR_RECORD_LINES, *recorded)
+        self.assertEqual(self.usage_output(CURSOR_SESSION_ID), GOLDEN_WITH_STATE)
+
+    def test_cursor_stop_without_token_fields_still_reports_the_turn(self):
+        session = {"session_id": "tokenless", "conversation_id": "tokenless"}
+        self.send_hook("user-prompt", 0, generation_id="generation-one", prompt="tokenless prompt", **session)
+        self.send_hook("stop", 7, generation_id="generation-one", status="completed", **session)
+        empty = ("est. used token: input: 0, output: 0, cache_create: 0, cache_read: 0, total_tokens: 0, "
+                 "price: $0.00, model: -, effort: -")
+        self.assertEqual(self.usage_output("tokenless"), "\n".join([
+            "Cursor: usage",
+            f"session: {self.token_file('tokenless')}".replace(str(self.home), "<home>"),
+            "",
+            '1. 10:00:00 (working time 00:00:07) "tokenless prompt"',
+            empty,
+            "",
+            "TOTAL (1 requests, 0 sub-agents)",
+            "working time: 00:00:07",
+            empty,
+            "",
+            "",
+        ]))
 
     def test_cursor_usage_fails_for_unknown_session(self):
         result = self.run_session_log("usage", "missing-session")
@@ -784,32 +920,18 @@ class CursorUsageTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("no Cursor token usage records found for the current project", result.stderr)
 
-    def test_cursor_stop_hook_appends_despite_corrupt_tokens_file(self):
+    def test_cursor_stop_hook_appends_despite_corrupt_record_file(self):
         self.append_token_lines("{not json", json.dumps({"input_tokens": 9}))
-        third = {"generation_id": "generation-three", "input_tokens": 5, "output_tokens": 2}
-        self.send_hook("stop", {**third, "status": "completed"})
-        last_line = self.token_file().read_text(encoding="utf-8").splitlines()[-1]
-        self.assertEqual(json.loads(last_line), third)
+        self.send_stop("generation-five", 200, input_tokens=5, output_tokens=2)
+        last_line = json.loads(self.token_file().read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual((last_line["event"], last_line["generation_id"]), ("stop", "generation-five"))
 
-    def test_cursor_usage_skips_corrupt_token_lines(self):
-        self.append_token_lines(*INVALID_CURSOR_TOKEN_LINES)
-        self.assert_totals_report(self.run_session_log("usage", CURSOR_SESSION_ID))
-
-    def test_cursor_usage_counts_duplicate_generation_lines_once(self):
-        self.append_token_lines(*(json.dumps(turn) for turn in CURSOR_TURNS))
-        self.assert_totals_report(self.run_session_log("usage", CURSOR_SESSION_ID))
-
-    def test_cursor_usage_fails_when_all_token_lines_are_invalid(self):
-        self.append_token_lines(*INVALID_CURSOR_TOKEN_LINES, session="corrupt-only")
+    def test_cursor_usage_fails_when_all_record_lines_are_invalid(self):
+        self.append_token_lines(*INVALID_CURSOR_RECORD_LINES, session="corrupt-only")
         result = self.run_session_log("usage", "corrupt-only")
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(f"Cursor session has no token usage records: {self.token_file('corrupt-only')}", result.stderr)
-        self.assertNotIn("total_tokens", result.stdout)
-
-    def test_cursor_usage_latest_resolves_workspace_from_subdirectory(self):
-        subdirectory = self.project / "src" / "nested"
-        subdirectory.mkdir(parents=True)
-        self.assert_totals_report(self.run_session_log("usage", "--latest", cwd=subdirectory))
+        self.assertNotIn("est. used token", result.stdout)
 
     def test_cursor_usage_rejects_path_targets(self):
         transcript = self.token_file()
