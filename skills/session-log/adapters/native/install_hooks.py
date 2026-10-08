@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # universal-session-log: managed
+import errno
 import json
 import os
 import random
@@ -14,6 +15,8 @@ if LIB_PATH not in sys.path:
 import pathsafe
 
 MAX_TEMP_FILE_ATTEMPTS = 20
+# O_NONBLOCK keeps a FIFO swapped in for the hooks file from blocking the open.
+READ_FLAGS = pathsafe.FILE_FLAGS | os.O_NONBLOCK
 
 
 def _events(harness):
@@ -36,10 +39,6 @@ def _events(harness):
 def fail(message):
     print(f"session-log: {message}", file=sys.stderr)
     raise SystemExit(1)
-
-
-def is_unsafe_path(path):
-    return path.is_symlink() or (path.exists() and not path.is_file())
 
 
 def build_command(harness, hook, lifecycle):
@@ -138,16 +137,29 @@ def safe_parent(path):
             current.mkdir(mode=0o700, exist_ok=True)
 
 
+def open_hooks_file(path):
+    try:
+        return os.open(path, READ_FLAGS)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            fail(f"refusing to update unsafe hooks file: {path}")
+        fail(f"cannot read hooks file: {error}")
+
+
 def load(path):
     safe_parent(path)
-    if is_unsafe_path(path):
-        fail(f"refusing to update unsafe hooks file: {path}")
-    if not path.exists():
+    descriptor = open_hooks_file(path)
+    if descriptor is None:
         return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        fail(f"cannot read hooks file: {error}")
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            fail(f"refusing to update unsafe hooks file: {path}")
+        try:
+            value = json.loads(handle.read().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            fail(f"cannot read hooks file: {error}")
     if not isinstance(value, dict):
         fail("hooks root must be an object")
     return value

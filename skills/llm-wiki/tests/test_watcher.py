@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pid_file import PIDFile
-from watcher import WatcherLog, _snapshot, main
+from watcher import RETAINED_LOG_LINES, WatcherLog, _snapshot, main
 
 _READY_TIMEOUT = 5.0
 _POLL_INTERVAL = 0.01
@@ -170,12 +170,13 @@ def test_log_rotate_exactly_at_threshold(tmp_path):
 def test_log_rotate_cuts_at_line_boundary(tmp_path):
     wl = WatcherLog(tmp_path)
     log_file = tmp_path / "watcher.log"
-    log_file.write_text("".join(f"line {i}\n" for i in range(10001)))
+    original = [f"line {i}\n" for i in range(10001)]
+    log_file.write_text("".join(original))
     wl.rotate_if_needed()
-    content = log_file.read_text()
-    lines = content.splitlines(keepends=True)
-    for line in lines[:-1]:
-        assert line.endswith("\n"), f"Line does not end with newline: {line!r}"
+    lines = log_file.read_text().splitlines(keepends=True)
+    # After the rotation marker, the file must hold exactly the last retained
+    # original lines, each whole: a cut mid-line would leave a partial first line.
+    assert lines[1:] == original[-RETAINED_LOG_LINES:]
 
 
 def test_log_rotate_missing_file_noop(tmp_path):

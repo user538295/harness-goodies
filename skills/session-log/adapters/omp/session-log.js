@@ -84,10 +84,12 @@ def read_dedupe_records(parent_fd):
         return records
     except UnicodeDecodeError:
         raise RuntimeError("invalid OMP dedupe state")
+MAX_DEDUPE_RECORDS = 64
 def retain_records(records):
     pending = [record for record in records if not record.get("committed")]
     committed = [record for record in records if record.get("committed")]
-    return pending + committed[-max(0, 64 - len(pending)):]
+    committed_limit = max(0, MAX_DEDUPE_RECORDS - len(pending))
+    return pending + (committed[-committed_limit:] if committed_limit else [])
 def write_dedupe_records(parent_fd, records):
     if not dedupe_key:
         return
@@ -490,6 +492,9 @@ const version = fs.readFileSync(path.join(packageRoot, "VERSION"), "utf8").trim(
 const MAX_APPEND_ATTEMPTS = 5;
 const APPEND_RETRY_DELAY_MS = 250;
 const MAX_CLOSED_SESSIONS = 1024;
+const LOG_HEADER_LINES = 8;
+// O_NONBLOCK keeps a FIFO swapped in after the lstat check from blocking the open.
+const LOG_READ_FLAGS = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
 const validId = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 function isEnabled() {
 	try { return fs.lstatSync(enabledFile).isFile(); } catch { return false; }
@@ -668,13 +673,24 @@ function ensureLog(root, cwd) {
 	ensureDirectory(path.dirname(file));
 	secureEnsureFile(file, `# Prompts — ${new Date().toISOString()}\n\n**Session ID:** ${root.id}\n**Session file:** ${root.file || "(not materialized yet)"}\n\n---\n`);
 	ensureFile(file, false);
-	const stat = fs.statSync(file);
-	const uid = typeof process.getuid === "function" ? process.getuid() : null;
-	if (uid !== null && stat.uid !== uid) throw new Error(`OMP log file is not owned by the current user: ${file}`);
-	const permissions = stat.mode & 0o777;
-	if (permissions > 0o600) throw new Error(`OMP log file permissions are too broad: ${file}`);
-	const hasSessionId = fs.readFileSync(file, "utf8").split("\n").slice(0, 8).includes(`**Session ID:** ${root.id}`);
-	if (!hasSessionId) throw new Error(`OMP log file has an unexpected session ID: ${file}`);
+	let descriptor;
+	try {
+		descriptor = fs.openSync(file, LOG_READ_FLAGS);
+	} catch (error) {
+		if (error?.code === "ELOOP") throw new Error(`OMP path is not a safe file: ${file}`);
+		throw error;
+	}
+	try {
+		const stat = fs.fstatSync(descriptor);
+		if (!stat.isFile()) throw new Error(`OMP path is not a safe file: ${file}`);
+		const uid = typeof process.getuid === "function" ? process.getuid() : null;
+		if (uid !== null && stat.uid !== uid) throw new Error(`OMP log file is not owned by the current user: ${file}`);
+		if ((stat.mode & 0o077) !== 0) throw new Error(`OMP log file permissions are too broad: ${file}`);
+		const hasSessionId = fs.readFileSync(descriptor, "utf8").split("\n").slice(0, LOG_HEADER_LINES).includes(`**Session ID:** ${root.id}`);
+		if (!hasSessionId) throw new Error(`OMP log file has an unexpected session ID: ${file}`);
+	} finally {
+		fs.closeSync(descriptor);
+	}
 	return file;
 }
 function append(file, text, dedupe = false, expectedSignature = enableSignature(), dedupeKey = "") {
@@ -1307,4 +1323,4 @@ export default function sessionLogOmp(pi, options = {}) {
 
 }
 
-export { stableKey, projectSlug, contentText, messageKey, pathInside, finiteNumber, timestampNumber, nonNegativeInteger, usageLine, formatHms, createRun, queuedEventHandlers, composeFinalizeRecord, usageCommandArguments };
+export { stableKey, projectSlug, contentText, messageKey, pathInside, finiteNumber, timestampNumber, nonNegativeInteger, usageLine, formatHms, createRun, queuedEventHandlers, composeFinalizeRecord, usageCommandArguments, SECURE_APPEND_SCRIPT, ensureLog };

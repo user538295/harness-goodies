@@ -337,8 +337,7 @@ def main(argv=None):
     safe_regular(flag, harness)
     safe_regular(runtime, harness)
     if not flag.is_file():
-        if runtime.exists():
-            runtime.unlink()
+        runtime.unlink(missing_ok=True)
         respond(harness, event)
         return
     try:

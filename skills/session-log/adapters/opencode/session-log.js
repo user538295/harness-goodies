@@ -371,7 +371,11 @@ export function commitPairedRuntime({ temporary, processTemporary, runtime, proc
     fs.renameSync(processTemporary, processRuntime);
   } catch (error) {
     try {
-      if (fs.existsSync(runtime) && !fs.lstatSync(runtime).isSymbolicLink()) fs.unlinkSync(runtime);
+      try {
+        if (!fs.lstatSync(runtime).isSymbolicLink()) fs.unlinkSync(runtime);
+      } catch (unlinkError) {
+        if (unlinkError?.code !== "ENOENT") throw unlinkError;
+      }
       if (restorable) fs.renameSync(backup, runtime);
     } catch (rollbackError) {
       throw new AggregateError([error, rollbackError], "OpenCode runtime rollback failed");
@@ -448,10 +452,12 @@ def read_dedupe_records(parent_fd):
         return records
     except UnicodeDecodeError:
         raise RuntimeError("invalid OpenCode dedupe state")
+MAX_DEDUPE_RECORDS = 64
 def retain_records(records):
     pending = [record for record in records if not record.get("committed")]
     committed = [record for record in records if record.get("committed")]
-    return pending + committed[-max(0, 64 - len(pending)):]
+    committed_limit = max(0, MAX_DEDUPE_RECORDS - len(pending))
+    return pending + (committed[-committed_limit:] if committed_limit else [])
 def write_dedupe_records(parent_fd, records):
     if not dedupe_key:
         return
@@ -1189,10 +1195,11 @@ export const SessionLogPlugin = async ({ directory }) => {
     return parts.length ? `switched: ${parts.join(", ")}\n` : "";
   };
   const nativeSessionParent = async (sessionID) => {
+    let snapshot = "";
     try {
       const databasePath = resolveDatabasePath();
       assertNoFollowContained(DATA_DIR, databasePath);
-      const snapshot = secureDatabaseSnapshot(databasePath);
+      snapshot = secureDatabaseSnapshot(databasePath);
       const { Database } = await import("bun:sqlite");
       const database = new Database(snapshot, { readonly: true });
       try {
@@ -1220,10 +1227,13 @@ export const SessionLogPlugin = async ({ directory }) => {
         return { available: schemaAvailable, found: false, parentID: "" };
       } finally {
         database.close();
-        try { fs.unlinkSync(snapshot); } catch {}
       }
     } catch {
       return { available: false, found: false, parentID: "" };
+    } finally {
+      if (snapshot) {
+        try { fs.unlinkSync(snapshot); } catch {}
+      }
     }
   };
   const resolveRoot = async (sessionID) => {

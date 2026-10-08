@@ -1,4 +1,5 @@
 import importlib.util
+import fcntl
 import io
 import json
 import os
@@ -18,6 +19,7 @@ INSTALL_PATH = REPO / "skills/session-log/adapters/native/install_hooks.py"
 HOOK_PATH = REPO / "skills/session-log/adapters/native/session_log_hook.py"
 CURSOR_USAGE_PATH = REPO / "skills/session-log/adapters/cursor/session_log_usage.py"
 CLAUDE_SETTINGS_PATH = REPO / "skills/session-log/lib/claude_settings.py"
+LOCKING_PATH = REPO / "skills/session-log/lib/locking.py"
 
 EMPTY_TOTALS = {
     "input_tokens": 0,
@@ -197,6 +199,42 @@ class CodexLatestSessionTests(unittest.TestCase):
         self.assertEqual(self.latest(), f"session: {root}")
 
 
+LOAD_SWAPPED_HOOKS_SCRIPT = """
+import importlib.util, os, pathlib, sys
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location("install_hooks", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+config, replacement = pathlib.Path(sys.argv[2]), sys.argv[3]
+native_open, native_read_text = os.open, pathlib.Path.read_text
+
+def swap():
+    # A concurrent writer replaces the validated hooks file right before it is opened for reading.
+    if config.is_symlink() or not config.is_file():
+        return
+    config.unlink()
+    if replacement == "fifo":
+        os.mkfifo(config)
+    else:
+        config.symlink_to(replacement)
+
+def swap_then_open(path, *args, **kwargs):
+    if os.fspath(path) == str(config):
+        swap()
+    return native_open(path, *args, **kwargs)
+
+def swap_then_read_text(path, *args, **kwargs):
+    if path == config:
+        swap()
+    return native_read_text(path, *args, **kwargs)
+
+with patch.object(os, "open", side_effect=swap_then_open), \\
+        patch.object(pathlib.Path, "read_text", new=swap_then_read_text):
+    print(installer.load(config))
+"""
+
+
+
 class InstallerHooksTests(unittest.TestCase):
     def test_installer_import_has_no_io_side_effects(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HOME": directory}), \
@@ -234,6 +272,33 @@ class InstallerHooksTests(unittest.TestCase):
                 installer.atomic_write(config, document)
 
             self.assertEqual(json.loads(config.read_text()), document)
+
+    def test_installer_load_refuses_hooks_file_swapped_after_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            secret = root / "secret.json"
+            secret.write_text(json.dumps({"secret": True}))
+            config = root / "hooks.json"
+            for replacement in (str(secret), "fifo"):
+                with self.subTest(replacement=replacement):
+                    config.unlink(missing_ok=True)
+                    config.write_text(json.dumps({"hooks": {}}))
+                    result = subprocess.run(
+                        [sys.executable, "-c", LOAD_SWAPPED_HOOKS_SCRIPT, str(INSTALL_PATH), str(config), replacement],
+                        text=True, capture_output=True, timeout=SUBPROCESS_TIMEOUT_SECONDS,
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("refusing to update unsafe hooks file", result.stderr)
+
+    def test_installer_reports_invalid_utf8_hooks_file_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory).resolve() / "hooks.json"
+            hook = REPO / "skills/session-log/adapters/native/session_log_hook.py"
+            config.write_bytes(b"\xff\xfe{}")
+            result = subprocess.run([sys.executable, str(INSTALL_PATH), "install", "codex", str(config), str(hook)], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot read hooks file", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 class AtomicSwapRaceTests(unittest.TestCase):
@@ -561,6 +626,120 @@ class DirectoryLifecycleTests(unittest.TestCase):
                         os.fstat(opened[0])
 
 
+STALE_OWNER_START = "Stale Owner Start"
+ACQUIRER_START = "Acquirer Start"
+
+
+class PackageLockTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name).resolve()
+        self.lock = self.directory / "install.lock"
+
+    def create_lock(self):
+        # The test process is alive but its start time differs, so the lock owner is judged dead.
+        self.lock.mkdir()
+        (self.lock / "owner").write_text(f"{os.getpid()}\n{STALE_OWNER_START}\n")
+
+    def create_stale_lock(self):
+        self.create_lock()
+        os.utime(self.lock, (OLD_MTIME, OLD_MTIME))
+
+    def release_lock(self):
+        (self.lock / "owner").unlink()
+        self.lock.rmdir()
+
+    def owner_lines(self):
+        return (self.lock / "owner").read_text().splitlines()
+
+    def acquire(self):
+        environment = {
+            "SESSION_LOG_LOCK_PATH": str(self.lock),
+            "SESSION_LOG_LOCK_PID": str(os.getpid()),
+            "SESSION_LOG_LOCK_START": ACQUIRER_START,
+        }
+        with patch.object(sys, "argv", ["locking.py", "acquire"]), \
+                patch.object(sys, "path", [str(LOCKING_PATH.parent), *sys.path]), \
+                patch.dict(os.environ, environment):
+            try:
+                load_module(LOCKING_PATH, "locking_under_test")
+            except SystemExit as exit_status:
+                return exit_status.code
+        return 0
+
+    def competing_reclaim(self, native_rmdir):
+        """Another acquirer that judged the same lock stale reclaims it, then a creator re-makes it."""
+        parent = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            try:
+                fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None
+            (self.lock / "owner").unlink(missing_ok=True)
+            native_rmdir(self.lock)
+            self.lock.mkdir()
+            # The creator holds the fresh lock open before writing its owner, which also pins its inode.
+            fresh = os.open(self.lock, os.O_RDONLY | os.O_DIRECTORY)
+            self.addCleanup(os.close, fresh)
+            return os.fstat(fresh).st_ino
+        finally:
+            os.close(parent)
+
+    def test_stale_reclaim_never_deletes_a_competitors_fresh_lock(self):
+        self.create_stale_lock()
+        native_rmdir = os.rmdir
+        fresh_inodes = []
+
+        def compete_then_rmdir(path, *args, **kwargs):
+            if path == self.lock.name and not fresh_inodes:
+                fresh_inodes.append(self.competing_reclaim(native_rmdir))
+            return native_rmdir(path, *args, **kwargs)
+
+        with patch.object(os, "rmdir", side_effect=compete_then_rmdir):
+            self.acquire()
+        self.assertIn(fresh_inodes[0], (None, os.stat(self.lock).st_ino),
+                      "stale-lock reclaim deleted a competitor's freshly created lock")
+
+    def test_acquire_reports_busy_while_another_process_reclaims(self):
+        self.create_stale_lock()
+        parent = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, parent)
+        fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertEqual(self.acquire(), 1)
+        self.assertEqual(self.owner_lines(), [str(os.getpid()), STALE_OWNER_START])
+
+    def test_acquire_retries_when_holder_releases_after_mkdir_conflict(self):
+        self.create_lock()
+        native_open = os.open
+        released = []
+
+        def release_then_open(path, *args, **kwargs):
+            if path == self.lock.name and not released:
+                released.append(True)
+                self.release_lock()
+            return native_open(path, *args, **kwargs)
+
+        with patch.object(os, "open", side_effect=release_then_open):
+            status = self.acquire()
+        self.assertEqual(status, 0)
+        self.assertEqual(self.owner_lines(), [str(os.getpid()), ACQUIRER_START])
+
+    def test_acquire_reports_busy_when_holder_releases_during_owner_check(self):
+        self.create_lock()
+        native_open = os.open
+        released = []
+
+        def release_then_open(path, *args, **kwargs):
+            if path == "owner" and not released:
+                released.append(True)
+                self.release_lock()
+            return native_open(path, *args, **kwargs)
+
+        with patch.object(os, "open", side_effect=release_then_open):
+            status = self.acquire()
+        self.assertEqual(status, 1)
+
 
 class NativeHookTests(unittest.TestCase):
     def test_native_hook_import_has_no_io_side_effects(self):
@@ -618,6 +797,27 @@ class NativeHookTests(unittest.TestCase):
             runtime = json.loads((root / "session-log" / "runtime.json").read_text())
         self.assertEqual(stdout.getvalue(), "{}\n")
         self.assertIsNone(runtime["process_start"])
+
+    def test_native_hook_disabled_tolerates_runtime_removed_by_concurrent_hook(self):
+        hook = load_module(HOOK_PATH, "session_log_hook_concurrent_disable_test")
+        native_unlink = Path.unlink
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            runtime = home / ".codex" / "session-log" / "runtime.json"
+            runtime.parent.mkdir(parents=True)
+            runtime.write_text("{}")
+
+            def concurrent_unlink(path, *args, **kwargs):
+                if path == runtime and path.exists():
+                    native_unlink(path)
+                return native_unlink(path, *args, **kwargs)
+
+            with patch.dict(os.environ, {"HOME": str(home)}), \
+                    patch.object(Path, "unlink", new=concurrent_unlink), \
+                    patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                hook.main(["codex", "stop"])
+            self.assertEqual(stdout.getvalue(), "{}\n")
+            self.assertFalse(runtime.exists())
 
 
 CURSOR_SESSION_ID = "cursor-usage-session"

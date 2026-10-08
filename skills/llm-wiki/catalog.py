@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,16 +18,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 READ_CHUNK_BYTES = 65536
+# Non-blocking so opening a FIFO/device never hangs; the type is then checked
+# on the opened descriptor itself, leaving no check-then-open race window.
+_HASH_OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY
 
 
 def _hash_file(path: Path) -> str:
     # Guard the hash boundary: a user-supplied path (possibly via a symlink)
-    # must resolve to a regular file before it can reach open(). This blocks
+    # must resolve to a regular file before it is read. This blocks
     # devices/FIFOs/sockets that would otherwise be read here.
-    if not path.is_file():
-        raise ValueError(f"not a regular file: {path}")
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
+    try:
+        fd = os.open(path, _HASH_OPEN_FLAGS)
+    except FileNotFoundError as e:
+        raise ValueError(f"not a regular file: {path}") from e
+    with open(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"not a regular file: {path}")
+        h = hashlib.sha256()
         while chunk := f.read(READ_CHUNK_BYTES):
             h.update(chunk)
     return h.hexdigest()
@@ -44,9 +52,10 @@ class CatalogStore:
         """Load the ledger. Missing file → empty ledger. A corrupt or
         wrong-shape file raises (JSONDecodeError/KeyError/TypeError) rather than
         silently reading as empty, which would trigger a full re-ingest."""
-        if not path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except FileNotFoundError:
             return {}
-        data = json.loads(path.read_text())
         return {
             k: CatalogEntry(sha256=v["sha256"], ingested_at=v["ingested_at"])
             for k, v in data.items()

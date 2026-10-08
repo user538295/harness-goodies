@@ -1,7 +1,9 @@
 import hashlib
 import json
+import os
 import re
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from catalog import (
     CatalogStore,
     _catalog_path,
     _existing_file_key,
+    _hash_file,
     _ledger_key,
     add,
     get,
@@ -40,6 +43,13 @@ def _sha(content: bytes) -> str:
 # --- CatalogStore tests ---
 
 def test_store_load_missing_file(tmp_path):
+    assert CatalogStore.load(tmp_path / "nope.json") == {}
+
+
+def test_store_load_file_vanishing_after_check_reads_as_empty(tmp_path, monkeypatch):
+    # Simulate the ledger being deleted between an existence check and the
+    # read: Path.exists() reports True but the file is already gone.
+    monkeypatch.setattr(Path, "exists", lambda self, **kwargs: True)
     assert CatalogStore.load(tmp_path / "nope.json") == {}
 
 
@@ -87,6 +97,48 @@ def test_store_save_creates_parent_dir(tmp_path):
     path = tmp_path / ".watcher" / "catalog.json"
     CatalogStore.save(path, {"a.md": CatalogEntry(sha256="x", ingested_at="t")})
     assert path.exists()
+
+
+# --- _hash_file tests ---
+
+_FIFO_OPEN_TIMEOUT_SECONDS = 2.0
+
+
+def test_hash_file_rejects_fifo_swapped_in_after_type_check(tmp_path, monkeypatch):
+    # Simulate a regular file swapped for a FIFO between the type check and
+    # open(): Path.is_file() reports True, but the path is a FIFO. Hashing must
+    # reject it without blocking on the FIFO open (no writer ever appears).
+    fifo = tmp_path / "pipe.md"
+    os.mkfifo(fifo)
+    monkeypatch.setattr(Path, "is_file", lambda self, **kwargs: True)
+    outcome: dict[str, BaseException | str] = {}
+
+    def hash_in_thread() -> None:
+        try:
+            outcome["result"] = _hash_file(fifo)
+        except BaseException as e:  # captured for assertion on the main thread
+            outcome["error"] = e
+
+    worker = threading.Thread(target=hash_in_thread, daemon=True)
+    worker.start()
+    worker.join(_FIFO_OPEN_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        # Unblock the stuck open() by appearing as a writer, then fail.
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(_FIFO_OPEN_TIMEOUT_SECONDS)
+        pytest.fail("_hash_file blocked opening a FIFO")
+    assert isinstance(outcome.get("error"), ValueError)
+
+
+def test_hash_file_regular_file(tmp_path):
+    f = tmp_path / "doc.md"
+    f.write_bytes(b"hello")
+    assert _hash_file(f) == _sha(b"hello")
+
+
+def test_hash_file_missing_raises_value_error(tmp_path):
+    with pytest.raises(ValueError):
+        _hash_file(tmp_path / "ghost.md")
 
 
 # --- raw key resolution tests ---

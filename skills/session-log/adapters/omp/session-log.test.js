@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
 	stableKey,
 	projectSlug,
@@ -14,7 +17,102 @@ import {
 	queuedEventHandlers,
 	composeFinalizeRecord,
 	usageCommandArguments,
+	SECURE_APPEND_SCRIPT,
 } from "./session-log.js";
+
+const ADAPTER_PATH = path.join(import.meta.dir, "session-log.js");
+const PRIVATE_FILE_MODE = 0o600;
+const DEDUPE_RECORD_LIMIT = 64;
+
+const temporaryDirectory = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-log-")));
+
+const createLogFile = (directory) => {
+	const file = path.join(directory, "session_test.md");
+	fs.writeFileSync(file, "# Prompts\n", { mode: PRIVATE_FILE_MODE });
+	return file;
+};
+
+const runAppendScript = (file, dedupeKey) => {
+	const stat = fs.statSync(file);
+	return Bun.spawnSync(["python3", "-c", SECURE_APPEND_SCRIPT], {
+		env: {
+			...process.env,
+			SESSION_LOG_FILE: file,
+			SESSION_LOG_EXPECTED_DEV: String(stat.dev),
+			SESSION_LOG_EXPECTED_INO: String(stat.ino),
+			SESSION_LOG_DEDUPE: dedupeKey ? "1" : "0",
+			SESSION_LOG_DEDUPE_KEY: dedupeKey,
+		},
+		stdin: Buffer.from("entry\n"),
+	});
+};
+
+describe("secure append script", () => {
+	test("drops committed dedupe records once pending records fill the limit", () => {
+		const directory = temporaryDirectory();
+		const file = createLogFile(directory);
+		const pending = Array.from({ length: DEDUPE_RECORD_LIMIT }, (_, index) => ({ key: `pending-${index}`, offset: 0, length: 1, sha256: "0", committed: false }));
+		const committed = { key: "committed-0", offset: 0, length: 1, sha256: "0", committed: true };
+		const dedupeFile = path.join(directory, ".session_test.md.dedupe");
+		fs.writeFileSync(dedupeFile, [...pending, committed].map((record) => `${JSON.stringify(record)}\n`).join(""), { mode: PRIVATE_FILE_MODE });
+
+		const result = runAppendScript(file, "new");
+
+		expect(result.stderr.toString()).toBe("");
+		const records = fs.readFileSync(dedupeFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+		expect(records).toHaveLength(DEDUPE_RECORD_LIMIT);
+		expect(records.every((record) => !record.committed)).toBe(true);
+	});
+});
+
+// ensureLog reads the module-level log root from HOME, so it runs in a child process
+// with a private HOME. The lstat hook tampers with the log right after the first
+// successful lstat of it, simulating an attacker racing the check.
+const ENSURE_LOG_SWAP_RUNNER = String.raw`
+import fs from "node:fs";
+import path from "node:path";
+const realLstat = fs.lstatSync;
+let swapped = false;
+fs.lstatSync = (target, ...rest) => {
+	const result = realLstat(target, ...rest);
+	if (!swapped && path.basename(String(target)) === "session_victim.md") {
+		swapped = true;
+		if (process.env.TAMPER_MODE) {
+			fs.chmodSync(target, Number.parseInt(process.env.TAMPER_MODE, 8));
+		} else {
+			fs.unlinkSync(target);
+			fs.symlinkSync(process.env.ATTACKER_FILE, target);
+		}
+	}
+	return result;
+};
+const { ensureLog } = await import(process.env.ADAPTER_PATH);
+try {
+	ensureLog({ id: "victim", header: { cwd: "/project" }, file: "" }, "/project");
+	console.log("ACCEPTED");
+} catch (error) {
+	console.log("REJECTED", error.message);
+}
+`;
+
+const runEnsureLogRace = (extraEnv = {}) => {
+	const home = temporaryDirectory();
+	const attackerFile = path.join(home, "attacker.md");
+	fs.writeFileSync(attackerFile, "**Session ID:** victim\n", { mode: PRIVATE_FILE_MODE });
+	const env = { ...process.env, HOME: home, ADAPTER_PATH, ATTACKER_FILE: attackerFile, ...extraEnv };
+	delete env.PI_CODING_AGENT_DIR;
+	delete env.OMP_PROMPT_LOG_DIR;
+	return Bun.spawnSync(["bun", "--eval", ENSURE_LOG_SWAP_RUNNER], { env }).stdout.toString();
+};
+
+describe("ensureLog", () => {
+	test("rejects a log swapped for a symlink after the lstat check", () => {
+		expect(runEnsureLogRace()).toContain("REJECTED OMP path is not a safe file");
+	});
+	test("rejects a log readable by others even when owner permissions are narrower than 0600", () => {
+		expect(runEnsureLogRace({ TAMPER_MODE: "407" })).toContain("REJECTED OMP log file permissions are too broad");
+	});
+});
 
 describe("stableKey", () => {
 	test("is deterministic and 64-hex", () => {

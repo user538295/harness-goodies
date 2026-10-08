@@ -7,7 +7,7 @@ bookkeeping live in one auditable, testable place. Invoked as
 ``python3 locking.py acquire|release`` with the SESSION_LOG_LOCK_* env vars.
 """
 import errno
-import json
+import fcntl
 import os
 import subprocess
 import sys
@@ -74,14 +74,23 @@ try:
                 if lock_fd is not None:
                     os.close(lock_fd)
                     lock_fd = None
-                lock_fd = os.open(name, flags, dir_fd=parent_fd)
+                # Reclaimers serialize on the parent directory so a lock judged stale cannot be swapped for a
+                # competitor's fresh one before its removal; closing parent_fd at exit releases the guard.
+                try:
+                    fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise SystemExit(1)
+                try:
+                    lock_fd = os.open(name, flags, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    continue
                 try:
                     lines = read_owner(lock_fd)
                 except FileNotFoundError:
                     lines = []
                 if owner_alive(lines):
                     raise SystemExit(1)
-                age = time.time() - os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mtime
+                age = time.time() - os.fstat(lock_fd).st_mtime
                 if age < STALE_LOCK_SECONDS:
                     raise SystemExit(1)
                 try:

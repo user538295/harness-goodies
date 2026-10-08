@@ -27,6 +27,8 @@ type SessionIndex = { byFile: Map<string, SessionRecord>; bySessionId: Map<strin
 type RecordedUsageOptions = { recorded: JsonObject; model: unknown; provider: unknown; effort: unknown };
 
 const MONEY_SCALE = 10000;
+// O_NONBLOCK keeps a FIFO swapped in after the path checks from blocking the open.
+const SESSION_READ_FLAGS = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK;
 
 function isErrnoException(error: unknown): error is { code?: string } {
 	return typeof error === "object" && error !== null && "code" in error;
@@ -292,12 +294,19 @@ function isPlainRecord(value: unknown): value is JsonObject {
 }
 
 function readEntries(file: string): JsonObject[] {
-	let contents: string;
+	let descriptor: number;
 	try {
-		contents = fs.readFileSync(file, "utf8");
+		descriptor = fs.openSync(file, SESSION_READ_FLAGS);
 	} catch (error) {
 		if (isEnoent(error)) return [];
 		throw error;
+	}
+	let contents: string;
+	try {
+		if (!fs.fstatSync(descriptor).isFile()) return [];
+		contents = fs.readFileSync(descriptor, "utf8");
+	} finally {
+		fs.closeSync(descriptor);
 	}
 	const entries: JsonObject[] = [];
 	for (const line of contents.split("\n")) {
@@ -406,15 +415,7 @@ function hasUnresolvedParent(record: SessionRecord, index: SessionIndex): boolea
 
 function recordFromPathTarget(target: string): SessionRecord | null {
 	if (target === "--latest" || validId(target)) return null;
-	let resolved: string;
-	try {
-		resolved = safeSessionPath(target);
-		if (!fs.statSync(resolved).isFile()) return null;
-	} catch (error) {
-		if (!isEnoent(error)) throw error;
-		return null;
-	}
-	return recordFromFile(resolved);
+	return recordFromFile(target);
 }
 
 function rootsOf(records: SessionRecord[], index: SessionIndex): { roots: SessionRecord[]; malformed: Set<string> } {
@@ -462,7 +463,8 @@ function newestRoot(roots: SessionRecord[]): SessionRecord {
 }
 
 function matchById(target: string, records: SessionRecord[], malformed: Set<string>): SessionRecord {
-	const matches = records.filter(record => sessionId(record) === target || sessionId(record).startsWith(target));
+	const exact = records.filter(record => sessionId(record) === target);
+	const matches = exact.length ? exact : records.filter(record => sessionId(record).startsWith(target));
 	if (matches.length === 1) {
 		if (malformed.has(matches[0].file)) throw new Error(`Malformed OMP session ancestry involving ${matches[0].file}`);
 		return matches[0];
