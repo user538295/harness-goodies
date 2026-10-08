@@ -889,9 +889,21 @@ function markLoaded() {
 		throw error;
 	}
 }
+// A bare `usage` must report the session it was typed in, not whichever session
+// in the project was written last; quote the path for the CLI's tokenizer.
+function usageCommandArguments(rawArguments, sessionFile) {
+	if (!sessionFile || rawArguments.trim() !== "usage") return rawArguments;
+	return `usage '${sessionFile.replaceAll("'", "'\\''")}'`;
+}
+
+function currentSessionFile(ctx) {
+	const { file } = sessionState(ctx);
+	try { return file && fs.statSync(file).isFile() ? file : ""; } catch { return ""; }
+}
+
 function runUniversalCommand(argumentString, ctx) {
 	const cli = path.join(packageRoot, "bin", "session-log");
-	const rawArguments = String(argumentString || "status");
+	const rawArguments = usageCommandArguments(String(argumentString || "status"), currentSessionFile(ctx));
 	const child = Bun.spawnSync([cli, "--entrypoint", "omp", "--harness", "omp", "--arguments", rawArguments], { stdout: "pipe", stderr: "pipe" });
 	const stdout = new TextDecoder().decode(child.stdout).trimEnd();
 	const stderr = new TextDecoder().decode(child.stderr).trim();
@@ -1295,4 +1307,4 @@ export default function sessionLogOmp(pi, options = {}) {
 
 }
 
-export { stableKey, projectSlug, contentText, messageKey, pathInside, finiteNumber, timestampNumber, nonNegativeInteger, usageLine, formatHms, createRun, queuedEventHandlers, composeFinalizeRecord };
+export { stableKey, projectSlug, contentText, messageKey, pathInside, finiteNumber, timestampNumber, nonNegativeInteger, usageLine, formatHms, createRun, queuedEventHandlers, composeFinalizeRecord, usageCommandArguments };

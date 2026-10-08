@@ -64,7 +64,7 @@
           </tr>
         </tbody>
       </table>
-      <p>A pontos címkék: <code>Claude Code</code>, <code>Codex</code>, <code>Cursor</code>, <code>OpenCode</code> és <code>OMP</code>. A <code>usage</code> alapból a legújabb natív sessiont választja; megadhatsz sessionazonosítót, illetve ahol az adapter elfogadja, átirat-útvonalat. Az OpenCode csak azonosítót vagy <code>--latest</code>-et fogad el. A <code>--check</code> kizárólag Claude Code alatt használható, és a telepített <code>ccusage</code> eredményével vet össze.</p>
+      <p>A pontos címkék: <code>Claude Code</code>, <code>Codex</code>, <code>Cursor</code>, <code>OpenCode</code> és <code>OMP</code>. Cél megadása nélkül a <code>usage</code> azt a sessiont összesíti, amelyben éppen dolgozol: az aktuális projekt felső szintű sessionjei közül azt választja, amelyikben a legfrissebb felhasználói prompt van, így egy párhuzamosan még író session sosem kerül kiválasztásra; az OMP <code>/session-log</code> parancsa közvetlenül a saját sessionjét adja át. Más session riportjához adj meg sessionazonosítót, illetve ahol az adapter elfogadja, átirat-útvonalat. Az OpenCode csak azonosítót vagy <code>--latest</code>-et fogad el. A <code>--check</code> kizárólag Claude Code alatt használható, és a telepített <code>ccusage</code> eredményével vet össze.</p>
     </section>
 
     <section data-section="4-good-to-know">
@@ -108,7 +108,7 @@ switched: model claude-sonnet-5 → claude-opus-5, effort high → max
     <section data-section="6-usage-report">
       <h2>Ilyen a Claude Code <code>usage</code> riportja</h2>
       <div class="example">
-        <p><strong>Parancs:</strong> <code>/session-log usage</code> Claude Code alatt (az aktuális projekt legújabb sessionjét összesíti). A többi környezet megtartja a fent leírt saját riportformáját.</p>
+        <p><strong>Parancs:</strong> <code>/session-log usage</code> Claude Code alatt (az aktuális sessiont összesíti — a projekt azon sessionjét, amelyben a legfrissebb felhasználói prompt van). A többi környezet megtartja a fent leírt saját riportformáját.</p>
         <pre><code>Claude Code: usage
 
 1. 14:02:11  Implement the next uncompleted task…   est. used token: … price: $2.32

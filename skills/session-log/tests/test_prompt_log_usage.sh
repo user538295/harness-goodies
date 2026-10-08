@@ -167,6 +167,13 @@ touch -t 202001010000 "$PDIR/00000000-0000-0000-0000-000000000000.jsonl"
 MAIN_TOTAL='est. used token: input: 222000, output: 111000, cache_create: 200000, cache_read: 300000, total_tokens: 833000, price: $5.95, model: claude-fable-5+claude-opus-5+claude-opus-5:fast+claude-sonnet-4-6+claude-sonnet-5+claude-test-9?, effort: high+low+max'
 assert_eq "engine mode=total on main transcript" "$MAIN_TOTAL" "$(engine total "$MAIN")"
 
+# mode=last_prompt -> epoch of the newest request start (req6, 10:05:00 UTC);
+# nothing for a transcript without one.
+assert_eq "engine mode=last_prompt on main transcript" \
+  "$(jq -n '"2026-08-28T10:05:00Z" | fromdateiso8601')" "$(engine last_prompt "$MAIN")"
+assert_eq "engine mode=last_prompt is empty without a user prompt" \
+  "" "$(engine last_prompt "$SUB/agent-a1.jsonl")"
+
 # mode=last -> req6 (unknown model). Fields: start, end, model, effort, line.
 LAST_LINE='est. used token: input: 10000, output: 5000, cache_create: 30000, cache_read: 0, total_tokens: 45000, price: $0.00, model: claude-test-9?, effort: high'
 last_rec="$(engine last "$MAIN")"
@@ -385,6 +392,78 @@ assert_eq "aggregator resolves a bare session id to the same output" \
 (cd "$PROJ_CWD" && HOME="$WORKROOT" bash "$AGG" --latest) > "$WORKROOT/latest.txt" 2>&1
 assert_eq "--latest picks the newest transcript of the current project" \
   "$(cat "$WORKROOT/by_path.txt")" "$(cat "$WORKROOT/latest.txt")"
+
+# --latest ranks the project's root sessions by their newest USER prompt, not
+# by mtime: a second session that is still writing output has the newer mtime
+# but is not the one the user is typing in. Fixture mtimes stay later than the
+# entries they hold, as on a real disk.
+latest_session() { # project-cwd -> basename of the transcript --latest picks
+  (cd "$1" && HOME="$WORKROOT" bash "$AGG" --latest 2>&1) \
+    | sed -n '1s|^session: .*/||p'
+}
+RANK_CWD="$WORKROOT/rank"
+mkdir -p "$RANK_CWD"
+RANK_DIR="$WORKROOT/.claude/projects/$(printf '%s' "$RANK_CWD" | sed 's|[/._]|-|g')"
+mkdir -p "$RANK_DIR"
+RANK_A="aaaaaaaa-0000-0000-0000-000000000001"
+RANK_B="bbbbbbbb-0000-0000-0000-000000000002"
+RANK_C="cccccccc-0000-0000-0000-000000000003"
+# A: the user's session — its newest prompt is a slash/skill invocation.
+{
+  usr '2026-08-28T11:30:00.000Z' '"typed"' 'false' '"a first prompt"'
+  asst '2026-08-28T11:30:05.000Z' msg_ra1 claude-opus-5 high 10 10 0 0 0 standard
+  usr '2026-08-28T12:00:00.000Z' 'null' 'false' '"<command-name>/plan</command-name>"'
+  asst '2026-08-28T12:00:05.000Z' msg_ra2 claude-opus-5 high 10 10 0 0 0 standard
+} > "$RANK_DIR/$RANK_A.jsonl"
+touch -t 202608281201 "$RANK_DIR/$RANK_A.jsonl"
+# B: older prompt, but still streaming tool calls and answers after it.
+{
+  usr '2026-08-28T11:00:00.000Z' '"typed"' 'false' '"b prompt"'
+  asst '2026-08-28T12:20:00.000Z' msg_rb1 claude-opus-5 high 10 10 0 0 0 standard
+  usr '2026-08-28T12:25:00.000Z' 'null' 'false' '[{"type":"tool_result","content":"ok"}]'
+  asst '2026-08-28T12:30:00.000Z' msg_rb2 claude-opus-5 high 10 10 0 0 0 standard
+} > "$RANK_DIR/$RANK_B.jsonl"
+touch -t 202608281230 "$RANK_DIR/$RANK_B.jsonl"
+assert_eq "--latest picks the session with the newest user prompt, not the newest mtime" \
+  "$RANK_A.jsonl" "$(latest_session "$RANK_CWD")"
+
+# C: newest mtime, but only meta/tool/injected/assistant entries — no prompt.
+{
+  usr '2026-08-28T12:40:00.000Z' 'null' 'true' '"<command-name>/model</command-name>"'
+  usr '2026-08-28T12:41:00.000Z' '"sdk"' 'false' '"<task-notification>done</task-notification>"'
+  usr '2026-08-28T12:42:00.000Z' 'null' 'false' '[{"type":"tool_result","content":"ok"}]'
+  asst '2026-08-28T12:44:00.000Z' msg_rc1 claude-opus-5 high 10 10 0 0 0 standard
+} > "$RANK_DIR/$RANK_C.jsonl"
+touch -t 202608281245 "$RANK_DIR/$RANK_C.jsonl"
+assert_eq "--latest ranks a session without user prompts below every session with one" \
+  "$RANK_A.jsonl" "$(latest_session "$RANK_CWD")"
+
+# A sub-agent transcript with a newer prompt and mtime is never a candidate.
+mkdir -p "$RANK_DIR/$RANK_B/subagents"
+usr '2026-08-28T13:00:00.000Z' '"typed"' 'false' '"child prompt"' \
+  > "$RANK_DIR/$RANK_B/subagents/agent-child.jsonl"
+touch -t 202608281301 "$RANK_DIR/$RANK_B/subagents/agent-child.jsonl"
+assert_eq "--latest never picks a sub-agent transcript" \
+  "$RANK_A.jsonl" "$(latest_session "$RANK_CWD")"
+
+# Single root session: picked, as before.
+SOLO_CWD="$WORKROOT/solo"
+SOLO_DIR="$WORKROOT/.claude/projects/$(printf '%s' "$SOLO_CWD" | sed 's|[/._]|-|g')"
+mkdir -p "$SOLO_CWD" "$SOLO_DIR"
+cp -p "$RANK_DIR/$RANK_B.jsonl" "$SOLO_DIR/"
+assert_eq "--latest picks the only session of a project" \
+  "$RANK_B.jsonl" "$(latest_session "$SOLO_CWD")"
+
+# No session has a user prompt: newest mtime wins, as before.
+NOPROMPT_CWD="$WORKROOT/noprompt"
+NOPROMPT_DIR="$WORKROOT/.claude/projects/$(printf '%s' "$NOPROMPT_CWD" | sed 's|[/._]|-|g')"
+mkdir -p "$NOPROMPT_CWD" "$NOPROMPT_DIR"
+cp "$RANK_DIR/$RANK_C.jsonl" "$NOPROMPT_DIR/$RANK_A.jsonl"
+touch -t 202608281250 "$NOPROMPT_DIR/$RANK_A.jsonl"
+cp "$RANK_DIR/$RANK_C.jsonl" "$NOPROMPT_DIR/$RANK_C.jsonl"
+touch -t 202608281245 "$NOPROMPT_DIR/$RANK_C.jsonl"
+assert_eq "--latest falls back to the newest mtime when no session has a user prompt" \
+  "$RANK_A.jsonl" "$(latest_session "$NOPROMPT_CWD")"
 
 # TOTAL must equal the arithmetic sum of every est-line printed above it.
 sum_cents() { # reads est-lines, prints summed cents

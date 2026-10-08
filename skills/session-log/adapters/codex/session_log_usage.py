@@ -4,10 +4,13 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 MAX_META_SCAN_LINES = 64
+# Ranks rollouts without a user prompt below every rollout that has one.
+NO_USER_PROMPT = float("-inf")
 
 
 def fail(message):
@@ -52,9 +55,49 @@ def is_current_project(cwd):
     return isinstance(cwd, str) and paths_resolve_same(cwd, os.getcwd())
 
 
+def is_root_session(metadata):
+    source = metadata.get("source")
+    return not (isinstance(source, dict) and "subagent" in source)
+
+
+def user_prompt_epoch(record):
+    # Codex records each submitted prompt as a completed UserMessage item; injected context is a bare response_item.
+    payload = record.get("payload")
+    if record.get("type") != "event_msg" or not isinstance(payload, dict) or payload.get("type") != "item_completed":
+        return None
+    item = payload.get("item")
+    if not isinstance(item, dict) or item.get("type") != "UserMessage":
+        return None
+    try:
+        return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00")).timestamp()
+    except (AttributeError, KeyError, ValueError):
+        return None
+
+
+def last_user_prompt_epoch(path):
+    latest = NO_USER_PROMPT
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                prompted = user_prompt_epoch(record) if isinstance(record, dict) else None
+                if prompted is not None:
+                    latest = max(latest, prompted)
+    except OSError:
+        pass
+    return latest
+
+
 def latest_project_rollout(root):
-    files = [path for path in rollout_files(root) if is_current_project(read_session_metadata(path).get("cwd"))]
-    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+    files = []
+    for path in rollout_files(root):
+        metadata = read_session_metadata(path)
+        if is_current_project(metadata.get("cwd")) and is_root_session(metadata):
+            files.append(path)
+    return max(files, key=lambda path: (last_user_prompt_epoch(path), path.stat().st_mtime)) if files else None
 
 
 def matches_session(path, session_id):

@@ -64,7 +64,7 @@
           </tr>
         </tbody>
       </table>
-      <p>The exact labels are <code>Claude Code</code>, <code>Codex</code>, <code>Cursor</code>, <code>OpenCode</code>, and <code>OMP</code>. <code>usage</code> defaults to the latest native session; pass a session ID, or a transcript path where that adapter accepts one. OpenCode accepts only an ID or <code>--latest</code>. Claude Code alone accepts <code>--check</code> to compare with <code>ccusage</code> when installed.</p>
+      <p>The exact labels are <code>Claude Code</code>, <code>Codex</code>, <code>Cursor</code>, <code>OpenCode</code>, and <code>OMP</code>. Without a target, <code>usage</code> reports the session you are working in: among the current project's top-level sessions it picks the one with the newest user prompt, so a parallel session that is still writing output is never chosen; OMP's <code>/session-log</code> command passes its own session directly. Pass a session ID, or a transcript path where that adapter accepts one, to report another session. OpenCode accepts only an ID or <code>--latest</code>. Claude Code alone accepts <code>--check</code> to compare with <code>ccusage</code> when installed.</p>
     </section>
 
     <section data-section="4-good-to-know">
@@ -108,7 +108,7 @@ switched: model claude-sonnet-5 → claude-opus-5, effort high → max
     <section data-section="6-usage-report">
       <h2>What a Claude Code <code>usage</code> report looks like</h2>
       <div class="example">
-        <p><strong>Command:</strong> <code>/session-log usage</code> in Claude Code (totals the newest session of the current project). Other harnesses keep their native report shapes described above.</p>
+        <p><strong>Command:</strong> <code>/session-log usage</code> in Claude Code (totals the current session — the project's session with the newest user prompt). Other harnesses keep their native report shapes described above.</p>
         <pre><code>Claude Code: usage
 
 1. 14:02:11  Implement the next uncompleted task…   est. used token: … price: $2.32

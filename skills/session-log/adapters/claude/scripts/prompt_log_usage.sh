@@ -46,13 +46,37 @@ for arg in "$@"; do
 done
 if [ -z "$target" ]; then usage >&2; exit 2; fi
 
+engine() { # mode; transcript content on stdin
+  jq -n -R -r -f "$_here/prompt_log_usage.jq" --arg mode "$1" \
+    --slurpfile P "$_here/prompt_log_prices.json"
+}
+
 if [ "$target" = "--latest" ]; then
+  # The session the user is typing in is the one with the newest user prompt;
+  # the newest mtime alone picks any other session that is still writing
+  # output. Prompt-less sessions rank last, ties keep the mtime order. A prompt
+  # is written before its file's mtime, so the newest-first scan stops once no
+  # older file can hold a newer prompt — a project holds thousands of them, so
+  # each is checked only when the scan reaches it.
   project_dir="$_CLAUDE_HOME/.claude/projects/$(resolve_project_key "$PWD")"
+  # GNU stat is probed first: GNU `stat -f` would print file-system info.
+  if stat -c %Y / >/dev/null 2>&1; then mtime_fmt=(-c $'%Y\t%n'); else mtime_fmt=(-f $'%m\t%N'); fi
   transcript=""
-  for f in "$project_dir"/*.jsonl; do
-    safe_f=$(_claude_transcript_file_is_safe "$f" 2>/dev/null) || continue
-    if [ -z "$transcript" ] || [ "$safe_f" -nt "$transcript" ]; then transcript="$safe_f"; fi
-  done
+  best_prompt=""
+  while IFS=$'\t' read -r mtime f; do
+    if [ -n "$best_prompt" ] && [ "$mtime" -le "$best_prompt" ]; then break; fi
+    f=$(_claude_transcript_file_is_safe "$f" 2>/dev/null) || continue
+    if [ -z "$transcript" ]; then transcript="$f"; fi
+    prompt=$(engine last_prompt < "$f")
+    if [ -n "$prompt" ] && { [ -z "$best_prompt" ] || [ "$prompt" -gt "$best_prompt" ]; }; then
+      best_prompt="$prompt"
+      transcript="$f"
+    fi
+  done < <(
+    find "$project_dir" -maxdepth 1 -name '*.jsonl' ! -name '.*' \
+      -exec stat "${mtime_fmt[@]}" {} + 2>/dev/null \
+      | sort -t $'\t' -k1,1nr -k2,2
+  )
 elif [ -e "$target" ] || [ -L "$target" ]; then
   explicit_path=1
   display_transcript="$target"
@@ -73,10 +97,6 @@ if [ -z "$transcript" ] || [ ! -f "$transcript" ]; then
   exit 1
 fi
 
-engine() { # mode; transcript content on stdin
-  jq -n -R -r -f "$_here/prompt_log_usage.jq" --arg mode "$1" \
-    --slurpfile P "$_here/prompt_log_prices.json"
-}
 printf 'session: %s\n\n' "$display_transcript"
 session_id="$(basename "$transcript" .jsonl)"
 subagent_dir="$(dirname "$transcript")/$session_id/subagents"

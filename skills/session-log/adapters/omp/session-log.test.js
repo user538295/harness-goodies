@@ -13,6 +13,7 @@ import {
 	createRun,
 	queuedEventHandlers,
 	composeFinalizeRecord,
+	usageCommandArguments,
 } from "./session-log.js";
 
 describe("stableKey", () => {
@@ -104,6 +105,22 @@ describe("formatting", () => {
 		expect(line).toContain("cost: $0.5000");
 		expect(line).toContain("model: m");
 		expect(line).toContain("effort: high");
+	});
+});
+
+describe("usageCommandArguments", () => {
+	const file = "/home/u/.omp/agent/sessions/p/a b's.jsonl";
+	test("targets the current session file when usage has no target", () => {
+		expect(usageCommandArguments("usage", file)).toBe("usage '/home/u/.omp/agent/sessions/p/a b'\\''s.jsonl'");
+		expect(usageCommandArguments("  usage\t", file)).toBe("usage '/home/u/.omp/agent/sessions/p/a b'\\''s.jsonl'");
+	});
+	test("keeps explicit targets and other commands unchanged", () => {
+		expect(usageCommandArguments("usage --latest", file)).toBe("usage --latest");
+		expect(usageCommandArguments("usage omp-session", file)).toBe("usage omp-session");
+		expect(usageCommandArguments("status", file)).toBe("status");
+	});
+	test("keeps bare usage when the current session file is unknown", () => {
+		expect(usageCommandArguments("usage", "")).toBe("usage");
 	});
 });
 

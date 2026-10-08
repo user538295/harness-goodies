@@ -20,6 +20,8 @@ from session_log_hook import SAFE_ID, TOKEN_FIELDS, TOKENS_SUFFIX, is_count, is_
 PRICES_PATH = ADAPTERS_PATH / "claude" / "scripts" / "prompt_log_prices.json"
 READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
 TOKEN_FILE_PREFIX = "session_"
+# Ranks sessions without a recorded prompt below every session that has one; started_at is a non-negative epoch.
+NO_PROMPT = -1
 STATE_DB_PATHS = {
     "darwin": Path("Library/Application Support/Cursor/User/globalStorage/state.vscdb"),
     "linux": Path(".config/Cursor/User/globalStorage/state.vscdb"),
@@ -89,18 +91,41 @@ def fail(message):
     raise SystemExit(1)
 
 
-def latest_token_file(logs_root, workspace="*", session="*"):
-    files = [
+def token_files(logs_root, workspace="*", session="*"):
+    return [
         path for path in logs_root.glob(f"{workspace}/{TOKEN_FILE_PREFIX}{session}{TOKENS_SUFFIX}")
         if path.is_file() and not path.is_symlink()
     ]
+
+
+def latest_token_file(logs_root, session):
+    files = token_files(logs_root, session=session)
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
+
+
+def token_file_session(path):
+    return path.name[len(TOKEN_FILE_PREFIX):-len(TOKENS_SUFFIX)]
+
+
+def last_prompt_started(records):
+    started = [epoch(prompt, "started_at") for prompt in records.prompts.values()]
+    return max((value for value in started if value is not None), default=NO_PROMPT)
+
+
+def latest_root_token_file(logs_root, workspace):
+    sessions = {}
+    for path in token_files(logs_root, workspace=workspace):
+        with open_token_file(path) as handle:
+            sessions[path] = read_records(handle)
+    children = {child for records in sessions.values() for child in records.subagents}
+    roots = [path for path in sessions if token_file_session(path) not in children]
+    return max(roots, key=lambda path: (last_prompt_started(sessions[path]), path.stat().st_mtime), default=None)
 
 
 def latest_workspace_token_file(logs_root, cwd):
     # Cursor hooks key logs by the workspace root, so usage from a subdirectory must search upward.
     for directory in (cwd, *cwd.parents):
-        path = latest_token_file(logs_root, workspace=workspace_key({"cwd": str(directory)}))
+        path = latest_root_token_file(logs_root, workspace_key({"cwd": str(directory)}))
         if path is not None:
             return path
     return None
@@ -338,7 +363,7 @@ def main(argv=None):
     prices = json.loads(PRICES_PATH.read_text(encoding="utf-8"))
     transcript = session_transcript(records)
     requests, totals = request_report(records, prices)
-    session_id = token_file.name[len(TOKEN_FILE_PREFIX):-len(TOKENS_SUFFIX)]
+    session_id = token_file_session(token_file)
     subagents = subagent_blocks(records, session_id, transcript)
     print(f"session: {transcript or token_file}")
     print()

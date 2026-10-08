@@ -897,6 +897,95 @@ set -e
 [[ "$omp_no_session_rc" -ne 0 ]] && pass "OMP no-session usage fails directly" || fail "OMP no-session usage fails directly"
 assert_contains "OMP no-session error explains missing reconstruction" "cannot be reconstructed" "$omp_no_session"
 
+printf '=== OMP and OpenCode usage --latest picks the newest user prompt ===\n'
+OMP_PICK_HOME="$WORKROOT/omp-pick-home"
+OMP_PICK_PROJECT="$WORKROOT/omp-pick-project"
+mkdir -p "$OMP_PICK_HOME/.Trash" "$OMP_PICK_HOME/.omp/agent/sessions/project" "$OMP_PICK_PROJECT"
+OMP_PICK_PROJECT="$(cd "$OMP_PICK_PROJECT" && pwd -P)"
+OMP_PICK_SESSIONS="$(cd "$OMP_PICK_HOME/.omp/agent/sessions/project" && pwd -P)"
+omp_pick_session() {
+  local file="$1" id="$2" parent="$3" prompt_time="$4" mtime="$5"
+  printf '{"type":"session","id":"%s","cwd":"%s","timestamp":"2026-08-28T09:00:00.000Z"%s}\n' \
+    "$id" "$OMP_PICK_PROJECT" "${parent:+,\"parentSession\":\"$parent\"}" > "$file"
+  if [[ -n "$prompt_time" ]]; then
+    printf '{"type":"message","timestamp":"%s","message":{"role":"user","content":"prompt %s","timestamp":"%s"}}\n' \
+      "$prompt_time" "$id" "$prompt_time" >> "$file"
+  fi
+  printf '{"type":"message","timestamp":"2026-08-28T10:20:00.000Z","message":{"role":"assistant","model":"fixture-model","timestamp":"2026-08-28T10:20:00.000Z","usage":{"input":1,"output":1}}}\n' >> "$file"
+  touch -t "$mtime" "$file"
+}
+OMP_PICK_A="$OMP_PICK_SESSIONS/omp-a.jsonl"
+OMP_PICK_B="$OMP_PICK_SESSIONS/omp b's session.jsonl"
+omp_pick_session "$OMP_PICK_A" omp-a "" "2026-08-28T10:05:00.000Z" 202001010101
+omp_pick_session "$OMP_PICK_B" omp-b "" "2026-08-28T10:00:00.000Z" 202501010101
+omp_single_usage="$(run_harness_at_home_and_dir "$OMP_PICK_HOME" "$OMP_PICK_PROJECT" omp usage 2>&1)"
+assert_contains "OMP latest picks the session with the newest user prompt over a newer mtime" \
+  "session: $OMP_PICK_A" "$omp_single_usage"
+omp_pick_session "$OMP_PICK_SESSIONS/omp-c.jsonl" omp-c "" "" 202601010101
+omp_pick_session "$OMP_PICK_SESSIONS/omp-d.jsonl" omp-d omp-b "2026-08-28T10:30:00.000Z" 202701010101
+omp_pick_usage="$(run_harness_at_home_and_dir "$OMP_PICK_HOME" "$OMP_PICK_PROJECT" omp usage --latest 2>&1)"
+assert_contains "OMP latest ignores promptless sessions and newer child prompts" \
+  "session: $OMP_PICK_A" "$omp_pick_usage"
+OMP_ALONE_HOME="$WORKROOT/omp-alone-home"
+mkdir -p "$OMP_ALONE_HOME/.omp/agent/sessions/project"
+OMP_ALONE_FILE="$(cd "$OMP_ALONE_HOME/.omp/agent/sessions/project" && pwd -P)/omp-alone.jsonl"
+omp_pick_session "$OMP_ALONE_FILE" omp-alone "" "2026-08-28T10:00:00.000Z" 202001010101
+assert_contains "OMP latest still reports a single session" "session: $OMP_ALONE_FILE" \
+  "$(run_harness_at_home_and_dir "$OMP_ALONE_HOME" "$OMP_PICK_PROJECT" omp usage --latest 2>&1)"
+omp_command_usage="$(
+  cd "$OMP_PICK_PROJECT" &&
+  HOME="$OMP_PICK_HOME" OMP_SESSION_LOG_PLUGIN="$(package_root_for omp)/adapters/omp/session-log.js" OMP_CURRENT_SESSION="$OMP_PICK_B" \
+    bun --eval '
+      const loaded = await import(process.env.OMP_SESSION_LOG_PLUGIN);
+      let command;
+      loaded.default({ registerCommand(name, definition) { command = definition; }, on() {} });
+      const ctx = { mode: "print", cwd: process.cwd(), sessionManager: { getSessionFile: () => process.env.OMP_CURRENT_SESSION, getSessionId: () => "omp-b", getHeader: () => ({}) } };
+      await command.handler("usage", ctx);
+    ' 2>&1
+)"
+assert_contains "OMP /session-log usage reports the exact current session" \
+  "session: $OMP_PICK_B" "$omp_command_usage"
+
+OPENCODE_PICK_HOME="$WORKROOT/opencode-pick-home"
+OPENCODE_PICK_DATA="$OPENCODE_PICK_HOME/.local/share/opencode"
+mkdir -p "$OPENCODE_PICK_HOME/.Trash" "$OPENCODE_PICK_DATA"
+sqlite3 "$OPENCODE_PICK_DATA/opencode.db" <<'SQL'
+CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_updated INTEGER, time_created INTEGER, title TEXT);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+INSERT INTO session VALUES ('oc-a', NULL, 100, 1, 'A');
+INSERT INTO session VALUES ('oc-b', NULL, 900, 1, 'B');
+INSERT INTO message VALUES ('a-user', 'oc-a', 5000, 5000, '{"role":"user","time":{"created":5000}}');
+INSERT INTO message VALUES ('a-assistant', 'oc-a', 5001, 5001, '{"role":"assistant","time":{"created":5001,"completed":5002}}');
+INSERT INTO session_message VALUES ('b-user', 'oc-b', 'user', 1, 4000, 4000, '{"text":"prompt","time":{"created":4000}}');
+INSERT INTO session_message VALUES ('b-assistant', 'oc-b', 'assistant', 2, 9000, 9000, '{"time":{"created":9000,"completed":9500}}');
+SQL
+assert_contains "OpenCode latest picks the session with the newest user prompt over a newer update" \
+  "session: oc-a" "$(run_harness_at_home "$OPENCODE_PICK_HOME" opencode usage 2>&1)"
+sqlite3 "$OPENCODE_PICK_DATA/opencode.db" <<'SQL'
+INSERT INTO session VALUES ('oc-c', NULL, 1000, 1, 'C');
+INSERT INTO session_message VALUES ('c-assistant', 'oc-c', 'assistant', 1, 9900, 9900, '{"time":{"created":9900,"completed":9950}}');
+INSERT INTO session VALUES ('oc-d', 'oc-b', 2000, 1, 'D');
+INSERT INTO session_message VALUES ('d-user', 'oc-d', 'user', 1, 8000, 8000, '{"text":"child","time":{"created":8000}}');
+SQL
+assert_contains "OpenCode latest ignores promptless sessions and newer child prompts" \
+  "session: oc-a" "$(run_harness_at_home "$OPENCODE_PICK_HOME" opencode usage --latest 2>&1)"
+sqlite3 "$OPENCODE_PICK_DATA/opencode.db" "INSERT INTO session VALUES ('oc-e', NULL, 50, 1, 'E');"
+mkdir -p "$OPENCODE_PICK_DATA/storage/message/oc-e"
+printf '{"role":"user","time":{"created":6000}}\n' > "$OPENCODE_PICK_DATA/storage/message/oc-e/e-user.json"
+assert_contains "OpenCode latest reads user prompts from legacy disk storage" \
+  "session: oc-e" "$(run_harness_at_home "$OPENCODE_PICK_HOME" opencode usage --latest 2>&1)"
+OPENCODE_ALONE_HOME="$WORKROOT/opencode-alone-home"
+mkdir -p "$OPENCODE_ALONE_HOME/.local/share/opencode"
+sqlite3 "$OPENCODE_ALONE_HOME/.local/share/opencode/opencode.db" <<'SQL'
+CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, time_updated INTEGER, time_created INTEGER, title TEXT);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+INSERT INTO session VALUES ('oc-alone', NULL, 100, 1, 'Alone');
+INSERT INTO message VALUES ('alone-user', 'oc-alone', 1000, 1000, '{"role":"user","time":{"created":1000}}');
+SQL
+assert_contains "OpenCode latest still reports a single session" \
+  "session: oc-alone" "$(run_harness_at_home "$OPENCODE_ALONE_HOME" opencode usage --latest 2>&1)"
+
 printf '=== CLI argument parsing covers quoting, conflicts, and relocation guards ===\n'
 sq_status="$(run_harness cursor --arguments "'status'" 2>&1)"
 assert_exact "single-quoted command token is preserved literally" "Cursor: off" "$sq_status"

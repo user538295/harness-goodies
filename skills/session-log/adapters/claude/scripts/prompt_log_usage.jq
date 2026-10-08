@@ -2,7 +2,7 @@
 #
 # Input : Claude transcript JSONL on stdin, read as raw lines (jq -n -R) so a
 #         truncated or corrupt line is skipped instead of aborting the run.
-# Args  : --arg mode last|segments|total|merge
+# Args  : --arg mode last|segments|total|merge|last_prompt
 #         --slurpfile P scripts/prompt_log_prices.json
 # Output: fields are separated by US (\u001f), never by tab — an empty field
 #         between two tabs is swallowed by the shell's `read`.
@@ -13,6 +13,9 @@
 #         merge    -> same accumulation as total, used when several transcripts
 #                     are concatenated: the id dedupe then also collapses an
 #                     entry that shows up in more than one file.
+#         last_prompt -> "<epoch>" of the newest request start (is_start), or
+#                     nothing when the transcript has none; --latest ranks
+#                     sessions by it.
 #
 # One API response is written to the transcript once per content block. Main
 # transcripts repeat the same final message.usage on every copy, but sub-agent
@@ -139,6 +142,11 @@ def blank_seg:
   { started: false, cmd: false, start: null, end: null, head: "",
     seen: {}, buckets: {}, efforts: {}, lm: "", le: "" };
 
+if $mode == "last_prompt" then
+  [ inputs | fromjson? | select(type == "object") | select(is_start)
+    | .timestamp | ts_epoch | select(. != null) ]
+  | max // empty
+else
 ($mode == "last" or $mode == "segments") as $split
 | reduce (inputs | fromjson? | select(type == "object")) as $e
     ({ n: 0, segs: [], cur: blank_seg };
@@ -204,3 +212,4 @@ def blank_seg:
   else
     (.segs[0] | render)
   end
+end

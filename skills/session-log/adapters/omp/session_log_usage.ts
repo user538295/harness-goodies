@@ -441,11 +441,22 @@ function compareRecency(a: SessionRecord, b: SessionRecord): number {
 		a.file.localeCompare(b.file);
 }
 
+// The session the user is typing in is the one with the newest user prompt; a
+// sibling session that is still streaming assistant output has a newer mtime.
+function latestPromptTime(record: SessionRecord): number {
+	let latest = 0;
+	for (const entry of record.entries) {
+		if (promptOf(entry) !== null) latest = Math.max(latest, entryTime(entry));
+	}
+	return latest;
+}
+
 function newestRoot(roots: SessionRecord[]): SessionRecord {
 	const cwd = path.resolve(process.cwd());
 	const inCwd = roots.filter(record => isRecordInCwd(record, cwd));
 	const candidates = inCwd.length ? inCwd : roots;
-	const newest = [...candidates].sort(compareRecency)[0];
+	const promptTimes = new Map(candidates.map(record => [record, latestPromptTime(record)]));
+	const newest = [...candidates].sort((a, b) => promptTimes.get(b)! - promptTimes.get(a)! || compareRecency(a, b))[0];
 	if (!newest) throw new Error(`No OMP session found under ${sessionsDir}`);
 	return newest;
 }

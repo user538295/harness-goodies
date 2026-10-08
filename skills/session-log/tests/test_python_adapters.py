@@ -127,6 +127,76 @@ class CodexUsageTests(unittest.TestCase):
         self.assertIn("no token_usage_record data", result.stderr)
 
 
+CODEX_ROOT_SOURCE = "vscode"
+CODEX_CHILD_SOURCE = {"subagent": {"thread_spawn": {"parent_thread_id": "session-a"}}}
+OLD_MTIME = 1_000_000
+NEW_MTIME = 2_000_000
+
+
+def codex_user_prompt(timestamp):
+    return {"timestamp": timestamp, "type": "event_msg", "payload": {
+        "type": "item_completed", "item": {"type": "UserMessage", "content": [{"type": "text", "text": "prompt"}]}}}
+
+
+def codex_injected_context(timestamp):
+    return {"timestamp": timestamp, "type": "response_item", "payload": {
+        "type": "message", "role": "user", "content": [{"type": "input_text", "text": "# AGENTS.md instructions"}]}}
+
+
+def codex_tool_call(timestamp):
+    return {"timestamp": timestamp, "type": "response_item", "payload": {"type": "function_call", "name": "shell"}}
+
+
+class CodexLatestSessionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        self.home = root / "home"
+        self.project = root / "project"
+        self.sessions = self.home / ".codex" / "sessions" / "2026" / "10" / "08"
+        self.sessions.mkdir(parents=True)
+        self.project.mkdir()
+
+    def rollout(self, name, mtime, *records, source=CODEX_ROOT_SOURCE):
+        path = self.sessions / f"rollout-{name}.jsonl"
+        lines = [{"type": "session_meta", "payload": {"id": name, "cwd": str(self.project), "source": source}},
+                 *records, {"type": "token_usage_record", "data": {"input_tokens": 1, "output_tokens": 1}}]
+        path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+        os.utime(path, (mtime, mtime))
+        return path
+
+    def latest(self):
+        result = subprocess.run([sys.executable, str(USAGE_PATH)], cwd=self.project, text=True, capture_output=True,
+                                env={**os.environ, "HOME": str(self.home)}, timeout=SUBPROCESS_TIMEOUT_SECONDS)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.splitlines()[0]
+
+    def test_latest_picks_session_with_newest_user_prompt_over_newest_mtime(self):
+        prompted = self.rollout("session-a", OLD_MTIME, codex_user_prompt("2026-10-08T10:05:00.000Z"))
+        self.rollout("session-b", NEW_MTIME, codex_user_prompt("2026-10-08T10:00:00.000Z"),
+                     codex_injected_context("2026-10-08T10:06:00.000Z"), codex_tool_call("2026-10-08T10:07:00.000Z"))
+        self.assertEqual(self.latest(), f"session: {prompted}")
+
+    def test_latest_picks_the_only_session(self):
+        only = self.rollout("session-a", OLD_MTIME, codex_user_prompt("2026-10-08T10:05:00.000Z"))
+        self.assertEqual(self.latest(), f"session: {only}")
+
+    def test_latest_ranks_sessions_without_user_prompt_last_then_by_mtime(self):
+        prompted = self.rollout("session-a", OLD_MTIME, codex_user_prompt("2026-10-08T10:05:00.000Z"))
+        self.rollout("session-b", NEW_MTIME, codex_injected_context("2026-10-08T10:06:00.000Z"))
+        self.assertEqual(self.latest(), f"session: {prompted}")
+        prompted.unlink()
+        newest = self.rollout("session-c", NEW_MTIME + 1, codex_tool_call("2026-10-08T10:07:00.000Z"))
+        self.assertEqual(self.latest(), f"session: {newest}")
+
+    def test_latest_never_picks_subagent_session(self):
+        root = self.rollout("session-a", OLD_MTIME, codex_user_prompt("2026-10-08T10:05:00.000Z"))
+        self.rollout("session-child", NEW_MTIME, codex_user_prompt("2026-10-08T10:09:00.000Z"),
+                     source=CODEX_CHILD_SOURCE)
+        self.assertEqual(self.latest(), f"session: {root}")
+
+
 class InstallerHooksTests(unittest.TestCase):
     def test_installer_import_has_no_io_side_effects(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HOME": directory}), \
@@ -939,6 +1009,63 @@ class CursorUsageTests(unittest.TestCase):
             result = self.run_session_log("usage", target, cwd=transcript.parent)
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("Cursor usage accepts only a session ID or --latest", result.stderr)
+
+
+class CursorLatestSessionTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        self.home = root / "home"
+        self.project = root / "project"
+        self.project.mkdir()
+        workspace = load_module(HOOK_PATH, "cursor_latest_hook_under_test").workspace_key({"cwd": str(self.project)})
+        self.logs = self.home / ".cursor" / "prompt-logs" / workspace
+        self.logs.mkdir(parents=True)
+
+    def token_file(self, session, mtime, *records):
+        path = self.logs / f"session_{session}{CURSOR_TOKENS_SUFFIX}"
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+        os.utime(path, (mtime, mtime))
+        return path
+
+    def latest(self):
+        result = subprocess.run([sys.executable, str(CURSOR_USAGE_PATH)], cwd=self.project, text=True,
+                                capture_output=True, env={**os.environ, "HOME": str(self.home), "TZ": "UTC"},
+                                timeout=SUBPROCESS_TIMEOUT_SECONDS)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.splitlines()[0]
+
+    def test_latest_picks_session_with_newest_user_prompt_over_newest_mtime(self):
+        prompted = self.token_file("session-a", OLD_MTIME,
+                                   {"event": "prompt", "generation_id": "generation-a", "started_at": 300})
+        self.token_file("session-b", NEW_MTIME,
+                        {"event": "prompt", "generation_id": "generation-b", "started_at": 200},
+                        {"event": "stop", "generation_id": "generation-b", "ended_at": 400})
+        self.assertEqual(self.latest(), f"session: {prompted}")
+
+    def test_latest_picks_the_only_session(self):
+        only = self.token_file("session-a", OLD_MTIME,
+                               {"event": "prompt", "generation_id": "generation-a", "started_at": 300})
+        self.assertEqual(self.latest(), f"session: {only}")
+
+    def test_latest_ranks_sessions_without_user_prompt_last_then_by_mtime(self):
+        prompted = self.token_file("session-a", OLD_MTIME,
+                                   {"event": "prompt", "generation_id": "generation-a", "started_at": 300})
+        self.token_file("session-b", NEW_MTIME, {"event": "stop", "generation_id": "generation-b", "ended_at": 400})
+        self.assertEqual(self.latest(), f"session: {prompted}")
+        prompted.unlink()
+        newest = self.token_file("session-c", NEW_MTIME + 1,
+                                 {"event": "stop", "generation_id": "generation-c", "ended_at": 500})
+        self.assertEqual(self.latest(), f"session: {newest}")
+
+    def test_latest_never_picks_subagent_session(self):
+        root = self.token_file("session-a", OLD_MTIME,
+                               {"event": "prompt", "generation_id": "generation-a", "started_at": 300},
+                               {"event": "subagent", "child_conversation_id": "session-child"})
+        self.token_file("session-child", NEW_MTIME,
+                        {"event": "prompt", "generation_id": "generation-child", "started_at": 900})
+        self.assertEqual(self.latest(), f"session: {root}")
 
 
 if __name__ == "__main__":

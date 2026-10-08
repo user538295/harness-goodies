@@ -201,9 +201,43 @@ root_of() {
   done
   printf '%s\n' "$id"
 }
+# The session the user is typing in is the root with the newest user prompt; a
+# sibling still streaming assistant output has a newer time_updated. Roots without
+# a prompt rank last; time_updated order breaks ties. Disk storage is consulted
+# only for sessions without database records, mirroring sum_session.
+latest_root() {
+  local prompt_sources=() db_sources=() rows id prompt records file created ranked="" index=0
+  if [ "$message_exists" = "1" ]; then
+    prompt_sources+=("SELECT CAST(json_extract(data, '$.time.created') AS INTEGER) AS t FROM message WHERE session_id=s.id AND json_valid(data) AND json_extract(data, '$.role')='user'")
+    db_sources+=("(SELECT count(*) FROM message WHERE session_id=s.id AND json_valid(data))")
+  fi
+  if [ "$session_message_exists" = "1" ]; then
+    prompt_sources+=("SELECT CAST(json_extract(data, '$.time.created') AS INTEGER) AS t FROM session_message WHERE session_id=s.id AND type='user' AND json_valid(data)")
+    db_sources+=("(SELECT count(*) FROM session_message WHERE session_id=s.id AND json_valid(data))")
+  fi
+  local prompt_sql="SELECT max(t) FROM (${prompt_sources[0]}${prompt_sources[1]:+ UNION ALL ${prompt_sources[1]}})"
+  local records_sql="${db_sources[0]}${db_sources[1]:+ + ${db_sources[1]}}"
+  rows=$(q "SELECT s.id || '|' || ifnull(($prompt_sql), '') || '|' || ($records_sql) FROM $SESSION_TABLE AS s WHERE s.parent_id IS NULL ORDER BY s.time_updated DESC;") || return 1
+  while IFS='|' read -r id prompt records; do
+    case "$id" in ''|*[!A-Za-z0-9_-]*) continue ;; esac
+    if [ -z "$prompt" ] && [ "$records" = "0" ] && [ ! -L "$DATA/storage" ] && [ ! -L "$MSG_DIR" ] &&
+      [ -d "$MSG_DIR/$id" ] && [ ! -L "$MSG_DIR/$id" ]; then
+      for file in "$MSG_DIR/$id"/*.json; do
+        [ -f "$file" ] && [ ! -L "$file" ] || continue
+        created=$(jq -r 'select(type == "object" and .role == "user") | .time.created? | numbers | floor' "$file" 2>/dev/null) || continue
+        [[ "$created" =~ ^[0-9]+$ ]] || continue
+        [ -n "$prompt" ] && [ "$prompt" -ge "$created" ] || prompt="$created"
+      done
+    fi
+    [[ "$prompt" =~ ^[0-9]+$ ]] || prompt=-1
+    ranked+="$prompt|$index|$id"$'\n'
+    index=$((index + 1))
+  done <<<"$rows"
+  printf '%s' "$ranked" | sort -t '|' -k1,1nr -k2,2n | cut -d '|' -f3 | sed -n '1p'
+}
 
 if [ "$arg" = "--latest" ]; then
-  root=$(q "SELECT id FROM $SESSION_TABLE WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT 1;") || exit 1
+  root=$(latest_root) || exit 1
 else
   root=$(root_of "$arg") || exit 1
 fi
