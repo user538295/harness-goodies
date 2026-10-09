@@ -1,6 +1,6 @@
 {
   "name": "opencode-goodies",
-  "version": "1.17.2",
+  "version": "1.17.3",
   "description": "Skills, commands, and agents for OpenCode — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
   "type": "module",
   "exports": "./.opencode-plugin/index.js",

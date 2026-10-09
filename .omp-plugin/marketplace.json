@@ -10,7 +10,7 @@
     {
       "name": "omp-goodies",
       "description": "Skills, commands, and agents for omp — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
-      "version": "1.17.2",
+      "version": "1.17.3",
       "source": "./",
       "author": {
         "name": "Gergely Mancz"
