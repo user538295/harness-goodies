@@ -7,9 +7,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_JSON="$REPO_ROOT/.claude-plugin/plugin.json"
 OMP_MARKETPLACE_JSON="$REPO_ROOT/.omp-plugin/marketplace.json"
 CURSOR_PLUGIN_JSON="$REPO_ROOT/.cursor-plugin/plugin.json"
+CODEX_PLUGIN_JSON="$REPO_ROOT/.codex-plugin/plugin.json"
 OPENCODE_PACKAGE_JSON="$REPO_ROOT/package.json"
 # Every file carrying the release version; a release bumps them together.
-VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON" "$CURSOR_PLUGIN_JSON" "$OPENCODE_PACKAGE_JSON")
+VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON" "$CURSOR_PLUGIN_JSON" "$CODEX_PLUGIN_JSON" "$OPENCODE_PACKAGE_JSON")
 
 # ── Pure functions (all testable without git or filesystem) ───────────────────
 
@@ -180,6 +181,8 @@ main() {
   echo "  claude plugin update claude-goodies@user538295"
   echo "  omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user538295"
   echo "    (first time on this machine: omp plugin marketplace add user538295/harness-goodies && omp plugin install omp-goodies@user538295)"
+  echo "  codex plugin marketplace upgrade user538295"
+  echo "    (first time on this machine: codex plugin marketplace add user538295/harness-goodies && codex plugin add codex-goodies@user538295)"
   echo "  opencode plugin update"
   echo "    (first time on this machine: opencode plugin add github:user538295/harness-goodies)"
   echo "  Cursor: Dashboard -> Plugins & MCPs -> Refresh the team marketplace (skip when Auto Refresh is on);"

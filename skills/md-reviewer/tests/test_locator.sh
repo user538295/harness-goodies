@@ -115,6 +115,13 @@ run() {
   run "$H"
   assert_eq "$RC" "0"; assert_eq "$OUT" "$H/.omp/plugins/cache/plugins/u___omp-goodies___1.10.0/skills/$SKILL" )
 
+( t "Codex marketplace cache with several versions picks the newest by version sort"
+  H="$(mktemp -d)"; C="$H/.codex/plugins/cache/u/codex-goodies"
+  mkskill "$C/1.9.0/skills/$SKILL"
+  mkskill "$C/1.10.0/skills/$SKILL"
+  run "$H"
+  assert_eq "$RC" "0"; assert_eq "$OUT" "$C/1.10.0/skills/$SKILL" )
+
 ( t "Cursor marketplace cache (commit-SHA dirs) picks the most recently installed copy"
   H="$(mktemp -d)"; C="$H/.cursor/plugins/cache/u/cursor-goodies"
   mkskill "$C/ffff/skills/$SKILL"; touch -t 202001010000 "$C/ffff/skills/$SKILL"

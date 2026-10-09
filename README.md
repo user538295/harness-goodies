@@ -124,6 +124,21 @@ Cursor reads its own manifests (`.cursor-plugin/plugin.json` and `.cursor-plugin
 
 To update later, Auto Refresh re-indexes the marketplace after each push; otherwise click **Refresh** on the marketplace.
 
+### Codex plugin
+
+```bash
+codex plugin marketplace add user538295/harness-goodies
+codex plugin add codex-goodies@user538295
+```
+
+Codex reads its own manifests (`.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json`) and installs `codex-goodies`: every skill, namespaced as `codex-goodies:<skill>`. Codex plugins carry no commands or agents, so `/da-review`, `/iterative-review`, and `devils-advocate` are not included. The plugin ships no hooks; session logging stays opt-in through the `session-log` skill's `on` command. Start a new session to load it. To update later:
+
+```bash
+codex plugin marketplace upgrade user538295
+```
+
+Installed `claude-goodies@user538295` in Codex before this plugin existed? Switch with `codex plugin remove claude-goodies@user538295 && codex plugin add codex-goodies@user538295`; that install also registered the Claude Code session-log hooks, which the switch removes.
+
 ### OpenCode plugin
 
 ```bash

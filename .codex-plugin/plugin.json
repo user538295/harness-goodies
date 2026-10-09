@@ -1,0 +1,14 @@
+{
+  "name": "codex-goodies",
+  "version": "1.17.3",
+  "description": "Skills for Codex — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
+  "author": {
+    "name": "Gergely Mancz",
+    "url": "https://github.com/user538295"
+  },
+  "homepage": "https://github.com/user538295/harness-goodies",
+  "repository": "https://github.com/user538295/harness-goodies",
+  "license": "MIT",
+  "skills": "./skills/",
+  "hooks": "./.codex-plugin/hooks.json"
+}

@@ -204,6 +204,20 @@ cp "$REPO/skills/session-log/SKILL.md" "$OMP_MARKET_HOME/announced/SKILL.md"
 omp_market_status="$(cd "$OMP_MARKET_HOME" && run_skill_entrypoint "$OMP_MARKET_HOME/announced/SKILL.md" "$OMP_MARKET_HOME" omp status 2>&1)"
 assert_exact "OMP skill falls back to the newest omp marketplace package" "OMP: off" "$omp_market_status"
 
+printf '=== source skill finds the newest Codex marketplace package ===\n'
+CODEX_MARKET_HOME="$WORKROOT/codex-marketplace-home"
+CODEX_MARKET_CACHE="$CODEX_MARKET_HOME/.codex/plugins/cache/user538295/codex-goodies"
+mkdir -p "$CODEX_MARKET_HOME/.Trash" "$CODEX_MARKET_HOME/announced"
+for market_version in 1.9.0 1.10.0; do
+  mkdir -p "$CODEX_MARKET_CACHE/$market_version/skills"
+  cp -R "$REPO/skills/session-log" "$CODEX_MARKET_CACHE/$market_version/skills/session-log"
+done
+printf '#!/usr/bin/env bash\nprintf "stale package\\n"; exit 1\n' \
+  > "$CODEX_MARKET_CACHE/1.9.0/skills/session-log/install.sh"
+cp "$REPO/skills/session-log/SKILL.md" "$CODEX_MARKET_HOME/announced/SKILL.md"
+codex_market_status="$(cd "$CODEX_MARKET_HOME" && run_skill_entrypoint "$CODEX_MARKET_HOME/announced/SKILL.md" "$CODEX_MARKET_HOME" codex status 2>&1)"
+assert_exact "Codex skill falls back to the newest Codex marketplace package" "Codex: off" "$codex_market_status"
+
 printf '=== source skill finds the most recently installed Cursor and OpenCode plugin packages ===\n'
 for host in cursor opencode; do
   case "$host" in

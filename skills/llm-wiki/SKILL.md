@@ -86,12 +86,12 @@ The skill itself lives at one of these paths (resolve at runtime by checking whi
 1. an explicit `LLM_WIKI_HOME` override
 2. project-level skills roots
 3. user-level skills roots of Claude Code, Cursor, OpenCode, omp and Codex
-4. the newest Claude Code plugin cache
+4. the newest plugin caches of Claude Code, omp, Codex, Cursor and OpenCode
 
 Resolve in one shot and capture the printed path as `<SKILL_ROOT>`:
 
 ```bash
-BASE=""; for d in "${LLM_WIKI_HOME:-}" .agents/skills/llm-wiki .claude/skills/llm-wiki .cursor/skills/llm-wiki .opencode/skills/llm-wiki .codex/skills/llm-wiki ~/.agents/skills/llm-wiki ~/.claude/skills/llm-wiki ~/.cursor/skills/llm-wiki ~/.config/opencode/skills/llm-wiki ~/.omp/agent/skills/llm-wiki ~/.codex/skills/llm-wiki "$(ls -d ~/.claude/plugins/cache/*/claude-goodies/*/skills/llm-wiki 2>/dev/null | sort -V | tail -1)" "$(ls -d ~/.omp/plugins/cache/plugins/*___omp-goodies___*/skills/llm-wiki 2>/dev/null | sort -V | tail -1)" "$(ls -dt ~/.cursor/plugins/cache/*/cursor-goodies/*/skills/llm-wiki 2>/dev/null | head -1)" "$(ls -dt ~/.cache/opencode/npm/*/*/node_modules/opencode-goodies/skills/llm-wiki 2>/dev/null | head -1)"; do [ -n "$d" ] && [ -f "$d/SKILL.md" ] && { BASE="$d"; break; }; done; [ -n "$BASE" ] && echo "$BASE" || { echo "ERROR: llm-wiki not found in any known skills root — set LLM_WIKI_HOME=<skill dir>" >&2; false; }
+BASE=""; for d in "${LLM_WIKI_HOME:-}" .agents/skills/llm-wiki .claude/skills/llm-wiki .cursor/skills/llm-wiki .opencode/skills/llm-wiki .codex/skills/llm-wiki ~/.agents/skills/llm-wiki ~/.claude/skills/llm-wiki ~/.cursor/skills/llm-wiki ~/.config/opencode/skills/llm-wiki ~/.omp/agent/skills/llm-wiki ~/.codex/skills/llm-wiki "$(ls -d ~/.claude/plugins/cache/*/claude-goodies/*/skills/llm-wiki 2>/dev/null | sort -V | tail -1)" "$(ls -d ~/.omp/plugins/cache/plugins/*___omp-goodies___*/skills/llm-wiki 2>/dev/null | sort -V | tail -1)" "$(ls -d ~/.codex/plugins/cache/*/codex-goodies/*/skills/llm-wiki 2>/dev/null | sort -V | tail -1)" "$(ls -dt ~/.cursor/plugins/cache/*/cursor-goodies/*/skills/llm-wiki 2>/dev/null | head -1)" "$(ls -dt ~/.cache/opencode/npm/*/*/node_modules/opencode-goodies/skills/llm-wiki 2>/dev/null | head -1)"; do [ -n "$d" ] && [ -f "$d/SKILL.md" ] && { BASE="$d"; break; }; done; [ -n "$BASE" ] && echo "$BASE" || { echo "ERROR: llm-wiki not found in any known skills root — set LLM_WIKI_HOME=<skill dir>" >&2; false; }
 ```
 
 Steps:
