@@ -1,0 +1,11 @@
+{
+  "name": "omp-goodies",
+  "description": "Skills, commands, and agents for omp — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
+  "author": {
+    "name": "Gergely Mancz",
+    "url": "https://github.com/user538295"
+  },
+  "homepage": "https://github.com/user538295/claude_goodies",
+  "repository": "https://github.com/user538295/claude_goodies",
+  "license": "MIT"
+}

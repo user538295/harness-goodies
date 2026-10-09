@@ -79,6 +79,26 @@ assert_eq "reads version" "2.3.4" "$(current_version)"
 PLUGIN_JSON="$_orig_json"
 rm -f "$_tmp_json"
 
+# ── write_version ─────────────────────────────────────────────────────────────
+echo "=== write_version ==="
+_orig_files=("${VERSION_FILES[@]}")
+_tmp_a="$(mktemp)"
+_tmp_b="$(mktemp)"
+printf '{\n  "version": "1.0.0"\n}\n' > "$_tmp_a"
+printf '{\n  "plugins": [\n    { "name": "p", "version": "1.0.0" }\n  ]\n}\n' > "$_tmp_b"
+VERSION_FILES=("$_tmp_a" "$_tmp_b")
+write_version 3.1.4
+assert_eq "bumps the plugin manifest"  "3.1.4" "$(version_in "$_tmp_a")"
+assert_eq "bumps the catalog entry"    "3.1.4" "$(version_in "$_tmp_b")"
+VERSION_FILES=("${_orig_files[@]}")
+mv "$_tmp_a" "$_tmp_b" ~/.Trash/
+
+# ── shipped versions agree ────────────────────────────────────────────────────
+echo "=== shipped versions agree ==="
+for _file in "${VERSION_FILES[@]}"; do
+  assert_eq "${_file#"$SCRIPT_DIR"/} matches plugin.json" "$(current_version)" "$(version_in "$_file")"
+done
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 printf "Results: %d passed, %d failed\n" "$PASS" "$FAIL"

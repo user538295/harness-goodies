@@ -91,6 +91,22 @@ The marketplace plugin bundles the Claude skill, runtime, and native hooks. Rest
 claude plugin update claude-goodies@user538295
 ```
 
+### omp plugin marketplace
+
+```bash
+omp plugin marketplace add user538295/claude_goodies
+omp plugin install omp-goodies@user538295
+```
+
+Inside omp the same steps are `/marketplace add user538295/claude_goodies` and `/marketplace install omp-goodies@user538295`. omp reads its own catalog (`.omp-plugin/marketplace.json`) and installs `omp-goodies`: every skill, both commands as `/omp-goodies:da-review` and `/omp-goodies:iterative-review`, and the `devils-advocate` agent with omp tool names. Run `/reload-plugins` or start a new session to load them. To update later:
+
+```bash
+omp plugin marketplace update user538295
+omp plugin upgrade omp-goodies@user538295
+```
+
+Session logging is opt-in: `/skill:session-log on` seeds the stable package under `~/.omp/agent` and links its extension; restart omp once, after which `/session-log status|on|off|usage` works directly.
+
 Each entrypoint passes its native harness identity explicitly; it never infers a harness from directories or environment variables. `off` never installs an absent adapter.
 
 ### Universal session-log package

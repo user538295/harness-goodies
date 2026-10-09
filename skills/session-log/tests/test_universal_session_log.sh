@@ -190,6 +190,20 @@ for host in omp cursor codex; do
     "$host_label: off" "$host_status"
 done
 
+printf '=== source skill finds the newest omp marketplace package ===\n'
+OMP_MARKET_HOME="$WORKROOT/omp-marketplace-home"
+OMP_MARKET_CACHE="$OMP_MARKET_HOME/.omp/plugins/cache/plugins"
+mkdir -p "$OMP_MARKET_HOME/.Trash" "$OMP_MARKET_HOME/announced"
+for market_version in 1.9.0 1.10.0; do
+  mkdir -p "$OMP_MARKET_CACHE/user538295___omp-goodies___$market_version/skills"
+  cp -R "$REPO/skills/session-log" "$OMP_MARKET_CACHE/user538295___omp-goodies___$market_version/skills/session-log"
+done
+printf '#!/usr/bin/env bash\nprintf "stale package\\n"; exit 1\n' \
+  > "$OMP_MARKET_CACHE/user538295___omp-goodies___1.9.0/skills/session-log/install.sh"
+cp "$REPO/skills/session-log/SKILL.md" "$OMP_MARKET_HOME/announced/SKILL.md"
+omp_market_status="$(cd "$OMP_MARKET_HOME" && run_skill_entrypoint "$OMP_MARKET_HOME/announced/SKILL.md" "$OMP_MARKET_HOME" omp status 2>&1)"
+assert_exact "OMP skill falls back to the newest omp marketplace package" "OMP: off" "$omp_market_status"
+
 printf '=== source installer repairs a previously enabled OpenCode entrypoint ===\n'
 OPENCODE_RECOVERY_HOME="$WORKROOT/opencode-recovery-home"
 OPENCODE_DEAD_PACKAGE="$OPENCODE_RECOVERY_HOME/.claude/plugins/cache/user538295/claude-goodies/1.12.1/skills/session-log"

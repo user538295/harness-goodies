@@ -5,6 +5,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_JSON="$REPO_ROOT/.claude-plugin/plugin.json"
+OMP_MARKETPLACE_JSON="$REPO_ROOT/.omp-plugin/marketplace.json"
+# Every file carrying the release version; a release bumps them together.
+VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON")
 
 # ── Pure functions (all testable without git or filesystem) ───────────────────
 
@@ -42,9 +45,22 @@ check_clean_tree() {
   [[ -z "$1" ]]
 }
 
+# version_in <json-file> → its "version" field
+version_in() {
+  grep '"version"' "$1" | sed 's/.*"version": *"\([^"]*\)".*/\1/'
+}
+
 # current_version → reads "version" field from PLUGIN_JSON
 current_version() {
-  grep '"version"' "$PLUGIN_JSON" | sed 's/.*"version": *"\([^"]*\)".*/\1/'
+  version_in "$PLUGIN_JSON"
+}
+
+# write_version <version> → sets "version" in every VERSION_FILES entry
+write_version() {
+  local file
+  for file in "${VERSION_FILES[@]}"; do
+    sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$1\"/" "$file"
+  done
 }
 
 # ── Git wrappers ──────────────────────────────────────────────────────────────
@@ -126,8 +142,8 @@ main() {
 
   if [[ "$dry_run" == "true" ]]; then
     echo "[dry-run] Would execute:"
-    printf "  1. sed plugin.json: %s → %s\n" "$current" "$next"
-    printf "  2. git add .claude-plugin/plugin.json\n"
+    printf "  1. sed version in %s files: %s → %s\n" "${#VERSION_FILES[@]}" "$current" "$next"
+    printf "  2. git add %s\n" "${VERSION_FILES[*]#"$REPO_ROOT"/}"
     printf "  3. git commit -m \"%s\"\n" "$commit_msg"
     printf "  4. git tag -a %s -m \"Release %s\"\n" "$tag" "$tag"
     printf "  5. git push origin main\n"
@@ -143,10 +159,10 @@ main() {
     fi
   fi
 
-  sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$next\"/" "$PLUGIN_JSON"
-  printf "Updated plugin.json: %s → %s\n" "$current" "$next"
+  write_version "$next"
+  printf "Updated %s version files: %s → %s\n" "${#VERSION_FILES[@]}" "$current" "$next"
 
-  git -C "$REPO_ROOT" add .claude-plugin/plugin.json
+  git -C "$REPO_ROOT" add "${VERSION_FILES[@]}"
   git -C "$REPO_ROOT" commit -m "$commit_msg"
   echo "Committed."
 
@@ -160,6 +176,7 @@ main() {
   printf "\nRelease %s complete.\n\n" "$tag"
   echo "Post-release verification:"
   echo "  claude plugin update claude-goodies@user538295"
+  echo "  omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user538295"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
