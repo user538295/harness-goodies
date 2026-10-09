@@ -1,6 +1,6 @@
 {
   "name": "claude-goodies",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "description": "Skills, commands, and agents for Claude Code — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
   "author": {
     "name": "Gergely Mancz",
