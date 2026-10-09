@@ -39,7 +39,6 @@ skills/documentation-standard/
 skills/feature-refinement/
 skills/implement/
 skills/llm-wiki/
-skills/llm-wiki-product/
 skills/md-reviewer/
 skills/options/
 skills/plain-language/

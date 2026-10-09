@@ -19,7 +19,6 @@
     <section data-section="1-summary">
       <h2>Összefoglaló</h2>
       <p>Állíts össze vagy üzemeltess egy <strong>általános témájú</strong> LLM wikit (Karpathy-minta) — egy tartós, LLM által karbantartott markdown tudásbázist kutatáshoz, személyes tudásmenedzsmenthez, könyvolvasáshoz, kurzusjegyzetekhez, versenytárselemzéshez vagy bármilyen, nem termékhez kötődő területhez.</p>
-      <p><em>Megjegyzés: Ha a wiki egy szoftverprojekt funkcióit, specifikációit, ütemtervét és döntéseit fedi le, helyette használd a <a href="skill-llm-wiki-product-hu.html">/llm-wiki-product</a> skillt. A két skill egy projekten belül kölcsönösen kizárja egymást.</em></p>
     </section>
 
     <section data-section="2-when-to-use">
@@ -35,11 +34,6 @@
         <li><code>"draft a document from the wiki"</code></li>
         <li><code>"lint the wiki"</code></li>
         <li>Bármilyen feladat, ami a <code>llm-wiki/</code> könyvtárat érinti <code>raw/</code>, <code>wiki/</code>, <code>drafts/</code> rétegekkel</li>
-      </ul>
-      <h3>Mikor ezt a skillt használd a <code>/llm-wiki-product</code> helyett</h3>
-      <ul>
-        <li><strong><code>/llm-wiki</code> (ez a skill)</strong> — általános, bármilyen <em>nem termékhez kötődő</em> téma: kutatás, személyes tudás, könyvolvasás, kurzusjegyzetek, versenytárselemzés, tanulás, hobbielmélyülés. Lapos <code>raw/</code> könyvtárat és <code>wiki/topics/</code>, <code>wiki/decisions/</code> oldalkategóriákat használ.</li>
-        <li><strong><code>/llm-wiki-product</code></strong> — szoftverprojekthez tartozó wiki funkciókhoz, specifikációkhoz, kódjegyzetekhez és versenytárs-dokumentumokhoz. Vödrökre bontott <code>raw/</code> könyvtárat és <code>wiki/features/</code>, <code>wiki/decisions/</code> kategóriákat használ.</li>
       </ul>
     </section>
 
@@ -126,13 +120,6 @@ Ingest this paper abstract into the wiki as a topic page on "attention mechanism
 
 Next recommended operation: query or lint to verify the wiki state.</code></pre>
       </div>
-    </section>
-
-    <section data-section="6-related-tools">
-      <h2>Kapcsolódó eszközök</h2>
-      <ul>
-        <li><a href="skill-llm-wiki-product-hu.html">/llm-wiki-product</a> — A skill termékcsapatokra szabott változata olyan wikikhez, amelyek funkciókat, specifikációkat, ütemterveket és döntéseket fednek le. Egy projekten belül kölcsönösen kizárja a <code>/llm-wiki</code>-t — válaszd azt, amelyik a területedhez illik.</li>
-      </ul>
     </section>
 
     <footer data-section="7-footer">

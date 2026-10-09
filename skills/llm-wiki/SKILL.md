@@ -6,8 +6,7 @@ description: >
   competitive analysis, hobby deep-dives, learning. Use when the user asks to "set up an LLM
   wiki", "apply the Karpathy wiki pattern", "build a persistent knowledge base", "ingest into
   the wiki", "create a topic page", "draft a document from the wiki", "lint the wiki", or any
-  task that involves the `llm-wiki/` directory with `raw/`, `wiki/`, `drafts/` layers. For
-  product-team wikis (features, specs, competitor docs), use `llm-wiki-product` instead.
+  task that involves the `llm-wiki/` directory with `raw/`, `wiki/`, `drafts/` layers.
 ---
 
 # LLM Wiki
@@ -24,18 +23,12 @@ markdown files, an index, and a log.
 
 The full original idea is in `reference/karpathy-llm-wiki.md` — read it if context is missing.
 
-## When to use this skill vs. `llm-wiki-product`
+## Wikis from the retired `llm-wiki-product` skill
 
-- **`llm-wiki` (this skill)** — generic, any non-product domain. Use for research, personal
-  knowledge, book reading, course notes, competitive analysis, learning, hobby deep-dives.
-  Flat `raw/`. Page categories: `wiki/topics/`, `wiki/decisions/`.
-- **`llm-wiki-product`** — product team wiki. Use when the user is building a product and
-  wants a wiki of features, specs, code notes, and competitor docs. Bucketed `raw/`
-  (`product-docs/`, `specs/`, `code-notes/`, `competitor-docs/`). Page categories:
-  `wiki/features/`, `wiki/decisions/`.
-
-The two skills are mutually exclusive on a project. Setup (Step 1) refuses to proceed if a
-product-skill wiki already exists at the target path.
+The product-team variant `llm-wiki-product` (bucketed `raw/` with `product-docs/`, `specs/`,
+`code-notes/`, `competitor-docs/`; page categories `wiki/features/`, `wiki/decisions/`) is
+retired. Its layout is incompatible with this skill, so Setup (Step 1) refuses to proceed if
+such a wiki already exists at the target path.
 
 ## Scope vs. other skills
 
@@ -104,16 +97,17 @@ BASE=""; for d in "${LLM_WIKI_HOME:-}" .agents/skills/llm-wiki .claude/skills/ll
 Steps:
 
 1. **Coexistence guard — refuse to overwrite a product-skill wiki.** If `llm-wiki/schema.md`
-   already exists, read it and check for any of these product-skill fingerprints:
+   already exists, read it and check for any of these fingerprints of the retired
+   `llm-wiki-product` skill:
    - the string `raw/product-docs/`
    - the string `raw/competitor-docs/`
    - the string `wiki/features/`
    - the marker `<!-- llm-wiki:pointer v` (the product skill's pointer namespace)
 
-   If any fingerprint is present, **stop and refuse** with: *"This project appears to use
-   `llm-wiki-product` (detected fingerprint: `<which one>`). Run that skill instead, or wipe
-   the existing `llm-wiki/` first."* Do not attempt to convert or merge — the two skills
-   serve different use cases.
+   If any fingerprint is present, **stop and refuse** with: *"This project's `llm-wiki/` was
+   created by the retired `llm-wiki-product` skill (detected fingerprint: `<which one>`). Its
+   layout is incompatible with `llm-wiki`; wipe the existing `llm-wiki/` first to start a
+   generic wiki."* Do not attempt to convert or merge — the two layouts differ.
 
 2. Verify `llm-wiki/` does not already exist. If it does (and the coexistence guard above
    did not refuse), switch to **Step 1b (Repair)**.
@@ -224,7 +218,7 @@ case-insensitive name resolution will fall back to `ls`.
     not silently skipped — surface to the user in M1 as an upgrade candidate.
 
   **Coexistence note (read-only):** a file may also contain a `<!-- llm-wiki:pointer v[0-9]+ -->`
-  marker from `llm-wiki-product`. The generic skill never touches the product skill's
+  marker left by the retired `llm-wiki-product` skill. The generic skill never touches that
   marker — different namespace. If you observe one alongside (or absent) the generic
   marker, mention it to the user once for awareness and continue.
 
@@ -266,11 +260,10 @@ If you are an agent that supports skills, invoke the `llm-wiki` skill (e.g. Clau
 
 **Current target version: `v1`.** The generic skill is new — no older versions of this
 pointer block exist yet. The namespace `llm-wiki-generic:pointer` is distinct from
-`llm-wiki:pointer` (used by `llm-wiki-product`), so the two markers can coexist in the same
-file without interference. The two skills are mutually exclusive on a project, but a file
-that happens to carry both markers (e.g. a stale product marker after the user wiped the
-wiki) is not an error condition for the generic skill — it just leaves the foreign marker
-alone.
+`llm-wiki:pointer` (left by the retired `llm-wiki-product` skill), so the two markers can
+coexist in the same file without interference. A file that carries both markers (e.g. a stale
+product marker after the user wiped the product wiki) is not an error condition for the
+generic skill — it just leaves the foreign marker alone.
 
 - **M4.** Append to `llm-wiki/log.md` (note the distinct `infra |` prefix — pointer ops are
   not wiki content operations):

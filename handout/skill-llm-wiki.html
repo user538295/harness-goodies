@@ -19,7 +19,6 @@
     <section data-section="1-summary">
       <h2>Summary</h2>
       <p>Set up or operate a <strong>general-domain</strong> LLM Wiki (Karpathy pattern) — a persistent, LLM-maintained markdown knowledge base for research, personal knowledge management, book reading, course notes, competitive analysis, or any non-product domain.</p>
-      <p><em>Note: For wikis covering features, specs, roadmaps, and decisions in a software project, use <a href="skill-llm-wiki-product.html">/llm-wiki-product</a> instead. The two skills are mutually exclusive on a project.</em></p>
     </section>
 
     <section data-section="2-when-to-use">
@@ -35,11 +34,6 @@
         <li><code>"draft a document from the wiki"</code></li>
         <li><code>"lint the wiki"</code></li>
         <li>Any task involving the <code>llm-wiki/</code> directory with <code>raw/</code>, <code>wiki/</code>, <code>drafts/</code> layers</li>
-      </ul>
-      <h3>When to use this skill vs. <code>/llm-wiki-product</code></h3>
-      <ul>
-        <li><strong><code>/llm-wiki</code> (this skill)</strong> — generic, any <em>non-product</em> domain: research, personal knowledge, book reading, course notes, competitive analysis, learning, hobby deep-dives. Uses flat <code>raw/</code> and page categories <code>wiki/topics/</code>, <code>wiki/decisions/</code>.</li>
-        <li><strong><code>/llm-wiki-product</code></strong> — software-project wiki for features, specs, code notes, and competitor docs. Uses bucketed <code>raw/</code> and categories <code>wiki/features/</code>, <code>wiki/decisions/</code>.</li>
       </ul>
     </section>
 
@@ -126,13 +120,6 @@ Ingest this paper abstract into the wiki as a topic page on "attention mechanism
 
 Next recommended operation: query or lint to verify the wiki state.</code></pre>
       </div>
-    </section>
-
-    <section data-section="6-related-tools">
-      <h2>Related tools</h2>
-      <ul>
-        <li><a href="skill-llm-wiki-product.html">/llm-wiki-product</a> — Product-team variant of this skill for wikis covering features, specs, roadmaps, and decisions. Mutually exclusive with <code>/llm-wiki</code> on a project — choose the one that matches your domain.</li>
-      </ul>
     </section>
 
     <footer data-section="7-footer">

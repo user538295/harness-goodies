@@ -54,7 +54,6 @@ Powered by the [`devils-advocate`](https://user538295.github.io/claude_goodies/h
 ### Make Claude remember
 
 - [**`/llm-wiki`**](https://user538295.github.io/claude_goodies/handout/skill-llm-wiki.html) — You've done the research, but Claude keeps forgetting it. Captures notes, sources, decisions; future chats search it first → sharper answers, fewer tokens.
-- [**`/llm-wiki-product`**](https://user538295.github.io/claude_goodies/handout/skill-llm-wiki-product.html) — Know exactly where you lose to competitors. Track rivals; get back a value-vs-effort backlog of gaps to close.
 
 ### Wrangle docs and skills
 
@@ -108,6 +107,7 @@ omp plugin upgrade omp-goodies@user538295
 Session logging is opt-in: `/skill:session-log on` seeds the stable package under `~/.omp/agent` and links its extension; restart omp once, after which `/session-log status|on|off|usage` works directly.
 
 Each entrypoint passes its native harness identity explicitly; it never infers a harness from directories or environment variables. `off` never installs an absent adapter.
+
 ### Cursor plugin
 
 Cursor reads its own manifests (`.cursor-plugin/plugin.json` and `.cursor-plugin/marketplace.json`) and installs `cursor-goodies`: every skill, both commands, and the `devils-advocate` agent. The plugin ships no hooks; session logging stays opt-in through `/session-log on`. Install it through one of two marketplace routes.
@@ -137,7 +137,6 @@ opencode plugin update
 ```
 
 Skills, commands, and agents with the same names under `~/.config/opencode/skills`, `~/.config/opencode/commands`, and `~/.config/opencode/agents` take precedence over the plugin's copies; remove those copies to use the plugin's versions. Session logging stays opt-in through `/session-log on`.
-
 
 ### Universal session-log package
 
