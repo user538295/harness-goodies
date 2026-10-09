@@ -1,6 +1,6 @@
 {
   "name": "codex-goodies",
-  "version": "1.17.3",
+  "version": "1.17.4",
   "description": "Skills for Codex — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
   "author": {
     "name": "Gergely Mancz",
