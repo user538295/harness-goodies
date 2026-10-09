@@ -15,7 +15,7 @@ Four installation paths exist. A release must satisfy all of them.
 
 ### Claude Code plugin marketplace
 ```bash
-claude plugin marketplace add user538295/claude_goodies
+claude plugin marketplace add user538295/harness-goodies
 claude plugin install claude-goodies
 # update later:
 claude plugin update claude-goodies@user538295
@@ -26,7 +26,7 @@ Claude Code reads `.claude-plugin/plugin.json` to resolve the plugin. The `"vers
 
 ### omp plugin marketplace
 ```bash
-omp plugin marketplace add user538295/claude_goodies
+omp plugin marketplace add user538295/harness-goodies
 omp plugin install omp-goodies@user538295
 # update later:
 omp plugin marketplace update user538295
@@ -39,7 +39,7 @@ First time only: submit the repository at [cursor.com/marketplace/publish](https
 
 ### OpenCode package plugin
 ```bash
-opencode plugin add github:user538295/claude_goodies
+opencode plugin add github:user538295/harness-goodies
 # update later:
 opencode plugin update
 ```
@@ -127,7 +127,7 @@ omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user5
 ```
 Should report `Upgraded omp-goodies@user538295 (user) to X.Y.Z`. `Marketplace "user538295" not found` means omp on this machine never added it; run the first-time setup once:
 ```bash
-omp plugin marketplace add user538295/claude_goodies && omp plugin install omp-goodies@user538295
+omp plugin marketplace add user538295/harness-goodies && omp plugin install omp-goodies@user538295
 ```
 
 ### Cursor marketplace
@@ -137,7 +137,7 @@ On a team marketplace without Auto Refresh, click **Refresh** in **Dashboard →
 ```bash
 opencode plugin update
 ```
-Should report `Updated Server plugin "opencode-goodies"`; `opencode plugin check` then lists the new commit as `(current)`. On a machine that never added it, run `opencode plugin add github:user538295/claude_goodies` once.
+Should report `Updated Server plugin "opencode-goodies"`; `opencode plugin check` then lists the new commit as `(current)`. On a machine that never added it, run `opencode plugin add github:user538295/harness-goodies` once.
 
 ---
 

@@ -1,4 +1,4 @@
-# Demo Shot Script — Claude Goodies
+# Demo Shot Script — Harness Goodies
 
 **Purpose**: Source of truth for the `demo.tape` author.  
 **GIF target duration**: ~48s total (Act 1: ~16s, Act 2: ~14s, Act 3: ~15s; title card: ~3s)

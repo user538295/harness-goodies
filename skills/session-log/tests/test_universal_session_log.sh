@@ -215,7 +215,7 @@ for host in cursor opencode; do
       ;;
     opencode)
       host_label="OpenCode"
-      market_root=".cache/opencode/npm/git-claude_goodies-abc"
+      market_root=".cache/opencode/npm/git-harness-goodies-abc"
       stale_package="2/node_modules/opencode-goodies/skills/session-log"
       fresh_package="1/node_modules/opencode-goodies/skills/session-log"
       ;;

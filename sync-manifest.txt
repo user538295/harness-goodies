@@ -1,4 +1,4 @@
-# sync-manifest.txt — the single source of truth for claude_goodies.
+# sync-manifest.txt — the single source of truth for harness-goodies.
 #
 # These are the "curated" paths: files that live in ~/.claude (runtime) AND
 # ship in this repo. One tool reads this file:

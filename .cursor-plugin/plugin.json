@@ -5,8 +5,8 @@
   "author": {
     "name": "Gergely Mancz"
   },
-  "homepage": "https://github.com/user538295/claude_goodies",
-  "repository": "https://github.com/user538295/claude_goodies",
+  "homepage": "https://github.com/user538295/harness-goodies",
+  "repository": "https://github.com/user538295/harness-goodies",
   "license": "MIT",
   "hooks": "./.cursor-plugin/hooks.json"
 }

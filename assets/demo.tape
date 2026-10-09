@@ -1,4 +1,4 @@
-# Claude Goodies hero GIF. Regenerate with:  vhs assets/demo.tape
+# Harness Goodies hero GIF. Regenerate with:  vhs assets/demo.tape
 # (run from the repo root; sources assets/demo-setup.zsh for the scripted output).
 # Update assets/demo-setup.zsh when a command's output format changes.
 

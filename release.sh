@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# release.sh — automated release script for claude_goodies
+# release.sh — automated release script for harness-goodies
 # Usage: bash release.sh [--dry-run]
 set -euo pipefail
 
@@ -179,9 +179,9 @@ main() {
   echo "Post-release verification:"
   echo "  claude plugin update claude-goodies@user538295"
   echo "  omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user538295"
-  echo "    (first time on this machine: omp plugin marketplace add user538295/claude_goodies && omp plugin install omp-goodies@user538295)"
+  echo "    (first time on this machine: omp plugin marketplace add user538295/harness-goodies && omp plugin install omp-goodies@user538295)"
   echo "  opencode plugin update"
-  echo "    (first time on this machine: opencode plugin add github:user538295/claude_goodies)"
+  echo "    (first time on this machine: opencode plugin add github:user538295/harness-goodies)"
   echo "  Cursor: Dashboard -> Plugins & MCPs -> Refresh the team marketplace (skip when Auto Refresh is on);"
   echo "    Cursor Marketplace updates appear after Cursor reviews them"
 }

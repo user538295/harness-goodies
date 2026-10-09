@@ -1,4 +1,4 @@
-# demo-setup.zsh — scripted command handlers for the Claude Goodies hero GIF.
+# demo-setup.zsh — scripted command handlers for the Harness Goodies hero GIF.
 #
 # Sourced by assets/demo.tape (VHS). It fakes three slash-commands so the
 # recording shows realistic output without running anything real. Each command

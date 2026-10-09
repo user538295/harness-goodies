@@ -1,5 +1,5 @@
 // OpenCode V2 package plugin: registers this repository's skills, commands, and agents.
-// Installed with `opencode plugin add github:user538295/claude_goodies`.
+// Installed with `opencode plugin add github:user538295/harness-goodies`.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

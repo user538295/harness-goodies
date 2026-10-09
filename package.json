@@ -13,7 +13,7 @@
   "dependencies": {
     "yaml": "2.9.1"
   },
-  "homepage": "https://github.com/user538295/claude_goodies",
-  "repository": "github:user538295/claude_goodies",
+  "homepage": "https://github.com/user538295/harness-goodies",
+  "repository": "github:user538295/harness-goodies",
   "license": "MIT"
 }

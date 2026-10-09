@@ -121,7 +121,7 @@ run() {
   assert_eq "$RC" "0"; assert_eq "$OUT" "$C/0000/skills/implement" )
 
 ( t "OpenCode package cache picks the most recently installed copy"
-  H="$(mktemp -d)"; C="$H/.cache/opencode/npm/git-claude_goodies-abc"
+  H="$(mktemp -d)"; C="$H/.cache/opencode/npm/git-harness-goodies-abc"
   mkskill "$C/2/node_modules/opencode-goodies/skills/implement"
   touch -t 202001010000 "$C/2/node_modules/opencode-goodies/skills/implement"
   mkskill "$C/1/node_modules/opencode-goodies/skills/implement"
