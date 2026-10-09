@@ -204,6 +204,34 @@ cp "$REPO/skills/session-log/SKILL.md" "$OMP_MARKET_HOME/announced/SKILL.md"
 omp_market_status="$(cd "$OMP_MARKET_HOME" && run_skill_entrypoint "$OMP_MARKET_HOME/announced/SKILL.md" "$OMP_MARKET_HOME" omp status 2>&1)"
 assert_exact "OMP skill falls back to the newest omp marketplace package" "OMP: off" "$omp_market_status"
 
+printf '=== source skill finds the most recently installed Cursor and OpenCode plugin packages ===\n'
+for host in cursor opencode; do
+  case "$host" in
+    cursor)
+      host_label="Cursor"
+      market_root=".cursor/plugins/cache/user538295/cursor-goodies"
+      stale_package="ffff/skills/session-log"
+      fresh_package="0000/skills/session-log"
+      ;;
+    opencode)
+      host_label="OpenCode"
+      market_root=".cache/opencode/npm/git-claude_goodies-abc"
+      stale_package="2/node_modules/opencode-goodies/skills/session-log"
+      fresh_package="1/node_modules/opencode-goodies/skills/session-log"
+      ;;
+  esac
+  market_home="$WORKROOT/$host-marketplace-home"
+  mkdir -p "$market_home/.Trash" "$market_home/announced" \
+    "$(dirname "$market_home/$market_root/$stale_package")" "$(dirname "$market_home/$market_root/$fresh_package")"
+  cp -R "$REPO/skills/session-log" "$market_home/$market_root/$stale_package"
+  printf '#!/usr/bin/env bash\nprintf "stale package\\n"; exit 1\n' > "$market_home/$market_root/$stale_package/install.sh"
+  touch -t 202001010000 "$market_home/$market_root/$stale_package"
+  cp -R "$REPO/skills/session-log" "$market_home/$market_root/$fresh_package"
+  cp "$REPO/skills/session-log/SKILL.md" "$market_home/announced/SKILL.md"
+  market_status="$(cd "$market_home" && run_skill_entrypoint "$market_home/announced/SKILL.md" "$market_home" "$host" status 2>&1)"
+  assert_exact "$host_label skill falls back to the most recently installed plugin package" "$host_label: off" "$market_status"
+done
+
 printf '=== source installer repairs a previously enabled OpenCode entrypoint ===\n'
 OPENCODE_RECOVERY_HOME="$WORKROOT/opencode-recovery-home"
 OPENCODE_DEAD_PACKAGE="$OPENCODE_RECOVERY_HOME/.claude/plugins/cache/user538295/claude-goodies/1.12.1/skills/session-log"

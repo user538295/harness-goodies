@@ -1,0 +1,19 @@
+{
+  "name": "opencode-goodies",
+  "version": "1.17.2",
+  "description": "Skills, commands, and agents for OpenCode — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
+  "type": "module",
+  "exports": "./.opencode-plugin/index.js",
+  "files": [
+    ".opencode-plugin/index.js",
+    "agents/",
+    "commands/",
+    "skills/"
+  ],
+  "dependencies": {
+    "yaml": "2.9.1"
+  },
+  "homepage": "https://github.com/user538295/claude_goodies",
+  "repository": "github:user538295/claude_goodies",
+  "license": "MIT"
+}

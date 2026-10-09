@@ -13,3 +13,6 @@ __pycache__/
 
 # Obsidian
 .obsidian/
+
+# Node (OpenCode plugin test dependencies)
+node_modules/

@@ -13,7 +13,8 @@
 #
 # NOT listed here (repo-only, maintained directly in the checkout, never synced
 # into ~/.claude): README.md, sync-manifest.txt, handout/, assets/,
-# hooks/, .claude-plugin/, .omp-plugin/.
+# hooks/, .claude-plugin/, .omp-plugin/, .cursor-plugin/, .opencode-plugin/,
+# package.json, bun.lock.
 #
 # Junk is never copied regardless of these entries: .DS_Store, __pycache__/,
 # *.pyc, .pytest_cache/, node_modules/, .git/, editor swap/backup files.

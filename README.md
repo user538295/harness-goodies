@@ -108,6 +108,36 @@ omp plugin upgrade omp-goodies@user538295
 Session logging is opt-in: `/skill:session-log on` seeds the stable package under `~/.omp/agent` and links its extension; restart omp once, after which `/session-log status|on|off|usage` works directly.
 
 Each entrypoint passes its native harness identity explicitly; it never infers a harness from directories or environment variables. `off` never installs an absent adapter.
+### Cursor plugin
+
+Cursor reads its own manifests (`.cursor-plugin/plugin.json` and `.cursor-plugin/marketplace.json`) and installs `cursor-goodies`: every skill, both commands, and the `devils-advocate` agent. The plugin ships no hooks; session logging stays opt-in through `/session-log on`. Install it through one of two marketplace routes.
+
+**Cursor Marketplace.** Once Cursor has reviewed and listed the plugin, open **Customize** in the sidebar, search for `cursor-goodies`, select **Install**, and choose a project or user scope. Cursor reviews every update before publishing it.
+
+**Team marketplace** (Teams and Enterprise plans; on Enterprise only admins can add one):
+
+1. Open **Dashboard → Plugins & MCPs**.
+2. In **Team Marketplaces**, click **Add Marketplace**, choose **Import from Repo**, and paste `https://github.com/user538295/claude_goodies`.
+3. Add `cursor-goodies` with **Add to Marketplace**.
+4. Under **Marketplace Settings**, set **Marketplace Access** and optionally **Enable Auto Refresh** (needs the Cursor GitHub App on the repository), then save.
+5. Each developer installs `cursor-goodies` from **Customize**, unless an admin set it to Default On or Required.
+
+To update later, Auto Refresh re-indexes the marketplace after each push; otherwise click **Refresh** on the marketplace.
+
+### OpenCode plugin
+
+```bash
+opencode plugin add github:user538295/claude_goodies
+```
+
+Requires OpenCode V2. OpenCode installs the `opencode-goodies` package (`package.json` plus `.opencode-plugin/index.js`) into its package cache, adds it to `~/.config/opencode/opencode.json`, and loads it without a restart. The plugin registers every skill, the `/da-review` and `/iterative-review` commands, and the `devils-advocate` subagent. To update later:
+
+```bash
+opencode plugin update
+```
+
+Skills, commands, and agents with the same names under `~/.config/opencode/skills`, `~/.config/opencode/commands`, and `~/.config/opencode/agents` take precedence over the plugin's copies; remove those copies to use the plugin's versions. Session logging stays opt-in through `/session-log on`.
+
 
 ### Universal session-log package
 

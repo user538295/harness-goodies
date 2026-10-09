@@ -1,11 +1,13 @@
 # Release Guide
 
-Two installation paths exist. A release must satisfy both.
+Four installation paths exist. A release must satisfy all of them.
 
 | Path | Entry point | Version source |
 |------|-------------|----------------|
 | Claude Code plugin marketplace | `.claude-plugin/plugin.json` | `"version"` field in that file |
 | omp plugin marketplace | `.omp-plugin/marketplace.json` | `"version"` field of the `omp-goodies` entry |
+| Cursor marketplace (Cursor Marketplace or a team marketplace) | `.cursor-plugin/marketplace.json` → `.cursor-plugin/plugin.json` | Indexed commit; `"version"` in `plugin.json` is kept in sync |
+| OpenCode package plugin | `package.json` → `.opencode-plugin/index.js` | Installed Git commit; `"version"` in `package.json` is kept in sync |
 
 ---
 
@@ -32,6 +34,17 @@ omp plugin upgrade omp-goodies@user538295
 ```
 omp reads `.omp-plugin/marketplace.json` and ignores the Claude catalog when it exists. `omp plugin upgrade` compares the catalog entry's `"version"`, so it must change on every release. `.omp-plugin/plugin.json` marks the plugin as omp-native and carries no version.
 
+### Cursor marketplace
+First time only: submit the repository at [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish) for the Cursor Marketplace, or import it into a team marketplace (**Dashboard → Plugins & MCPs → Add Marketplace → Import from Repo**). Cursor reads `.cursor-plugin/marketplace.json`, which lists `cursor-goodies` at `source: "./"`, and merges it with `.cursor-plugin/plugin.json`. Cursor caches installs per commit (`~/.cursor/plugins/cache/<marketplace>/cursor-goodies/<commit>/`), so a pushed commit is what reaches users: the Cursor Marketplace after Cursor reviews the update, a team marketplace on its next Auto Refresh or manual **Refresh**. `plugin.json` points `hooks` at the empty `.cursor-plugin/hooks.json`, so Cursor never loads the Claude Code hooks in `hooks/hooks.json`.
+
+### OpenCode package plugin
+```bash
+opencode plugin add github:user538295/claude_goodies
+# update later:
+opencode plugin update
+```
+OpenCode installs the repository as the npm-style package `opencode-goodies` from `package.json`; `"files"` limits the install to `.opencode-plugin/index.js`, `skills/`, `commands/`, and `agents/`, and `"dependencies"` brings in `yaml` for frontmatter parsing. `opencode plugin check` compares the installed commit with the branch head, so every pushed commit is an update.
+
 ---
 
 ## Pre-release checklist
@@ -47,7 +60,7 @@ Update `sync-manifest.txt` before anything else. It is the curated list of paths
 Files not in the manifest are not tracked as curated runtime paths.
 
 ### 2. Bump the version
-`release.sh` does this for you: it sets the same version in every file of `VERSION_FILES` — `.claude-plugin/plugin.json` and `.omp-plugin/marketplace.json`. By hand, update the `"version"` field in both:
+`release.sh` does this for you: it sets the same version in every file of `VERSION_FILES` — `.claude-plugin/plugin.json`, `.omp-plugin/marketplace.json`, `.cursor-plugin/plugin.json`, and `package.json`. By hand, update the `"version"` field in all four:
 
 ```json
 {
@@ -64,7 +77,7 @@ Follow semver (`MAJOR.MINOR.PATCH`):
 
 ### 3. Commit
 ```bash
-git add sync-manifest.txt .claude-plugin/plugin.json .omp-plugin/marketplace.json
+git add sync-manifest.txt .claude-plugin/plugin.json .omp-plugin/marketplace.json .cursor-plugin/plugin.json package.json
 git commit -m "chore(release): bump version to X.Y.Z"
 ```
 
@@ -112,7 +125,19 @@ Should report the new version number from `.claude-plugin/plugin.json`.
 ```bash
 omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user538295
 ```
-Should report `Upgraded omp-goodies@user538295 (user) to X.Y.Z`.
+Should report `Upgraded omp-goodies@user538295 (user) to X.Y.Z`. `Marketplace "user538295" not found` means omp on this machine never added it; run the first-time setup once:
+```bash
+omp plugin marketplace add user538295/claude_goodies && omp plugin install omp-goodies@user538295
+```
+
+### Cursor marketplace
+On a team marketplace without Auto Refresh, click **Refresh** in **Dashboard → Plugins & MCPs**. The Cursor Marketplace publishes the update after Cursor reviews it.
+
+### OpenCode package plugin
+```bash
+opencode plugin update
+```
+Should report `Updated Server plugin "opencode-goodies"`; `opencode plugin check` then lists the new commit as `(current)`. On a machine that never added it, run `opencode plugin add github:user538295/claude_goodies` once.
 
 ---
 
@@ -123,5 +148,7 @@ Should report `Upgraded omp-goodies@user538295 (user) to X.Y.Z`.
 | `sync-manifest.txt` | Add any new paths |
 | `.claude-plugin/plugin.json` | Bump `"version"` |
 | `.omp-plugin/marketplace.json` | Bump `"version"` of the `omp-goodies` entry |
+| `.cursor-plugin/plugin.json` | Bump `"version"` |
+| `package.json` | Bump `"version"` |
 | git tag | Create `vX.Y.Z` on the release commit |
 | `.claude-plugin/marketplace.json` | No change needed (listing metadata only) |

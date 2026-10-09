@@ -1,0 +1,16 @@
+{
+  "name": "user538295",
+  "owner": {
+    "name": "Gergely Mancz"
+  },
+  "metadata": {
+    "description": "Gergely Mancz's Cursor goodies — skills, commands, and agents."
+  },
+  "plugins": [
+    {
+      "name": "cursor-goodies",
+      "source": "./",
+      "description": "Skills, commands, and agents for Cursor — TDD workflow, LLM wiki, skill packager, iterative review, and more."
+    }
+  ]
+}

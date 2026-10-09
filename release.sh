@@ -6,8 +6,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_JSON="$REPO_ROOT/.claude-plugin/plugin.json"
 OMP_MARKETPLACE_JSON="$REPO_ROOT/.omp-plugin/marketplace.json"
+CURSOR_PLUGIN_JSON="$REPO_ROOT/.cursor-plugin/plugin.json"
+OPENCODE_PACKAGE_JSON="$REPO_ROOT/package.json"
 # Every file carrying the release version; a release bumps them together.
-VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON")
+VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON" "$CURSOR_PLUGIN_JSON" "$OPENCODE_PACKAGE_JSON")
 
 # ── Pure functions (all testable without git or filesystem) ───────────────────
 
@@ -177,6 +179,11 @@ main() {
   echo "Post-release verification:"
   echo "  claude plugin update claude-goodies@user538295"
   echo "  omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user538295"
+  echo "    (first time on this machine: omp plugin marketplace add user538295/claude_goodies && omp plugin install omp-goodies@user538295)"
+  echo "  opencode plugin update"
+  echo "    (first time on this machine: opencode plugin add github:user538295/claude_goodies)"
+  echo "  Cursor: Dashboard -> Plugins & MCPs -> Refresh the team marketplace (skip when Auto Refresh is on);"
+  echo "    Cursor Marketplace updates appear after Cursor reviews them"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

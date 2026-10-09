@@ -106,6 +106,28 @@ run() {
     assert_eq "$OUT" "$H/$root/clean-code-review"
   done )
 
+( t "omp marketplace cache with several versions picks the newest by version sort"
+  H="$(mktemp -d)"
+  mkskill "$H/.omp/plugins/cache/plugins/u___omp-goodies___1.9.0/skills/clean-code-review"
+  mkskill "$H/.omp/plugins/cache/plugins/u___omp-goodies___1.10.0/skills/clean-code-review"
+  run "$H"
+  assert_eq "$RC" "0"; assert_eq "$OUT" "$H/.omp/plugins/cache/plugins/u___omp-goodies___1.10.0/skills/clean-code-review" )
+
+( t "Cursor marketplace cache (commit-SHA dirs) picks the most recently installed copy"
+  H="$(mktemp -d)"; C="$H/.cursor/plugins/cache/u/cursor-goodies"
+  mkskill "$C/ffff/skills/clean-code-review"; touch -t 202001010000 "$C/ffff/skills/clean-code-review"
+  mkskill "$C/0000/skills/clean-code-review"
+  run "$H"
+  assert_eq "$RC" "0"; assert_eq "$OUT" "$C/0000/skills/clean-code-review" )
+
+( t "OpenCode package cache picks the most recently installed copy"
+  H="$(mktemp -d)"; C="$H/.cache/opencode/npm/git-claude_goodies-abc"
+  mkskill "$C/2/node_modules/opencode-goodies/skills/clean-code-review"
+  touch -t 202001010000 "$C/2/node_modules/opencode-goodies/skills/clean-code-review"
+  mkskill "$C/1/node_modules/opencode-goodies/skills/clean-code-review"
+  run "$H"
+  assert_eq "$RC" "0"; assert_eq "$OUT" "$C/1/node_modules/opencode-goodies/skills/clean-code-review" )
+
 ( t "HOME with a space in its path still resolves"
   H="$(mktemp -d)/my home"; mkskill "$H/.agents/skills/clean-code-review"
   run "$H"

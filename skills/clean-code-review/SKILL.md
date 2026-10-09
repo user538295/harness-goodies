@@ -1,4 +1,5 @@
 ---
+name: clean-code-review
 description: Structured clean code review — 132 checks across 7 groups (clarity, smells, solid, arch, tests, safety, ddd). Flexible targets — local changes (default), staged/unstaged/untracked, a git ref/range, a pull/merge-request link (GitHub/GitLab/Bitbucket), or explicit files (works without git). Runs scripted detections, spawns one agent per group, synthesizes findings.
 ---
 
@@ -48,7 +49,7 @@ A project may silence specific rules with a `.clean-code-review-config.json` fil
 **Fallback — only if no directory was reported**, run this harness-neutral locator (an explicit `CCR_HOME=<skill dir>` wins; then project-level roots, then user-level roots of Claude Code, Cursor, OpenCode, omp and Codex, then the newest Claude Code plugin cache; symlinks are followed, stale ones skipped):
 
 ```bash
-BASE=""; for d in "${CCR_HOME:-}" .agents/skills/clean-code-review .claude/skills/clean-code-review .cursor/skills/clean-code-review .opencode/skills/clean-code-review .codex/skills/clean-code-review ~/.agents/skills/clean-code-review ~/.claude/skills/clean-code-review ~/.cursor/skills/clean-code-review ~/.config/opencode/skills/clean-code-review ~/.omp/agent/skills/clean-code-review ~/.codex/skills/clean-code-review "$(ls -d ~/.claude/plugins/cache/*/claude-goodies/*/skills/clean-code-review 2>/dev/null | sort -V | tail -1)"; do [ -n "$d" ] && [ -f "$d/scripts/collect.sh" ] && { BASE="$d"; break; }; done; [ -n "$BASE" ] && echo "$BASE" || { echo "ERROR: clean-code-review not found in any known skills root — set CCR_HOME=<skill dir>" >&2; false; }
+BASE=""; for d in "${CCR_HOME:-}" .agents/skills/clean-code-review .claude/skills/clean-code-review .cursor/skills/clean-code-review .opencode/skills/clean-code-review .codex/skills/clean-code-review ~/.agents/skills/clean-code-review ~/.claude/skills/clean-code-review ~/.cursor/skills/clean-code-review ~/.config/opencode/skills/clean-code-review ~/.omp/agent/skills/clean-code-review ~/.codex/skills/clean-code-review "$(ls -d ~/.claude/plugins/cache/*/claude-goodies/*/skills/clean-code-review 2>/dev/null | sort -V | tail -1)" "$(ls -d ~/.omp/plugins/cache/plugins/*___omp-goodies___*/skills/clean-code-review 2>/dev/null | sort -V | tail -1)" "$(ls -dt ~/.cursor/plugins/cache/*/cursor-goodies/*/skills/clean-code-review 2>/dev/null | head -1)" "$(ls -dt ~/.cache/opencode/npm/*/*/node_modules/opencode-goodies/skills/clean-code-review 2>/dev/null | head -1)"; do [ -n "$d" ] && [ -f "$d/scripts/collect.sh" ] && { BASE="$d"; break; }; done; [ -n "$BASE" ] && echo "$BASE" || { echo "ERROR: clean-code-review not found in any known skills root — set CCR_HOME=<skill dir>" >&2; false; }
 ```
 
 Capture the printed path as `$BASE`. On the error, stop and show it to the user.
