@@ -4,12 +4,12 @@
     "name": "Gergely Mancz"
   },
   "metadata": {
-    "description": "Gergely Mancz's omp goodies — skills, commands, and agents."
+    "description": "Gergely Mancz's omp goodies — skills and agents."
   },
   "plugins": [
     {
       "name": "omp-goodies",
-      "description": "Skills, commands, and agents for omp — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
+      "description": "Skills and agents for omp — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
       "version": "1.17.4",
       "source": "./",
       "author": {

@@ -143,7 +143,7 @@ flowchart LR
 
 ---
 
-## Companion skills and commands
+## Companion skills
 
 - **`/documentation-standard`** — structure, organisation, where files go, what sections to include.
 - **`/iterative-review`** — adversarial verification of the output (multiple devil's-advocate agents, severity-tagged findings, fix loop). Invoke after applying this skill if you want errors caught the way the source-investigation caught its own.

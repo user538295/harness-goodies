@@ -6,7 +6,7 @@
   <title>/iterative-review — Claude Code Handout</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="card.css">
-  <!-- Source: commands/iterative-review.md (last synced: 2026-08-14) -->
+  <!-- Source: skills/iterative-review/SKILL.md (last synced: 2026-08-14) -->
 </head>
 <body>
   <div class="card-page">
@@ -36,7 +36,7 @@
 
     <section data-section="3-invocation">
       <h2>Invocation</h2>
-      <p>Pass a target as the argument. If no argument is supplied, the command reviews the current uncommitted changes (<code>git diff HEAD</code>).</p>
+      <p>Pass a target as the argument. If no argument is supplied, the skill reviews the current uncommitted changes (<code>git diff HEAD</code>).</p>
       <pre><code>/iterative-review [target]</code></pre>
       <p><strong>Parameters:</strong></p>
       <ul>
@@ -52,7 +52,7 @@
         <li>Minor — style, naming, or nitpick (reported but not fixed automatically)</li>
       </ul>
       <p><strong>Note:</strong> Fix agents do NOT create git commits — all changes remain as uncommitted working-tree modifications.</p>
-      <p><strong>Note on continuation:</strong> When invoked from <code>/implement</code>, the calling skill includes its own "do not stop at the review verdict" reminder in its NEXT-mode Step 3 — and <code>/iterative-review</code> itself also ends every Review Summary with a <code>⚠️ CALLER</code> warning that the summary is not a task completion signal and the caller must continue to the next step immediately. Both the caller and the command carry a continuation reminder.</p>
+      <p><strong>Note on continuation:</strong> When invoked as a skill from <code>/implement</code>, the calling skill includes its own "do not stop at the review verdict" reminder in its NEXT-mode Step 3 — and <code>/iterative-review</code> itself also ends every Review Summary with a <code>⚠️ CALLER</code> warning that the summary is not a task completion signal and the caller must continue to the next step immediately. Both the caller and the invoked skill carry a continuation reminder.</p>
     </section>
 
     <section data-section="4-example-1">

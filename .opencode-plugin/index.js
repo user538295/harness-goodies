@@ -1,4 +1,4 @@
-// OpenCode V2 package plugin: registers this repository's skills, commands, and agents.
+// OpenCode V2 package plugin: registers this repository's skills and agents.
 // Installed with `opencode plugin add github:user538295/harness-goodies`.
 import fs from "node:fs";
 import path from "node:path";
@@ -7,7 +7,6 @@ import { parse as parseYaml } from "yaml";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FRONTMATTER = /^---\n([\s\S]*?)\n---(?:\n|$)/;
-const ARGUMENTS_PLACEHOLDER = "$ARGUMENTS";
 
 const readMarkdown = (file) => {
   const text = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
@@ -34,12 +33,6 @@ const loadSkills = () =>
       return { id, name: data.name ?? id, description: data.description, location: file, content: body };
     });
 
-const loadCommands = () =>
-  markdownFiles("commands").map(({ id, file }) => {
-    const { data, body } = readMarkdown(file);
-    return { name: id, description: data.description, template: body.trim() };
-  });
-
 const loadAgents = () =>
   markdownFiles("agents").map(({ id, file }) => {
     const { data, body } = readMarkdown(file);
@@ -50,27 +43,10 @@ export default {
   id: "opencode-goodies",
   setup: async (ctx) => {
     const skills = loadSkills();
-    const commands = loadCommands();
     const agents = loadAgents();
 
     await ctx.skill.transform((editor) => {
       for (const skill of skills) editor.add(skill);
-    });
-
-    await ctx.command.transform((editor) => {
-      for (const command of commands) {
-        editor.add({
-          name: command.name,
-          description: command.description,
-          execute: (input) =>
-            ctx.session.prompt({
-              ...input.prompt,
-              sessionID: input.sessionID,
-              text: command.template.replaceAll(ARGUMENTS_PLACEHOLDER, input.prompt.text),
-              delivery: input.delivery,
-            }),
-        });
-      }
     });
 
     await ctx.agent.transform((editor) => {

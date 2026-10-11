@@ -48,7 +48,7 @@ Spawn one agent (type `general-purpose`, `model: "opus"`) to update any document
 
 ### 4. Iterative review (Agent)
 
-Spawn one agent (type `general-purpose`, `model: "opus"`) that invokes the `iterative-review` skill via the Skill tool on the uncommitted changes. It runs that skill's full loop — spawning reviewers and fix agents — until no Critical, Major, or Moderate issues remain, re-running tests after each fix pass. Relay its Review Summary.
+Spawn one subagent (in Claude Code: type `general-purpose`, `model: "opus"`) that invokes the `iterative-review` skill (your skill list may show it with a plugin prefix, e.g. `claude-goodies:iterative-review`) via your harness's skill-loading mechanism on the uncommitted changes. It runs that skill's full loop — spawning reviewers and fix agents — until no Critical, Major, or Moderate issues remain, re-running tests after each fix pass. Relay its Review Summary.
 
 ### 5. Commit (Skill)
 

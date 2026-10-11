@@ -53,7 +53,7 @@ This step has two halves. **Run** the non-mutating verification yourself (items 
 Run these now — no asking:
 
 1. **Tests** — Run the relevant test suite and record the result. If running is genuinely blocked (e.g. Docker/DB not up), say so and mark ❓ — don't fabricate a pass.
-2. **Devil's advocate** — Run `/devils-advocate` (or `/da-review`; `claude-goodies:da-review` if that is the name shown in your skill list) on this session's work and capture its findings.
+2. **Devil's advocate** — Invoke the `da-review` skill (your skill list may show it with a plugin prefix, e.g. `claude-goodies:da-review` or `codex-goodies:da-review`) on this session's work and capture its findings.
 
 Assess these read-only:
 
@@ -81,7 +81,7 @@ These are **blockers**, not close-out chores. The issue is not finished, so do *
 > 1. … 2. …
 > Want me to fix them? [ ] fix all · [ ] fix #1 only · [ ] not now
 
-Fixing is a mutating action, so it happens only after the user says yes — then hand off to the right flow (`/tdd`, `/devils-advocate`'s fix pass, a direct fix). After fixes land, verification re-runs and the wrap-up continues. Until then, the commit/tracker steps stay off the table.
+Fixing is a mutating action, so it happens only after the user says yes — then hand off to the right flow (`/tdd`, the `iterative-review` skill's fix loop, a direct fix). After fixes land, verification re-runs and the wrap-up continues. Until then, the commit/tracker steps stay off the table.
 
 ### Case B — tests green and devil's advocate clean
 

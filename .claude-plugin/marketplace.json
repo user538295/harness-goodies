@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "user538295",
-  "description": "Gergely Mancz's Claude Code goodies — skills, commands, and agents.",
+  "description": "Gergely Mancz's Claude Code goodies — skills and agents.",
   "owner": {
     "name": "Gergely Mancz",
     "url": "https://github.com/user538295"
@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "claude-goodies",
-      "description": "Skills, commands, and agents for Claude Code — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
+      "description": "Skills and agents for Claude Code — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
       "source": "./",
       "category": "productivity"
     }

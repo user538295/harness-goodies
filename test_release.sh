@@ -39,7 +39,7 @@ assert_eq "from zero"       "0.1.0"  "$(next_version 0.0.9 true)"
 echo "=== diff_has_new_items ==="
 assert_exits_0 "new agent"      diff_has_new_items $'A\tagents/foo.md'
 assert_exits_0 "new skill"      diff_has_new_items $'A\tskills/bar/skill.md'
-assert_exits_0 "new command"    diff_has_new_items $'A\tcommands/cmd.md'
+assert_exits_1 "commands/ not shipped" diff_has_new_items $'A\tcommands/cmd.md'
 assert_exits_0 "new script"     diff_has_new_items $'A\tscripts/run.sh'
 assert_exits_0 "mix add+modify" diff_has_new_items $'M\tREADME.md\nA\tagents/new.md'
 assert_exits_1 "empty diff"     diff_has_new_items ""

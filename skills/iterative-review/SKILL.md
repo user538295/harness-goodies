@@ -1,8 +1,12 @@
 ---
-description: Spawn multiple devil's advocate agents in parallel — plus a Brooks-Lint reviewer when /brooks-review is available, and a one-off clean-code catalog pass in cycle 1 when /clean-code-review is available — to review, then spawn fix agents to address all moderate+ issues, re-run tests after each fix pass. Repeat until no critical, major or moderate issues remain.
+name: iterative-review
+description: >-
+  Spawn multiple devil's advocate agents in parallel — plus a Brooks-Lint reviewer when /brooks-review is available, and a one-off clean-code catalog pass in cycle 1 when /clean-code-review is available — to review, then spawn fix agents to address all moderate+ issues, re-run tests after each fix pass. Repeat until no critical, major or moderate issues remain. Use when the user invokes /iterative-review or when another skill (e.g. implement, bugfix) needs its review-and-fix loop.
 ---
 
-Target: $ARGUMENTS (if empty, use the current uncommitted changes — run `git diff HEAD` to get them).
+Target: $ARGUMENTS (if empty — including when another skill invoked this one and named the target in its request instead — use that named target, else the current uncommitted changes — run `git diff HEAD` to get them).
+
+**Reviewer fallback — decide by capability, not harness brand.** If no `devils-advocate` agent type is available (e.g. Codex, whose plugins ship no agents) but a subagent tool exists, spawn generic subagents in step 1 instead and instruct each to first read and adopt the persona in `$BASE/../../agents/devils-advocate.md`, where `$BASE` is this skill's directory as announced by the harness (`Base directory for this skill: <path>` or `[Skill directory: <path>]`; in Cursor and Codex, the directory of this SKILL.md). If that file is missing, proceed with the rubric only and tell the user. If no subagent tool exists at all, run the review and fix passes inline and tell the user the review is not independent — this overrides the "MUST use the Agent tool" rule in step 1.
 
 Severity rubric — use this consistently across all agents:
 - **Critical**: blocks correctness, security, or safety

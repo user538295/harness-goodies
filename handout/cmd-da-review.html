@@ -6,7 +6,7 @@
   <title>/da-review — Claude Code Handout</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="card.css">
-  <!-- Source: commands/da-review.md -->
+  <!-- Source: skills/da-review/SKILL.md -->
 </head>
 <body>
   <div class="card-page">
@@ -40,9 +40,9 @@
       <pre><code>/da-review [target]</code></pre>
       <p><strong>Parameters:</strong></p>
       <ul>
-        <li><code>[target]</code> — (optional) what to review: a file path, a <code>git diff</code> snippet, a plan file path, or a description. If empty, the command reviews the current plan/code/work in context.</li>
+        <li><code>[target]</code> — (optional) what to review: a file path, a <code>git diff</code> snippet, a plan file path, or a description. If empty, the skill reviews the current plan/code/work in context.</li>
       </ul>
-      <p><strong>Allowed tools (read-only):</strong> <code>Read</code>, <code>Grep</code>, <code>Glob</code>. The agent cannot write files or run shell commands.</p>
+      <p><strong>Pre-approved tools:</strong> <code>Read</code>, <code>Grep</code>, <code>Glob</code>. Pre-approval does not restrict other tools; the skill's instructions forbid fixes — it only reports findings.</p>
       <p><strong>Severity rubric</strong> (same as <code>/iterative-review</code> — kept in sync):</p>
       <ul>
         <li><span class="badge must">Critical</span> — blocks correctness, security, or safety</li>

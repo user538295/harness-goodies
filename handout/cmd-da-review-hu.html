@@ -6,7 +6,7 @@
   <title>/da-review — Claude Code segédlet</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="card.css">
-  <!-- Source: commands/da-review.md -->
+  <!-- Source: skills/da-review/SKILL.md -->
 </head>
 <body>
   <div class="card-page">
@@ -23,7 +23,7 @@
 
     <section data-section="2-when-to-use">
       <h2>Mikor használd</h2>
-      <p>Akkor használd a <code>/da-review</code> parancsot, ha valamiről kritikus, ellenpárti olvasatot szeretnél, és egy prioritizált problémalistát, amellyel utána magad dolgozol tovább. Egyszer fut le, és megáll — nem ciklusol, nem indít javító ügynököket, és nem módosít semmilyen fájlt.</p>
+      <p>Akkor használd a <code>/da-review</code> skillt, ha valamiről kritikus, ellenpárti olvasatot szeretnél, és egy prioritizált problémalistát, amellyel utána magad dolgozol tovább. Egyszer fut le, és megáll — nem ciklusol, nem indít javító ügynököket, és nem módosít semmilyen fájlt.</p>
       <p><strong>Lényeges különbség az <code>/iterative-review</code>-hoz képest:</strong> a <code>/da-review</code> <em>azonosítja</em> a problémákat; az <code>/iterative-review</code> ezzel szemben <em>azonosítja és ki is javítja</em> őket ciklusban mindaddig, amíg nem marad kritikus, súlyos vagy közepes probléma. Akkor válaszd a <code>/da-review</code>-t, ha kézben akarod tartani a javításokat; akkor válaszd az <code>/iterative-review</code>-t, ha automatikusan szeretnéd elhárítani a problémákat.</p>
       <p>Tipikus kiváltó helyzetek:</p>
       <ul>
@@ -40,9 +40,9 @@
       <pre><code>/da-review [target]</code></pre>
       <p><strong>Paraméterek:</strong></p>
       <ul>
-        <li><code>[target]</code> — (opcionális) mit vizsgáljon: fájl elérési útja, egy <code>git diff</code> részlet, egy tervfájl elérési útja vagy egy leírás. Ha üres, a parancs az aktuális kontextusban lévő tervet/kódot/munkát vizsgálja.</li>
+        <li><code>[target]</code> — (opcionális) mit vizsgáljon: fájl elérési útja, egy <code>git diff</code> részlet, egy tervfájl elérési útja vagy egy leírás. Ha üres, a skill az aktuális kontextusban lévő tervet/kódot/munkát vizsgálja.</li>
       </ul>
-      <p><strong>Engedélyezett eszközök (csak olvasás):</strong> <code>Read</code>, <code>Grep</code>, <code>Glob</code>. Az ügynök nem írhat fájlokat, és nem futtathat shell parancsokat.</p>
+      <p><strong>Előre jóváhagyott eszközök:</strong> <code>Read</code>, <code>Grep</code>, <code>Glob</code>. Az előzetes jóváhagyás nem tiltja a többi eszközt; a skill utasításai tiltják a javítást — csak jelenti a találatokat.</p>
       <p><strong>Súlyossági rubrika</strong> (megegyezik az <code>/iterative-review</code>-ban használttal — szinkronban tartva):</p>
       <ul>
         <li><span class="badge must">Kritikus</span> — helyesség, biztonság vagy üzembiztonság szempontjából blokkoló</li>

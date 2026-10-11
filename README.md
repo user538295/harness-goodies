@@ -2,7 +2,7 @@
 
 **An opinionated, human-in-the-loop workflow for [Claude Code](https://claude.ai/code).** Turns a rough feature idea into shipped, reviewed, committed code — without you babysitting every step, and without letting Claude ship blind.
 
-Skills, commands, and one adversarial review agent. Every piece explained with a worked example in the [interactive handout](https://user538295.github.io/harness-goodies/handout/) (English · [Magyar](https://user538295.github.io/harness-goodies/handout/index-hu.html)).
+Skills and one adversarial review agent. Every piece explained with a worked example in the [interactive handout](https://user538295.github.io/harness-goodies/handout/) (English · [Magyar](https://user538295.github.io/harness-goodies/handout/index-hu.html)).
 
 ![Harness Goodies demo](assets/demo.gif)
 
@@ -49,7 +49,7 @@ See `skills/implement/SKILL.md` § NEXT mode, "Step 6: Commit" for the one-task-
 - [**`/clean-code-review`**](https://user538295.github.io/harness-goodies/handout/skill-clean-code-review.html) — Code done, want the deep read. Runs 132 checks across 7 groups (clarity, smells, SOLID, architecture, tests, safety, DDD) — on local changes, staged/unstaged/untracked, a git range, a pull/merge-request link, or specific files.
 - [**`/options`**](https://user538295.github.io/harness-goodies/handout/skill-options.html) — Stuck between approaches. Produces 2–4 genuinely different paths with honest pros/cons, grounded in your actual project files, and a firm recommendation.
 
-Powered by the [`devils-advocate`](https://user538295.github.io/harness-goodies/handout/agentic-workflow-en.html#da) agent — the thing actually doing the attacking. Auto-invoked by both review commands and inside `/implement`.
+Powered by the [`devils-advocate`](https://user538295.github.io/harness-goodies/handout/agentic-workflow-en.html#da) agent — the thing actually doing the attacking. Auto-invoked by both review skills and inside `/implement`.
 
 ### Make Claude remember
 
@@ -97,7 +97,7 @@ omp plugin marketplace add user538295/harness-goodies
 omp plugin install omp-goodies@user538295
 ```
 
-Inside omp the same steps are `/marketplace add user538295/harness-goodies` and `/marketplace install omp-goodies@user538295`. omp reads its own catalog (`.omp-plugin/marketplace.json`) and installs `omp-goodies`: every skill, both commands as `/omp-goodies:da-review` and `/omp-goodies:iterative-review`, and the `devils-advocate` agent with omp tool names. Run `/reload-plugins` or start a new session to load them. To update later:
+Inside omp the same steps are `/marketplace add user538295/harness-goodies` and `/marketplace install omp-goodies@user538295`. omp reads its own catalog (`.omp-plugin/marketplace.json`) and installs `omp-goodies`: every skill (including `/skill:da-review` and `/skill:iterative-review`) and the `devils-advocate` agent with omp tool names. Run `/reload-plugins` or start a new session to load them. To update later:
 
 ```bash
 omp plugin marketplace update user538295
@@ -110,7 +110,7 @@ Each entrypoint passes its native harness identity explicitly; it never infers a
 
 ### Cursor plugin
 
-Cursor reads its own manifests (`.cursor-plugin/plugin.json` and `.cursor-plugin/marketplace.json`) and installs `cursor-goodies`: every skill, both commands, and the `devils-advocate` agent. The plugin ships no hooks; session logging stays opt-in through `/session-log on`. Install it through one of two marketplace routes.
+Cursor reads its own manifests (`.cursor-plugin/plugin.json` and `.cursor-plugin/marketplace.json`) and installs `cursor-goodies`: every skill and the `devils-advocate` agent. The plugin ships no hooks; session logging stays opt-in through `/session-log on`. Install it through one of two marketplace routes.
 
 **Cursor Marketplace.** Once Cursor has reviewed and listed the plugin, open **Customize** in the sidebar, search for `cursor-goodies`, select **Install**, and choose a project or user scope. Cursor reviews every update before publishing it.
 
@@ -131,7 +131,7 @@ codex plugin marketplace add user538295/harness-goodies
 codex plugin add codex-goodies@user538295
 ```
 
-Codex reads its own manifests (`.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json`) and installs `codex-goodies`: every skill, namespaced as `codex-goodies:<skill>`. Codex plugins carry no commands or agents, so `/da-review`, `/iterative-review`, and `devils-advocate` are not included. The plugin ships no hooks; session logging stays opt-in through the `session-log` skill's `on` command. Start a new session to load it. To update later:
+Codex reads its own manifests (`.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json`) and installs `codex-goodies`: every skill, namespaced as `codex-goodies:<skill>`. Codex plugins carry no agents, so `devils-advocate` is not included; `da-review` and `iterative-review` fall back to generic subagents that read the persona from the plugin's `agents/devils-advocate.md`. The plugin ships no hooks; session logging stays opt-in through the `session-log` skill's `on` command. Start a new session to load it. To update later:
 
 ```bash
 codex plugin marketplace upgrade user538295
@@ -145,13 +145,13 @@ Installed `claude-goodies@user538295` in Codex before this plugin existed? Switc
 opencode plugin add github:user538295/harness-goodies
 ```
 
-Requires OpenCode V2. OpenCode installs the `opencode-goodies` package (`package.json` plus `.opencode-plugin/index.js`) into its package cache, adds it to `~/.config/opencode/opencode.json`, and loads it without a restart. The plugin registers every skill, the `/da-review` and `/iterative-review` commands, and the `devils-advocate` subagent. To update later:
+Requires OpenCode V2. OpenCode installs the `opencode-goodies` package (`package.json` plus `.opencode-plugin/index.js`) into its package cache, adds it to `~/.config/opencode/opencode.json`, and loads it without a restart. The plugin registers every skill and the `devils-advocate` subagent. To update later:
 
 ```bash
 opencode plugin update
 ```
 
-Skills, commands, and agents with the same names under `~/.config/opencode/skills`, `~/.config/opencode/commands`, and `~/.config/opencode/agents` take precedence over the plugin's copies; remove those copies to use the plugin's versions. Session logging stays opt-in through `/session-log on`.
+Skills and agents with the same names under `~/.config/opencode/skills` and `~/.config/opencode/agents` take precedence over the plugin's copies; remove those copies to use the plugin's versions. Session logging stays opt-in through `/session-log on`.
 
 ### Universal session-log package
 
@@ -220,5 +220,5 @@ No MCP servers are required.
 
 ---
 
-Full reference, with worked examples for every skill, command, agent, and script — open the handout:
+Full reference, with worked examples for every skill, agent, and script — open the handout:
 **[English](https://user538295.github.io/harness-goodies/handout/) · [Magyar](https://user538295.github.io/harness-goodies/handout/index-hu.html)**.

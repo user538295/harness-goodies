@@ -117,7 +117,7 @@ Instruct the agent with all of the above. Wait for the agent to return before co
 
 ### Step 3: Critical review
 
-**You MUST run `/iterative-review`** (or `claude-goodies:iterative-review` if that is the name shown in your skill list)**.** When a companion plan was detected in Step 1, pass its path in the review target and instruct the reviewers to read it first — the acceptance criteria and `S#`/`C#` this task must satisfy are defined there, not in the task-breakdown file.
+**You MUST invoke the `iterative-review` skill** (your skill list may show it with a plugin prefix, e.g. `claude-goodies:iterative-review` or `codex-goodies:iterative-review` — invoke whichever name is listed)**.** Name the review target in your request. When a companion plan was detected in Step 1, pass its path in the review target and instruct the reviewers to read it first — the acceptance criteria and `S#`/`C#` this task must satisfy are defined there, not in the task-breakdown file.
 
 After `/iterative-review` returns — regardless of what its Verdict says — you MUST immediately continue to Step 4. The Review Summary is a sub-task result, not your completion signal. **Do NOT stop here.**
 

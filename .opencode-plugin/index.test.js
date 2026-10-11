@@ -4,17 +4,14 @@ import path from "node:path";
 import plugin from "./index.js";
 
 const repoRoot = path.resolve(import.meta.dir, "..");
-const registered = { skills: new Map(), commands: new Map(), agents: new Map(), prompts: [] };
+const registered = { skills: new Map(), agents: new Map(), commandTransforms: 0 };
 
 beforeAll(async () => {
   const context = {
     skill: {
       transform: async (callback) => callback({ add: (skill) => registered.skills.set(skill.id, skill) }),
     },
-    command: {
-      transform: async (callback) =>
-        callback({ add: (command) => registered.commands.set(command.name, command) }),
-    },
+    command: { transform: async () => registered.commandTransforms++ },
     agent: {
       transform: async (callback) =>
         callback({
@@ -25,7 +22,6 @@ beforeAll(async () => {
           },
         }),
     },
-    session: { prompt: async (input) => registered.prompts.push(input) },
   };
   await plugin.setup(context);
 });
@@ -52,21 +48,12 @@ test("folded YAML descriptions and CRLF frontmatter parse to plain text", () => 
   expect(registered.skills.get("wrap-up").content).not.toContain("\r");
 });
 
-test("command substitutes $ARGUMENTS and prompts the invoking session", async () => {
-  const command = registered.commands.get("da-review");
-  expect(command.description).toStartWith("Single-pass devil's advocate review.");
-  const prompt = { text: "src/app.ts", files: [] };
-  await command.execute({ sessionID: "ses_1", prompt, delivery: "queue" });
-  const sent = registered.prompts.at(-1);
-  expect(sent.sessionID).toBe("ses_1");
-  expect(sent.delivery).toBe("queue");
-  expect(sent.files).toEqual([]);
-  expect(sent.text).toContain("Review the following target: src/app.ts (if empty");
-  expect(sent.text).not.toContain("$ARGUMENTS");
-});
-
-test("registers both shipped commands", () => {
-  expect([...registered.commands.keys()].sort()).toEqual(["da-review", "iterative-review"]);
+test("review workflows register as skills, not commands", () => {
+  expect(registered.skills.get("da-review").description).toStartWith("Single-pass devil's advocate review.");
+  expect(registered.skills.get("iterative-review").location).toBe(
+    path.join(repoRoot, "skills", "iterative-review", "SKILL.md"),
+  );
+  expect(registered.commandTransforms).toBe(0);
 });
 
 test("agent registers as a subagent with its description and body as system prompt", () => {

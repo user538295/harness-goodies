@@ -6,7 +6,7 @@
   <title>/iterative-review — Claude Code segédlet</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="card.css">
-  <!-- Source: commands/iterative-review.md (last synced: 2026-08-14) -->
+  <!-- Source: skills/iterative-review/SKILL.md (last synced: 2026-08-14) -->
 </head>
 <body>
   <div class="card-page">
@@ -23,7 +23,7 @@
 
     <section data-section="2-when-to-use">
       <h2>Mikor használd</h2>
-      <p>Akkor használd a <code>/iterative-review</code> parancsot, ha nemcsak átvizsgálást szeretnél, <em>hanem</em> a javításokat is automatikusan, ciklusban alkalmazva — nem csak egy hibalistát. Addig forog a ciklus, amíg minden kritikus, súlyos és közepes probléma eltűnik.</p>
+      <p>Akkor használd a <code>/iterative-review</code> skillt, ha nemcsak átvizsgálást szeretnél, <em>hanem</em> a javításokat is automatikusan, ciklusban alkalmazva — nem csak egy hibalistát. Addig forog a ciklus, amíg minden kritikus, súlyos és közepes probléma eltűnik.</p>
       <p><strong>Lényeges különbség a <code>/da-review</code>-hoz képest:</strong> a <code>/da-review</code> csak <em>azonosítja</em> a problémákat, majd megáll — magad javítod őket. A <code>/iterative-review</code> automatikusan <em>azonosítja és kijavítja</em> az összes közepes vagy súlyosabb problémát, és minden kör között újrafuttatja a teszteket. Válaszd a <code>/da-review</code>-ot, ha kézben szeretnéd tartani a javításokat; válaszd a <code>/iterative-review</code>-ot, ha azt szeretnéd, hogy a problémák automatikusan megoldódjanak.</p>
       <p>Tipikus kiváltó helyzetek:</p>
       <ul>
@@ -36,7 +36,7 @@
 
     <section data-section="3-invocation">
       <h2>Meghívás</h2>
-      <p>Add át a célt argumentumként. Ha nem adsz meg argumentumot, a parancs az aktuális, commitálatlan változtatásokat vizsgálja (<code>git diff HEAD</code>).</p>
+      <p>Add át a célt argumentumként. Ha nem adsz meg argumentumot, a skill az aktuális, commitálatlan változtatásokat vizsgálja (<code>git diff HEAD</code>).</p>
       <pre><code>/iterative-review [target]</code></pre>
       <p><strong>Paraméterek:</strong></p>
       <ul>
@@ -52,7 +52,7 @@
         <li>Apró — stílus, elnevezés vagy szőrszálhasogatás (jelzi, de nem javítja automatikusan)</li>
       </ul>
       <p><strong>Megjegyzés:</strong> A javító ágensek NEM hoznak létre git commitokat — minden változtatás commitálatlan working-tree módosításként marad.</p>
-      <p><strong>Megjegyzés a folytatásról:</strong> Amikor az <code>/implement</code> hívja meg, a hívó skill maga tartalmazza a "ne állj meg a review verdiktnél" emlékeztetőt a 3. lépésében — és az <code>/iterative-review</code> önmaga is minden Review Summary végén elhelyez egy <code>⚠️ CALLER</code> figyelmeztetést, amely szerint az összefoglaló nem feladat-teljesítési jelzés, és a hívónak azonnal folytatnia kell a következő lépéssel. A hívó és a parancs is hordoz folytatás-emlékeztetőt.</p>
+      <p><strong>Megjegyzés a folytatásról:</strong> Amikor az <code>/implement</code> skillként hívja meg, a hívó skill maga tartalmazza a "ne állj meg a review verdiktnél" emlékeztetőt a 3. lépésében — és az <code>/iterative-review</code> önmaga is minden Review Summary végén elhelyez egy <code>⚠️ CALLER</code> figyelmeztetést, amely szerint az összefoglaló nem feladat-teljesítési jelzés, és a hívónak azonnal folytatnia kell a következő lépéssel. A hívó és a meghívott skill is hordoz folytatás-emlékeztetőt.</p>
     </section>
 
     <section data-section="4-example-1">

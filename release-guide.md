@@ -53,7 +53,7 @@ opencode plugin add github:user538295/harness-goodies
 # update later:
 opencode plugin update
 ```
-OpenCode installs the repository as the npm-style package `opencode-goodies` from `package.json`; `"files"` limits the install to `.opencode-plugin/index.js`, `skills/`, `commands/`, and `agents/`, and `"dependencies"` brings in `yaml` for frontmatter parsing. `opencode plugin check` compares the installed commit with the branch head, so every pushed commit is an update.
+OpenCode installs the repository as the npm-style package `opencode-goodies` from `package.json`; `"files"` limits the install to `.opencode-plugin/index.js`, `skills/`, and `agents/`, and `"dependencies"` brings in `yaml` for frontmatter parsing. `opencode plugin check` compares the installed commit with the branch head, so every pushed commit is an update.
 
 ---
 
@@ -63,7 +63,6 @@ OpenCode installs the repository as the npm-style package `opencode-goodies` fro
 Update `sync-manifest.txt` before anything else. It is the curated list of paths that live in both `~/.claude` and this repo — `release.sh` prompts you to confirm it is current.
 
 - New skill directory → `skills/my-skill/` (trailing slash = recursive copy)
-- New command file → `commands/my-command.md`
 - New script → `scripts/my-script.sh`
 - New single-file agent → `agents/my-agent.md`
 

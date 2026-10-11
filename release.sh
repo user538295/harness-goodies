@@ -27,10 +27,10 @@ next_version() {
 }
 
 # diff_has_new_items <git-diff-name-status output> → 0 if new item found, 1 if not
-# "New item" = a file added (status A) directly under agents/, skills/, commands/, scripts/
+# "New item" = a file added (status A) directly under agents/, skills/, scripts/
 diff_has_new_items() {
   local diff_output="$1"
-  echo "$diff_output" | grep -qE $'^A\t(agents|skills|commands|scripts)/' || return 1
+  echo "$diff_output" | grep -qE $'^A\t(agents|skills|scripts)/' || return 1
 }
 
 # filter_valid_tags <newline-separated tag list> → first vX.Y.Z tag, or empty
