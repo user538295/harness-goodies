@@ -192,19 +192,15 @@ OpenCode and OMP keep per-process runtime records alongside the shared runtime p
 
 Unconstrained AI coding produces verbose, coupled code that accumulates fast and is hard to reverse. Constraints aren't slow — they're the thing that makes the output trustworthy enough to ship.
 
-Everything ships with a `CLAUDE.md` that Claude Code loads at the start of every session. It encodes five principles:
+The repo is developed under the guidelines in its own [`AGENTS.md`](AGENTS.md), which Claude Code, Codex, OpenCode, and omp load at session start. The plugins don't install it — copy it into your own `AGENTS.md` or `~/.claude/CLAUDE.md` if you want the same rules. It encodes three principles:
 
-1. **Think before coding.** State assumptions, surface tradeoffs, push back when warranted.
+1. **Think before coding.** Verify and cite every claim, state assumptions, surface tradeoffs, push back when warranted.
 2. **Simplicity first.** Minimum code that solves the problem; nothing speculative.
-3. **Documentation must stay current.** Every code change updates the docs in the same session. Outdated documentation is treated as a bug.
-4. **Surgical changes.** Touch only what the task requires.
-5. **Goal-driven execution.** Define success upfront and loop until verified.
+3. **Surgical changes.** Touch only what the task requires, and fix any concrete defect you find along the way.
 
-Four of these five principles are adapted from [Andrej Karpathy's guidelines](https://github.com/multica-ai/andrej-karpathy-skills/blob/main/skills/karpathy-guidelines/SKILL.md); "Documentation must stay current" is an original addition.
+All three are adapted from [Andrej Karpathy's guidelines](https://github.com/multica-ai/andrej-karpathy-skills/blob/main/skills/karpathy-guidelines/SKILL.md).
 
 And enforces: tests before code (85%+ coverage), warning-free codebase at all times. `skills/implement/SKILL.md` adds the execution-level rule: one commit per plan task, no batching multiple tasks into a single commit.
-
-By default, the installer 3-way merges your local `~/.claude/CLAUDE.md` changes with the shipped version (when a merge base from a prior run exists) and writes the merged result automatically; on a conflict it writes conflict markers into the file and opens your editor to resolve them. It leaves the file untouched when your copy already matches the shipped one, or when no merge base exists yet. Pass `--overwrite` to replace it outright instead (diff + confirmation in a terminal, silent in non-interactive contexts), or `--keep-claude-md` to leave an existing `CLAUDE.md` alone — a fresh install still installs it either way.
 
 If that's not your speed, this repo isn't for you. If it is — install in 30 seconds.
 

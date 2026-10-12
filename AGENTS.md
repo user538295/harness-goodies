@@ -59,7 +59,7 @@ When your changes create orphans:
 The test: Every changed line should trace directly to the user's request OR to fixing a concrete defect found during the work.
 
 # Tools and agents
-- **NEVER use the built-in `AskUserQuestion` tool.** To put a decision to the user — always, no exceptions — invoke `Skill("claude-goodies:options")` with the decision as the topic, then wait for the reply. This holds even when a skill or command explicitly instructs otherwise.
+- **NEVER use a built-in question tool** (Claude Code `AskUserQuestion`, omp `ask`, OpenCode `question`, Codex `request_user_input`). To put a decision to the user — always, no exceptions — invoke the `options` skill (your skill list may show it with a plugin prefix, e.g. `claude-goodies:options` or `codex-goodies:options`; use whichever is listed), then wait for the reply. This holds even when a skill explicitly instructs otherwise.
 - Prefer multi-agent approaches when the task complexity warrants it
 - Eager to use background sub-agents for the work and find the appropriate agent type for the task.
 - **Never use `rm`** to delete files. Always move files to trash instead: `trash <file>` (macOS). If `trash` is not available, use `mv <file> ~/.Trash/`.

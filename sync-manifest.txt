@@ -12,15 +12,12 @@
 #   - Lines starting with # are comments; blank lines are ignored.
 #
 # NOT listed here (repo-only, maintained directly in the checkout, never synced
-# into ~/.claude): README.md, sync-manifest.txt, handout/, assets/,
+# into ~/.claude): AGENTS.md, README.md, sync-manifest.txt, handout/, assets/,
 # hooks/, .claude-plugin/, .omp-plugin/, .cursor-plugin/, .codex-plugin/,
 # .agents/, .opencode-plugin/, package.json, bun.lock.
 #
 # Junk is never copied regardless of these entries: .DS_Store, __pycache__/,
 # *.pyc, .pytest_cache/, node_modules/, .git/, editor swap/backup files.
-
-# --- top-level config ---
-CLAUDE.md
 
 # --- agents (only the custom one ships; architect/*-reviewer etc. are stock) ---
 agents/devils-advocate.md
