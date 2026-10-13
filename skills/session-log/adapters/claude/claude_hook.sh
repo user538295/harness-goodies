@@ -62,6 +62,28 @@ command -v jq >/dev/null 2>&1 || { printf 'session-log: missing dependency: jq\n
 
 check_path_components "$CLAUDE_ROOT/prompt-logs" || { printf 'session-log: unsafe Claude log root\n' >&2; exit 1; }
 check_path_components "$STATE_DIR" || { printf 'session-log: unsafe Claude runtime root\n' >&2; exit 1; }
+
+# A plugin-cache copy runs from the plugin's hooks/hooks.json, so every owned
+# settings.json hook is a duplicate, often a dead versioned path left by an
+# older release. Remove them at session start, logging on or off. Best effort:
+# this cleanup never fails the hook, and the grep keeps the clean case cheap.
+remove_owned_settings_hooks() {
+  local settings="$CLAUDE_ROOT/settings.json" owner="universal-session-log"
+  case "$PACKAGE_ROOT" in
+    "$CLAUDE_HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log) ;;
+    *) return 0 ;;
+  esac
+  [[ -f "$settings" && ! -L "$settings" ]] || return 0
+  grep -qF "SESSION_LOG_OWNER=$owner " "$settings" || return 0
+  PLUGIN_ROOT="${PACKAGE_ROOT%/skills/session-log}" \
+    python3 "$PACKAGE_ROOT/lib/claude_settings.py" plugin-hooks-current || return 0
+  SETTINGS_PATH="$settings" SESSION_LOG_OWNER_MARKER="$owner" \
+    python3 "$PACKAGE_ROOT/lib/claude_settings.py" remove
+}
+if [[ "${1:-}" == session-start ]]; then
+  remove_owned_settings_hooks </dev/null >/dev/null 2>&1 || true
+fi
+
 input="$(cat)"
 enabled_file="$CLAUDE_ROOT/prompt-logs/.enabled"
 runtime="$STATE_DIR/runtime.json"

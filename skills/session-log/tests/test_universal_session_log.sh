@@ -701,6 +701,186 @@ printf '%s\n' '{"session_id":"plugin-package-session","cwd":"'"$PWD"'"}' |
 package_plugin_status="$(HOME="$PACKAGE_PLUGIN_HOME" bash "$PACKAGE_PLUGIN_HOME/.claude/skills/session-log/install.sh" --harness claude --arguments status 2>&1)"
 assert_contains "stable package becomes loaded through stable hook" "Claude Code: on" "$package_plugin_status"
 
+printf '=== Claude plugin mode leaves no owned settings.json hooks ===\n'
+write_stale_claude_settings() {
+  local settings="$1" stale_hook="$2"
+  mkdir -p "$(dirname "$settings")"
+  STALE_HOOK="$stale_hook" python3 - "$settings" <<'PY'
+import json, os, shlex, sys
+stale = shlex.quote(os.environ["STALE_HOOK"])
+owned = lambda name: {"type": "command", "command": f"SESSION_LOG_OWNER=universal-session-log bash {stale} {name}"}
+document = {
+    "model": "opus",
+    "hooks": {
+        "SessionStart": [
+            {"matcher": "startup|resume", "hooks": [owned("session-start")]},
+            {"hooks": [{"type": "command", "command": "cc-status session-start"}]},
+        ],
+        "UserPromptSubmit": [{"hooks": [owned("user-prompt")]}],
+        "Stop": [{"hooks": [owned("stop"), {"type": "command", "command": "bash ~/.claude/cc-status.sh stop"}]}],
+        "SubagentStop": [{"hooks": [owned("subagent-stop")]}],
+        "Notification": [{"hooks": [{"type": "command", "command": "cc-status notify"}]}],
+    },
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2)
+PY
+}
+claude_settings_summary() {
+  python3 - "$1" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    document = json.load(handle)
+print(f"model:{document.get('model')}")
+for event, entries in sorted(document.get("hooks", {}).items()):
+    for entry in entries:
+        for item in entry.get("hooks", []):
+            command = item.get("command", "")
+            kind = "owned" if command.startswith("SESSION_LOG_OWNER=") else "other"
+            print(f"{kind}:{event}:{command}")
+PY
+}
+assert_non_owned_hooks_preserved() {
+  local label="$1" summary="$2"
+  assert_contains "$label keeps unrelated settings" "model:opus" "$summary"
+  assert_contains "$label keeps a non-owned SessionStart hook" "other:SessionStart:cc-status session-start" "$summary"
+  assert_contains "$label keeps a non-owned hook sharing an owned entry" "other:Stop:bash ~/.claude/cc-status.sh stop" "$summary"
+  assert_contains "$label keeps a non-owned hook on an unmanaged event" "other:Notification:cc-status notify" "$summary"
+}
+make_claude_plugin_cache() {
+  local home="$1" version="$2" plugin_root
+  plugin_root="$home/.claude/plugins/cache/user538295/claude-goodies/$version"
+  mkdir -p "$plugin_root/skills" "$plugin_root/hooks"
+  cp -R "$REPO/skills/session-log" "$plugin_root/skills/session-log"
+  cp "$REPO/hooks/hooks.json" "$plugin_root/hooks/hooks.json"
+  printf '%s\n' "$plugin_root"
+}
+
+PLUGIN_UPGRADE_HOME="$WORKROOT/plugin-upgrade-home"
+mkdir -p "$PLUGIN_UPGRADE_HOME/.Trash"
+PLUGIN_UPGRADE_ROOT="$(make_claude_plugin_cache "$PLUGIN_UPGRADE_HOME" 1.18.0)"
+PLUGIN_UPGRADE_SETTINGS="$PLUGIN_UPGRADE_HOME/.claude/settings.json"
+PLUGIN_STALE_HOOK="$PLUGIN_UPGRADE_HOME/.claude/plugins/cache/user538295/claude-goodies/1.14.1/skills/session-log/adapters/claude/claude_hook.sh"
+write_stale_claude_settings "$PLUGIN_UPGRADE_SETTINGS" "$PLUGIN_STALE_HOOK"
+set +e
+plugin_upgrade_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude on 2>&1)"
+set -e
+assert_contains "plugin on without CLAUDE_PLUGIN_ROOT enables logging" "Claude Code: on — restart required" "$plugin_upgrade_on"
+plugin_upgrade_summary="$(claude_settings_summary "$PLUGIN_UPGRADE_SETTINGS")"
+assert_not_contains "plugin on removes stale versioned owned hooks" "owned:" "$plugin_upgrade_summary"
+assert_not_contains "plugin on writes no versioned cache path" "plugins/cache" "$plugin_upgrade_summary"
+assert_non_owned_hooks_preserved "plugin on" "$plugin_upgrade_summary"
+cp "$PLUGIN_UPGRADE_SETTINGS" "$WORKROOT/plugin-upgrade-settings.first"
+set +e
+plugin_upgrade_again="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude on 2>&1)"
+set -e
+assert_contains "repeated plugin on still reports on" "Claude Code: on" "$plugin_upgrade_again"
+cmp -s "$WORKROOT/plugin-upgrade-settings.first" "$PLUGIN_UPGRADE_SETTINGS" &&
+  pass "repeated plugin on leaves settings byte-identical" ||
+  fail "repeated plugin on leaves settings byte-identical"
+set +e
+plugin_upgrade_status="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude status 2>&1)"
+set -e
+assert_contains "plugin status treats plugin hooks as the adapter" "Claude Code: on — restart required" "$plugin_upgrade_status"
+write_stale_claude_settings "$PLUGIN_UPGRADE_SETTINGS" "$PLUGIN_STALE_HOOK"
+set +e
+plugin_repair_status="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude status 2>&1)"
+set -e
+assert_contains "plugin status repair reports on" "Claude Code: on" "$plugin_repair_status"
+plugin_repair_summary="$(claude_settings_summary "$PLUGIN_UPGRADE_SETTINGS")"
+assert_not_contains "enabled plugin status removes stale owned hooks" "owned:" "$plugin_repair_summary"
+assert_non_owned_hooks_preserved "plugin status repair" "$plugin_repair_summary"
+write_stale_claude_settings "$PLUGIN_UPGRADE_SETTINGS" "$PLUGIN_STALE_HOOK"
+set +e
+plugin_upgrade_off="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude off 2>&1)"
+set -e
+assert_contains "plugin off disables logging" "Claude Code: off" "$plugin_upgrade_off"
+plugin_off_summary="$(claude_settings_summary "$PLUGIN_UPGRADE_SETTINGS")"
+assert_not_contains "plugin off removes stale owned hooks" "owned:" "$plugin_off_summary"
+assert_non_owned_hooks_preserved "plugin off" "$plugin_off_summary"
+
+printf '=== plugin SessionStart hook removes stale owned settings.json hooks ===\n'
+write_stale_claude_settings "$PLUGIN_UPGRADE_SETTINGS" "$PLUGIN_STALE_HOOK"
+set +e
+printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
+  (unset CLAUDE_PLUGIN_ROOT; HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start) >/dev/null 2>&1
+plugin_hook_rc=$?
+set -e
+assert_exact "plugin SessionStart cleanup succeeds" "0" "$plugin_hook_rc"
+plugin_hook_summary="$(claude_settings_summary "$PLUGIN_UPGRADE_SETTINGS")"
+assert_not_contains "plugin SessionStart removes stale owned hooks" "owned:" "$plugin_hook_summary"
+assert_non_owned_hooks_preserved "plugin SessionStart" "$plugin_hook_summary"
+cp "$PLUGIN_UPGRADE_SETTINGS" "$WORKROOT/plugin-hook-settings.first"
+set +e
+printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
+  HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start >/dev/null 2>&1
+plugin_hook_again_rc=$?
+set -e
+assert_exact "repeated plugin SessionStart cleanup succeeds" "0" "$plugin_hook_again_rc"
+cmp -s "$WORKROOT/plugin-hook-settings.first" "$PLUGIN_UPGRADE_SETTINGS" &&
+  pass "repeated plugin SessionStart leaves settings byte-identical" ||
+  fail "repeated plugin SessionStart leaves settings byte-identical"
+printf '{"hooks": "SESSION_LOG_OWNER=universal-session-log broken\n' > "$PLUGIN_UPGRADE_SETTINGS"
+cp "$PLUGIN_UPGRADE_SETTINGS" "$WORKROOT/plugin-hook-invalid.first"
+set +e
+printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
+  HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start >/dev/null 2>&1
+plugin_hook_invalid_rc=$?
+set -e
+assert_exact "plugin SessionStart never fails on invalid settings" "0" "$plugin_hook_invalid_rc"
+cmp -s "$WORKROOT/plugin-hook-invalid.first" "$PLUGIN_UPGRADE_SETTINGS" &&
+  pass "plugin SessionStart leaves invalid settings untouched" ||
+  fail "plugin SessionStart leaves invalid settings untouched"
+
+printf '=== plugin cache without its hooks keeps the stable settings.json adapter ===\n'
+HOOKLESS_PLUGIN_HOME="$WORKROOT/hookless-plugin-home"
+mkdir -p "$HOOKLESS_PLUGIN_HOME/.Trash"
+HOOKLESS_PLUGIN_ROOT="$(make_claude_plugin_cache "$HOOKLESS_PLUGIN_HOME" 1.18.0)"
+mv "$HOOKLESS_PLUGIN_ROOT/hooks/hooks.json" "$HOOKLESS_PLUGIN_HOME/.Trash/hooks.json"
+set +e
+hookless_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$HOOKLESS_PLUGIN_ROOT/skills/session-log/SKILL.md" "$HOOKLESS_PLUGIN_HOME" claude on 2>&1)"
+set -e
+assert_contains "hookless plugin cache enables logging" "Claude Code: on — restart required" "$hookless_on"
+hookless_summary="$(claude_settings_summary "$HOOKLESS_PLUGIN_HOME/.claude/settings.json")"
+assert_contains "hookless plugin cache installs the stable Stop hook" \
+  "owned:Stop:SESSION_LOG_OWNER=universal-session-log bash $(cd "$HOOKLESS_PLUGIN_HOME" && pwd -P)/.claude/skills/session-log/adapters/claude/claude_hook.sh stop" "$hookless_summary"
+assert_not_contains "hookless plugin cache writes no versioned cache path" "plugins/cache" "$hookless_summary"
+
+printf '=== standalone on replaces stale owned hooks whatever their path ===\n'
+STANDALONE_UPGRADE_HOME="$WORKROOT/standalone-upgrade-home"
+mkdir -p "$STANDALONE_UPGRADE_HOME/.Trash" "$STANDALONE_UPGRADE_HOME/.claude/skills"
+cp -R "$REPO/skills/session-log" "$STANDALONE_UPGRADE_HOME/.claude/skills/session-log"
+STANDALONE_UPGRADE_SETTINGS="$STANDALONE_UPGRADE_HOME/.claude/settings.json"
+STANDALONE_HOOK="$(cd "$STANDALONE_UPGRADE_HOME" && pwd -P)/.claude/skills/session-log/adapters/claude/claude_hook.sh"
+write_stale_claude_settings "$STANDALONE_UPGRADE_SETTINGS" "$STANDALONE_UPGRADE_HOME/.claude/plugins/cache/user538295/claude-goodies/1.14.1/skills/session-log/adapters/claude/claude_hook.sh"
+set +e
+standalone_upgrade_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$STANDALONE_UPGRADE_HOME/.claude/skills/session-log/SKILL.md" "$STANDALONE_UPGRADE_HOME" claude on 2>&1)"
+set -e
+assert_contains "standalone on enables logging" "Claude Code: on — restart required" "$standalone_upgrade_on"
+standalone_upgrade_summary="$(claude_settings_summary "$STANDALONE_UPGRADE_SETTINGS")"
+assert_not_contains "standalone on removes stale versioned owned hooks" "1.14.1" "$standalone_upgrade_summary"
+for event_name in SessionStart:session-start UserPromptSubmit:user-prompt Stop:stop SubagentStop:subagent-stop; do
+  assert_exact "standalone on keeps exactly one owned ${event_name%%:*} hook" \
+    "owned:${event_name%%:*}:SESSION_LOG_OWNER=universal-session-log bash $STANDALONE_HOOK ${event_name#*:}" \
+    "$(grep "^owned:${event_name%%:*}:" <<< "$standalone_upgrade_summary")"
+done
+assert_non_owned_hooks_preserved "standalone on" "$standalone_upgrade_summary"
+cp "$STANDALONE_UPGRADE_SETTINGS" "$WORKROOT/standalone-upgrade-settings.first"
+set +e
+(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$STANDALONE_UPGRADE_HOME/.claude/skills/session-log/SKILL.md" "$STANDALONE_UPGRADE_HOME" claude on) >/dev/null 2>&1
+set -e
+cmp -s "$WORKROOT/standalone-upgrade-settings.first" "$STANDALONE_UPGRADE_SETTINGS" &&
+  pass "repeated standalone on leaves settings byte-identical" ||
+  fail "repeated standalone on leaves settings byte-identical"
+write_stale_claude_settings "$STANDALONE_UPGRADE_SETTINGS" "$STANDALONE_HOOK"
+set +e
+printf '%s\n' '{"session_id":"standalone-session","cwd":"'"$PWD"'"}' |
+  HOME="$STANDALONE_UPGRADE_HOME" bash "$STANDALONE_HOOK" session-start >/dev/null 2>&1
+set -e
+assert_contains "standalone SessionStart keeps its own owned hooks" \
+  "owned:Stop:SESSION_LOG_OWNER=universal-session-log bash $STANDALONE_HOOK stop" \
+  "$(claude_settings_summary "$STANDALONE_UPGRADE_SETTINGS")"
+
 printf '=== native reports keep their raw payload after one harness label ===\n'
 set +e
 claude_missing="$(run_harness claude usage --latest 2>&1)"

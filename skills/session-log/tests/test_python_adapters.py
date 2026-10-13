@@ -626,6 +626,78 @@ class DirectoryLifecycleTests(unittest.TestCase):
                         os.fstat(opened[0])
 
 
+class ClaudeSettingsOwnershipTests(unittest.TestCase):
+    OWNER = "universal-session-log"
+
+    def load(self):
+        with patch.object(sys, "path", [str(CLAUDE_SETTINGS_PATH.parent), *sys.path]):
+            return load_module(CLAUDE_SETTINGS_PATH, "claude_settings_ownership_test")
+
+    def owned(self, path, name):
+        return {"type": "command", "command": f"SESSION_LOG_OWNER={self.OWNER} bash {path} {name}"}
+
+    def test_remove_strips_owned_hooks_of_any_path_and_keeps_the_rest(self):
+        settings = self.load()
+        lookalike = {"type": "command", "command": "SESSION_LOG_OWNER=universal-session-log-other bash x stop"}
+        foreign = {"type": "command", "command": "cc-status stop"}
+        document = {"hooks": {
+            "Stop": [{"hooks": [self.owned("/old/1.14.1/claude_hook.sh", "stop"), foreign]}],
+            "SubagentStop": [{"hooks": [self.owned("/stable/claude_hook.sh", "subagent-stop")]}],
+            "Notification": [{"hooks": [lookalike]}],
+        }}
+        self.assertTrue(settings._remove_managed_hooks(document, self.OWNER))
+        self.assertEqual(document, {"hooks": {
+            "Stop": [{"hooks": [foreign]}],
+            "Notification": [{"hooks": [lookalike]}],
+        }})
+        self.assertFalse(settings._remove_managed_hooks(document, self.OWNER))
+
+    def test_remove_drops_hooks_object_left_empty(self):
+        settings = self.load()
+        document = {"model": "opus", "hooks": {"Stop": [{"hooks": [self.owned("/x/claude_hook.sh", "stop")]}]}}
+        self.assertTrue(settings._remove_managed_hooks(document, self.OWNER))
+        self.assertEqual(document, {"model": "opus"})
+
+    def test_install_replaces_owned_hooks_with_stale_paths(self):
+        settings = self.load()
+        document = {"hooks": {"Stop": [{"hooks": [self.owned("/old/1.14.1/claude_hook.sh", "stop")]}]}}
+        settings._inject_managed_hooks(document, "/stable/claude_hook.sh", self.OWNER)
+        self.assertEqual(document["hooks"]["Stop"], [{"hooks": [self.owned("/stable/claude_hook.sh", "stop")]}])
+
+    def test_remove_cli_leaves_missing_settings_absent(self):
+        settings = self.load()
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.json"
+            with patch.dict(os.environ, {"SETTINGS_PATH": str(settings_path), "SESSION_LOG_OWNER_MARKER": self.OWNER}):
+                settings.main(["remove"])
+            self.assertFalse(settings_path.exists())
+
+    def test_has_owned_cli_reports_owned_hooks_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.json"
+            environment = {**os.environ, "SETTINGS_PATH": str(settings_path), "SESSION_LOG_OWNER_MARKER": self.OWNER}
+            run = lambda: subprocess.run([sys.executable, str(CLAUDE_SETTINGS_PATH), "has-owned"], env=environment).returncode
+            settings_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "cc-status"}]}]}}))
+            self.assertEqual(run(), 1)
+            settings_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [self.owned("/x/claude_hook.sh", "stop")]}]}}))
+            self.assertEqual(run(), 0)
+
+    def test_plugin_hooks_current_requires_the_repository_hooks_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugin_root = Path(directory)
+            hook = plugin_root / "skills/session-log/adapters/claude/claude_hook.sh"
+            hook.parent.mkdir(parents=True)
+            hook.write_text("#!/usr/bin/env bash\n")
+            environment = {**os.environ, "PLUGIN_ROOT": str(plugin_root)}
+            run = lambda: subprocess.run([sys.executable, str(CLAUDE_SETTINGS_PATH), "plugin-hooks-current"], env=environment).returncode
+            self.assertEqual(run(), 1)
+            (plugin_root / "hooks").mkdir()
+            (plugin_root / "hooks/hooks.json").write_text((REPO / "hooks/hooks.json").read_text())
+            self.assertEqual(run(), 0)
+            (plugin_root / "hooks/hooks.json").write_text(json.dumps({"hooks": {}}))
+            self.assertEqual(run(), 1)
+
+
 STALE_OWNER_START = "Stale Owner Start"
 ACQUIRER_START = "Acquirer Start"
 

@@ -23,71 +23,15 @@ native_hooks_current() {
 }
 
 claude_plugin_mode() {
-  local plugin_root
-  [[ "$HARNESS" == claude && -n "${CLAUDE_PLUGIN_ROOT:-}" ]] || return 1
-  plugin_root="$(cd "$CLAUDE_PLUGIN_ROOT" 2>/dev/null && pwd -P)" || return 1
-  [[ "$PACKAGE_ROOT" == "$plugin_root/skills/session-log" ]]
+  [[ "$HARNESS" == claude ]] && claude_plugin_package "$PACKAGE_ROOT"
 }
 
-claude_plugin_hooks_current() {
-  local hooks_path="$CLAUDE_PLUGIN_ROOT/hooks/hooks.json"
-  [[ -f "$hooks_path" && ! -L "$hooks_path" ]] || return 1
-  ensure_safe_parent "$hooks_path"
-  HOOKS_PATH="$hooks_path" CLAUDE_PLUGIN_ROOT_PATH="$CLAUDE_PLUGIN_ROOT" \
-    python3 - <<'PY'
-import json
-import os
-
-hooks_path = os.environ["HOOKS_PATH"]
-plugin_root = os.environ["CLAUDE_PLUGIN_ROOT_PATH"]
-try:
-    with open(hooks_path, encoding="utf-8") as handle:
-        document = json.load(handle)
-except (OSError, json.JSONDecodeError):
-    raise SystemExit(1)
-hooks = document.get("hooks")
-if not isinstance(hooks, dict):
-    raise SystemExit(1)
-events = {
-    "SessionStart": ("startup", "session-start"),
-    "UserPromptSubmit": (None, "user-prompt"),
-    "Stop": (None, "stop"),
-    "SubagentStop": (None, "subagent-stop"),
-}
-hook_path = os.path.join(
-    plugin_root, "skills", "session-log", "adapters", "claude", "claude_hook.sh"
-)
-for event, (matcher, name) in events.items():
-    entries = hooks.get(event)
-    if not isinstance(entries, list):
-        raise SystemExit(1)
-    expected = f'exec bash "${{CLAUDE_PLUGIN_ROOT}}/skills/session-log/adapters/claude/claude_hook.sh" {name}'
-    if not any(
-        isinstance(entry, dict)
-        and (
-            (matcher is None and "matcher" not in entry)
-            or entry.get("matcher") == matcher
-        )
-        and isinstance(entry.get("hooks"), list)
-        and any(
-            isinstance(item, dict)
-            and item.get("type") == "command"
-            and item.get("command") == expected
-            for item in entry["hooks"]
-        )
-        for entry in entries
-    ):
-        raise SystemExit(1)
-if not os.path.isfile(hook_path) or os.path.islink(hook_path):
-    raise SystemExit(1)
-PY
-}
-
+# Plugin mode: the plugin's hooks/hooks.json is the adapter, so it is current
+# only while settings.json holds no owned (duplicate or stale) hook.
 claude_settings_has_adapter() {
   if claude_plugin_mode; then
-    [[ -f "$PACKAGE_ROOT/adapters/claude/claude_hook.sh" &&
-       ! -L "$PACKAGE_ROOT/adapters/claude/claude_hook.sh" ]] || return 1
-    claude_plugin_hooks_current
+    ! SETTINGS_PATH="$HARNESS_ROOT/settings.json" SESSION_LOG_OWNER_MARKER="$OWNER_MARKER_VALUE" \
+      python3 "$SESSION_LOG_LIB/claude_settings.py" has-owned
     return
   fi
   [[ -f "$HARNESS_ROOT/settings.json" ]] || return 1
@@ -295,9 +239,6 @@ preflight_native_hooks() {
 }
 
 preflight_claude_settings() {
-  if claude_plugin_mode; then
-    return 0
-  fi
   local settings="$HARNESS_ROOT/settings.json"
   ensure_safe_parent "$settings"
   [[ ! -L "$settings" ]] ||
@@ -349,6 +290,7 @@ preflight_off() {
   preflight_enable_flag
   validate_state_dir
   preflight_install_lock
+  if claude_plugin_mode; then preflight_claude_settings; fi
 }
 
 write_manifest() {
@@ -420,6 +362,17 @@ install_claude_settings() {
     python3 "$SESSION_LOG_LIB/claude_settings.py" install
 }
 
+# Plugin mode: drop every owned settings.json hook; the plugin registers its own.
+remove_claude_settings_hooks() {
+  require_command python3
+  local settings="$HARNESS_ROOT/settings.json"
+  ensure_safe_parent "$settings"
+  [[ ! -L "$settings" ]] || fail "refusing to update symlinked Claude settings: $settings"
+  [[ ! -d "$settings" ]] || fail "refusing to update directory as Claude settings: $settings"
+  SETTINGS_PATH="$settings" SESSION_LOG_OWNER_MARKER="$OWNER_MARKER_VALUE" \
+    python3 "$SESSION_LOG_LIB/claude_settings.py" remove
+}
+
 clear_runtime_markers() {
   local candidate
   ensure_safe_parent "$RUNTIME_FILE"
@@ -444,7 +397,9 @@ remove_recognized_dangling_adapter_link() {
 install_adapter() {
   case "$HARNESS" in
     claude)
-      if ! claude_plugin_mode; then
+      if claude_plugin_mode; then
+        remove_claude_settings_hooks
+      else
         install_claude_settings
       fi
       ;;

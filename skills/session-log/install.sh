@@ -837,6 +837,11 @@ main() {
   if ((INSTALL_MODE == 0)); then
     [[ "$HARNESS_SELECTION" != all ]] || fail "--harness all requires --install"
     dispatch_root="$(package_root_for "$HARNESS_SELECTION")"
+    # A Claude plugin-cache package runs its own CLI: plugin mode is derived from
+    # the package location, which the seeded stable copy no longer carries.
+    if [[ "$HARNESS_SELECTION" == claude ]] && claude_plugin_package "$SOURCE_ROOT"; then
+      dispatch_root="$SOURCE_ROOT"
+    fi
     bash "$dispatch_root/bin/session-log" \
       --entrypoint "$HARNESS_SELECTION" \
       --harness "$HARNESS_SELECTION" \

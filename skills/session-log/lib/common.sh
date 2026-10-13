@@ -73,6 +73,18 @@ write_private_file() {
     fail "cannot safely write private file: $1"
 }
 
+# True when package root $1 is a claude-goodies plugin-cache copy whose plugin
+# hooks/hooks.json registers the Claude lifecycle hooks: that plugin, not
+# settings.json, then owns the hooks. Derived from the package's own location
+# because no CLAUDE_* path variable reaches the skill's shell.
+claude_plugin_package() {
+  case "$1" in
+    "$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log) ;;
+    *) return 1 ;;
+  esac
+  PLUGIN_ROOT="${1%/skills/session-log}" python3 "$SESSION_LOG_LIB/claude_settings.py" plugin-hooks-current
+}
+
 safe_remove_path() {
   SESSION_LOG_REMOVE_PATH="$1" python3 "$SESSION_LOG_LIB/pathsafe.py" remove
 }

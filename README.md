@@ -84,7 +84,7 @@ claude plugin marketplace add user538295/harness-goodies
 claude plugin install claude-goodies
 ```
 
-The marketplace plugin bundles the Claude skill, runtime, and native hooks. Restart Claude Code (or start a new session) for plugin changes to load. To update later:
+The marketplace plugin bundles the Claude skill, runtime, and native hooks. Its `hooks/hooks.json` owns the session-log hooks, so `/session-log on`, `off`, and (while logging is on) `status` remove any session-log hook from `~/.claude/settings.json`, and every new session does the same, which clears dead paths that older releases wrote into the versioned plugin cache. Restart Claude Code (or start a new session) for plugin changes to load. To update later:
 
 ```bash
 claude plugin update claude-goodies@user538295

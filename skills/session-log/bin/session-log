@@ -427,6 +427,7 @@ main() {
       preflight_off
       acquire_install_lock
       trap release_install_lock EXIT
+      if claude_plugin_mode; then remove_claude_settings_hooks; fi
       set_disabled
       printf '%s: off\n' "$HARNESS_LABEL"
       release_install_lock

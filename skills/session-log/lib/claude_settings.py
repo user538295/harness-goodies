@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 # universal-session-log: managed
-"""Claude settings.json hook management (install + legacy migration).
+"""Claude settings.json hook management (install, removal, legacy migration).
 
 Extracted verbatim from bin/session-log (``install``) and install.sh
 (``migrate``) so the flock + JSON-merge + atomic-replace dances live in one
 auditable, testable module instead of two large shell here-documents.
 
 Usage:
-    python3 claude_settings.py install   # SETTINGS_PATH, HOOK_PATH, SESSION_LOG_OWNER_MARKER
-    python3 claude_settings.py migrate   # SETTINGS_PATH, CLAUDE_SCRIPTS_DIR
+    python3 claude_settings.py install    # SETTINGS_PATH, HOOK_PATH, SESSION_LOG_OWNER_MARKER
+    python3 claude_settings.py remove     # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER
+    python3 claude_settings.py has-owned  # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER; exit 0 if any
+    python3 claude_settings.py plugin-hooks-current  # PLUGIN_ROOT; exit 0 if hooks.json registers
+    python3 claude_settings.py migrate    # SETTINGS_PATH, CLAUDE_SCRIPTS_DIR
+
+A hook is owned when its command starts with the ``SESSION_LOG_OWNER=<owner> ``
+marker, whatever hook path follows it, so entries written by older releases
+(including dead versioned plugin-cache paths) are replaced or removed too.
 """
 import fcntl
 import json
@@ -26,6 +33,19 @@ FILE_FLAGS = os.O_RDONLY | NOFOLLOW
 BACKUP_ATTEMPTS = 20
 INSTALL_TEMP_ATTEMPTS = 20
 TEMP_ATTEMPTS = 100
+MANAGED_EVENTS = {
+    "SessionStart": ("startup|resume", "session-start"),
+    "UserPromptSubmit": (None, "user-prompt"),
+    "Stop": (None, "stop"),
+    "SubagentStop": (None, "subagent-stop"),
+}
+PLUGIN_EVENTS = {
+    "SessionStart": ("startup", "session-start"),
+    "UserPromptSubmit": (None, "user-prompt"),
+    "Stop": (None, "stop"),
+    "SubagentStop": (None, "subagent-stop"),
+}
+PLUGIN_HOOK_RELATIVE = os.path.join("skills", "session-log", "adapters", "claude", "claude_hook.sh")
 
 
 @dataclass(frozen=True)
@@ -162,15 +182,20 @@ def _restore_after_conflict(parent_fd, options):
     )
 
 
-def _is_owned_command_hook(item, expected_command):
+def _owner_prefix(owner):
+    return f"SESSION_LOG_OWNER={shlex.quote(owner)} "
+
+
+def _is_owned_command_hook(item, owner_prefix):
     return (
         isinstance(item, dict)
         and item.get("type") == "command"
-        and item.get("command", "") == expected_command
+        and isinstance(item.get("command"), str)
+        and item["command"].startswith(owner_prefix)
     )
 
 
-def _filter_managed_hooks(entries, expected_command):
+def _filter_managed_hooks(entries, owner_prefix):
     filtered = []
     for entry in entries:
         if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
@@ -179,7 +204,7 @@ def _filter_managed_hooks(entries, expected_command):
         kept_hooks = []
         removed_owned = False
         for item in entry["hooks"]:
-            if _is_owned_command_hook(item, expected_command):
+            if _is_owned_command_hook(item, owner_prefix):
                 removed_owned = True
             else:
                 kept_hooks.append(item)
@@ -213,29 +238,44 @@ def _load_install_settings(parent_fd, settings_name):
 
 
 def _inject_managed_hooks(document, hook_path, owner):
-    events = {
-        "SessionStart": ("startup|resume", "session-start"),
-        "UserPromptSubmit": (None, "user-prompt"),
-        "Stop": (None, "stop"),
-        "SubagentStop": (None, "subagent-stop"),
-    }
     hooks = document.get("hooks")
     if hooks is None:
         hooks = {}
     elif not isinstance(hooks, dict):
         raise SystemExit("cannot update Claude settings: hooks must be an object")
     document["hooks"] = hooks
-    for event, (matcher, name) in events.items():
+    for event, (matcher, name) in MANAGED_EVENTS.items():
         entries = hooks.setdefault(event, [])
         if not isinstance(entries, list):
             raise SystemExit(f"cannot update Claude settings: hooks.{event} must be an array")
-        command = f"SESSION_LOG_OWNER={shlex.quote(owner)} bash {shlex.quote(hook_path)} {name}"
-        filtered = _filter_managed_hooks(entries, command)
+        command = f"{_owner_prefix(owner)}bash {shlex.quote(hook_path)} {name}"
+        filtered = _filter_managed_hooks(entries, _owner_prefix(owner))
         entry = {"hooks": [{"type": "command", "command": command}]}
         if matcher is not None:
             entry["matcher"] = matcher
         filtered.append(entry)
         hooks[event] = filtered
+
+
+def _remove_managed_hooks(document, owner):
+    hooks = document.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    changed = False
+    for event, entries in list(hooks.items()):
+        if not isinstance(entries, list):
+            continue
+        kept = _filter_managed_hooks(entries, _owner_prefix(owner))
+        if kept == entries:
+            continue
+        changed = True
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
+    if changed and not hooks:
+        document.pop("hooks", None)
+    return changed
 
 
 def _install_snapshot_matches(current_stat, current_contents, snapshot):
@@ -415,28 +455,106 @@ def _write_install_settings(parent_fd, settings_name, update):
         _cleanup_install_write(parent_fd, settings_name, state)
 
 
-def install():
-    settings_path = os.environ["SETTINGS_PATH"]
-    hook_path = os.environ["HOOK_PATH"]
-    owner = os.environ["SESSION_LOG_OWNER_MARKER"]
-    directory, settings_name = os.path.split(settings_path)
-    parent_fd = pathsafe.open_directory(directory, create=True)
+def _update_settings(edit, create):
+    """Apply ``edit(document) -> changed`` under the settings lock; write only on change."""
+    directory, settings_name = os.path.split(os.environ["SETTINGS_PATH"])
+    parent_fd = pathsafe.open_directory(directory, create=create)
     try:
         lock_fd = os.open(settings_name + ".session-log.lock", os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600, dir_fd=parent_fd)
         try:
             os.fchmod(lock_fd, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             document, original = _load_install_settings(parent_fd, settings_name)
-            _inject_managed_hooks(document, hook_path, owner)
-            _write_install_settings(
-                parent_fd,
-                settings_name,
-                SettingsUpdate(document=document, snapshot=original),
-            )
+            if edit(document):
+                _write_install_settings(
+                    parent_fd,
+                    settings_name,
+                    SettingsUpdate(document=document, snapshot=original),
+                )
         finally:
             os.close(lock_fd)
     finally:
         os.close(parent_fd)
+
+
+def install():
+    hook_path = os.environ["HOOK_PATH"]
+    owner = os.environ["SESSION_LOG_OWNER_MARKER"]
+
+    def inject(document):
+        _inject_managed_hooks(document, hook_path, owner)
+        return True
+
+    _update_settings(inject, create=True)
+
+
+def remove():
+    settings_path = os.environ["SETTINGS_PATH"]
+    owner = os.environ["SESSION_LOG_OWNER_MARKER"]
+    if not os.path.lexists(settings_path):
+        return
+    _update_settings(lambda document: _remove_managed_hooks(document, owner), create=False)
+
+
+def has_owned():
+    owner = os.environ["SESSION_LOG_OWNER_MARKER"]
+    try:
+        with open(os.environ["SETTINGS_PATH"], encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    hooks = document.get("hooks") if isinstance(document, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    prefix = _owner_prefix(owner)
+    return any(
+        isinstance(entry, dict)
+        and isinstance(entry.get("hooks"), list)
+        and any(_is_owned_command_hook(item, prefix) for item in entry["hooks"])
+        for entries in hooks.values()
+        if isinstance(entries, list)
+        for entry in entries
+    )
+
+
+def _plugin_registers_event(entries, matcher, name):
+    expected = f'exec bash "${{CLAUDE_PLUGIN_ROOT}}/{PLUGIN_HOOK_RELATIVE}" {name}'
+    return any(
+        isinstance(entry, dict)
+        and ((matcher is None and "matcher" not in entry) or entry.get("matcher") == matcher)
+        and isinstance(entry.get("hooks"), list)
+        and any(
+            isinstance(item, dict)
+            and item.get("type") == "command"
+            and item.get("command") == expected
+            for item in entry["hooks"]
+        )
+        for entry in entries
+    )
+
+
+def plugin_hooks_current():
+    """True when PLUGIN_ROOT's hooks/hooks.json registers every Claude lifecycle hook."""
+    plugin_root = os.environ["PLUGIN_ROOT"]
+    hooks_dir = os.path.join(plugin_root, "hooks")
+    hooks_path = os.path.join(hooks_dir, "hooks.json")
+    hook_path = os.path.join(plugin_root, PLUGIN_HOOK_RELATIVE)
+    if os.path.islink(hooks_dir) or os.path.islink(hooks_path) or not os.path.isfile(hooks_path):
+        return False
+    if os.path.islink(hook_path) or not os.path.isfile(hook_path):
+        return False
+    try:
+        with open(hooks_path, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    hooks = document.get("hooks") if isinstance(document, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    return all(
+        isinstance(hooks.get(event), list) and _plugin_registers_event(hooks[event], matcher, name)
+        for event, (matcher, name) in PLUGIN_EVENTS.items()
+    )
 
 
 
@@ -723,6 +841,12 @@ def main(argv):
     operation = argv[0]
     if operation == "install":
         install()
+    elif operation == "remove":
+        remove()
+    elif operation == "has-owned":
+        raise SystemExit(0 if has_owned() else 1)
+    elif operation == "plugin-hooks-current":
+        raise SystemExit(0 if plugin_hooks_current() else 1)
     elif operation == "migrate":
         migrate()
     else:
