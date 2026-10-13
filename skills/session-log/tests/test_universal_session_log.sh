@@ -846,6 +846,89 @@ assert_contains "hookless plugin cache installs the stable Stop hook" \
   "owned:Stop:SESSION_LOG_OWNER=universal-session-log bash $(cd "$HOOKLESS_PLUGIN_HOME" && pwd -P)/.claude/skills/session-log/adapters/claude/claude_hook.sh stop" "$hookless_summary"
 assert_not_contains "hookless plugin cache writes no versioned cache path" "plugins/cache" "$hookless_summary"
 
+printf '=== plugin on replaces a stale owned skill symlink and still cleans settings.json ===\n'
+STALE_LINK_HOME="$WORKROOT/stale-link-home"
+mkdir -p "$STALE_LINK_HOME/.Trash" "$STALE_LINK_HOME/.claude/skills"
+STALE_LINK_ROOT="$(make_claude_plugin_cache "$STALE_LINK_HOME" 1.18.1)"
+STALE_LINK_OLD="$(make_claude_plugin_cache "$STALE_LINK_HOME" 1.17.0)/skills/session-log"
+STALE_LINK_SKILL="$STALE_LINK_HOME/.claude/skills/session-log"
+STALE_LINK_SETTINGS="$STALE_LINK_HOME/.claude/settings.json"
+ln -s "$STALE_LINK_OLD/" "$STALE_LINK_SKILL"
+write_stale_claude_settings "$STALE_LINK_SETTINGS" "$PLUGIN_STALE_HOOK"
+set +e
+stale_link_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$STALE_LINK_ROOT/skills/session-log/SKILL.md" "$STALE_LINK_HOME" claude on 2>&1)"
+set -e
+assert_contains "stale owned skill symlink does not block plugin on" "Claude Code: on — restart required" "$stale_link_on"
+[[ -d "$STALE_LINK_SKILL" && ! -L "$STALE_LINK_SKILL" ]] &&
+  pass "stale owned skill symlink becomes a real package directory" ||
+  fail "stale owned skill symlink becomes a real package directory"
+assert_file "replaced skill directory holds the current package" "$STALE_LINK_SKILL/install.sh"
+assert_exact "replaced skill directory holds the current version" "$PACKAGE_VERSION" "$(tr -d '[:space:]' < "$STALE_LINK_SKILL/VERSION" 2>/dev/null)"
+assert_file "old plugin cache version is left untouched" "$STALE_LINK_OLD/install.sh"
+assert_not_file "old plugin cache version gains no manifest" "$STALE_LINK_OLD/.universal-session-log.manifest"
+stale_link_summary="$(claude_settings_summary "$STALE_LINK_SETTINGS")"
+assert_not_contains "stale owned skill symlink still lets plugin on remove owned hooks" "owned:" "$stale_link_summary"
+assert_non_owned_hooks_preserved "stale owned skill symlink" "$stale_link_summary"
+cp "$STALE_LINK_SETTINGS" "$WORKROOT/stale-link-settings.first"
+set +e
+stale_link_again="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$STALE_LINK_ROOT/skills/session-log/SKILL.md" "$STALE_LINK_HOME" claude on 2>&1)"
+set -e
+assert_contains "repeated plugin on after symlink replacement reports on" "Claude Code: on" "$stale_link_again"
+[[ -d "$STALE_LINK_SKILL" && ! -L "$STALE_LINK_SKILL" ]] &&
+  pass "repeated plugin on keeps the real package directory" ||
+  fail "repeated plugin on keeps the real package directory"
+cmp -s "$WORKROOT/stale-link-settings.first" "$STALE_LINK_SETTINGS" &&
+  pass "repeated plugin on after symlink replacement leaves settings byte-identical" ||
+  fail "repeated plugin on after symlink replacement leaves settings byte-identical"
+
+DANGLING_LINK_HOME="$WORKROOT/dangling-link-home"
+mkdir -p "$DANGLING_LINK_HOME/.Trash" "$DANGLING_LINK_HOME/.claude/skills"
+DANGLING_LINK_ROOT="$(make_claude_plugin_cache "$DANGLING_LINK_HOME" 1.18.1)"
+ln -s "$DANGLING_LINK_HOME/.claude/plugins/cache/user538295/claude-goodies/1.12.1/skills/session-log" \
+  "$DANGLING_LINK_HOME/.claude/skills/session-log"
+write_stale_claude_settings "$DANGLING_LINK_HOME/.claude/settings.json" "$PLUGIN_STALE_HOOK"
+set +e
+dangling_link_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$DANGLING_LINK_ROOT/skills/session-log/SKILL.md" "$DANGLING_LINK_HOME" claude on 2>&1)"
+set -e
+assert_contains "dangling owned skill symlink does not block plugin on" "Claude Code: on — restart required" "$dangling_link_on"
+[[ -d "$DANGLING_LINK_HOME/.claude/skills/session-log" && ! -L "$DANGLING_LINK_HOME/.claude/skills/session-log" ]] &&
+  pass "dangling owned skill symlink becomes a real package directory" ||
+  fail "dangling owned skill symlink becomes a real package directory"
+assert_not_contains "dangling owned skill symlink still lets plugin on remove owned hooks" "owned:" \
+  "$(claude_settings_summary "$DANGLING_LINK_HOME/.claude/settings.json")"
+
+printf '=== a foreign skill symlink is refused with an actionable error ===\n'
+FOREIGN_LINK_HOME="$WORKROOT/foreign-link-home"
+mkdir -p "$FOREIGN_LINK_HOME/.Trash" "$FOREIGN_LINK_HOME/.claude/skills" "$FOREIGN_LINK_HOME/elsewhere"
+FOREIGN_LINK_ROOT="$(make_claude_plugin_cache "$FOREIGN_LINK_HOME" 1.18.1)"
+cp -R "$REPO/skills/session-log" "$FOREIGN_LINK_HOME/elsewhere/session-log"
+FOREIGN_LINK_SKILL="$FOREIGN_LINK_HOME/.claude/skills/session-log"
+for foreign_destination in \
+  "$FOREIGN_LINK_HOME/elsewhere/session-log" \
+  "$FOREIGN_LINK_HOME/.claude/plugins/cache/user538295/../../../../elsewhere/claude-goodies/1.17.0/skills/session-log"; do
+  ln -sfn "$foreign_destination" "$FOREIGN_LINK_SKILL"
+  write_stale_claude_settings "$FOREIGN_LINK_HOME/.claude/settings.json" "$PLUGIN_STALE_HOOK"
+  set +e
+  foreign_link_error="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$FOREIGN_LINK_ROOT/skills/session-log/SKILL.md" "$FOREIGN_LINK_HOME" claude on 2>&1)"
+  foreign_link_rc=$?
+  set -e
+  [[ "$foreign_link_rc" -ne 0 ]] && pass "foreign skill symlink is refused ($foreign_destination)" ||
+    fail "foreign skill symlink is refused ($foreign_destination)"
+  assert_contains "foreign skill symlink error names the link and its target" \
+    "refusing to replace unowned package link: $(cd "$FOREIGN_LINK_HOME" && pwd -P)/.claude/skills/session-log -> $foreign_destination" "$foreign_link_error"
+  assert_contains "foreign skill symlink error says how to recover" "move it aside" "$foreign_link_error"
+  assert_link "foreign skill symlink is preserved" "$foreign_destination" "$FOREIGN_LINK_SKILL"
+done
+assert_not_file "foreign skill symlink target gains no manifest" "$FOREIGN_LINK_HOME/elsewhere/session-log/.universal-session-log.manifest"
+set +e
+printf '%s\n' '{"session_id":"foreign-link-session","cwd":"'"$PWD"'"}' |
+  (unset CLAUDE_PLUGIN_ROOT; HOME="$FOREIGN_LINK_HOME" bash "$FOREIGN_LINK_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start) >/dev/null 2>&1
+foreign_link_hook_rc=$?
+set -e
+assert_exact "plugin SessionStart succeeds beside a foreign skill symlink" "0" "$foreign_link_hook_rc"
+assert_not_contains "plugin SessionStart removes owned hooks beside a foreign skill symlink" "owned:" \
+  "$(claude_settings_summary "$FOREIGN_LINK_HOME/.claude/settings.json")"
+
 printf '=== standalone on replaces stale owned hooks whatever their path ===\n'
 STANDALONE_UPGRADE_HOME="$WORKROOT/standalone-upgrade-home"
 mkdir -p "$STANDALONE_UPGRADE_HOME/.Trash" "$STANDALONE_UPGRADE_HOME/.claude/skills"

@@ -407,56 +407,11 @@ remove_standalone_adapter_files() {
   fi
 }
 
-remove_legacy_entrypoints() {
-  local path
-  for path in \
-    "$HOME_ROOT/.claude/skills/session-log/SKILL.md" \
-    "$HOME_ROOT/.config/opencode/skills/session-log/SKILL.md" \
-    "$HOME_ROOT/.config/opencode/commands/session-log.md" \
-    "$HOME_ROOT/.omp/agent/skills/session-log/SKILL.md"; do
-    case "$path" in
-      "$HOME_ROOT/.claude/"*) selected_harness claude || continue ;;
-      "$HOME_ROOT/.config/opencode/"*) selected_harness opencode || continue ;;
-      "$HOME_ROOT/.omp/"*) selected_harness omp || continue ;;
-    esac
-    case "$path" in
-      "$HOME_ROOT/.claude/skills/session-log/SKILL.md"|\
-      "$HOME_ROOT/.config/opencode/skills/session-log/SKILL.md"|\
-      "$HOME_ROOT/.config/opencode/commands/session-log.md"|\
-      "$HOME_ROOT/.omp/agent/skills/session-log/SKILL.md")
-      continue
-      ;;
-    esac
-    if [[ -f "$path" && ! -L "$path" ]] && has_exact_ownership_marker "$path"; then
-      remove_managed_path "$path"
-    fi
-  done
-}
-
-validate_legacy_entrypoints() {
-  local path
-  for path in \
-    "$HOME_ROOT/.claude/skills/session-log/SKILL.md" \
-    "$HOME_ROOT/.config/opencode/skills/session-log/SKILL.md" \
-    "$HOME_ROOT/.config/opencode/commands/session-log.md" \
-    "$HOME_ROOT/.omp/agent/skills/session-log/SKILL.md"; do
-    case "$path" in
-      "$HOME_ROOT/.claude/"*) selected_harness claude || continue ;;
-      "$HOME_ROOT/.config/opencode/"*) selected_harness opencode || continue ;;
-      "$HOME_ROOT/.omp/"*) selected_harness omp || continue ;;
-    esac
-    if [[ -f "$path" && ! -L "$path" ]] && has_exact_ownership_marker "$path"; then
-      validate_managed_path "$path"
-    fi
-  done
-}
-
 validate_migration() {
   selected_harness claude && {
     validate_claude_settings
     validate_claude_legacy_scripts
   }
-  validate_legacy_entrypoints
   if selected_harness opencode; then
     validate_managed_path "$HOME_ROOT/.config/opencode/plugins/session-log.js"
     validate_managed_path "$HOME_ROOT/.config/opencode/scripts/session_log_usage.sh"
@@ -478,7 +433,6 @@ migrate_legacy_files() {
       python3 "$SESSION_LOG_LIB/claude_settings.py" migrate
   fi
   selected_harness claude && validate_claude_settings
-  remove_legacy_entrypoints
   selected_harness claude && remove_claude_legacy_scripts
   remove_standalone_adapter_files
   if selected_harness omp; then
@@ -746,24 +700,37 @@ copy_package() {
   write_package_manifest "$target"
 }
 
-recognized_dangling_package_link() {
+# A package-root symlink is ours to replace when it points at a claude-goodies
+# plugin-cache package (live or gone, any version), or is dangling into an
+# earlier package location. Only the link is unlinked; its target is never
+# followed or touched.
+recognized_package_link() {
   local target="$1" destination
-  [[ -L "$target" && ! -e "$target" ]] || return 1
+  [[ -L "$target" ]] || return 1
   destination="$(readlink "$target")"
+  destination="${destination%/}"
+  case "$destination" in */../*|*/./*) return 1 ;; esac
   case "$destination" in
-    "$SOURCE_ROOT"|\
-    "$STORE/releases/"*/skills/session-log|\
     "$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log|\
     "$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log) return 0 ;;
   esac
+  [[ ! -e "$target" ]] || return 1
+  case "$destination" in
+    "$SOURCE_ROOT"|\
+    "$STORE/releases/"*/skills/session-log) return 0 ;;
+  esac
   return 1
+}
+
+require_recognized_package_link() {
+  recognized_package_link "$1" ||
+    fail "refusing to replace unowned package link: $1 -> $(readlink "$1"); move it aside or replace it with a real directory, then rerun"
 }
 
 prepare_package_target() {
   local target="$1"
   if [[ -L "$target" ]]; then
-    recognized_dangling_package_link "$target" ||
-      fail "refusing to replace unowned package link: $target"
+    require_recognized_package_link "$target"
     unlink "$target"
   fi
 }
@@ -774,7 +741,9 @@ validate_seed_entrypoints() {
   for harness in claude codex cursor opencode omp; do
     selected_harness "$harness" || continue
     target="$(package_root_for "$harness")"
-    if ! recognized_dangling_package_link "$target"; then
+    if [[ -L "$target" ]]; then
+      require_recognized_package_link "$target"
+    else
       validate_package_targets "$target" "$SOURCE_ROOT/SKILL.md"
     fi
   done
