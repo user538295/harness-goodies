@@ -3,8 +3,8 @@
 #
 # Sourced by bin/session-log right after lib/common.sh. Runs in the same shell,
 # so it shares bin's globals (HARNESS, HARNESS_ROOT, STATE_DIR, INSTALL_LOCK,
-# INSTALL_LOCK_OWNER_START, VERSION, STORE, HOME_ROOT, PACKAGE_ROOT,
-# OWNER_MARKER_VALUE, ...) and the harness descriptor tables declared in bin.
+# INSTALL_LOCK_OWNER_START, REPAIR_REPORTED, CLAUDE_SETTINGS_MODE, VERSION, STORE, HOME_ROOT,
+# PACKAGE_ROOT, OWNER_MARKER_VALUE, ...) and the harness descriptor tables declared in bin.
 
 adapter_asset_current() {
   local kind source target
@@ -22,16 +22,76 @@ native_hooks_current() {
   python3 "$(source_for configurator)" check "$HARNESS" "$config" "$(source_for hook)"
 }
 
-claude_plugin_mode() {
-  [[ "$HARNESS" == claude ]] && claude_plugin_package "$PACKAGE_ROOT"
+# Sets CLAUDE_SETTINGS_MODE, how this copy treats settings.json session-log hooks (Claude
+# Code), once per command: the first check that needs it resolves it (after the install lock
+# where the command takes one), so a session start rewriting the plugin marker mid-command
+# cannot change it. The plugin's hooks/hooks.json registers the hooks in both plugin modes:
+#   plugin            settings.json keeps none (a plugin copy enabled at user scope, or a
+#                     standalone copy deferring to that plugin);
+#   plugin-dead-only  a plugin copy enabled only at project, local, or managed scope: a live
+#                     standalone copy's hooks still serve other projects, so only dead
+#                     registrations go and none is ever added;
+#   standalone        settings.json holds exactly this copy's managed set.
+resolve_claude_settings_mode() {
+  [[ "$HARNESS" == claude && -z "$CLAUDE_SETTINGS_MODE" ]] || return 0
+  if claude_plugin_package "$PACKAGE_ROOT"; then
+    if claude_plugin_user_enabled "$PACKAGE_ROOT"; then
+      CLAUDE_SETTINGS_MODE=plugin
+    else
+      CLAUDE_SETTINGS_MODE=plugin-dead-only
+    fi
+  elif claude_plugin_active; then
+    CLAUDE_SETTINGS_MODE=plugin
+  else
+    CLAUDE_SETTINGS_MODE=standalone
+  fi
 }
 
-# Plugin mode: the plugin's hooks/hooks.json is the adapter, so it is current
-# only while settings.json holds no owned (duplicate or stale) hook.
+# True when this Claude copy registers no settings.json hooks of its own (either plugin mode);
+# CLAUDE_SETTINGS_MODE says which registrations it removes.
+claude_registers_no_settings_hooks() {
+  [[ "$HARNESS" == claude ]] || return 1
+  resolve_claude_settings_mode
+  [[ "$CLAUDE_SETTINGS_MODE" != standalone ]]
+}
+
+# True when user-scope enabledPlugins sets the claude-goodies plugin of plugin-cache
+# package root $1 to true; unreadable settings count as not enabled.
+claude_plugin_user_enabled() {
+  local marketplace="${1#"$HOME_ROOT/.claude/plugins/cache/"}"
+  SETTINGS_PATH="$HARNESS_ROOT/settings.json" PLUGIN_KEY="claude-goodies@${marketplace%%/*}" \
+    python3 "$SESSION_LOG_LIB/claude_settings.py" plugin-enabled
+}
+
+# Prints the plugin-cache package root the plugin's own SessionStart hook recorded, provided
+# Claude Code has not orphaned (replaced or uninstalled) that version directory.
+recorded_plugin_root() {
+  local marker="$STATE_DIR/$PLUGIN_ROOT_MARKER_NAME" root plugin_root orphaned
+  [[ -f "$marker" && ! -L "$marker" ]] || return 1
+  root="$(cat "$marker")"
+  case "$root" in */../*|*/./*) return 1 ;; esac
+  claude_plugin_package_path "$root" || return 1
+  plugin_root="${root%/skills/session-log}"
+  orphaned="$plugin_root/.orphaned_at"
+  [[ -d "$plugin_root" && ! -e "$orphaned" && ! -L "$orphaned" ]] || return 1
+  printf '%s\n' "$root"
+}
+
+# Standalone copy: the plugin's hooks are active when its recorded package is live and
+# enabled at user scope. Limit: a plugin enabled only at project, local, or managed scope
+# does not count, so this copy keeps its own settings.json hooks.
+claude_plugin_active() {
+  local root
+  root="$(recorded_plugin_root)" || return 1
+  claude_plugin_user_enabled "$root"
+}
+
+# Plugin modes: the plugin's hooks/hooks.json is the adapter, so it is current only
+# while settings.json holds no registration that mode removes.
 claude_settings_has_adapter() {
-  if claude_plugin_mode; then
+  if claude_registers_no_settings_hooks; then
     ! SETTINGS_PATH="$HARNESS_ROOT/settings.json" SESSION_LOG_OWNER_MARKER="$OWNER_MARKER_VALUE" \
-      python3 "$SESSION_LOG_LIB/claude_settings.py" has-owned
+      python3 "$SESSION_LOG_LIB/claude_settings.py" has-removable "$CLAUDE_SETTINGS_MODE"
     return
   fi
   [[ -f "$HARNESS_ROOT/settings.json" ]] || return 1
@@ -90,13 +150,19 @@ PY
 
 manifest_asset_hash() {
   local asset="$1"
-  awk -v wanted="asset=$asset" '$0 == wanted { if (getline && $0 ~ /^sha256=/) { sub(/^sha256=/, ""); print; exit } }' "$STATE_DIR/adapter.manifest" 2>/dev/null
+  awk -v wanted="asset=$asset" '
+    $0 == wanted { if (getline && $0 ~ /^sha256=/) { sub(/^sha256=/, ""); print; exit } }
+  ' "$STATE_DIR/adapter.manifest" 2>/dev/null
 }
 
 manifest_current() {
-  local kind source expected
+  local kind source expected version
   [[ -f "$STATE_DIR/adapter.manifest" && ! -L "$STATE_DIR/adapter.manifest" ]] || return 1
-  [[ "$(awk -F= '$1 == "version" { value=$2; count++ } END { if (count != 1) exit 1; print value }' "$STATE_DIR/adapter.manifest")" == "$VERSION" ]] || return 1
+  version="$(awk -F= '
+    $1 == "version" { value=$2; count++ }
+    END { if (count != 1) exit 1; print value }
+  ' "$STATE_DIR/adapter.manifest")" || return 1
+  [[ "$version" == "$VERSION" ]] || return 1
   for kind in ${HARNESS_KINDS[$HARNESS]}; do
     source="$(source_for "$kind")"
     expected="$(sha256_file "$source")"
@@ -248,12 +314,16 @@ preflight_claude_settings() {
   [[ ! -e "$settings" ]] && return
   [[ -f "$settings" ]] ||
     fail "refusing to update non-file Claude settings: $settings"
-  SETTINGS_PATH="$settings" python3 - <<'PY'
+  local error
+  error="$(SETTINGS_PATH="$settings" python3 - 2>&1 <<'PY'
 import json
 import os
 
-with open(os.environ["SETTINGS_PATH"], encoding="utf-8") as handle:
-    document = json.load(handle)
+try:
+    with open(os.environ["SETTINGS_PATH"], encoding="utf-8") as handle:
+        document = json.load(handle)
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"cannot read Claude settings {os.environ['SETTINGS_PATH']}: {error}")
 if not isinstance(document, dict):
     raise SystemExit("Claude settings root must be an object")
 hooks = document.get("hooks")
@@ -265,6 +335,7 @@ if isinstance(hooks, dict):
         if entries is not None and not isinstance(entries, list):
             raise SystemExit(f"Claude settings hooks.{event} must be an array")
 PY
+)" || fail "$error"
 }
 
 preflight_state_files() {
@@ -290,7 +361,6 @@ preflight_off() {
   preflight_enable_flag
   validate_state_dir
   preflight_install_lock
-  if claude_plugin_mode; then preflight_claude_settings; fi
 }
 
 write_manifest() {
@@ -355,6 +425,9 @@ install_claude_settings() {
   local settings="$HARNESS_ROOT/settings.json"
   local hook
   hook="$(source_for hook)"
+  # Never point settings.json at a versioned plugin-cache copy, which Claude Code deletes later.
+  ! claude_plugin_package_path "$PACKAGE_ROOT" ||
+    fail "refusing to register a versioned plugin-cache copy in Claude settings: $hook"
   ensure_safe_parent "$settings"
   [[ ! -L "$settings" ]] || fail "refusing to update symlinked Claude settings: $settings"
   [[ ! -d "$settings" ]] || fail "refusing to update directory as Claude settings: $settings"
@@ -362,7 +435,8 @@ install_claude_settings() {
     python3 "$SESSION_LOG_LIB/claude_settings.py" install
 }
 
-# Plugin mode: drop every owned settings.json hook; the plugin registers its own.
+# Plugin modes: drop the settings.json hooks CLAUDE_SETTINGS_MODE makes removable; the
+# plugin registers its own.
 remove_claude_settings_hooks() {
   require_command python3
   local settings="$HARNESS_ROOT/settings.json"
@@ -370,7 +444,7 @@ remove_claude_settings_hooks() {
   [[ ! -L "$settings" ]] || fail "refusing to update symlinked Claude settings: $settings"
   [[ ! -d "$settings" ]] || fail "refusing to update directory as Claude settings: $settings"
   SETTINGS_PATH="$settings" SESSION_LOG_OWNER_MARKER="$OWNER_MARKER_VALUE" \
-    python3 "$SESSION_LOG_LIB/claude_settings.py" remove
+    python3 "$SESSION_LOG_LIB/claude_settings.py" remove "$CLAUDE_SETTINGS_MODE"
 }
 
 clear_runtime_markers() {
@@ -394,10 +468,80 @@ remove_recognized_dangling_adapter_link() {
   fi
 }
 
+repair_dangling_adapter_link() {
+  local kind="$1" target
+  target="$(target_for "$kind")"
+  [[ -L "$target" ]] || return 0
+  remove_recognized_dangling_adapter_link "$kind"
+  [[ ! -L "$target" ]] || return 0
+  printf '%s: removed dangling adapter link %s\n' "$HARNESS_LABEL" "$target"
+  REPAIR_REPORTED=1
+}
+
+# Prints "<harness>: <line>" for each line of a repair report and records that one was printed.
+print_repair_report() {
+  local line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    printf '%s: %s\n' "$HARNESS_LABEL" "$line"
+    REPAIR_REPORTED=1
+  done <<< "$1"
+}
+
+repair_claude_settings() {
+  local settings="$HARNESS_ROOT/settings.json" hook="" report
+  [[ -e "$settings" || -L "$settings" ]] || return 0
+  require_command python3
+  preflight_claude_settings
+  if ! claude_registers_no_settings_hooks; then
+    if claude_plugin_package_path "$PACKAGE_ROOT"; then
+      # Never point settings.json at a versioned plugin-cache copy.
+      printf '%s: repair skipped: this plugin copy'"'"'s hooks/hooks.json does not register the session-log hooks\n' "$HARNESS_LABEL"
+      REPAIR_REPORTED=1
+      return 0
+    fi
+    hook="$(source_for hook)"
+    [[ -f "$hook" && ! -L "$hook" ]] || fail "adapter asset is missing: $hook"
+  fi
+  report="$(SETTINGS_PATH="$settings" HOOK_PATH="$hook" SESSION_LOG_OWNER_MARKER="$OWNER_MARKER_VALUE" \
+    python3 "$SESSION_LOG_LIB/claude_settings.py" repair "$CLAUDE_SETTINGS_MODE")"
+  print_repair_report "$report"
+}
+
+repair_native_hooks() {
+  local config="$HARNESS_ROOT/hooks.json" report
+  [[ -e "$config" || -L "$config" ]] || return 0
+  require_command python3
+  preflight_native_hooks
+  report="$(python3 "$(source_for configurator)" repair "$HARNESS" "$config" "$(source_for hook)")"
+  print_repair_report "$report"
+}
+
+# Collapse duplicate and stale session-log registrations to the one set the harness
+# needs: settings.json hooks (Claude Code; none while the plugin owns the hooks, only dead
+# ones removed from a plugin copy not enabled at user scope),
+# hooks.json entries (Codex, Cursor), dangling plugin-cache adapter links (OpenCode,
+# OMP; install.sh removes their legacy session-log-omp adapters before every command).
+# Callers hold the install lock.
+repair_registrations() {
+  case "$HARNESS" in
+    claude) repair_claude_settings ;;
+    codex|cursor) repair_native_hooks ;;
+    opencode)
+      repair_dangling_adapter_link plugin
+      repair_dangling_adapter_link usage
+      ;;
+    omp)
+      repair_dangling_adapter_link extension
+      repair_dangling_adapter_link usage
+      ;;
+  esac
+}
+
 install_adapter() {
   case "$HARNESS" in
     claude)
-      if claude_plugin_mode; then
+      if claude_registers_no_settings_hooks; then
         remove_claude_settings_hooks
       else
         install_claude_settings

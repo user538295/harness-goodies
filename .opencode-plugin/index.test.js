@@ -36,7 +36,7 @@ test("registers every skill directory under its directory name", () => {
 test("skill carries frontmatter metadata, its SKILL.md location, and the body without frontmatter", () => {
   const skill = registered.skills.get("session-log");
   expect(skill.name).toBe("session-log");
-  expect(skill.description).toBe("Manage session prompt logging and usage totals (on / off / status / usage)");
+  expect(skill.description).toBe("Manage session prompt logging and usage totals (on / off / status / usage / repair)");
   expect(skill.location).toBe(path.join(repoRoot, "skills", "session-log", "SKILL.md"));
   expect(skill.content.startsWith("<!-- universal-session-log: managed -->")).toBe(true);
 });

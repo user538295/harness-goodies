@@ -23,6 +23,8 @@ RUNTIME_FILE=""
 ENABLE_LOCK=""
 INSTALL_LOCK=""
 INSTALL_LOCK_OWNER_START=""
+REPAIR_REPORTED=0
+CLAUDE_SETTINGS_MODE=""
 
 SESSION_LOG_LOG_PREFIX="session-log"
 # shellcheck source=../lib/common.sh
@@ -125,7 +127,7 @@ split_command_string() {
   if ((token_started)); then tokens+=("$token"); fi
   ((${#tokens[@]} > 0)) || fail "session-log command is required"
   case "${tokens[0]}" in
-    on|off|status|usage) ;;
+    on|off|status|usage|repair) ;;
     *) fail "unknown command: ${tokens[0]}" ;;
   esac
   COMMAND="${tokens[0]}"
@@ -134,7 +136,7 @@ split_command_string() {
 
 validate_command_args() {
   case "$COMMAND" in
-    on|off|status)
+    on|off|status|repair)
       ((${#COMMAND_ARGS[@]} == 0)) ||
         fail "trailing arguments are not valid for $COMMAND"
       ;;
@@ -183,7 +185,7 @@ parse_args() {
         RAW_ARGUMENTS_SET=1
         shift
         ;;
-      on|off|status|usage)
+      on|off|status|usage|repair)
         [[ "$DIRECT_COMMAND_SET" == 0 ]] || fail "only one session-log command is allowed"
         [[ "$RAW_ARGUMENTS_SET" == 0 ]] || fail "cannot combine a command with --arguments"
         DIRECT_COMMAND_SET=1
@@ -195,7 +197,7 @@ parse_args() {
         done
         ;;
       --help|-h)
-        printf 'Usage: session-log --entrypoint <claude|codex|cursor|opencode|omp> --harness <same> [on|off|status|usage] [native args...]\n'
+        printf 'Usage: session-log --entrypoint <claude|codex|cursor|opencode|omp> --harness <same> [on|off|status|usage|repair] [native args...]\n'
         printf '       session-log --entrypoint <claude|codex|cursor|opencode|omp> --harness <same> --arguments "<command and native args>"\n'
         exit 0
         ;;
@@ -263,15 +265,30 @@ target_for() {
   printf '%s\n' "$HARNESS_ROOT/$relative"
 }
 
+# The VERSION the active hooks record in runtime.json: a standalone Claude copy deferring to
+# the plugin (plugin mode outside the plugin cache) expects the plugin package's, since the
+# plugin's hooks write it. Callers resolve CLAUDE_SETTINGS_MODE first.
+runtime_version() {
+  local root
+  if [[ "$CLAUDE_SETTINGS_MODE" == plugin ]] && ! claude_plugin_package_path "$PACKAGE_ROOT" &&
+    root="$(recorded_plugin_root)" && [[ -f "$root/VERSION" && ! -L "$root/VERSION" ]]; then
+    tr -d '[:space:]' < "$root/VERSION"
+  else
+    printf '%s' "$VERSION"
+  fi
+}
+
 runtime_current() {
   validate_state_dir
   require_command jq
-  local candidate loaded_at now pid expected_start actual_start
+  local candidate loaded_at now pid expected_start actual_start expected_version
   local -a candidates=("$RUNTIME_FILE" "$STATE_DIR"/runtime.*.json)
+  resolve_claude_settings_mode
+  expected_version="$(runtime_version)"
   for candidate in "${candidates[@]}"; do
     [[ -f "$candidate" && ! -L "$candidate" ]] || continue
     [[ "$(jq -r '.harness // empty' "$candidate" 2>/dev/null)" == "$HARNESS" ]] || continue
-    [[ "$(jq -r '.version // empty' "$candidate" 2>/dev/null)" == "$VERSION" ]] || continue
+    [[ "$(jq -r '.version // empty' "$candidate" 2>/dev/null)" == "$expected_version" ]] || continue
     if [[ "$HARNESS" == claude ]]; then
       [[ -n "$(jq -r '.session_id // empty' "$candidate" 2>/dev/null)" ]] || continue
       [[ "$(jq -r '.loaded_at // empty' "$candidate" 2>/dev/null)" =~ ^[0-9]+$ ]] || continue
@@ -403,6 +420,20 @@ run_usage() {
   unlink "$error_file"
 }
 
+# Remove duplicate and stale session-log hook registrations under the install lock,
+# then report what was removed (or that nothing was).
+run_repair() {
+  validate_state_dir
+  preflight_install_lock
+  acquire_install_lock
+  trap release_install_lock EXIT
+  repair_registrations
+  release_install_lock
+  trap - EXIT
+  ((REPAIR_REPORTED)) ||
+    printf '%s: repair found no duplicate or stale registrations\n' "$HARNESS_LABEL"
+}
+
 main() {
   parse_args "$@"
   resolve_roots
@@ -411,6 +442,8 @@ main() {
       preflight_on
       acquire_install_lock
       trap release_install_lock EXIT
+      resolve_claude_settings_mode
+      repair_registrations
       if ! adapter_current; then install_adapter; fi
       set_enabled
       if runtime_current; then
@@ -427,7 +460,10 @@ main() {
       preflight_off
       acquire_install_lock
       trap release_install_lock EXIT
-      if claude_plugin_mode; then remove_claude_settings_hooks; fi
+      if claude_registers_no_settings_hooks; then
+        preflight_claude_settings
+        remove_claude_settings_hooks
+      fi
       set_disabled
       printf '%s: off\n' "$HARNESS_LABEL"
       release_install_lock
@@ -440,6 +476,9 @@ main() {
     usage)
       repair_enabled_adapter
       run_usage
+      ;;
+    repair)
+      run_repair
       ;;
   esac
 }

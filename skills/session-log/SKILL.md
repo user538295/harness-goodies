@@ -1,6 +1,6 @@
 ---
 name: session-log
-description: Manage session prompt logging and usage totals (on / off / status / usage)
+description: Manage session prompt logging and usage totals (on / off / status / usage / repair)
 ---
 <!-- universal-session-log: managed -->
 
@@ -25,3 +25,5 @@ fi
 ```
 
 Keep arguments exact and shell-quote the assignment as one data value; never evaluate invocation text as shell syntax. For example, forward `usage --latest` as both words and preserve quoted values. Cursor usage prints Claude Code's per-request layout and price estimate from the parent agent's token counts recorded by Cursor `stop` hooks while logging is on, then lists each subagent with only its final context size from Cursor's local state (not added to TOTAL); it fails rather than inventing totals when none exist. Codex user hooks require trust review after installation.
+
+`repair` removes duplicate and stale session-log hook registrations for the current host, restores the missing ones of a partial set, and reports what it changed: Claude Code `settings.json` entries (all of them while the claude-goodies plugin owns the hooks: enabled in user-scope `enabledPlugins` and, seen from a standalone copy, after its hooks have started a session; run from a plugin copy not enabled at user scope, only those whose script no longer exists or lies in the versioned plugin cache), Codex and Cursor `hooks.json` entries, and dangling OpenCode and OMP adapter links that point into the claude-goodies plugin cache. `on` runs the same repair first; Claude Code session start runs it silently, and only when `settings.json`, the session-log package (its location or `VERSION`), the plugin version that last started a session, or the presence of a hook script that `settings.json` registers changed since that copy's last successful repair. On native Windows only the plugin's hooks run (under Git Bash); `on`, `off`, `repair`, and the session-start repair need WSL, and while `settings.json` holds session-log hooks each native session start retries that repair silently because only a successful one is recorded.

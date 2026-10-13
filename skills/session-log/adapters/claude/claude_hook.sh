@@ -1,35 +1,31 @@
 #!/usr/bin/env bash
 # universal-session-log: managed
 set -euo pipefail
+# A hook never reports an error: every failure below exits 0 without output.
 
 readonly PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-readonly VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
-readonly CLAUDE_HOME="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
-readonly CLAUDE_ROOT="$CLAUDE_HOME/.claude"
+readonly VERSION="$(tr -d '[:space:]' 2>/dev/null < "$PACKAGE_ROOT/VERSION")"
+[[ -n "$VERSION" ]] || exit 0  # incomplete package
+readonly HOME_ROOT="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+readonly CLAUDE_ROOT="$HOME_ROOT/.claude"
 readonly STATE_DIR="$CLAUDE_ROOT/session-log"
 readonly SCRIPT_DIR="$PACKAGE_ROOT/adapters/claude/scripts"
 check_default_root_alias() {
   local raw_home="$HOME" raw_root="$HOME/.claude" raw_real
   if [[ -L "$raw_home" ]]; then
     raw_real="$(cd "$raw_home" 2>/dev/null && pwd -P)" || return 1
-    [[ "$raw_real" == "$CLAUDE_HOME" ]] || return 1
+    [[ "$raw_real" == "$HOME_ROOT" ]] || return 1
   fi
   if [[ -L "$raw_root" ]]; then
     raw_real="$(cd "$raw_root" 2>/dev/null && pwd -P)" || return 1
     [[ "$raw_real" == "$CLAUDE_ROOT" ]] || return 1
   fi
 }
-check_default_root_alias || {
-  printf 'session-log: unsafe Claude root alias\n' >&2
-  exit 1
-}
+check_default_root_alias || exit 0
 
 if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
   config_real="$(cd "$CLAUDE_CONFIG_DIR" 2>/dev/null && pwd -P || true)"
-  [[ "$config_real" == "$CLAUDE_ROOT" ]] || {
-    printf 'session-log: custom CLAUDE_CONFIG_DIR is unsupported\n' >&2
-    exit 1
-  }
+  [[ "$config_real" == "$CLAUDE_ROOT" ]] || exit 0  # a custom CLAUDE_CONFIG_DIR is unsupported
 fi
 
 check_path_components() {
@@ -52,36 +48,81 @@ ensure_directory() {
     [[ -n "$component" ]] || continue
     current="${current%/}/$component"
     if [[ -L "$current" ]]; then return 1; fi
-    if [[ ! -e "$current" ]]; then mkdir "$current" || return 1; fi
+    if [[ ! -e "$current" ]]; then (umask 077; mkdir "$current") 2>/dev/null || return 1; fi
     [[ -d "$current" ]] || return 1
   done
 }
 
-check_path_components "$CLAUDE_ROOT" || { printf 'session-log: unsafe Claude root\n' >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { printf 'session-log: missing dependency: jq\n' >&2; exit 1; }
+check_path_components "$CLAUDE_ROOT" || exit 0
+check_path_components "$CLAUDE_ROOT/prompt-logs" || exit 0
+check_path_components "$STATE_DIR" || exit 0
 
-check_path_components "$CLAUDE_ROOT/prompt-logs" || { printf 'session-log: unsafe Claude log root\n' >&2; exit 1; }
-check_path_components "$STATE_DIR" || { printf 'session-log: unsafe Claude runtime root\n' >&2; exit 1; }
 
-# A plugin-cache copy runs from the plugin's hooks/hooks.json, so every owned
-# settings.json hook is a duplicate, often a dead versioned path left by an
-# older release. Remove them at session start, logging on or off. Best effort:
-# this cleanup never fails the hook, and the grep keeps the clean case cheap.
-remove_owned_settings_hooks() {
-  local settings="$CLAUDE_ROOT/settings.json" owner="universal-session-log"
-  case "$PACKAGE_ROOT" in
-    "$CLAUDE_HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log) ;;
-    *) return 0 ;;
-  esac
+# Atomically replace state file $1 with content $2. Best effort: refuses a symlinked or
+# directory target and never leaves its temporary file behind.
+write_state_file() {
+  local target="$1" temp="$STATE_DIR/.${1##*/}.$$.tmp"
+  [[ ! -L "$target" && ! -d "$target" ]] || return 0
+  ensure_directory "$STATE_DIR" || return 0
+  (umask 077; set -C; printf '%s' "$2" > "$temp") 2>/dev/null || return 0
+  mv -f "$temp" "$target" 2>/dev/null || unlink "$temp" 2>/dev/null || true
+}
+
+# The plugin's own SessionStart proves its hooks are active; a standalone copy reads this
+# marker so its on/status/repair stop registering duplicate settings.json hooks.
+record_plugin_root() {
+  local marker="$1"
+  if [[ -f "$marker" && ! -L "$marker" && "$(< "$marker")" == "$PACKAGE_ROOT" ]]; then
+    return 0
+  fi
+  write_state_file "$marker" "$PACKAGE_ROOT"
+}
+
+# What a session-start repair depends on: settings.json, this package, the plugin's marker,
+# and whether each claude_hook.sh path settings.json names (bare or single-quoted) is a file,
+# so a removed copy's dead registrations are repaired. Paths spelled with JSON escapes or
+# double quotes are not resolved: their removal is repaired at the next settings change.
+repair_fingerprint() {
+  local settings="$1" marker="$2" hook
+  cksum < "$settings" || return 1
+  printf '%s\n%s\n' "$PACKAGE_ROOT" "$VERSION"
+  [[ ! -f "$marker" || -L "$marker" ]] || cat "$marker"
+  while IFS= read -r hook; do
+    hook="${hook#\'}"
+    hook="${hook%\'}"
+    if [[ -f "$hook" ]]; then printf 'file %s\n' "$hook"; else printf 'none %s\n' "$hook"; fi
+  done < <(grep -oE "'[^']*claude_hook\.sh'|[^\"' ]*claude_hook\.sh" "$settings" || true)
+}
+
+# Session start runs the shared repair, logging on or off: a plugin copy drops every
+# settings.json registration while enabled at user scope (its hooks/hooks.json owns the
+# hooks), otherwise only dead ones; a standalone copy collapses repeated or stale ones.
+# Best effort: it never fails the hook and all output is discarded. A per-copy stamp of the
+# last successful repair's fingerprint skips it until that fingerprint changes; a file
+# without session-log hooks costs one grep.
+repair_settings_registrations() {
+  local settings="$CLAUDE_ROOT/settings.json" marker fingerprint stamp checksum
+  # shellcheck source=../../lib/common.sh
+  source "$PACKAGE_ROOT/lib/common.sh" || return 0
+  marker="$STATE_DIR/$PLUGIN_ROOT_MARKER_NAME"
+  if claude_plugin_package_path "$PACKAGE_ROOT"; then record_plugin_root "$marker"; fi
   [[ -f "$settings" && ! -L "$settings" ]] || return 0
-  grep -qF "SESSION_LOG_OWNER=$owner " "$settings" || return 0
-  PLUGIN_ROOT="${PACKAGE_ROOT%/skills/session-log}" \
-    python3 "$PACKAGE_ROOT/lib/claude_settings.py" plugin-hooks-current || return 0
-  SETTINGS_PATH="$settings" SESSION_LOG_OWNER_MARKER="$owner" \
-    python3 "$PACKAGE_ROOT/lib/claude_settings.py" remove
+  grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=' "$settings" || return 0
+  fingerprint="$(repair_fingerprint "$settings" "$marker")" || return 0
+  # One stamp per copy: a plugin and a standalone copy must not overwrite each other's.
+  checksum="$(printf '%s' "$PACKAGE_ROOT" | cksum)" || return 0
+  stamp="$STATE_DIR/settings-repair.${checksum%% *}.stamp"
+  if [[ -f "$stamp" && ! -L "$stamp" && "$(< "$stamp")" == "$fingerprint" ]]; then
+    return 0
+  fi
+  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || return 0
+  # Benign race: a write landing between the repair and this fingerprint is stamped unrepaired;
+  # the next change to the fingerprint triggers the repair again.
+  fingerprint="$(repair_fingerprint "$settings" "$marker")" || return 0
+  write_state_file "$stamp" "$fingerprint"
 }
 if [[ "${1:-}" == session-start ]]; then
-  remove_owned_settings_hooks </dev/null >/dev/null 2>&1 || true
+  repair_settings_registrations </dev/null >/dev/null 2>&1 || true
 fi
 
 input="$(cat)"
@@ -90,25 +131,31 @@ runtime="$STATE_DIR/runtime.json"
 process_runtime="$STATE_DIR/runtime.${PPID}.json"
 if [[ -L "$runtime" || ( -e "$runtime" && ! -f "$runtime" ) ||
       -L "$process_runtime" || ( -e "$process_runtime" && ! -f "$process_runtime" ) ]]; then
-  printf 'session-log: unsafe Claude runtime file\n' >&2
-  exit 1
+  exit 0  # unsafe runtime file
 fi
 if [[ ! -f "$enabled_file" || -L "$enabled_file" ]]; then
-  [[ -e "$runtime" ]] && unlink "$runtime"
-  [[ -e "$process_runtime" ]] && unlink "$process_runtime"
+  [[ ! -e "$runtime" ]] || unlink "$runtime" 2>/dev/null || true
+  [[ ! -e "$process_runtime" ]] || unlink "$process_runtime" 2>/dev/null || true
   exit 0
 fi
-ensure_directory "$STATE_DIR" || { printf 'session-log: unsafe Claude runtime root\n' >&2; exit 1; }
+# jq is needed only while logging is on: Git for Windows ships Git Bash without it.
+command -v jq >/dev/null 2>&1 || exit 0
+ensure_directory "$STATE_DIR" || exit 0
 session_id="$(printf '%s' "$input" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)"
 if [[ -n "$session_id" ]]; then
-  nonce="$(printf '%s' "$session_id" | jq -Rr @uri)"
+  nonce="$(printf '%s' "$session_id" | jq -Rr @uri 2>/dev/null)" || exit 0
   temp="$STATE_DIR/.runtime.$$.${RANDOM}.tmp"
   process_temp="$STATE_DIR/.runtime.$$.${RANDOM}.process.tmp"
   if [[ -e "$temp" || -L "$temp" || -e "$process_temp" || -L "$process_temp" ]]; then
-    printf 'session-log: runtime temp already exists\n' >&2
-    exit 1
+    exit 0  # runtime temp already exists
   fi
-  trap 'for file in "${temp:-}" "${process_temp:-}"; do [[ -z "$file" || -L "$file" ]] || unlink "$file" 2>/dev/null || true; done' EXIT
+  remove_runtime_temps() {
+    local file
+    for file in "${temp:-}" "${process_temp:-}"; do
+      [[ -z "$file" || -L "$file" ]] || unlink "$file" 2>/dev/null || true
+    done
+  }
+  trap remove_runtime_temps EXIT
   write_runtime_temp() {
     local target="$1"
     (umask 077; set -C; jq -n \
@@ -119,12 +166,13 @@ if [[ -n "$session_id" ]]; then
       --arg loaded_at "$(date +%s)" \
       --arg pid "$PPID" \
       --arg process_start "$(ps -p "$PPID" -o lstart= 2>/dev/null | sed 's/^ *//')" \
-      '{harness:$harness,version:$version,session_id:$session_id,nonce:$nonce,loaded_at:$loaded_at,pid:$pid,process_start:$process_start}' > "$target")
+      '{harness:$harness,version:$version,session_id:$session_id,nonce:$nonce,
+        loaded_at:$loaded_at,pid:$pid,process_start:$process_start}' > "$target")
   }
-  write_runtime_temp "$temp"
-  write_runtime_temp "$process_temp"
-  mv -f "$temp" "$runtime"
-  mv -f "$process_temp" "$process_runtime"
+  write_runtime_temp "$temp" 2>/dev/null || exit 0
+  write_runtime_temp "$process_temp" 2>/dev/null || exit 0
+  mv -f "$temp" "$runtime" 2>/dev/null || exit 0
+  mv -f "$process_temp" "$process_runtime" 2>/dev/null || exit 0
 else
   :
 fi
@@ -134,8 +182,9 @@ case "${1:-}" in
   user-prompt) script="$SCRIPT_DIR/prompt_log_save.sh" ;;
   stop) script="$SCRIPT_DIR/prompt_log_stop.sh" ;;
   subagent-stop) script="$SCRIPT_DIR/prompt_log_subagent.sh" ;;
-  *) printf 'session-log: unknown Claude lifecycle event\n' >&2; exit 2 ;;
+  *) exit 0 ;;  # unknown Claude lifecycle event
 esac
 
-[[ -f "$script" ]] || { printf 'session-log: Claude lifecycle adapter is incomplete\n' >&2; exit 1; }
-printf '%s' "$input" | bash "$script"
+[[ -f "$script" ]] || exit 0  # Claude lifecycle adapter is incomplete
+# Hook stdout is meaningful to Claude Code and passes through; errors never surface.
+printf '%s' "$input" | bash "$script" 2>/dev/null || true

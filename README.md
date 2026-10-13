@@ -84,7 +84,7 @@ claude plugin marketplace add user538295/harness-goodies
 claude plugin install claude-goodies
 ```
 
-The marketplace plugin bundles the Claude skill, runtime, and native hooks. Its `hooks/hooks.json` owns the session-log hooks, so `/session-log on`, `off`, and (while logging is on) `status` remove any session-log hook from `~/.claude/settings.json`, and every new session does the same, which clears dead paths that older releases wrote into the versioned plugin cache. Restart Claude Code (or start a new session) for plugin changes to load. To update later:
+The marketplace plugin bundles the Claude skill, runtime, and native hooks. While the plugin is enabled at user scope (`enabledPlugins` in `~/.claude/settings.json` sets `claude-goodies@<marketplace>` to `true`, which `claude plugin install` writes by default), its `hooks/hooks.json` owns the session-log hooks: `/session-log on`, `off`, `repair`, and (while logging is on) `status` remove every session-log hook from `~/.claude/settings.json`, and a new session does the same silently, which clears dead paths that older releases wrote into the versioned plugin cache. A session repeats that cleanup only when `settings.json`, the session-log package (its location or `VERSION`), the plugin version that last started a session, or the presence of a hook script that `settings.json` registers changed since that session-log copy's last successful cleanup; `/session-log repair` runs it on demand and reports what it changed. Once the plugin's hooks have started a session, a standalone session-log copy under `~/.claude/skills` defers to them and registers no `settings.json` hooks of its own, unless Claude Code has orphaned that plugin version after an update or uninstall. With the plugin enabled only at project, local, or managed scope, the plugin removes only dead session-log registrations (those whose script no longer exists or lies in the versioned plugin cache) and the standalone copy keeps its `settings.json` hooks, so that project may log twice. With the plugin enabled at user scope but disabled at project or local scope, that project does not log, because the standalone copy still defers to the plugin. After uninstalling or disabling the plugin, run `/session-log on` once to register the standalone copy's hooks again. Restart Claude Code (or start a new session) for plugin changes to load. To update later:
 
 ```bash
 claude plugin update claude-goodies@user538295
@@ -104,7 +104,7 @@ omp plugin marketplace update user538295
 omp plugin upgrade omp-goodies@user538295
 ```
 
-Session logging is opt-in: `/skill:session-log on` seeds the stable package under `~/.omp/agent` and links its extension; restart omp once, after which `/session-log status|on|off|usage` works directly.
+Session logging is opt-in: `/skill:session-log on` seeds the stable package under `~/.omp/agent` and links its extension; restart omp once, after which `/session-log status|on|off|usage|repair` works directly.
 
 Each entrypoint passes its native harness identity explicitly; it never infers a harness from directories or environment variables. `off` never installs an absent adapter.
 
@@ -208,6 +208,7 @@ If that's not your speed, this repo isn't for you. If it is — install in 30 se
 
 - Universal session-log: Claude Code, Codex, Cursor, OpenCode, or OMP.
 - macOS or Linux — or Windows via WSL.
+- Native Windows is partial: the Claude Code plugin's session-log hooks run under Git Bash (install Git for Windows), exit 0 silently when their script is missing, and need no jq while logging is off. `/session-log on`, `off`, `repair`, the session-start `settings.json` cleanup, and the package install need WSL. While `settings.json` holds session-log hooks, each session start on native Windows attempts that cleanup, which fails silently and is retried at the next session start (a small startup delay), because only a successful cleanup is recorded. Use WSL to log sessions on Windows.
 - bash, Python 3, jq, standard POSIX utilities, and `shasum` or `sha256sum`.
 - sqlite3 for OpenCode native usage reports.
 - Bun for OMP native usage reports.

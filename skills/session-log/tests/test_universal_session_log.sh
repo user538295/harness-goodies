@@ -708,7 +708,8 @@ write_stale_claude_settings() {
   STALE_HOOK="$stale_hook" python3 - "$settings" <<'PY'
 import json, os, shlex, sys
 stale = shlex.quote(os.environ["STALE_HOOK"])
-owned = lambda name: {"type": "command", "command": f"SESSION_LOG_OWNER=universal-session-log bash {stale} {name}"}
+def owned(name):
+    return {"type": "command", "command": f"SESSION_LOG_OWNER=universal-session-log bash {stale} {name}"}
 document = {
     "model": "opus",
     "hooks": {
@@ -802,18 +803,21 @@ assert_non_owned_hooks_preserved "plugin off" "$plugin_off_summary"
 printf '=== plugin SessionStart hook removes stale owned settings.json hooks ===\n'
 write_stale_claude_settings "$PLUGIN_UPGRADE_SETTINGS" "$PLUGIN_STALE_HOOK"
 set +e
-printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
-  (unset CLAUDE_PLUGIN_ROOT; HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start) >/dev/null 2>&1
+plugin_hook_stderr="$(printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
+  (unset CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR; HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start) 2>&1 >/dev/null)"
 plugin_hook_rc=$?
 set -e
 assert_exact "plugin SessionStart cleanup succeeds" "0" "$plugin_hook_rc"
+assert_exact "plugin SessionStart cleanup writes no error output" "" "$plugin_hook_stderr"
 plugin_hook_summary="$(claude_settings_summary "$PLUGIN_UPGRADE_SETTINGS")"
 assert_not_contains "plugin SessionStart removes stale owned hooks" "owned:" "$plugin_hook_summary"
 assert_non_owned_hooks_preserved "plugin SessionStart" "$plugin_hook_summary"
 cp "$PLUGIN_UPGRADE_SETTINGS" "$WORKROOT/plugin-hook-settings.first"
+# Without the stamp the repair runs again, so this proves the repair itself is idempotent.
+unlink "$PLUGIN_UPGRADE_HOME"/.claude/session-log/settings-repair.*.stamp
 set +e
 printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
-  HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start >/dev/null 2>&1
+  (unset CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR; HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start) >/dev/null 2>&1
 plugin_hook_again_rc=$?
 set -e
 assert_exact "repeated plugin SessionStart cleanup succeeds" "0" "$plugin_hook_again_rc"
@@ -824,7 +828,7 @@ printf '{"hooks": "SESSION_LOG_OWNER=universal-session-log broken\n' > "$PLUGIN_
 cp "$PLUGIN_UPGRADE_SETTINGS" "$WORKROOT/plugin-hook-invalid.first"
 set +e
 printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
-  HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start >/dev/null 2>&1
+  (unset CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR; HOME="$PLUGIN_UPGRADE_HOME" bash "$PLUGIN_UPGRADE_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start) >/dev/null 2>&1
 plugin_hook_invalid_rc=$?
 set -e
 assert_exact "plugin SessionStart never fails on invalid settings" "0" "$plugin_hook_invalid_rc"

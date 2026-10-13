@@ -1,5 +1,5 @@
 ---
-description: Manage session prompt logging and usage totals (on / off / status / usage)
+description: Manage session prompt logging and usage totals (on / off / status / usage / repair)
 ---
 <!-- universal-session-log: managed -->
 

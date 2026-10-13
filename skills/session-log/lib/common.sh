@@ -1,9 +1,11 @@
 # universal-session-log: managed
-# Shared helpers sourced by bin/session-log and install.sh.
+# Shared helpers sourced by bin/session-log, install.sh, and adapters/claude/claude_hook.sh.
 # Callers set SESSION_LOG_LOG_PREFIX before sourcing to control the fail prefix.
 
 SESSION_LOG_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 : "${SESSION_LOG_LOG_PREFIX:=session-log}"
+# State file in which the claude-goodies plugin's SessionStart hook records its package root.
+readonly PLUGIN_ROOT_MARKER_NAME="plugin-root"
 
 fail() {
   printf '%s: %s\n' "$SESSION_LOG_LOG_PREFIX" "$1" >&2
@@ -78,11 +80,15 @@ write_private_file() {
 # settings.json, then owns the hooks. Derived from the package's own location
 # because no CLAUDE_* path variable reaches the skill's shell.
 claude_plugin_package() {
-  case "$1" in
-    "$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log) ;;
-    *) return 1 ;;
-  esac
+  claude_plugin_package_path "$1" || return 1
   PLUGIN_ROOT="${1%/skills/session-log}" python3 "$SESSION_LOG_LIB/claude_settings.py" plugin-hooks-current
+}
+
+claude_plugin_package_path() {
+  case "$1" in
+    "$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log) return 0 ;;
+  esac
+  return 1
 }
 
 safe_remove_path() {

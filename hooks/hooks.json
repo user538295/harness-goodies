@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec bash \"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\" session-start"
+            "command": "s=\"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\"; case $s in *\\\\*) s=$(printf '%s\\n' \"$s\" | tr '\\\\' /);; esac; [ -f \"$s\" ] && exec bash \"$s\" session-start; exit 0",
+            "shell": "bash"
           }
         ]
       }
@@ -16,7 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec bash \"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\" user-prompt"
+            "command": "s=\"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\"; case $s in *\\\\*) s=$(printf '%s\\n' \"$s\" | tr '\\\\' /);; esac; [ -f \"$s\" ] && exec bash \"$s\" user-prompt; exit 0",
+            "shell": "bash"
           }
         ]
       }
@@ -26,7 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec bash \"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\" stop",
+            "command": "s=\"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\"; case $s in *\\\\*) s=$(printf '%s\\n' \"$s\" | tr '\\\\' /);; esac; [ -f \"$s\" ] && exec bash \"$s\" stop; exit 0",
+            "shell": "bash",
             "timeout": 30
           }
         ]
@@ -37,7 +40,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "exec bash \"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\" subagent-stop",
+            "command": "s=\"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\"; case $s in *\\\\*) s=$(printf '%s\\n' \"$s\" | tr '\\\\' /);; esac; [ -f \"$s\" ] && exec bash \"$s\" subagent-stop; exit 0",
+            "shell": "bash",
             "timeout": 15
           }
         ]
