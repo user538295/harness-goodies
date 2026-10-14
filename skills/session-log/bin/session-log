@@ -484,6 +484,15 @@ enable_plugin_hooks() {
   fi
 }
 
+# `off` for a plugin-owned harness: it only removes the enable flag, which enable_flag.py locks on
+# its own, so it skips the install lock a running cleanup (the OMP extension's background repair) holds.
+disable_plugin_hooks() {
+  preflight_enable_flag
+  validate_state_dir
+  set_disabled
+  printf '%s: off\n' "$HARNESS_LABEL"
+}
+
 main() {
   parse_args "$@"
   resolve_roots
@@ -515,6 +524,10 @@ main() {
       trap - EXIT
       ;;
     off)
+      if plugin_owns_hooks; then
+        disable_plugin_hooks
+        return
+      fi
       preflight_off
       acquire_install_lock
       trap release_install_lock EXIT

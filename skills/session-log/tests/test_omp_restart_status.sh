@@ -78,8 +78,10 @@ if [[ "$(cat "$WORKROOT/omp.out")" != ready ]]; then
   printf 'FAIL: restarted OMP extension did not load: %s\n' "$(cat "$WORKROOT/omp.err")" >&2
   exit 1
 fi
+# The repair holds the install lock until it exits, after its last removal.
+INSTALL_LOCK="$TEST_HOME/.omp/agent/session-log/.install.lock"
 for ((attempt = 0; attempt < POLL_ATTEMPTS; attempt++)); do
-  [[ -e "$SEEDED" || -L "$LEGACY_EXTENSION" ]] || break
+  [[ -e "$SEEDED" || -L "$LEGACY_EXTENSION" || -e "$INSTALL_LOCK" ]] || break
   sleep "$POLL_SECONDS"
 done
 expect "the extension's load-time repair removes the seeded install" "" \

@@ -475,16 +475,25 @@ const rawDefaultAgentDir = path.join(home, ".omp", "agent");
 const rawDefaultLogDir = path.join(rawDefaultAgentDir, "prompt-logs");
 const rawAgentDir = process.env.PI_CODING_AGENT_DIR || rawDefaultAgentDir;
 const rawLogDir = process.env.OMP_PROMPT_LOG_DIR || rawDefaultLogDir;
-if (containsSymlinkComponent(rawAgentDir) || containsSymlinkComponent(rawLogDir)) {
-	throw new Error("OMP root contains an unsafe symlink");
-}
 const defaultAgentDir = path.join(home, ".omp", "agent");
 const defaultLogDir = path.join(defaultAgentDir, "prompt-logs");
 const agentDir = canonicalPath(process.env.PI_CODING_AGENT_DIR || defaultAgentDir);
 const logDir = canonicalPath(process.env.OMP_PROMPT_LOG_DIR || defaultLogDir);
-if (agentDir !== canonicalPath(defaultAgentDir) || logDir !== canonicalPath(defaultLogDir)) {
-	throw new Error("OMP root is relocated; universal session-log does not support custom roots");
+// Why this process cannot log, or "" when its roots are the supported defaults. omp loads every
+// installed plugin's extension, so an unsupported root (a named profile sets PI_CODING_AGENT_DIR)
+// must not fail the load: the extension then registers only /session-log, whose CLI names the error.
+function unsupportedRootReason() {
+	try {
+		if (containsSymlinkComponent(rawAgentDir) || containsSymlinkComponent(rawLogDir)) return "OMP root contains an unsafe symlink";
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+	if (agentDir !== canonicalPath(defaultAgentDir) || logDir !== canonicalPath(defaultLogDir)) {
+		return "OMP root is relocated; universal session-log does not support custom roots";
+	}
+	return "";
 }
+const unsupportedRoot = unsupportedRootReason();
 const enabledFile = path.join(logDir, ".enabled");
 const stateDir = path.join(agentDir, "session-log");
 const packageRoot = path.resolve(import.meta.dir, "../..");
@@ -492,11 +501,17 @@ const version = fs.readFileSync(path.join(packageRoot, "VERSION"), "utf8").trim(
 // omp runs a marketplace plugin from <plugins>/cache/plugins/<marketplace>___<plugin>___<version>,
 // linked as <plugins>/node_modules/<package name>, and an upgrade deletes the version a running
 // session loaded this module from. The package that link names then runs the session's commands.
-// It is found at load, while the loaded version's package.json still exists.
-const pluginRoot = path.resolve(packageRoot, "../..");
-const pluginsDir = path.resolve(pluginRoot, "../../..");
-function installedPackageRoot() {
-	if (path.relative(pluginsDir, path.dirname(pluginRoot)) !== path.join("cache", "plugins")) return "";
+// It is found at load, while the loaded version's package.json still exists. Project-scope installs
+// keep their node_modules link under the project, so this fallback (the user-scope link) does not
+// apply there and the restart error appears instead.
+const CACHE_DIR_SEGMENTS = ["cache", "plugins"];
+const PACKAGE_REMOVED_MESSAGE = "session-log: an upgrade removed the package this omp session loaded; restart omp";
+// packageRoot is <plugin root>/skills/session-log.
+const pluginRoot = path.dirname(path.dirname(packageRoot));
+// The plugin root sits in <plugins>/cache/plugins.
+const pluginsDir = path.dirname(path.dirname(path.dirname(pluginRoot)));
+function resolveLinkedPackageRoot() {
+	if (path.relative(pluginsDir, path.dirname(pluginRoot)) !== path.join(...CACHE_DIR_SEGMENTS)) return "";
 	try {
 		const { name } = JSON.parse(fs.readFileSync(path.join(pluginRoot, "package.json"), "utf8"));
 		return typeof name === "string" && name ? path.join(pluginsDir, "node_modules", name, "skills", "session-log") : "";
@@ -504,10 +519,18 @@ function installedPackageRoot() {
 		return "";
 	}
 }
-const linkedPackageRoot = installedPackageRoot();
-function sessionLogCli() {
-	const own = path.join(packageRoot, "bin", "session-log");
-	return fs.existsSync(own) || !linkedPackageRoot ? own : path.join(linkedPackageRoot, "bin", "session-log");
+const linkedPackageRoot = resolveLinkedPackageRoot();
+// Starts `bin/session-log --entrypoint omp --harness omp <cliArguments>` through `start` with the
+// loaded package's CLI, or the linked package's once an upgrade deleted the loaded one.
+function spawnSessionLogCli(start, cliArguments) {
+	for (const root of [packageRoot, linkedPackageRoot].filter(Boolean)) {
+		try {
+			return start([path.join(root, "bin", "session-log"), "--entrypoint", "omp", "--harness", "omp", ...cliArguments]);
+		} catch (error) {
+			if (error?.code !== "ENOENT") throw error;
+		}
+	}
+	throw new Error(PACKAGE_REMOVED_MESSAGE);
 }
 const MAX_APPEND_ATTEMPTS = 5;
 const APPEND_RETRY_DELAY_MS = 250;
@@ -892,8 +915,31 @@ function processStart(pid) {
 	try { return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" }).trim(); } catch { return ""; }
 }
 
+const PROCESS_RUNTIME_PATTERN = /^runtime\.(\d+)\.json$/;
+const isDeadProcess = (pid) => {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		return error?.code === "ESRCH";
+	}
+};
+// Every load writes runtime.<pid>.json and `off` keeps them, so the markers of exited omp processes
+// go here; runtime.json and the markers of live processes stay.
+function pruneDeadProcessRuntimes() {
+	let names;
+	try { names = fs.readdirSync(stateDir); } catch { return; }
+	for (const name of names) {
+		const pid = Number(PROCESS_RUNTIME_PATTERN.exec(name)?.[1]);
+		if (!pid || pid === process.pid || !isDeadProcess(pid)) continue;
+		const marker = path.join(stateDir, name);
+		try { if (fs.lstatSync(marker).isFile()) fs.unlinkSync(marker); } catch {}
+	}
+}
+
 function markLoaded() {
 	ensureDirectory(stateDir);
+	pruneDeadProcessRuntimes();
 	const nonce = `${process.pid}-${Date.now()}-${randomUUID()}`;
 	const temporary = path.join(stateDir, `.runtime.${nonce}.tmp`);
 	const processTemporary = path.join(stateDir, `.runtime.${nonce}.process.tmp`);
@@ -939,33 +985,41 @@ function currentSessionFile(ctx) {
 
 // Older releases linked an extension into the OMP root and seeded a package copy into its skill
 // root; omp loads such an extension beside this one. `repair` removes them in the background, once
-// per process, logging on or off; a failed attempt runs again at the next start.
-const seededPackage = path.join(agentDir, "skills", "session-log");
+// per process, logging on or off; a failed attempt is reported on stderr and runs again at the next start.
 const LEGACY_LEFTOVERS = [
 	path.join(agentDir, "extensions", "session-log.js"),
 	path.join(agentDir, "extensions", "session-log-omp.js"),
 	path.join(agentDir, "skills", "session-log-omp"),
-	path.join(seededPackage, ".universal-session-log.manifest"),
+	path.join(agentDir, "skills", "session-log", ".universal-session-log.manifest"),
 ];
+const CLI_MESSAGE_PREFIX = "session-log: ";
 let legacyCleanupStarted = false;
 const pathPresent = (candidate) => {
 	try { return Boolean(fs.lstatSync(candidate)); } catch { return false; }
 };
-function legacyLeftoversPresent() {
-	if (LEGACY_LEFTOVERS.some(pathPresent)) return true;
-	try { return fs.lstatSync(seededPackage).isSymbolicLink(); } catch { return false; }
-}
+const reportLegacyCleanupFailure = (detail) => {
+	const reason = detail.startsWith(CLI_MESSAGE_PREFIX) ? detail.slice(CLI_MESSAGE_PREFIX.length) : detail;
+	process.stderr.write(`session-log: legacy cleanup failed: ${reason}; run /session-log repair\n`);
+};
 function cleanupLegacyLeftovers() {
-	if (legacyCleanupStarted || !legacyLeftoversPresent()) return;
+	if (legacyCleanupStarted || !LEGACY_LEFTOVERS.some(pathPresent)) return;
 	legacyCleanupStarted = true;
 	try {
-		Bun.spawn([sessionLogCli(), "--entrypoint", "omp", "--harness", "omp", "repair"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
-	} catch {}
+		const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "pipe" }), ["repair"]);
+		child.unref();
+		Promise.all([child.exited, new Response(child.stderr).text()]).then(([exitCode, stderr]) => {
+			if (exitCode === 0) return;
+			const lastLine = stderr.split("\n").filter((line) => line.trim()).pop();
+			reportLegacyCleanupFailure(lastLine || `exit status ${exitCode}`);
+		}).catch((error) => reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error)));
+	} catch (error) {
+		reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error));
+	}
 }
 
 function runUniversalCommand(argumentString, ctx) {
 	const rawArguments = usageCommandArguments(String(argumentString || "status"), currentSessionFile(ctx));
-	const child = Bun.spawnSync([sessionLogCli(), "--entrypoint", "omp", "--harness", "omp", "--arguments", rawArguments], { stdout: "pipe", stderr: "pipe" });
+	const child = spawnSessionLogCli((command) => Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe" }), ["--arguments", rawArguments]);
 	const stdout = new TextDecoder().decode(child.stdout).trimEnd();
 	const stderr = new TextDecoder().decode(child.stderr).trim();
 	if (child.exitCode !== 0) throw new Error(stderr || stdout || `session-log exited with ${child.exitCode}`);
@@ -1002,10 +1056,7 @@ function composeFinalizeRecord({ state, root, messages, ctx, start, end, previou
 	return { record, model, responseIdentity };
 }
 
-export default function sessionLogOmp(pi, options = {}) {
-	const now = options.now ?? Date.now;
-	markLoaded();
-	cleanupLegacyLeftovers();
+function registerSessionLogCommand(pi) {
 	pi.registerCommand("session-log", {
 		description: "Manage session prompt logging and usage totals",
 		handler: async (args, ctx) => {
@@ -1017,6 +1068,17 @@ export default function sessionLogOmp(pi, options = {}) {
 			}
 		},
 	});
+}
+
+export default function sessionLogOmp(pi, options = {}) {
+	if (unsupportedRoot) {
+		registerSessionLogCommand(pi);
+		return;
+	}
+	const now = options.now ?? Date.now;
+	markLoaded();
+	cleanupLegacyLeftovers();
+	registerSessionLogCommand(pi);
 	const promptStates = new Map();
 	const promptAttempts = new Map();
 	const promptRetryTimers = new Map();

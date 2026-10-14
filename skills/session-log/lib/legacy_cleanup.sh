@@ -10,8 +10,8 @@
 # It removes only what is proven to be session-log's and never clears runtime markers: a harness
 # plugin's own hooks keep logging whatever duplicate registration goes. Claude Code removals of
 # registrations, scripts, and package copies, and OMP removals of adapter links and package copies,
-# are reported through print_repair_report; obsolete state files and the OpenCode/OMP leftovers of
-# pre-universal releases go silently.
+# are reported through print_repair_report; obsolete state files, the OMP standalone extension copy,
+# and the OpenCode/OMP leftovers of pre-universal releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
@@ -79,21 +79,23 @@ legacy_cleanup_opencode() {
 # entered for its usage link; the package-copy removal handles a symlinked one.
 legacy_cleanup_omp() {
   local extension="$HARNESS_ROOT/extensions/session-log.js" seeded="$HARNESS_ROOT/skills/session-log"
-  local usage="$HARNESS_ROOT/skills/session-log/scripts/session_log_usage.ts"
+  local usage="$HARNESS_ROOT/skills/session-log/scripts/session_log_usage.ts" has_usage_link=0
+  if [[ ! -L "$seeded" && -L "$usage" ]]; then has_usage_link=1; fi
+  validate_state_dir
   if [[ -L "$extension" ]]; then validate_legacy_omp_link extension "$extension"; else validate_managed_path "$extension"; fi
-  if [[ ! -L "$seeded" && -L "$usage" ]]; then validate_legacy_omp_link usage "$usage"; fi
+  if ((has_usage_link)); then validate_legacy_omp_link usage "$usage"; fi
   validate_managed_path "$HARNESS_ROOT/skills/session-log-omp" "$HARNESS_ROOT/skills/session-log-omp/SKILL.md"
   validate_managed_path "$HARNESS_ROOT/extensions/session-log-omp.js"
   if [[ -L "$extension" ]]; then remove_legacy_omp_link "$extension"; else remove_managed_path "$extension"; fi
-  if [[ ! -L "$seeded" && -L "$usage" ]]; then remove_legacy_omp_link "$usage"; fi
+  if ((has_usage_link)); then remove_legacy_omp_link "$usage"; fi
   remove_managed_path "$HARNESS_ROOT/skills/session-log-omp" "$HARNESS_ROOT/skills/session-log-omp/SKILL.md"
   remove_managed_path "$HARNESS_ROOT/extensions/session-log-omp.js"
   remove_seeded_package "$seeded"
-  remove_obsolete_state_files "${OMP_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"
+  remove_obsolete_state_files "${OMP_OBSOLETE_STATE_FILES[@]/#/"$STATE_DIR"/}"
 }
 
-# Fails unless symlink $2 points at OMP adapter kind $1 where older releases linked it: inside a
-# session-log package (the seeded copy, a plugin cache, this package) or the release store.
+# Fails unless symlink $2 points at OMP adapter kind $1 where older releases linked it: inside any
+# session-log package (the seeded copy, a plugin cache, another checkout) or the release store.
 validate_legacy_omp_link() {
   local kind="$1" link="$2" destination
   ensure_safe_parent "$link"
@@ -186,10 +188,10 @@ remove_claude_obsolete_state() {
   done
 }
 
-# Removes each state file named; a path that is not a regular file stays.
+# Removes each state file named; a path that is not a regular file stays. Callers run
+# validate_state_dir first.
 remove_obsolete_state_files() {
   local candidate
-  validate_state_dir
   for candidate in "$@"; do
     [[ -f "$candidate" && ! -L "$candidate" ]] || continue
     # A concurrent cleanup may have removed it already.
@@ -293,9 +295,6 @@ validate_managed_path() {
       "$HOME_ROOT/.config/opencode/scripts/session_log_usage.sh:$PACKAGE_ROOT/adapters/opencode/session_log_usage.sh"|\
       "$HOME_ROOT/.config/opencode/scripts/session_log_usage.sh:$HOME_ROOT/.config/opencode/skills/session-log/adapters/opencode/session_log_usage.sh"|\
       "$HOME_ROOT/.config/opencode/scripts/session_log_usage.sh:$STORE/releases/"*/adapters/opencode/session_log_usage.sh|\
-      "$HOME_ROOT/.omp/agent/extensions/session-log.js:$PACKAGE_ROOT/adapters/omp/session-log.js"|\
-      "$HOME_ROOT/.omp/agent/extensions/session-log.js:$HOME_ROOT/.omp/agent/skills/session-log/adapters/omp/session-log.js"|\
-      "$HOME_ROOT/.omp/agent/extensions/session-log.js:$STORE/releases/"*/adapters/omp/session-log.js|\
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$PACKAGE_ROOT/adapters/omp/session-log.js"|\
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$HOME_ROOT/.omp/agent/skills/session-log/adapters/omp/session-log.js"|\
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$STORE/releases/"*/adapters/omp/session-log.js)

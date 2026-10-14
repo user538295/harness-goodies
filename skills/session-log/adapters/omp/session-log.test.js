@@ -117,21 +117,35 @@ describe("ensureLog", () => {
 // The extension as omp loads it from a marketplace install: <plugins>/cache/plugins/<marketplace>___<plugin>___<version>
 // holds the repository root, and <plugins>/node_modules/<package name> links the version installed now.
 const PACKAGE_DIR = path.resolve(import.meta.dir, "../..");
-const PLUGIN_PACKAGE_NAME = "opencode-goodies";
+const REPOSITORY_ROOT = path.resolve(import.meta.dir, "../../../..");
+const PLUGIN_PACKAGE_NAME = JSON.parse(fs.readFileSync(path.join(REPOSITORY_ROOT, "package.json"), "utf8")).name;
+const PACKAGE_TESTS = "tests";
 const EXECUTABLE_MODE = 0o755;
 const BACKGROUND_WAIT_MS = 5000;
 // Long enough for a background repair the extension should not have started to show up.
 const NO_CLEANUP_WAIT_MS = 1000;
 const BACKGROUND_TEST_TIMEOUT_MS = 2 * BACKGROUND_WAIT_MS;
 const POLL_INTERVAL_MS = 50;
-const recordingCli = (label) => `#!/usr/bin/env bash\nprintf '%s %s\\n' "${label}" "$*" >> "$HOME/cli-calls"\n`;
+const FAILED_EXIT_CODE = 1;
+const PACKAGE_REMOVED_MESSAGE = "session-log: an upgrade removed the package this omp session loaded; restart omp";
+// Records each call; `failure` makes it print that line to stderr and fail, the way a refused repair does.
+const recordingCli = (label, failure = "") => [
+	"#!/usr/bin/env bash",
+	`printf '%s %s\\n' "${label}" "$*" >> "$HOME/cli-calls"`,
+	...(failure ? [`printf '%s\\n' '${failure}' >&2`, `exit ${FAILED_EXIT_CODE}`] : []),
+	"",
+].join("\n");
+const isPackageTests = (source) => {
+	const relative = path.relative(PACKAGE_DIR, source);
+	return relative === PACKAGE_TESTS || relative.startsWith(`${PACKAGE_TESTS}${path.sep}`);
+};
 const pluginsDirectory = (home) => path.join(home, ".omp", "plugins");
-const installPlugin = (home, version) => {
+const installPlugin = (home, version, failure = "") => {
 	const root = path.join(pluginsDirectory(home), "cache", "plugins", `user538295___omp-goodies___${version}`);
 	fs.mkdirSync(path.join(root, "skills"), { recursive: true });
 	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: PLUGIN_PACKAGE_NAME, version }));
-	fs.cpSync(PACKAGE_DIR, path.join(root, "skills", "session-log"), { recursive: true, filter: (source) => !source.includes(`${path.sep}tests`) });
-	fs.writeFileSync(path.join(root, "skills", "session-log", "bin", "session-log"), recordingCli(version), { mode: EXECUTABLE_MODE });
+	fs.cpSync(PACKAGE_DIR, path.join(root, "skills", "session-log"), { recursive: true, filter: (source) => !isPackageTests(source) });
+	fs.writeFileSync(path.join(root, "skills", "session-log", "bin", "session-log"), recordingCli(version, failure), { mode: EXECUTABLE_MODE });
 	return root;
 };
 const linkInstalledPlugin = (home, root) => {
@@ -141,22 +155,42 @@ const linkInstalledPlugin = (home, root) => {
 	fs.symlinkSync(root, link);
 };
 const extensionOf = (root) => path.join(root, "skills", "session-log", "adapters", "omp", "session-log.js");
-// Loads the extension, optionally deletes a directory the way an upgrade deletes the old cache, then runs a command.
+// Loads the extension LOADS times (default once), optionally deletes a directory the way an upgrade deletes the old
+// cache, then runs a command; prints a failed command's message and then what the extension registered. With
+// WAIT_FOR_STDERR_MS it stays alive until the extension writes to stderr (or that wait ends), so the outcome of a
+// background repair reaches it.
 const LOAD_AND_RUN = String.raw`
 import fs from "node:fs";
+if (process.env.WAIT_FOR_STDERR_MS) {
+	const keepAlive = setTimeout(() => {}, Number(process.env.WAIT_FOR_STDERR_MS));
+	const write = process.stderr.write.bind(process.stderr);
+	process.stderr.write = (...chunks) => {
+		clearTimeout(keepAlive);
+		return write(...chunks);
+	};
+}
 const loaded = await import(process.env.EXTENSION);
+const registrations = [];
 let handler;
-loaded.default({ registerCommand: (_name, options) => { handler = options.handler; }, on() {} });
+const pi = {
+	registerCommand: (name, options) => { registrations.push("command:" + name); handler = options.handler; },
+	on: (event) => { registrations.push("on:" + event); },
+};
+for (let load = 0; load < Number(process.env.LOADS || 1); load += 1) loaded.default(pi);
 if (process.env.DELETE_BEFORE_COMMAND) fs.rmSync(process.env.DELETE_BEFORE_COMMAND, { recursive: true, force: true });
-if (process.env.COMMAND) await handler(process.env.COMMAND, { ui: { notify() {} } });
+if (process.env.COMMAND) {
+	try { await handler(process.env.COMMAND, { ui: { notify() {} } }); }
+	catch (error) { console.log("command failed: " + error.message); }
+}
+console.log(JSON.stringify(registrations));
 `;
 const loadExtension = (home, extension, env = {}) => {
-	const environment = { ...process.env, HOME: home, EXTENSION: extension, ...env };
+	const environment = { ...process.env };
 	delete environment.PI_CODING_AGENT_DIR;
 	delete environment.OMP_PROMPT_LOG_DIR;
-	const result = Bun.spawnSync(["bun", "--eval", LOAD_AND_RUN], { env: environment });
-	expect(result.stderr.toString()).toBe("");
+	const result = Bun.spawnSync(["bun", "--eval", LOAD_AND_RUN], { env: { ...environment, HOME: home, EXTENSION: extension, ...env } });
 	expect(result.exitCode).toBe(0);
+	return { stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 };
 const cliCalls = (home) => {
 	try { return fs.readFileSync(path.join(home, "cli-calls"), "utf8"); } catch { return ""; }
@@ -166,21 +200,77 @@ const waitForCliCalls = async (home, waitMs = BACKGROUND_WAIT_MS) => {
 	while (!cliCalls(home) && Date.now() < deadline) await Bun.sleep(POLL_INTERVAL_MS);
 	return cliCalls(home);
 };
+const leaveSessionLogOmpExtension = (agent) => {
+	fs.mkdirSync(path.join(agent, "extensions"), { recursive: true });
+	fs.writeFileSync(path.join(agent, "extensions", "session-log-omp.js"), "// universal-session-log: managed\n");
+};
 
 describe("plugin command", () => {
 	test("runs the CLI of the package the extension loaded from", () => {
 		const home = temporaryDirectory();
 		const current = installPlugin(home, "1.0.0");
 		linkInstalledPlugin(home, current);
-		loadExtension(home, extensionOf(current), { COMMAND: "status" });
+		expect(loadExtension(home, extensionOf(current), { COMMAND: "status" }).stderr).toBe("");
 		expect(cliCalls(home)).toBe("1.0.0 --entrypoint omp --harness omp --arguments status\n");
 	});
 	test("runs the installed version's CLI once an upgrade deleted the loaded package", () => {
 		const home = temporaryDirectory();
 		const loaded = installPlugin(home, "1.0.0");
 		linkInstalledPlugin(home, installPlugin(home, "2.0.0"));
-		loadExtension(home, extensionOf(loaded), { COMMAND: "off", DELETE_BEFORE_COMMAND: loaded });
+		expect(loadExtension(home, extensionOf(loaded), { COMMAND: "off", DELETE_BEFORE_COMMAND: loaded }).stderr).toBe("");
 		expect(cliCalls(home)).toBe("2.0.0 --entrypoint omp --harness omp --arguments off\n");
+	});
+	test("asks for a restart once an upgrade deleted the loaded package and nothing links another", () => {
+		const home = temporaryDirectory();
+		const loaded = installPlugin(home, "1.0.0");
+		const { stdout, stderr } = loadExtension(home, extensionOf(loaded), { COMMAND: "status", DELETE_BEFORE_COMMAND: loaded });
+		expect(stderr).toBe("");
+		expect(stdout.split("\n")[0]).toBe(`command failed: ${PACKAGE_REMOVED_MESSAGE}`);
+		expect(cliCalls(home)).toBe("");
+	});
+});
+
+describe("unsupported OMP root", () => {
+	const unsupportedRoots = {
+		"relocated by a named profile": (home) => ({ PI_CODING_AGENT_DIR: path.join(home, "profiles", "work") }),
+		"reached through a symlink": (home) => {
+			fs.mkdirSync(path.join(home, "dotfiles", "omp-agent"), { recursive: true });
+			fs.symlinkSync(path.join(home, "dotfiles", "omp-agent"), path.join(home, ".omp", "agent"));
+			return {};
+		},
+	};
+	for (const [name, prepare] of Object.entries(unsupportedRoots)) {
+		test(`${name} registers only the command, which leaves the error to the CLI`, async () => {
+			const home = temporaryDirectory();
+			const plugin = installPlugin(home, "1.0.0");
+			const env = prepare(home);
+			const agent = env.PI_CODING_AGENT_DIR || path.join(home, ".omp", "agent");
+			leaveSessionLogOmpExtension(agent);
+			const { stdout, stderr } = loadExtension(home, extensionOf(plugin), { ...env, COMMAND: "status" });
+			expect(stderr).toBe("");
+			expect(stdout).toBe(`${JSON.stringify(["command:session-log"])}\n`);
+			expect(await waitForCliCalls(home, NO_CLEANUP_WAIT_MS)).toBe("1.0.0 --entrypoint omp --harness omp --arguments status\n");
+			for (const stateDir of [path.join(agent, "session-log"), path.join(home, ".omp", "agent", "session-log")]) {
+				expect(fs.existsSync(path.join(stateDir, "runtime.json"))).toBe(false);
+			}
+		}, BACKGROUND_TEST_TIMEOUT_MS);
+	}
+});
+
+describe("runtime markers at load", () => {
+	test("prunes the per-process markers of dead processes and keeps live ones", () => {
+		const home = temporaryDirectory();
+		const plugin = installPlugin(home, "1.0.0");
+		const stateDir = path.join(home, ".omp", "agent", "session-log");
+		fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+		const deadPid = Bun.spawnSync(["true"]).pid;
+		const dead = path.join(stateDir, `runtime.${deadPid}.json`);
+		const live = path.join(stateDir, `runtime.${process.pid}.json`);
+		for (const marker of [dead, live]) fs.writeFileSync(marker, "{}\n", { mode: PRIVATE_FILE_MODE });
+		expect(loadExtension(home, extensionOf(plugin)).stderr).toBe("");
+		expect(fs.existsSync(dead)).toBe(false);
+		expect(fs.existsSync(live)).toBe(true);
+		expect(fs.existsSync(path.join(stateDir, "runtime.json"))).toBe(true);
 	});
 });
 
@@ -190,17 +280,10 @@ describe("legacy cleanup at load", () => {
 			fs.mkdirSync(path.join(agent, "extensions"), { recursive: true });
 			fs.symlinkSync(path.join(agent, "skills", "session-log", "adapters", "omp", "session-log.js"), path.join(agent, "extensions", "session-log.js"));
 		},
-		"session-log-omp extension": (agent) => {
-			fs.mkdirSync(path.join(agent, "extensions"), { recursive: true });
-			fs.writeFileSync(path.join(agent, "extensions", "session-log-omp.js"), "// universal-session-log: managed\n");
-		},
+		"session-log-omp extension": leaveSessionLogOmpExtension,
 		"seeded package copy": (agent) => {
 			fs.mkdirSync(path.join(agent, "skills", "session-log"), { recursive: true });
 			fs.writeFileSync(path.join(agent, "skills", "session-log", ".universal-session-log.manifest"), "format=1\n");
-		},
-		"skill-root link": (agent) => {
-			fs.mkdirSync(path.join(agent, "skills"), { recursive: true });
-			fs.symlinkSync(path.join(agent, "elsewhere"), path.join(agent, "skills", "session-log"));
 		},
 	};
 	for (const [name, leave] of Object.entries(legacyLeftovers)) {
@@ -208,15 +291,42 @@ describe("legacy cleanup at load", () => {
 			const home = temporaryDirectory();
 			const plugin = installPlugin(home, "1.0.0");
 			leave(path.join(home, ".omp", "agent"));
-			loadExtension(home, extensionOf(plugin));
+			expect(loadExtension(home, extensionOf(plugin)).stderr).toBe("");
 			expect(await waitForCliCalls(home)).toBe("1.0.0 --entrypoint omp --harness omp repair\n");
 		}, BACKGROUND_TEST_TIMEOUT_MS);
 	}
-	test("runs nothing without leftovers", async () => {
+	const noLeftovers = {
+		"nothing left": () => {},
+		// A skill-root link is the user's own (e.g. dotfiles); repair handles a session-log one when the user runs it.
+		"only a skill-root link": (agent) => {
+			fs.mkdirSync(path.join(agent, "skills"), { recursive: true });
+			fs.symlinkSync(path.join(agent, "elsewhere"), path.join(agent, "skills", "session-log"));
+		},
+	};
+	for (const [name, leave] of Object.entries(noLeftovers)) {
+		test(`runs nothing with ${name}`, async () => {
+			const home = temporaryDirectory();
+			const plugin = installPlugin(home, "1.0.0");
+			leave(path.join(home, ".omp", "agent"));
+			expect(loadExtension(home, extensionOf(plugin)).stderr).toBe("");
+			expect(await waitForCliCalls(home, NO_CLEANUP_WAIT_MS)).toBe("");
+		}, BACKGROUND_TEST_TIMEOUT_MS);
+	}
+	test("starts one repair however often omp calls the factory", async () => {
 		const home = temporaryDirectory();
 		const plugin = installPlugin(home, "1.0.0");
-		loadExtension(home, extensionOf(plugin));
-		expect(await waitForCliCalls(home, NO_CLEANUP_WAIT_MS)).toBe("");
+		leaveSessionLogOmpExtension(path.join(home, ".omp", "agent"));
+		expect(loadExtension(home, extensionOf(plugin), { LOADS: "2" }).stderr).toBe("");
+		await waitForCliCalls(home);
+		await Bun.sleep(NO_CLEANUP_WAIT_MS);
+		expect(cliCalls(home)).toBe("1.0.0 --entrypoint omp --harness omp repair\n");
+	}, BACKGROUND_TEST_TIMEOUT_MS);
+	test("reports a failed repair on stderr", () => {
+		const home = temporaryDirectory();
+		const plugin = installPlugin(home, "1.0.0", "session-log: boom");
+		leaveSessionLogOmpExtension(path.join(home, ".omp", "agent"));
+		const { stderr } = loadExtension(home, extensionOf(plugin), { WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
+		expect(stderr).toBe("session-log: legacy cleanup failed: boom; run /session-log repair\n");
 	}, BACKGROUND_TEST_TIMEOUT_MS);
 });
 
