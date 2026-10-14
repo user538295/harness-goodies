@@ -89,7 +89,6 @@ adapter_current() {
   manifest_current || return 1
   case "$HARNESS" in
     opencode) adapter_asset_current plugin && adapter_asset_current usage ;;
-    omp) adapter_asset_current extension && adapter_asset_current usage ;;
   esac
 }
 
@@ -151,12 +150,8 @@ is_plugin_cache_adapter_link() {
   case "$1" in
     opencode:plugin:"$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session-log.js|\
     opencode:usage:"$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session_log_usage.sh|\
-    omp:extension:"$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/omp/session-log.js|\
-    omp:usage:"$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/omp/session_log_usage.ts|\
     opencode:plugin:"$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session-log.js|\
-    opencode:usage:"$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session_log_usage.sh|\
-    omp:extension:"$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/omp/session-log.js|\
-    omp:usage:"$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/omp/session_log_usage.ts)
+    opencode:usage:"$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session_log_usage.sh)
       return 0 ;;
     *) return 1 ;;
   esac
@@ -186,11 +181,7 @@ preflight_adapter_target() {
         "opencode:plugin:$source"|\
         opencode:plugin:"$STORE/releases/"*/adapters/opencode/session-log.js|\
         "opencode:usage:$source"|\
-        opencode:usage:"$STORE/releases/"*/adapters/opencode/session_log_usage.sh|\
-        "omp:extension:$source"|\
-        omp:extension:"$STORE/releases/"*/adapters/omp/session-log.js|\
-        "omp:usage:$source"|\
-        omp:usage:"$STORE/releases/"*/adapters/omp/session_log_usage.ts) ;;
+        opencode:usage:"$STORE/releases/"*/adapters/opencode/session_log_usage.sh) ;;
         *) fail "refusing to overwrite unowned adapter link: $target" ;;
       esac
     fi
@@ -234,7 +225,7 @@ preflight_state_files() {
 preflight_adapter() {
   case "$HARNESS" in
     codex) preflight_native_hooks ;;
-    opencode|omp) preflight_adapter_targets ;;
+    opencode) preflight_adapter_targets ;;
   esac
 }
 
@@ -358,8 +349,8 @@ repair_native_hooks() {
 }
 
 # Collapse duplicate and stale session-log registrations to the one set the harness
-# needs: hooks.json entries (Codex), dangling plugin-cache adapter links (OpenCode,
-# OMP; legacy_cleanup removes their legacy session-log-omp adapters first). Without a
+# needs: hooks.json entries (Codex), dangling plugin-cache adapter links (OpenCode;
+# legacy_cleanup removes its legacy session-log-omp adapters first). Without a
 # codex-goodies plugin package the Codex entries stay: the command that replaces them would run
 # nothing, while an older release's entry may still run its package.
 # Callers hold the install lock.
@@ -370,10 +361,6 @@ repair_registrations() {
       ;;
     opencode)
       repair_dangling_adapter_link plugin
-      repair_dangling_adapter_link usage
-      ;;
-    omp)
-      repair_dangling_adapter_link extension
       repair_dangling_adapter_link usage
       ;;
   esac
@@ -389,12 +376,6 @@ install_adapter() {
       remove_recognized_dangling_adapter_link plugin
       remove_recognized_dangling_adapter_link usage
       atomic_link "$(source_for plugin)" "$(target_for plugin)"
-      atomic_link "$(source_for usage)" "$(target_for usage)"
-      ;;
-    omp)
-      remove_recognized_dangling_adapter_link extension
-      remove_recognized_dangling_adapter_link usage
-      atomic_link "$(source_for extension)" "$(target_for extension)"
       atomic_link "$(source_for usage)" "$(target_for usage)"
       ;;
   esac

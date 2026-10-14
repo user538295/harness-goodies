@@ -4,6 +4,11 @@
   "description": "Skills and agents for OpenCode — TDD workflow, LLM wiki, skill packager, iterative review, and more.",
   "type": "module",
   "exports": "./.opencode-plugin/index.js",
+  "omp": {
+    "extensions": [
+      "./skills/session-log/adapters/omp/session-log.js"
+    ]
+  },
   "files": [
     ".opencode-plugin/index.js",
     "agents/",

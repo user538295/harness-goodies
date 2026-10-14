@@ -47,7 +47,7 @@ package_root_for() {
     codex) printf '%s\n' "$TEST_HOME/.codex/plugins/cache/user538295/codex-goodies/$PACKAGE_VERSION/skills/session-log" ;;
     cursor) printf '%s\n' "$TEST_HOME/.cursor/skills/session-log" ;;
     opencode) printf '%s\n' "$TEST_HOME/.config/opencode/skills/session-log" ;;
-    omp) printf '%s\n' "$TEST_HOME/.omp/agent/skills/session-log" ;;
+    omp) printf '%s\n' "$TEST_HOME/.omp/plugins/cache/plugins/user538295___omp-goodies___$PACKAGE_VERSION/skills/session-log" ;;
     *) fail "unsupported test harness: $1" ;;
   esac
 }
@@ -316,7 +316,7 @@ assert_not_file "relocated Claude root is not written" "$WORKROOT/relocated-clau
 assert_exact "default Claude root spelled out is accepted" "Claude Code: off" \
   "$(HOME="$CLAUDE_RELOCATED_HOME" CLAUDE_CONFIG_DIR="$CLAUDE_RELOCATED_HOME/.claude" bash "$ENTRYPOINT" --harness claude --arguments status 2>&1)"
 
-printf '=== each native adapter installs lazily ===\n'
+printf '=== each native adapter installs lazily; the omp plugin ships its extension ===\n'
 OPENCODE_HOME="$WORKROOT/opencode-home"
 OMP_HOME="$WORKROOT/omp-home"
 mkdir -p "$OPENCODE_HOME/.Trash" "$OMP_HOME/.Trash"
@@ -327,8 +327,10 @@ assert_exact "OMP on status is exact" "OMP: on — restart required" "$omp_on"
 assert_file "OpenCode flag created" "$OPENCODE_HOME/.config/opencode/prompt-logs/.enabled"
 assert_file "OpenCode plugin installed" "$OPENCODE_HOME/.config/opencode/plugins/session-log.js"
 assert_file "OMP flag created" "$OMP_HOME/.omp/agent/prompt-logs/.enabled"
-assert_file "OMP extension installed" "$OMP_HOME/.omp/agent/extensions/session-log.js"
-assert_file "OMP usage parser installed" "$OMP_HOME/.omp/agent/skills/session-log/scripts/session_log_usage.ts"
+assert_not_file "OMP on links no extension" "$OMP_HOME/.omp/agent/extensions/session-log.js"
+assert_not_file "OMP on copies no package" "$OMP_HOME/.omp/agent/skills/session-log"
+OMP_PLUGIN_EXTENSION="$(jq -r '.omp.extensions[0]' "$REPO/package.json")"
+assert_exact "the omp plugin manifest names the session-log extension" "./skills/session-log/adapters/omp/session-log.js" "$OMP_PLUGIN_EXTENSION"
 set +e
 opencode_plugin_smoke="$(
   HOME="$OPENCODE_HOME" SESSION_LOG_PLUGIN="$OPENCODE_HOME/.config/opencode/plugins/session-log.js" \
@@ -337,7 +339,7 @@ opencode_plugin_smoke="$(
 )"
 opencode_plugin_smoke_rc=$?
 omp_plugin_smoke="$(
-  HOME="$OMP_HOME" OMP_SESSION_LOG_PLUGIN="$OMP_HOME/.omp/agent/extensions/session-log.js" \
+  HOME="$OMP_HOME" OMP_SESSION_LOG_PLUGIN="$REPO/${OMP_PLUGIN_EXTENSION#./}" \
     bun --eval 'const events = []; const pi = { registerCommand: (name) => events.push(`command:${name}`), on: (name) => events.push(name) }; const loaded = await import(process.env.OMP_SESSION_LOG_PLUGIN); loaded.default(pi); process.stdout.write(events.join(","));' \
     2>&1
 )"
@@ -555,7 +557,7 @@ mkdir -p "$SYMLINK_HOME/.Trash" "$SYMLINK_HOME/.omp/agent/prompt-logs"
 printf 'sentinel\n' > "$WORKROOT/sentinel"
 ln -s "$WORKROOT/sentinel" "$SYMLINK_HOME/.omp/agent/prompt-logs/.enabled"
 set +e
-symlink_error="$(HOME="$SYMLINK_HOME" "$TEST_HOME/.omp/agent/skills/session-log/bin/session-log" --entrypoint omp --harness omp on 2>&1)"
+symlink_error="$(HOME="$SYMLINK_HOME" "$(package_root_for omp)/bin/session-log" --entrypoint omp --harness omp on 2>&1)"
 symlink_rc=$?
 set -e
 [[ "$symlink_rc" -ne 0 ]] && pass "symlinked enable flag is protected" || fail "symlinked enable flag is protected"
@@ -674,12 +676,12 @@ assert_not_file "copied OpenCode package does not need global wrapper" "$PACKAGE
 PACKAGE_OMP_HOME="$WORKROOT/package-omp-home"
 mkdir -p "$PACKAGE_OMP_HOME/.Trash" "$PACKAGE_OMP_HOME/.omp/agent/skills"
 cp -R "$REPO/skills/session-log" "$PACKAGE_OMP_HOME/.omp/agent/skills/session-log"
-PACKAGE_OMP_ROOT="$(cd "$PACKAGE_OMP_HOME/.omp/agent/skills/session-log" && pwd -P)"
 package_omp_on="$(HOME="$PACKAGE_OMP_HOME" bash "$PACKAGE_OMP_HOME/.omp/agent/skills/session-log/install.sh" --harness omp --arguments on 2>&1)"
-assert_contains "copied OMP package enables logging" "OMP: on — restart required" "$package_omp_on"
-assert_link "copied OMP package installs its extension" \
-  "$PACKAGE_OMP_ROOT/adapters/omp/session-log.js" \
-  "$PACKAGE_OMP_HOME/.omp/agent/extensions/session-log.js"
+assert_exact "a manual copy under the OMP skill root is reported and enables logging" \
+  "OMP: kept legacy package copy $(cd "$PACKAGE_OMP_HOME" && pwd -P)/.omp/agent/skills/session-log: it has no ownership manifest; move it aside"$'\n'"OMP: on — restart required" \
+  "$package_omp_on"
+assert_file "a manual copy under the OMP skill root is never removed" "$PACKAGE_OMP_HOME/.omp/agent/skills/session-log/install.sh"
+assert_not_file "a manual OMP copy links no extension" "$PACKAGE_OMP_HOME/.omp/agent/extensions/session-log.js"
 
 PACKAGE_CLAUDE_HOME="$WORKROOT/package-claude-home"
 mkdir -p "$PACKAGE_CLAUDE_HOME/.Trash" "$PACKAGE_CLAUDE_HOME/.claude/skills"
@@ -1133,7 +1135,16 @@ omp_symlink_runtime="$(
 )"
 omp_symlink_runtime_rc=$?
 set -e
-[[ "$omp_symlink_runtime_rc" -ne 0 ]] && pass "OMP rejects symlinked runtime state" || fail "OMP rejects symlinked runtime state"
+# A throwing factory would fail omp's plugin install, so the extension names the error and keeps only /session-log.
+if [[ "$omp_symlink_runtime_rc" -eq 0 ]]; then
+  pass "OMP loads despite symlinked runtime state"
+else
+  fail "OMP loads despite symlinked runtime state"
+fi
+# The extension names the canonical path (mktemp's directory may sit behind a symlink such as macOS /var).
+assert_contains "OMP rejects symlinked runtime state" \
+  "session-log: OMP path is not a safe file: $(cd "$OMP_SAFE_HOME" && pwd -P)/.omp/agent/session-log/runtime.json" \
+  "$omp_symlink_runtime"
 assert_exact "OMP symlinked runtime target remains unchanged" "omp runtime sentinel" "$(cat "$WORKROOT/omp-runtime-sentinel")"
 
 

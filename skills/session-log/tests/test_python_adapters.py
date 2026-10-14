@@ -1111,7 +1111,8 @@ CLAUDE_REPAIR_CLEAN = "Claude Code: repair found no duplicate or stale registrat
 
 def harness_environment(home):
     environment = {key: value for key, value in os.environ.items()
-                   if key not in ("CLAUDE_PLUGIN_ROOT", "CLAUDE_CONFIG_DIR", "CODEX_HOME")}
+                   if key not in ("CLAUDE_PLUGIN_ROOT", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR",
+                                  "OMP_PROMPT_LOG_DIR")}
     return {**environment, "HOME": str(home)}
 
 
@@ -2132,12 +2133,41 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 self.assertEqual(config.read_bytes(), original)
 
 
+class ClaudeOffTests(unittest.TestCase):
+    """Claude Code `off` removes the flag and the runtime markers under the install lock."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        self.package = claude_package(self.home)
+        self.assertEqual(run_session_log(self.package, self.home, "claude", "on").returncode, 0)
+        self.flag = self.home / ".claude/prompt-logs/.enabled"
+
+    def test_off_removes_the_flag_and_every_runtime_marker(self):
+        state = self.home / ".claude/session-log"
+        for name in ("runtime.json", "runtime.1.json"):
+            (state / name).write_text("{}\n")
+        result = run_session_log(self.package, self.home, "claude", "off")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "Claude Code: off\n", ""))
+        self.assertFalse(os.path.lexists(self.flag))
+        self.assertEqual([path.name for path in state.glob("runtime*.json")], [])
+
+    def test_off_fails_while_another_command_holds_the_install_lock(self):
+        hold_install_lock(self.home)
+        result = run_session_log(self.package, self.home, "claude", "off")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("another session-log command is already in progress", result.stderr)
+        self.assertTrue(self.flag.is_file())
+
+
 LEGACY_PACKAGE_PATH = REPO / "skills/session-log/lib/legacy_package.py"
 SEEDED_MANIFEST = ".universal-session-log.manifest"
 PLUGIN_CACHE_LINK_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/skills/session-log"
 # A remover that blocks (e.g. on a FIFO) fails the test instead of hanging the suite.
 LEGACY_PACKAGE_TIMEOUT_SECONDS = 30
-RELEASE_STORE_LINK_RELATIVE = ".local/share/universal-session-log/releases/1.0.0/skills/session-log"
+RELEASE_STORE_RELEASE_RELATIVE = ".local/share/universal-session-log/releases/1.0.0"
+RELEASE_STORE_LINK_RELATIVE = f"{RELEASE_STORE_RELEASE_RELATIVE}/skills/session-log"
 
 
 def write_seeded_manifest(copy):
@@ -2732,7 +2762,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
 
     @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
     def test_an_obsolete_state_file_that_cannot_be_removed_fails_the_cleanup(self):
-        """remove_obsolete_state_file, shared by the Codex and Claude Code cleanups, names the file it cannot remove.
+        """remove_obsolete_state_files, shared by every harness cleanup, names the file it cannot remove.
 
         `repair` never meets a read-only state directory: taking the install lock makes it private (0700) again.
         """
@@ -2741,7 +2771,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.state.chmod(READ_ONLY_DIRECTORY_MODE)
         try:
             result = subprocess.run(
-                ["bash", "-c", 'source "$1/lib/common.sh"; source "$1/lib/legacy_cleanup.sh"; remove_obsolete_state_file "$2"',
+                ["bash", "-c", 'source "$1/lib/common.sh"; source "$1/lib/legacy_cleanup.sh"; remove_obsolete_state_files "$2"',
                  "remove-obsolete-state", str(self.package), str(stamp)],
                 capture_output=True, text=True, env=harness_environment(self.home), timeout=SUBPROCESS_TIMEOUT_SECONDS)
         finally:
@@ -2963,7 +2993,6 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
 
 ADAPTER_LINKS = {
     "opencode": (".config/opencode", "plugins/session-log.js", "adapters/opencode/session-log.js"),
-    "omp": (".omp/agent", "extensions/session-log.js", "adapters/omp/session-log.js"),
 }
 PLUGIN_CACHE_PACKAGE_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/skills/session-log"
 
@@ -3569,6 +3598,265 @@ class CursorPluginHooksTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), original)
         self.assertTrue((seeded / "SKILL.md").is_file())
         self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), sorted(CURSOR_OBSOLETE_STATE))
+
+
+
+
+OMP_SUBROOT = ".omp/agent"
+OMP_PLUGIN_PACKAGE_RELATIVE = ".omp/plugins/cache/plugins/user538295___omp-goodies___1.19.0/skills/session-log"
+OMP_SEEDED_RELATIVE = ".omp/agent/skills/session-log"
+OMP_EXTENSION_LINK_RELATIVE = ".omp/agent/extensions/session-log.js"
+OMP_EXTENSION_SOURCE = "adapters/omp/session-log.js"
+OMP_USAGE_LINK = "scripts/session_log_usage.ts"
+OMP_USAGE_SOURCE = "adapters/omp/session_log_usage.ts"
+OMP_OBSOLETE_STATE = ("adapter.version", "adapter.manifest", "desired.version")
+OMP_REPAIR_CLEAN = "OMP: repair found no duplicate or stale registrations\n"
+OMP_RESTART_REQUIRED = "OMP: on — restart required\n"
+
+
+def omp_package(home):
+    """The session-log package of an omp-goodies marketplace plugin installed under ``home``."""
+    package = home / OMP_PLUGIN_PACKAGE_RELATIVE
+    package.parent.mkdir(parents=True)
+    shutil.copytree(REPO / "skills/session-log", package)
+    return package
+
+
+def omp_seeded_install(home):
+    """What older releases left after `on`: a seeded copy, its usage link, and the extension link into it."""
+    seeded = home / OMP_SEEDED_RELATIVE
+    seeded.parent.mkdir(parents=True)
+    shutil.copytree(REPO / "skills/session-log", seeded)
+    write_seeded_manifest(seeded)
+    (seeded / "scripts").mkdir()
+    (seeded / OMP_USAGE_LINK).symlink_to(seeded / OMP_USAGE_SOURCE)
+    extension = home / OMP_EXTENSION_LINK_RELATIVE
+    extension.parent.mkdir(parents=True)
+    extension.symlink_to(seeded / OMP_EXTENSION_SOURCE)
+    return seeded, extension
+
+
+def write_live_omp_marker(home, package):
+    """The runtime marker the extension writes when a live omp process loads it: this test process stands in."""
+    state = home / OMP_SUBROOT / "session-log"
+    state.mkdir(parents=True, exist_ok=True)
+    marker = {"harness": "omp", "version": (package / "VERSION").read_text().strip(), "pid": os.getpid(),
+              "process_start": process_start(os.getpid()), "nonce": "test"}
+    (state / "runtime.json").write_text(json.dumps(marker))
+
+
+class OmpPluginOwnedTests(unittest.TestCase):
+    """The omp plugin registers the extension: `on`/`off` flip the flag and the cleanup removes older installs."""
+
+    maxDiff = None
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        self.package = omp_package(self.home)
+
+    def run_omp(self, *arguments):
+        return run_session_log(self.package, self.home, "omp", *arguments)
+
+    def test_on_only_creates_the_flag(self):
+        result = self.run_omp("on")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, OMP_RESTART_REQUIRED, ""))
+        self.assertTrue((self.home / OMP_SUBROOT / "prompt-logs/.enabled").is_file())
+        self.assertFalse(os.path.lexists(self.home / OMP_EXTENSION_LINK_RELATIVE))
+        self.assertFalse(os.path.lexists(self.home / OMP_SEEDED_RELATIVE))
+        status = self.run_omp("status")
+        self.assertEqual((status.returncode, status.stdout, status.stderr), (0, OMP_RESTART_REQUIRED, ""))
+        self.assertFalse(os.path.lexists(self.home / OMP_EXTENSION_LINK_RELATIVE))
+
+    def test_off_and_on_apply_without_a_restart_while_the_extension_is_loaded(self):
+        write_live_omp_marker(self.home, self.package)
+        self.assertEqual(self.run_omp("on").stdout, "OMP: on\n")
+        self.assertEqual(self.run_omp("off").stdout, "OMP: off\n")
+        self.assertEqual(self.run_omp("status").stdout, "OMP: off\n")
+        self.assertEqual(self.run_omp("on").stdout, "OMP: on\n")
+        self.assertEqual(self.run_omp("status").stdout, "OMP: on\n")
+
+    def test_off_succeeds_while_the_extension_repair_holds_the_install_lock(self):
+        flag = self.home / OMP_SUBROOT / "prompt-logs/.enabled"
+        self.assertEqual(self.run_omp("on").returncode, 0)
+        hold_install_lock(self.home, OMP_SUBROOT)
+        result = self.run_omp("off")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "OMP: off\n", ""))
+        self.assertFalse(os.path.lexists(flag))
+        self.assertTrue((self.home / OMP_SUBROOT / Path(INSTALL_LOCK_RELATIVE).relative_to(".claude") / "owner").is_file())
+
+    def test_on_skips_the_cleanup_and_enables_while_the_extension_repair_holds_the_install_lock(self):
+        hold_install_lock(self.home, OMP_SUBROOT)
+        result = self.run_omp("on")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(result.stdout, "OMP: legacy cleanup skipped: another session-log command is running\n"
+                                        + OMP_RESTART_REQUIRED)
+        self.assertTrue((self.home / OMP_SUBROOT / "prompt-logs/.enabled").is_file())
+
+    def test_every_command_refuses_a_relocated_root_and_names_the_supported_one(self):
+        relocated = str(self.home / "relocated")
+        messages = {
+            "PI_CODING_AGENT_DIR": "OMP root is relocated; session-log supports only ~/.omp/agent",
+            "OMP_PROMPT_LOG_DIR": "OMP prompt-log root is relocated; session-log supports only ~/.omp/agent/prompt-logs",
+        }
+        for variable, message in messages.items():
+            with self.subTest(variable):
+                result = subprocess.run(
+                    ["bash", str(self.package / "bin/session-log"), "--entrypoint", "omp", "--harness", "omp", "status"],
+                    capture_output=True, text=True, env={**harness_environment(self.home), variable: relocated},
+                )
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", f"session-log: {message}\n"))
+
+    def test_repair_removes_the_seeded_install_and_obsolete_state(self):
+        seeded, extension = omp_seeded_install(self.home)
+        state = self.home / OMP_SUBROOT / "session-log"
+        state.mkdir(parents=True)
+        for name in (*OMP_OBSOLETE_STATE, "runtime.json", "runtime.1.json"):
+            (state / name).write_text("kept\n" if name.startswith("runtime") else "obsolete\n")
+        first = self.run_omp("repair")
+        self.assertEqual((first.returncode, first.stderr), (0, ""))
+        self.assertEqual(first.stdout, (f"OMP: removed legacy adapter link {extension}\n"
+                                        f"OMP: removed legacy adapter link {seeded / OMP_USAGE_LINK}\n"
+                                        f"OMP: removed legacy package copy {seeded}\n"))
+        self.assertFalse(os.path.lexists(extension))
+        self.assertFalse(os.path.lexists(seeded))
+        self.assertEqual(sorted(path.name for path in state.iterdir()), ["runtime.1.json", "runtime.json"])
+        second = self.run_omp("repair")
+        self.assertEqual((second.returncode, second.stdout, second.stderr), (0, OMP_REPAIR_CLEAN, ""))
+
+    def test_on_removes_the_seeded_install_before_enabling(self):
+        seeded, extension = omp_seeded_install(self.home)
+        result = self.run_omp("on")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(result.stdout.splitlines()[-1] + "\n", OMP_RESTART_REQUIRED)
+        self.assertFalse(os.path.lexists(extension))
+        self.assertFalse(os.path.lexists(seeded))
+
+    def test_repair_removes_extension_links_every_older_release_made(self):
+        destinations = {
+            "plugin cache": self.home / PLUGIN_CACHE_PACKAGE_RELATIVE / OMP_EXTENSION_SOURCE,
+            "release store": self.home / RELEASE_STORE_RELEASE_RELATIVE / OMP_EXTENSION_SOURCE,
+            "this package": self.package / OMP_EXTENSION_SOURCE,
+        }
+        extension = self.home / OMP_EXTENSION_LINK_RELATIVE
+        extension.parent.mkdir(parents=True)
+        for name, destination in destinations.items():
+            with self.subTest(name):
+                extension.symlink_to(destination)
+                result = self.run_omp("repair")
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (0, f"OMP: removed legacy adapter link {extension}\n", ""))
+                self.assertFalse(os.path.lexists(extension))
+
+    def test_status_leaves_and_on_removes_a_marked_standalone_extension_copy(self):
+        standalone = self.home / OMP_EXTENSION_LINK_RELATIVE
+        standalone.parent.mkdir(parents=True)
+        standalone.write_text("// universal-session-log: managed\nlegacy standalone copy\n")
+        flag = self.home / OMP_SUBROOT / "prompt-logs/.enabled"
+        flag.parent.mkdir(parents=True)
+        flag.write_text("enabled\n")
+        status = self.run_omp("status")
+        self.assertEqual((status.returncode, status.stdout, status.stderr), (0, OMP_RESTART_REQUIRED, ""))
+        self.assertTrue(standalone.is_file())
+        on = self.run_omp("on")
+        self.assertEqual((on.returncode, on.stdout, on.stderr), (0, OMP_RESTART_REQUIRED, ""))
+        self.assertFalse(os.path.lexists(standalone))
+
+    def test_repair_refuses_an_unowned_extension_link_and_changes_nothing(self):
+        seeded, _ = omp_seeded_install(self.home)
+        extension = self.home / OMP_EXTENSION_LINK_RELATIVE
+        extension.unlink()
+        foreign = self.home / "elsewhere/session-log.js"
+        extension.symlink_to(foreign)
+        result = self.run_omp("repair")
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (1, "", f"session-log: refusing to remove unowned legacy path: {extension}\n"))
+        self.assertEqual(os.readlink(extension), str(foreign))
+        self.assertTrue(os.path.islink(seeded / OMP_USAGE_LINK))
+        self.assertTrue((seeded / SEEDED_MANIFEST).is_file())
+        on = self.run_omp("on")
+        self.assertEqual((on.returncode, on.stderr), (0, ""))
+        self.assertEqual(on.stdout, (f"OMP: legacy cleanup failed: refusing to remove unowned legacy path: {extension}; "
+                                     "fix it, then run repair\n" + OMP_RESTART_REQUIRED))
+
+    def test_repair_refuses_a_foreign_usage_link_in_the_seeded_copy_and_changes_nothing(self):
+        seeded, extension = omp_seeded_install(self.home)
+        usage = seeded / OMP_USAGE_LINK
+        usage.unlink()
+        foreign = self.home / "elsewhere/session_log_usage.ts"
+        usage.symlink_to(foreign)
+        result = self.run_omp("repair")
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (1, "", f"session-log: refusing to remove unowned legacy path: {usage}\n"))
+        self.assertEqual(os.readlink(usage), str(foreign))
+        self.assertTrue(os.path.islink(extension))
+        self.assertTrue((seeded / SEEDED_MANIFEST).is_file())
+
+    def test_repair_removes_a_usage_link_into_the_release_store(self):
+        seeded, extension = omp_seeded_install(self.home)
+        usage = seeded / OMP_USAGE_LINK
+        usage.unlink()
+        usage.symlink_to(self.home / RELEASE_STORE_RELEASE_RELATIVE / OMP_USAGE_SOURCE)
+        result = self.run_omp("repair")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(result.stdout, (f"OMP: removed legacy adapter link {extension}\n"
+                                         f"OMP: removed legacy adapter link {usage}\n"
+                                         f"OMP: removed legacy package copy {seeded}\n"))
+        self.assertFalse(os.path.lexists(seeded))
+
+    def test_repair_never_follows_a_symlinked_scripts_directory_in_the_seeded_copy(self):
+        seeded, extension = omp_seeded_install(self.home)
+        elsewhere = self.home / "elsewhere/scripts"
+        elsewhere.parent.mkdir()
+        shutil.move(seeded / "scripts", elsewhere)
+        (seeded / "scripts").symlink_to(elsewhere)
+        result = self.run_omp("repair")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("refusing to follow symlinked parent", result.stderr)
+        self.assertTrue(os.path.islink(extension))
+        self.assertTrue(os.path.islink(elsewhere / "session_log_usage.ts"))
+        self.assertTrue((seeded / SEEDED_MANIFEST).is_file())
+
+    def test_repair_refuses_an_unmarked_file_at_the_extension_path_and_on_still_enables(self):
+        user_file = self.home / OMP_EXTENSION_LINK_RELATIVE
+        user_file.parent.mkdir(parents=True)
+        user_file.write_text("// the user's own extension\n")
+        result = self.run_omp("repair")
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (1, "", f"session-log: refusing to remove unowned legacy path: {user_file}\n"))
+        self.assertEqual(user_file.read_text(), "// the user's own extension\n")
+        on = self.run_omp("on")
+        self.assertEqual((on.returncode, on.stderr), (0, ""))
+        self.assertEqual(on.stdout, (f"OMP: legacy cleanup failed: refusing to remove unowned legacy path: {user_file}; "
+                                     "fix it, then run repair\n" + OMP_RESTART_REQUIRED))
+        self.assertTrue(user_file.is_file())
+
+    def test_repair_keeps_a_seeded_copy_with_a_changed_file_after_removing_the_links(self):
+        seeded, extension = omp_seeded_install(self.home)
+        with (seeded / "SKILL.md").open("a") as skill:
+            skill.write("\nlocal edit\n")
+        result = self.run_omp("repair")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(result.stdout, (f"OMP: removed legacy adapter link {extension}\n"
+                                         f"OMP: removed legacy adapter link {seeded / OMP_USAGE_LINK}\n"
+                                         f"OMP: kept legacy package copy {seeded}: SKILL.md was changed; move it aside\n"))
+        self.assertFalse(os.path.lexists(extension))
+        self.assertTrue((seeded / "SKILL.md").is_file())
+
+    def test_repair_never_reaches_through_a_symlinked_skill_root(self):
+        real_copy = self.home / "dotfiles/session-log"
+        real_copy.parent.mkdir(parents=True)
+        shutil.copytree(REPO / "skills/session-log", real_copy)
+        (real_copy / "scripts").mkdir()
+        (real_copy / OMP_USAGE_LINK).symlink_to(real_copy / OMP_USAGE_SOURCE)
+        seeded = self.home / OMP_SEEDED_RELATIVE
+        seeded.parent.mkdir(parents=True)
+        seeded.symlink_to(real_copy)
+        result = self.run_omp("repair")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, OMP_REPAIR_CLEAN, ""))
+        self.assertTrue(os.path.islink(real_copy / OMP_USAGE_LINK))
+        self.assertEqual(os.readlink(seeded), str(real_copy))
 
 
 # Python stand-ins Git Bash may find on Windows: none at all, or the Microsoft Store
