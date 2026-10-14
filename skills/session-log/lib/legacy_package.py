@@ -3,7 +3,7 @@
 """Removal of the package copies older install.sh releases seeded into harness skill roots.
 
 Usage:
-    python3 legacy_package.py remove <skill-root>/session-log   # HOME
+    python3 legacy_package.py remove <skill-root>/session-log   # reads $HOME
 
 A copy goes only when its ownership manifest proves every file in it: each regular file is
 the manifest itself or an asset the manifest lists with the same SHA-256, apart from the
@@ -14,7 +14,7 @@ its target is never touched. No symlink is ever followed, including a symlinked 
 
 Prints ``removed`` or ``removed link``; ``kept: <reason>`` when the copy carries session-log's
 ownership marks but cannot be proven unchanged or cannot be read; nothing when the path is not
-session-log's.
+session-log's or cannot be read far enough to tell.
 """
 import errno
 import fnmatch
@@ -43,8 +43,6 @@ LINK_DESTINATIONS = (
     ".claude/plugins/cache/*/claude-goodies/*/skills/session-log",
     ".local/share/universal-session-log/releases/*/skills/session-log",
 )
-# Errors that mean the path is absent or reached only through a symlink: not session-log's.
-NOT_REACHABLE = (errno.ENOENT, errno.ENOTDIR, errno.ELOOP)
 
 
 class Kept(Exception):
@@ -103,7 +101,11 @@ def _check_file(dir_fd, name, relative, assets):
 def _inventory(dir_fd, prefix, assets):
     """``{relative path: identity}`` of every file below ``dir_fd`` once each is proven session-log's."""
     checked = {}
-    for name in sorted(os.listdir(dir_fd)):
+    try:
+        names = sorted(os.listdir(dir_fd))
+    except OSError as error:
+        raise Kept(f"cannot read {prefix.rstrip('/') or 'it'}: {error.strerror}") from error
+    for name in names:
         relative = prefix + name
         try:
             info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
@@ -145,12 +147,11 @@ def _remove_tree(dir_fd, prefix, checked):
 
 
 def _has_ownership_marker(copy_fd):
+    """Whether the copy's SKILL.md carries session-log's ownership line; unreadable means no."""
     try:
         return SKILL_OWNERSHIP_LINE in _read_regular(copy_fd, SKILL_FILE).decode("utf-8", "replace").splitlines()
-    except FileNotFoundError:
+    except OSError:
         return False
-    except OSError as error:
-        raise Kept(f"cannot read {SKILL_FILE}: {error.strerror}") from error
 
 
 def _recognized_link(destination, home):
@@ -175,6 +176,11 @@ def _remove_copy(parent_fd, name):
         checked = _inventory(copy_fd, "", assets)
         try:
             _remove_tree(copy_fd, "", checked)
+            # The manifest goes last and only from an otherwise empty copy, so a run that stops
+            # here leaves a copy a later run still recognizes.
+            for leftover in sorted(os.listdir(copy_fd)):
+                if leftover != MANIFEST:
+                    raise Kept(f"{leftover} changed during removal")
             if checked.get(MANIFEST) != _identity(os.stat(MANIFEST, dir_fd=copy_fd, follow_symlinks=False)):
                 raise Kept(f"{MANIFEST} changed during removal")
             os.unlink(MANIFEST, dir_fd=copy_fd)
@@ -193,16 +199,15 @@ def remove(path, home):
     """Remove the seeded copy (or recognized symlink) at ``path`` when it is proven session-log's.
 
     Never follows a symlink. Returns ``removed``, ``removed link``, ``kept: <reason>``, or an
-    empty string when ``path`` is absent, reached only through a symlink, or not session-log's.
-    ``home`` is the home directory the recognized link destinations live under.
+    empty string when ``path`` is absent, reached only through a symlink, not session-log's, or
+    unreadable before its ownership manifest was read. ``home`` is the home directory the
+    recognized link destinations live under.
     """
     directory, name = os.path.split(os.path.abspath(path))
     try:
         parent_fd = pathsafe.open_directory(directory, create=False)
-    except OSError as error:
-        if error.errno in NOT_REACHABLE:
-            return ""
-        return f"{RESULT_KEPT_PREFIX}cannot read {directory}: {error.strerror}"
+    except OSError:
+        return ""
     try:
         try:
             info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -216,10 +221,8 @@ def remove(path, home):
             return _remove_copy(parent_fd, name)
         except Kept as kept:
             return f"{RESULT_KEPT_PREFIX}{kept}"
-        except OSError as error:
-            if error.errno in NOT_REACHABLE:
-                return ""
-            return f"{RESULT_KEPT_PREFIX}cannot read it: {error.strerror}"
+        except OSError:
+            return ""  # every error after the manifest was read is a Kept
     finally:
         os.close(parent_fd)
 

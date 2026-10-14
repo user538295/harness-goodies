@@ -1038,6 +1038,7 @@ INSTALL_LOCK_RELATIVE = ".claude/session-log/.install.lock"
 PRIVATE_DIRECTORY_MODE = 0o700
 LEGACY_CLEANUP_STAMP_RELATIVE = ".claude/session-log/legacy-cleanup.stamp"
 EXECUTABLE_MODE = 0o755
+READ_ONLY_DIRECTORY_MODE = 0o555
 NATIVE_HARNESSES = (("codex", ".codex"), ("cursor", ".cursor"))
 NATIVE_LABELS = {"codex": "Codex", "cursor": "Cursor"}
 # Settings.json registrations of a seeded copy that is not installed, so every one of them is dead.
@@ -1154,6 +1155,24 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CLAUDE_REPAIR_CLEAN, ""))
             self.assertEqual(sorted(path.name for path in state.iterdir()), ["runtime.1.json", "runtime.json"])
 
+    def test_claude_repair_keeps_the_plugin_root_marker_while_a_kept_seeded_copy_reads_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            # A copy without an ownership manifest is kept; its 1.19.0 code reads plugin-root to
+            # defer to the plugin instead of registering settings.json hooks of its own.
+            seeded = home / SEEDED_RELATIVE
+            seeded.parent.mkdir(parents=True)
+            shutil.copytree(REPO / "skills/session-log", seeded)
+            state = home / ".claude/session-log"
+            state.mkdir(parents=True)
+            for name in OBSOLETE_CLAUDE_STATE:
+                (state / name).write_text("obsolete\n")
+            result = run_session_log(package, home, "claude", "repair")
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertIn("kept legacy package copy", result.stdout)
+            self.assertEqual(sorted(path.name for path in state.iterdir()), ["plugin-root"])
+
     def test_claude_repair_reports_the_legacy_scripts_and_hooks_it_removes(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
@@ -1200,12 +1219,65 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             self.assertEqual((result.returncode, result.stderr), (0, ""))
             self.assertEqual(result.stdout, (
                 f"Claude Code: legacy cleanup failed: refusing to remove unrecognized legacy Claude script: {script}; "
-                "run repair for details\nClaude Code: on — logging starts with the next prompt\n"))
+                "run repair to retry\nClaude Code: on — logging starts with the next prompt\n"))
             self.assertTrue((home / ".claude/prompt-logs/.enabled").is_file())
             self.assertEqual(script.read_text(), "edited by the user\n")
             repaired = run_session_log(package, home, "claude", "repair")
             self.assertEqual(repaired.returncode, 1)
             self.assertIn("refusing to remove unrecognized legacy Claude script", repaired.stderr)
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_claude_on_stops_the_cleanup_at_a_failing_step_and_keeps_its_scripts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            claude_root = home / ".claude"
+            scripts = claude_root / "scripts"
+            scripts.mkdir(parents=True)
+            (claude_root / "prompt-logs").mkdir()
+            (claude_root / "session-log").mkdir()
+            script = scripts / "prompt_log_save.sh"
+            script.write_text("# universal-session-log: managed\nlegacy\n")
+            settings = claude_root / "settings.json"
+            settings.write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [command_hook(f"bash {script}")]}]}}))
+            original = settings.read_bytes()
+            # settings.json cannot be locked or replaced, so `migrate` fails before anything is removed.
+            claude_root.chmod(READ_ONLY_DIRECTORY_MODE)
+            try:
+                result = run_session_log(package, home, "claude", "on")
+            finally:
+                claude_root.chmod(PRIVATE_DIRECTORY_MODE)
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            failure, status = result.stdout.splitlines()
+            self.assertTrue(failure.startswith("Claude Code: legacy cleanup failed: "), failure)
+            self.assertIn("Permission denied", failure)
+            self.assertTrue(failure.endswith("; run repair to retry"), failure)
+            self.assertNotIn("Traceback", failure)
+            self.assertEqual(status, "Claude Code: on — logging starts with the next prompt")
+            self.assertEqual(script.read_text(), "# universal-session-log: managed\nlegacy\n")
+            self.assertEqual(settings.read_bytes(), original)
+            self.assertTrue((claude_root / "prompt-logs/.enabled").is_file())
+
+    def test_claude_on_reports_a_silent_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home = root / "home"
+            package = claude_package(home)
+            settings = home / ".claude/settings.json"
+            settings.write_text(json.dumps({"hooks": {}}))
+            shims = root / "shims"
+            shims.mkdir()
+            # A python3 whose `migrate` fails without a word.
+            (shims / "python3").write_text(
+                f'#!/bin/sh\ncase "$*" in *"claude_settings.py migrate"*) exit 1 ;; esac\nexec "{sys.executable}" "$@"\n')
+            (shims / "python3").chmod(EXECUTABLE_MODE)
+            result = subprocess.run(
+                ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "on"],
+                capture_output=True, text=True,
+                env={**harness_environment(home), "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}"})
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertEqual(result.stdout, "Claude Code: legacy cleanup failed; run repair to retry\n"
+                                            "Claude Code: on — logging starts with the next prompt\n")
 
     def test_claude_on_without_jq_fails_before_enabling_logging(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1728,6 +1800,8 @@ class RepairCommandEdgeTests(unittest.TestCase):
 LEGACY_PACKAGE_PATH = REPO / "skills/session-log/lib/legacy_package.py"
 SEEDED_MANIFEST = ".universal-session-log.manifest"
 PLUGIN_CACHE_LINK_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/skills/session-log"
+# A remover that blocks (e.g. on a FIFO) fails the test instead of hanging the suite.
+LEGACY_PACKAGE_TIMEOUT_SECONDS = 30
 RELEASE_STORE_LINK_RELATIVE = ".local/share/universal-session-log/releases/1.0.0/skills/session-log"
 
 
@@ -1757,7 +1831,7 @@ class LegacyPackageCopyTests(unittest.TestCase):
     def remove(self, path=None):
         result = subprocess.run(
             [sys.executable, str(LEGACY_PACKAGE_PATH), "remove", str(path or self.copy)],
-            capture_output=True, text=True, env=harness_environment(self.home),
+            capture_output=True, text=True, env=harness_environment(self.home), timeout=LEGACY_PACKAGE_TIMEOUT_SECONDS,
         )
         self.assertEqual((result.returncode, result.stderr), (0, ""))
         return result.stdout
@@ -1842,6 +1916,7 @@ class LegacyPackageCopyTests(unittest.TestCase):
         self.assertEqual(self.remove(), "removed\n")
         self.assertFalse(os.path.lexists(copy))
 
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
     def test_keeps_a_copy_it_cannot_read_without_a_traceback(self):
         copy = self.seeded()
         (copy / "lib").chmod(0)
@@ -1852,6 +1927,44 @@ class LegacyPackageCopyTests(unittest.TestCase):
     def in_process(self):
         with patch.object(sys, "path", [str(LEGACY_PACKAGE_PATH.parent), *sys.path]):
             return load_module(LEGACY_PACKAGE_PATH, "legacy_package_race_test")
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_stays_silent_about_a_copy_it_cannot_prove_is_session_logs(self):
+        for name, unreadable in (("copy directory", ""), ("SKILL.md of a manifest-less copy", "SKILL.md")):
+            with self.subTest(name):
+                self.copy.parent.mkdir(parents=True)
+                shutil.copytree(REPO / "skills/session-log", self.copy)
+                (self.copy / unreadable).chmod(0)
+                try:
+                    self.assertEqual(self.remove(), "")
+                finally:
+                    (self.copy / unreadable).chmod(PRIVATE_DIRECTORY_MODE)
+                self.assertTrue((self.copy / "install.sh").is_file())
+                shutil.rmtree(self.copy.parent)
+
+    def test_keeps_the_manifest_when_the_copy_changes_after_its_files_are_removed(self):
+        changes = {
+            "a top-level file appears": (lambda copy: (copy / "notes.md").write_text("mine\n"), "notes.md"),
+            "the manifest is rewritten": (
+                lambda copy: (copy / SEEDED_MANIFEST).write_text("format=1\nowner=universal-session-log\nversion=9.9.9\n"),
+                SEEDED_MANIFEST),
+        }
+        for name, (change, culprit) in changes.items():
+            with self.subTest(name):
+                copy = self.seeded()
+                module = self.in_process()
+                removed = module._remove_tree
+
+                def remove_then_change(*arguments):
+                    removed(*arguments)
+                    if not arguments[1]:
+                        change(copy)
+
+                with patch.object(module, "_remove_tree", side_effect=remove_then_change):
+                    result = module.remove(str(copy), str(self.home))
+                self.assertEqual(result, f"kept: {culprit} changed during removal")
+                self.assertTrue((copy / SEEDED_MANIFEST).is_file())
+                shutil.rmtree(self.copy.parent)
 
     def test_keeps_a_copy_that_changes_between_its_check_and_removal(self):
         changes = {
@@ -1977,19 +2090,48 @@ class AdapterLinkRepairTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(os.readlink(link), str(package / source))
 
+    def foreign_destinations(self, home, source):
+        """Link targets that are not a session-log package's adapter, including dotted lookalikes."""
+        return (str(home / "elsewhere/session-log.js"), f"{home}/evil/../skills/session-log/{source}",
+                f"../skills/session-log/{source}", f"./skills/session-log/{source}")
+
     def test_on_refuses_an_adapter_link_to_a_foreign_file(self):
-        for harness, (subroot, target, _) in ADAPTER_LINKS.items():
-            for destination in ("elsewhere/session-log.js", "x/skills/session-log/../../elsewhere/session-log.js"):
-                with self.subTest(harness=harness, destination=destination), tempfile.TemporaryDirectory() as directory:
-                    home = Path(directory).resolve()
-                    package = harness_package(home, "cache/2.0.0")
-                    link = home / subroot / target
-                    link.parent.mkdir(parents=True)
-                    link.symlink_to(home / destination)
-                    result = run_session_log(package, home, harness, "on")
-                    self.assertEqual(result.returncode, 1, result.stdout)
-                    self.assertIn("refusing to overwrite unowned adapter link", result.stderr)
-                    self.assertEqual(os.readlink(link), str(home / destination))
+        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
+            with tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = harness_package(home, "cache/2.0.0")
+                link = home / subroot / target
+                link.parent.mkdir(parents=True)
+                for destination in self.foreign_destinations(home, source):
+                    with self.subTest(harness=harness, destination=destination):
+                        link.symlink_to(destination)
+                        result = run_session_log(package, home, harness, "on")
+                        # The shell preflight refuses it before anything is installed.
+                        self.assertEqual((result.returncode, result.stderr),
+                                         (1, f"session-log: refusing to overwrite unowned adapter link: {link}\n"))
+                        self.assertEqual(os.readlink(link), destination)
+                        self.assertFalse((home / subroot / "prompt-logs/.enabled").exists())
+                        link.unlink()
+
+    def test_link_adapter_refuses_a_dotted_package_lookalike(self):
+        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
+            with tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = harness_package(home, "cache/2.0.0")
+                link = home / subroot / target
+                link.parent.mkdir(parents=True)
+                for destination in self.foreign_destinations(home, source)[1:]:
+                    with self.subTest(harness=harness, destination=destination):
+                        link.symlink_to(destination)
+                        result = subprocess.run(
+                            [sys.executable, str(package / "lib/pathsafe.py"), "link-adapter"], capture_output=True, text=True,
+                            env={**harness_environment(home), "SESSION_LOG_SOURCE": str(package / source),
+                                 "SESSION_LOG_TARGET": str(link), "SESSION_LOG_STORE": str(home / "store"),
+                                 "SESSION_LOG_ADAPTER_RELATIVE": source})
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("refusing to overwrite unowned adapter link", result.stderr)
+                        self.assertEqual(os.readlink(link), destination)
+                        link.unlink()
 
     def test_on_migrates_a_marked_standalone_adapter_copy(self):
         for harness, (subroot, target, source) in ADAPTER_LINKS.items():
@@ -2000,6 +2142,22 @@ class AdapterLinkRepairTests(unittest.TestCase):
                 standalone.parent.mkdir(parents=True)
                 standalone.write_text("// universal-session-log: managed\nlegacy standalone copy\n")
                 result = run_session_log(package, home, harness, "on")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(os.readlink(standalone), str(package / source))
+
+    def test_status_with_logging_on_migrates_a_marked_standalone_adapter_copy(self):
+        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = harness_package(home, "cache/2.0.0")
+                standalone = home / subroot / target
+                standalone.parent.mkdir(parents=True)
+                standalone.write_text("// universal-session-log: managed\nlegacy standalone copy\n")
+                flag = home / subroot / "prompt-logs/.enabled"
+                flag.parent.mkdir(parents=True)
+                flag.write_text("enabled\n")
+                flag.chmod(0o600)
+                result = run_session_log(package, home, harness, "status")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(os.readlink(standalone), str(package / source))
 

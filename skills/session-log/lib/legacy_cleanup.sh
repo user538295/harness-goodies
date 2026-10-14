@@ -4,9 +4,10 @@
 # Sourced by bin/session-log after lib/adapter_install.sh, in the same shell, so it shares bin's
 # globals (HARNESS, HARNESS_ROOT, STATE_DIR, HARNESS_LABEL, OWNER_MARKER_VALUE, ...). `on` and
 # `repair` run it under the install lock; Claude Code's SessionStart hook runs it silently through
-# `repair`. It removes only what is proven to be session-log's, prints one line per removal
-# through print_repair_report, and never clears runtime markers: a harness plugin's own hooks
-# keep logging whatever duplicate registration goes.
+# `repair`. It removes only what is proven to be session-log's, prints one line per removed
+# registration, script, or package copy through print_repair_report (obsolete state files go
+# silently), and never clears runtime markers: a harness plugin's own hooks keep logging whatever
+# duplicate registration goes.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
@@ -14,11 +15,12 @@ readonly CLAUDE_LEGACY_SCRIPTS=(prompt_log_save.sh prompt_log_new_session.sh pro
   prompt_log_lib.sh prompt_log_usage.sh prompt_log_usage.jq prompt_log_prices.json)
 # Claude Code state files that older releases wrote and nothing reads any more: the adapter
 # installer's version stamps and manifest, and the plugin-root marker standalone copies read.
-# remove_claude_obsolete_state also removes their per-copy settings-repair.*.stamp files.
+# remove_claude_obsolete_state also removes their per-copy settings-repair.*.stamp files, but keeps
+# plugin-root while a seeded copy the cleanup had to keep still reads it.
 readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version plugin-root)
 
-# The cleanup of the current harness. A harness whose plugin takes over its session-log hooks
-# adds its own legacy_cleanup_<harness> here.
+# The cleanup of the current harness: any harness whose older releases left something behind has
+# its own legacy_cleanup_<harness> here, whether or not its plugin owns its hooks yet.
 legacy_cleanup() {
   case "$HARNESS" in
     claude) legacy_cleanup_claude ;;
@@ -134,6 +136,11 @@ remove_claude_obsolete_state() {
   validate_state_dir
   for candidate in "${CLAUDE_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}" "$STATE_DIR"/settings-repair.*.stamp; do
     [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    # Without this marker, a kept 1.19.0 copy registers its own settings.json hooks again.
+    if [[ "$candidate" == "$STATE_DIR/plugin-root" ]] &&
+      [[ -e "$HARNESS_ROOT/skills/session-log" || -L "$HARNESS_ROOT/skills/session-log" ]]; then
+      continue
+    fi
     # A concurrent cleanup may have removed it already.
     unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
       fail "cannot remove obsolete state file: $candidate"
@@ -318,9 +325,9 @@ validate_claude_legacy_scripts() {
   done
 }
 
+# legacy_cleanup_claude validates them first; remove_known_path checks each one again.
 remove_claude_legacy_scripts() {
   local name path
-  validate_claude_legacy_scripts
   for name in "${CLAUDE_LEGACY_SCRIPTS[@]}"; do
     path="$HOME_ROOT/.claude/scripts/$name"
     [[ -e "$path" || -L "$path" ]] || continue

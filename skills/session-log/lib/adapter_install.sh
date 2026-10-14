@@ -133,7 +133,7 @@ is_plugin_cache_adapter_link() {
 # releases seeded into the skill root, or another package version a harness plugin ships.
 is_package_adapter_link() {
   local relative="${ADAPTER_SOURCES[$HARNESS:$1]}" destination="$2"
-  case "$destination/" in */../*|*/./*) return 1 ;; esac
+  case "/$destination/" in */../*|*/./*) return 1 ;; esac
   [[ "$destination" == */skills/session-log/"$relative" ]]
 }
 
@@ -146,9 +146,7 @@ preflight_adapter_target() {
   ensure_safe_parent "$target"
   if [[ -L "$target" ]]; then
     existing="$(readlink "$target")"
-    if [[ ! -e "$target" ]] && is_plugin_cache_adapter_link "$HARNESS:$kind:$existing"; then
-      :
-    elif is_package_adapter_link "$kind" "$existing"; then
+    if is_package_adapter_link "$kind" "$existing"; then
       :
     else
       case "$HARNESS:$kind:$existing" in
@@ -203,12 +201,6 @@ preflight_adapter() {
     codex|cursor) preflight_native_hooks ;;
     opencode|omp) preflight_adapter_targets ;;
   esac
-}
-
-preflight_on() {
-  preflight_enable_flag
-  preflight_state_files
-  preflight_adapter
 }
 
 preflight_off() {
@@ -368,12 +360,17 @@ install_adapter() {
   clear_runtime_markers
 }
 
+# Like `on`, the legacy cleanup comes before the adapter preflight: it removes the standalone
+# adapter copies of earlier releases that sit where the adapter goes.
 repair_enabled_adapter() {
   [[ -f "$FLAG_FILE" && ! -L "$FLAG_FILE" ]] || return 0
   adapter_current && return 0
-  preflight_on
+  preflight_enable_flag
+  preflight_state_files
   acquire_install_lock
   trap release_install_lock EXIT
+  legacy_cleanup
+  preflight_adapter
   install_adapter
   release_install_lock
   trap - EXIT

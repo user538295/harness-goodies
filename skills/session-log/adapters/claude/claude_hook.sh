@@ -79,6 +79,8 @@ legacy_leftovers_present() {
   local settings="$CLAUDE_ROOT/settings.json"
   [[ -e "$SEEDED_COPY/.universal-session-log.manifest" || -L "$SEEDED_COPY" ]] && return 0
   compgen -G "$LEGACY_SCRIPTS_GLOB" >/dev/null && return 0
+  # A cheap superset of the registrations claude_settings.py recognizes as session-log's (owner
+  # marker, claude_hook.sh commands, pre-plugin prompt_log_* scripts); keep the two in step.
   [[ -f "$settings" && ! -L "$settings" ]] && grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=|prompt_log_' "$settings"
 }
 
@@ -94,9 +96,10 @@ cleanup_fingerprint() {
 
 # Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never
 # fails the hook and all output is discarded. A stamp of the fingerprint after each attempt,
-# successful or not, skips it until that fingerprint changes, so a cleanup that cannot succeed
-# (say, an edited legacy script) costs one attempt per change, not one per session; `on` and
-# `repair` report why it failed. With no leftover it costs one grep.
+# successful or not, skips it until settings.json, this package, or whether a seeded copy or
+# legacy scripts exist changes, so a cleanup that cannot succeed (say, an edited legacy script)
+# does not rerun at every session start. Restoring an edited file changes none of these: `on`
+# and `repair` run the cleanup then and report why it failed. With no leftover it costs one grep.
 cleanup_legacy_leftovers() {
   local fingerprint
   legacy_leftovers_present || return 0
