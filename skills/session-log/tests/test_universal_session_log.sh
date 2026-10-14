@@ -285,6 +285,12 @@ unknown_before_command_rc=$?
 set -e
 [[ "$unknown_before_command_rc" -ne 0 ]] && pass "unknown CLI argument before command fails" || fail "unknown CLI argument before command fails"
 assert_contains "unknown CLI argument error names the argument" "unknown argument: --bogus" "$unknown_before_command"
+set +e
+cli_home_unset="$(env -u HOME "$(package_root_for claude)/bin/session-log" --entrypoint claude --harness claude status 2>&1)"
+cli_home_unset_rc=$?
+set -e
+if [[ "$cli_home_unset_rc" -ne 0 ]]; then pass "CLI fails when HOME is unset"; else fail "CLI fails when HOME is unset (actual: $cli_home_unset)"; fi
+assert_not_contains "CLI with HOME unset reports no status" "Claude Code:" "$cli_home_unset"
 
 
 

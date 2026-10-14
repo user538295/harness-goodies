@@ -7,10 +7,14 @@ readonly OWNER_MARKER_VALUE="universal-session-log"
 # running session's hooks, and a restart shows the "Hooks need review" screen while any hook is new
 # or changed. RESTORE_FOLLOW_UP in adapters/native/install_hooks.py says the same (tests check it).
 readonly CODEX_TRUST_INSTRUCTION="approve the session-log hooks in /hooks, or restart Codex and choose 'Trust all and continue' if it shows the 'Hooks need review' screen"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-readonly PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-readonly VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
-readonly HOME_ROOT="$(cd "${HOME:?HOME is required}" && pwd -P)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+readonly PACKAGE_ROOT
+VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
+readonly VERSION
+HOME_ROOT="$(cd "${HOME:?HOME is required}" && pwd -P)"
+readonly HOME_ROOT
 readonly STORE="$HOME_ROOT/.local/share/universal-session-log"
 # No hook of this package's version has seen the flag in the running Cursor: the cursor-goodies
 # plugin is missing or predates its hooks, Cursor still runs the hooks of an older plugin version
