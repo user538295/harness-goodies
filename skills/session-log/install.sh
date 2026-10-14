@@ -459,6 +459,7 @@ lib/claude_settings.py
 lib/enable_flag.py
 lib/locking.py
 lib/adapter_install.sh
+lib/legacy_cleanup.sh
 adapters/claude/claude_hook.sh
 adapters/claude/scripts/prompt_log_lib.sh
 adapters/claude/scripts/prompt_log_new_session.sh
@@ -806,9 +807,8 @@ main() {
   if ((INSTALL_MODE == 0)); then
     [[ "$HARNESS_SELECTION" != all ]] || fail "--harness all requires --install"
     dispatch_root="$(package_root_for "$HARNESS_SELECTION")"
-    # A Claude plugin-cache package runs its own CLI: plugin mode is derived from
-    # the package location, which the seeded stable copy no longer carries.
-    if [[ "$HARNESS_SELECTION" == claude ]] && claude_plugin_package "$SOURCE_ROOT"; then
+    # Claude Code runs its own package's CLI: the plugin's hooks run from it, not from the seeded copy.
+    if [[ "$HARNESS_SELECTION" == claude ]]; then
       dispatch_root="$SOURCE_ROOT"
     fi
     bash "$dispatch_root/bin/session-log" \

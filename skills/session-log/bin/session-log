@@ -24,13 +24,14 @@ ENABLE_LOCK=""
 INSTALL_LOCK=""
 INSTALL_LOCK_OWNER_START=""
 REPAIR_REPORTED=0
-CLAUDE_SETTINGS_MODE=""
 
 SESSION_LOG_LOG_PREFIX="session-log"
 # shellcheck source=../lib/common.sh
 source "$PACKAGE_ROOT/lib/common.sh"
 # shellcheck source=../lib/adapter_install.sh
 source "$PACKAGE_ROOT/lib/adapter_install.sh"
+# shellcheck source=../lib/legacy_cleanup.sh
+source "$PACKAGE_ROOT/lib/legacy_cleanup.sh"
 
 declare -rA HARNESS_LABELS=(
   [claude]="Claude Code" [codex]="Codex" [cursor]="Cursor" [opencode]="OpenCode" [omp]="OMP"
@@ -44,7 +45,6 @@ declare -rA ADAPTER_SOURCES=(
   [opencode:usage]="adapters/opencode/session_log_usage.sh"
   [omp:extension]="adapters/omp/session-log.js"
   [omp:usage]="adapters/omp/session_log_usage.ts"
-  [claude:hook]="adapters/claude/claude_hook.sh"
   [cursor:hook]="adapters/native/session_log_hook.py"
   [codex:hook]="adapters/native/session_log_hook.py"
   [cursor:configurator]="adapters/native/install_hooks.py"
@@ -59,7 +59,6 @@ declare -rA ADAPTER_TARGETS=(
   [omp:usage]="skills/session-log/scripts/session_log_usage.ts"
 )
 declare -rA HARNESS_KINDS=(
-  [claude]="hook"
   [cursor]="hook configurator usage"
   [codex]="hook configurator usage"
   [opencode]="plugin usage"
@@ -265,30 +264,16 @@ target_for() {
   printf '%s\n' "$HARNESS_ROOT/$relative"
 }
 
-# The VERSION the active hooks record in runtime.json: a standalone Claude copy deferring to
-# the plugin (plugin mode outside the plugin cache) expects the plugin package's, since the
-# plugin's hooks write it. Callers resolve CLAUDE_SETTINGS_MODE first.
-runtime_version() {
-  local root
-  if [[ "$CLAUDE_SETTINGS_MODE" == plugin ]] && ! claude_plugin_package_path "$PACKAGE_ROOT" &&
-    root="$(recorded_plugin_root)" && [[ -f "$root/VERSION" && ! -L "$root/VERSION" ]]; then
-    tr -d '[:space:]' < "$root/VERSION"
-  else
-    printf '%s' "$VERSION"
-  fi
-}
-
+# True when the hooks of a running session have written their runtime marker, for this VERSION.
 runtime_current() {
   validate_state_dir
   require_command jq
-  local candidate loaded_at now pid expected_start actual_start expected_version
+  local candidate loaded_at now pid expected_start actual_start
   local -a candidates=("$RUNTIME_FILE" "$STATE_DIR"/runtime.*.json)
-  resolve_claude_settings_mode
-  expected_version="$(runtime_version)"
   for candidate in "${candidates[@]}"; do
     [[ -f "$candidate" && ! -L "$candidate" ]] || continue
     [[ "$(jq -r '.harness // empty' "$candidate" 2>/dev/null)" == "$HARNESS" ]] || continue
-    [[ "$(jq -r '.version // empty' "$candidate" 2>/dev/null)" == "$expected_version" ]] || continue
+    [[ "$(jq -r '.version // empty' "$candidate" 2>/dev/null)" == "$VERSION" ]] || continue
     if [[ "$HARNESS" == claude ]]; then
       [[ -n "$(jq -r '.session_id // empty' "$candidate" 2>/dev/null)" ]] || continue
       [[ "$(jq -r '.loaded_at // empty' "$candidate" 2>/dev/null)" =~ ^[0-9]+$ ]] || continue
@@ -334,6 +319,14 @@ set_disabled() {
   clear_runtime_markers
 }
 
+# True when the harness plugin registers the session-log hooks from its own package. Its hooks
+# are no-ops until the enable flag exists, so `on` and `off` only flip that flag and nothing
+# installs, compares, or reinstalls an adapter. A harness whose plugin takes over its hooks joins
+# here and adds its leftovers to legacy_cleanup (lib/legacy_cleanup.sh).
+plugin_owns_hooks() {
+  [[ "$HARNESS" == claude ]]
+}
+
 print_status() {
   ensure_safe_parent "$FLAG_FILE"
   [[ ! -L "$FLAG_FILE" ]] || fail "refusing to follow symlinked enable flag: $FLAG_FILE"
@@ -342,7 +335,7 @@ print_status() {
     printf '%s: off\n' "$HARNESS_LABEL"
     return
   fi
-  if ! adapter_current; then
+  if ! plugin_owns_hooks && ! adapter_current; then
     printf '%s: on — adapter missing\n' "$HARNESS_LABEL"
     return
   fi
@@ -420,13 +413,14 @@ run_usage() {
   unlink "$error_file"
 }
 
-# Remove duplicate and stale session-log hook registrations under the install lock,
-# then report what was removed (or that nothing was).
+# Remove legacy leftovers and duplicate or stale session-log hook registrations under the
+# install lock, then report what was removed (or that nothing was).
 run_repair() {
   validate_state_dir
   preflight_install_lock
   acquire_install_lock
   trap release_install_lock EXIT
+  legacy_cleanup
   repair_registrations
   release_install_lock
   trap - EXIT
@@ -434,15 +428,43 @@ run_repair() {
     printf '%s: repair found no duplicate or stale registrations\n' "$HARNESS_LABEL"
 }
 
+# `on` for a plugin-owned harness: legacy cleanup, then the enable flag. Without a current runtime
+# marker, a flag this command created takes effect at the next prompt; a flag that was already on
+# means the hooks of the running session never saw it, so they are not loaded.
+enable_plugin_hooks() {
+  local was_enabled=0
+  preflight_enable_flag
+  validate_state_dir
+  preflight_install_lock
+  acquire_install_lock
+  trap release_install_lock EXIT
+  legacy_cleanup
+  [[ ! -e "$FLAG_FILE" ]] || was_enabled=1
+  set_enabled
+  if runtime_current; then
+    printf '%s: on\n' "$HARNESS_LABEL"
+  elif ((was_enabled)); then
+    printf '%s: on — restart required\n' "$HARNESS_LABEL"
+  else
+    printf '%s: on — logging starts with the next prompt\n' "$HARNESS_LABEL"
+  fi
+  release_install_lock
+  trap - EXIT
+}
+
 main() {
   parse_args "$@"
   resolve_roots
   case "$COMMAND" in
     on)
+      if plugin_owns_hooks; then
+        enable_plugin_hooks
+        return
+      fi
       preflight_on
       acquire_install_lock
       trap release_install_lock EXIT
-      resolve_claude_settings_mode
+      legacy_cleanup
       repair_registrations
       if ! adapter_current; then install_adapter; fi
       set_enabled
@@ -460,21 +482,17 @@ main() {
       preflight_off
       acquire_install_lock
       trap release_install_lock EXIT
-      if claude_registers_no_settings_hooks; then
-        preflight_claude_settings
-        remove_claude_settings_hooks
-      fi
       set_disabled
       printf '%s: off\n' "$HARNESS_LABEL"
       release_install_lock
       trap - EXIT
       ;;
     status)
-      repair_enabled_adapter
+      plugin_owns_hooks || repair_enabled_adapter
       print_status
       ;;
     usage)
-      repair_enabled_adapter
+      plugin_owns_hooks || repair_enabled_adapter
       run_usage
       ;;
     repair)

@@ -1,32 +1,19 @@
 #!/usr/bin/env python3
 # universal-session-log: managed
-"""Claude settings.json hook management (install, removal, legacy migration).
+"""Removal of the session-log hooks older releases registered in Claude settings.json.
 
-Extracted verbatim from bin/session-log (``install``) and install.sh
-(``migrate``) so the flock + JSON-merge + atomic-replace dances live in one
-auditable, testable module instead of two large shell here-documents.
+The claude-goodies plugin's hooks/hooks.json registers the session-log hooks, so
+settings.json keeps none. The flock + JSON-merge + atomic-replace dances live in
+one auditable, testable module instead of large shell here-documents.
 
 Usage:
-    python3 claude_settings.py install    # SETTINGS_PATH, HOOK_PATH, SESSION_LOG_OWNER_MARKER
-    python3 claude_settings.py remove <plugin-mode>         # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER; prints a line only if it removed any
-    python3 claude_settings.py repair <mode>                # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER, HOOK_PATH (standalone); prints what it changed
-    python3 claude_settings.py has-removable <plugin-mode>  # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER; exit 0 if any
-    python3 claude_settings.py plugin-hooks-current  # PLUGIN_ROOT; exit 0 if hooks.json registers
-    python3 claude_settings.py plugin-enabled  # SETTINGS_PATH, PLUGIN_KEY; exit 0 if enabledPlugins sets it to true
+    python3 claude_settings.py remove     # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER; prints a line only if it removed any
     python3 claude_settings.py migrate    # SETTINGS_PATH, CLAUDE_SCRIPTS_DIR
 
-The caller names the mode: ``plugin`` (the plugin's hooks own the session-log
-hooks, so settings.json keeps none), ``plugin-dead-only`` (a plugin copy whose
-plugin is not enabled at user scope: only registrations whose script is gone or
-lies in the versioned plugin cache are removed, since a live standalone copy may
-still serve other projects), or
-``standalone`` (exactly the managed set for HOOK_PATH); the plugin modes are the
-``<plugin-mode>`` values.
-
 A hook is owned when its command starts with the ``SESSION_LOG_OWNER=<owner> ``
-marker, whatever hook path follows it, so entries written by older releases
-(including dead versioned plugin-cache paths) are replaced or removed too. An
-unmarked ``[exec] bash <path>/skills/session-log/adapters/claude/claude_hook.sh
+marker, whatever hook path follows it, so entries written by any older release
+(including dead versioned plugin-cache paths) are removed. An unmarked
+``[exec] bash <path>/skills/session-log/adapters/claude/claude_hook.sh
 <lifecycle>`` command counts as owned as well, whatever its path: a copy of the
 plugin's own ``${CLAUDE_PLUGIN_ROOT}`` command (never substituted in
 settings.json) or an old install path. A native Windows ``C:\\`` path is
@@ -41,7 +28,6 @@ import re
 import shlex
 import stat
 import sys
-from collections import Counter
 from dataclasses import dataclass
 
 import pathsafe
@@ -51,35 +37,13 @@ FILE_FLAGS = os.O_RDONLY | NOFOLLOW
 BACKUP_ATTEMPTS = 20
 INSTALL_TEMP_ATTEMPTS = 20
 TEMP_ATTEMPTS = 100
-MANAGED_EVENTS = {
-    "SessionStart": ("startup|resume", "session-start"),
-    "UserPromptSubmit": (None, "user-prompt"),
-    "Stop": (None, "stop"),
-    "SubagentStop": (None, "subagent-stop"),
-}
-PLUGIN_EVENTS = {
-    "SessionStart": ("startup", "session-start"),
-    "UserPromptSubmit": (None, "user-prompt"),
-    "Stop": (None, "stop"),
-    "SubagentStop": (None, "subagent-stop"),
-}
 # Always '/'-separated: it is matched inside hook command strings, which use '/' on every platform.
 PLUGIN_HOOK_RELATIVE = "skills/session-log/adapters/claude/claude_hook.sh"
-LIFECYCLE_NAMES = frozenset(name for _, name in MANAGED_EVENTS.values())
+LIFECYCLE_NAMES = frozenset({"session-start", "user-prompt", "stop", "subagent-stop"})
 BASH_COMMANDS = frozenset({"bash", "/bin/bash"})
 # `bash <claude_hook.sh> <lifecycle>`, once a leading `exec` is dropped.
 HOOK_COMMAND_WORDS = 3
-MODE_PLUGIN = "plugin"
-MODE_PLUGIN_DEAD_ONLY = "plugin-dead-only"
-MODE_STANDALONE = "standalone"
-PLUGIN_MODES = frozenset({MODE_PLUGIN, MODE_PLUGIN_DEAD_ONLY})
-REPAIR_MODES = PLUGIN_MODES | {MODE_STANDALONE}
 WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
-PLUGIN_ROOT_VARIABLE = "CLAUDE_PLUGIN_ROOT"
-# Claude Code's versioned plugin copies, below the home directory.
-PLUGIN_CACHE_RELATIVE = ".claude/plugins/cache/"
-# How a hook command may spell the home directory before the shell expands it.
-HOME_REFERENCES = ("~", "$HOME", "${HOME}")
 
 
 def plugin_hook_command(name):
@@ -270,36 +234,6 @@ def _runs_claude_hook(command):
     )
 
 
-def _plugin_cache_prefixes():
-    """Every spelling of ``<home>/.claude/plugins/cache/`` a hook script path may start with."""
-    home = os.environ["HOME"]
-    return tuple(f"{root.rstrip('/')}/{PLUGIN_CACHE_RELATIVE}" for root in (home, os.path.realpath(home), *HOME_REFERENCES))
-
-
-def _is_dead_hook_path(path, cache_prefixes):
-    """True when a registered hook script path cannot serve this host's hooks: an unsubstituted plugin root,
-    a versioned plugin-cache copy (settings.json must never point there; Claude Code deletes a replaced version
-    later), or an absolute path that is not an existing file. A path the shell would expand (``~``, ``$``) or
-    resolve against the hook's working directory (relative) cannot be judged here, so it counts as live."""
-    if PLUGIN_ROOT_VARIABLE in path or path.startswith(cache_prefixes):
-        return True
-    if not (path.startswith("/") or WINDOWS_DRIVE_PATH.match(path)) or "~" in path or "$" in path:
-        return False
-    return not os.path.isfile(path)
-
-
-def _is_dead_command(command, owner_prefix):
-    """True when an owned command cannot run its hook: the plugin command copied verbatim (never substituted
-    in settings.json) or a hook script path every word split reads as dead. An unreadable command counts as live."""
-    if command in PLUGIN_COMMANDS:
-        return True
-    if command.startswith(owner_prefix):
-        command = command[len(owner_prefix):]
-    paths = list(_hook_script_paths(command))
-    cache_prefixes = _plugin_cache_prefixes()
-    return bool(paths) and all(_is_dead_hook_path(path, cache_prefixes) for path in paths)
-
-
 def _is_owned_command_hook(item, owner_prefix):
     """A session-log registration: owner-marked, a copy of the plugin's own command, or any claude_hook.sh command."""
     return (
@@ -318,17 +252,6 @@ def _owned_hook(owner):
     """Predicate: the hook item is a session-log registration."""
     prefix = _owner_prefix(owner)
     return lambda item: _is_owned_command_hook(item, prefix)
-
-
-def _dead_owned_hook(owner):
-    """Predicate: the hook item is a session-log registration that cannot run its hook."""
-    prefix = _owner_prefix(owner)
-    return lambda item: _is_owned_command_hook(item, prefix) and _is_dead_command(item["command"], prefix)
-
-
-def _removable_hook(mode, owner):
-    """Predicate for the registrations a plugin ``mode`` removes: every owned one, or only the dead ones."""
-    return _owned_hook(owner) if mode == MODE_PLUGIN else _dead_owned_hook(owner)
 
 
 def _filter_managed_hooks(entries, removable):
@@ -373,38 +296,11 @@ def _load_install_settings(parent_fd, settings_name):
     return document, SettingsSnapshot(metadata, contents)
 
 
-def _managed_command(hook_path, owner, name):
-    return f"{_owner_prefix(owner)}bash {shlex.quote(hook_path)} {name}"
-
-
-def _inject_managed_hooks(document, hook_path, owner):
-    """Leave exactly the managed set: drop owned hooks under every event, then register one per managed event."""
-    hooks = document.get("hooks")
-    if hooks is None:
-        hooks = {}
-    elif not isinstance(hooks, dict):
-        raise SystemExit("cannot update Claude settings: hooks must be an object")
-    document["hooks"] = hooks
-    owned = _owned_hook(owner)
-    _strip_hooks(hooks, owned, skip_events=MANAGED_EVENTS)
-    for event, (matcher, name) in MANAGED_EVENTS.items():
-        entries = hooks.setdefault(event, [])
-        if not isinstance(entries, list):
-            raise SystemExit(f"cannot update Claude settings: hooks.{event} must be an array")
-        command = _managed_command(hook_path, owner, name)
-        filtered = _filter_managed_hooks(entries, owned)
-        entry = {"hooks": [{"type": "command", "command": command}]}
-        if matcher is not None:
-            entry["matcher"] = matcher
-        filtered.append(entry)
-        hooks[event] = filtered
-
-
-def _strip_hooks(hooks, removable, skip_events=()):
-    """Drop removable hook items outside ``skip_events``, and any entry or event they leave empty."""
+def _strip_hooks(hooks, removable):
+    """Drop removable hook items, and any entry or event they leave empty."""
     changed = False
     for event, entries in list(hooks.items()):
-        if event in skip_events or not isinstance(entries, list):
+        if not isinstance(entries, list):
             continue
         kept = _filter_managed_hooks(entries, removable)
         if kept == entries:
@@ -628,33 +524,21 @@ def _update_settings(edit, create):
         os.close(parent_fd)
 
 
-def install():
-    hook_path = os.environ["HOOK_PATH"]
-    owner = os.environ["SESSION_LOG_OWNER_MARKER"]
-
-    def inject(document):
-        _inject_managed_hooks(document, hook_path, owner)
-        return True
-
-    _update_settings(inject, create=True)
-
-
-def remove(mode):
-    """Drop the registrations plugin ``mode`` makes removable, and print how many when any were;
-    never registers any."""
+def remove():
+    """Drop every session-log registration, and print how many when any were; never registers any."""
     settings_path = os.environ["SETTINGS_PATH"]
-    removable = _removable_hook(mode, os.environ["SESSION_LOG_OWNER_MARKER"])
+    owned = _owned_hook(os.environ["SESSION_LOG_OWNER_MARKER"])
     if not os.path.lexists(settings_path):
         return
 
     def strip(document):
-        removed = len(_registrations(document, removable))
-        _remove_managed_hooks(document, removable)
+        removed = len(_registrations(document, owned))
+        _remove_managed_hooks(document, owned)
         return removed
 
     removed = _update_settings(strip, create=False)
     if removed:
-        print(f"removed {removed} session-log hook registration(s) from {settings_path}")
+        print(f"removed {removed} legacy session-log hook registration(s) from {settings_path}")
 
 
 def _registrations(document, selected):
@@ -671,117 +555,6 @@ def _registrations(document, selected):
         for item in entry["hooks"]
         if selected(item)
     ]
-
-
-def _repair_counts(found, wanted):
-    """``(removed, restored)`` registrations when the owned set ``found`` is rewritten to ``wanted``."""
-    kept = sum((Counter(found) & Counter(wanted)).values())
-    return len(found) - kept, len(wanted) - kept
-
-
-def repair(mode):
-    """Leave settings.json as ``mode`` requires: no session-log hook (``plugin``), no dead one
-    (``plugin-dead-only``), or exactly the managed set for HOOK_PATH (``standalone``).
-
-    Rewrites only when a registration is repeated, stale, dead, missing from a partial set, or
-    redundant with the plugin's hooks, and prints how many were removed and restored. A settings
-    file without any owned registration is never touched: repair registers nothing from scratch.
-    """
-    settings_path = os.environ["SETTINGS_PATH"]
-    owner = os.environ["SESSION_LOG_OWNER_MARKER"]
-    if not os.path.lexists(settings_path):
-        return
-    if mode == MODE_STANDALONE:
-        hook_path = os.environ["HOOK_PATH"]
-        selected = _owned_hook(owner)
-        wanted = [
-            (event, matcher, _managed_command(hook_path, owner, name))
-            for event, (matcher, name) in MANAGED_EVENTS.items()
-        ]
-    else:
-        selected = _removable_hook(mode, owner)
-        wanted = []
-
-    def collapse(document):
-        found = _registrations(document, selected)
-        if not found or Counter(found) == Counter(wanted):
-            return None
-        if mode == MODE_STANDALONE:
-            _inject_managed_hooks(document, hook_path, owner)
-        else:
-            _remove_managed_hooks(document, selected)
-        return _repair_counts(found, wanted)
-
-    counts = _update_settings(collapse, create=False)
-    if counts is None:
-        return
-    removed, restored = counts
-    if removed:
-        print(f"removed {removed} duplicate or stale hook registration(s) from {settings_path}")
-    if restored:
-        print(f"restored {restored} missing hook registration(s) in {settings_path}")
-
-
-def _read_json_object_or_none(path):
-    """The JSON object stored at ``path``, or None when it is unreadable, invalid, or not an object."""
-    try:
-        with open(path, encoding="utf-8") as handle:
-            document = json.load(handle)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return document if isinstance(document, dict) else None
-
-
-def plugin_enabled():
-    """True only when SETTINGS_PATH's enabledPlugins sets PLUGIN_KEY to true (user scope); unreadable means false."""
-    document = _read_json_object_or_none(os.environ["SETTINGS_PATH"])
-    plugins = document.get("enabledPlugins") if document is not None else None
-    return isinstance(plugins, dict) and plugins.get(os.environ["PLUGIN_KEY"]) is True
-
-
-def has_removable(mode):
-    """True when settings.json holds a registration plugin ``mode`` would remove; unreadable means false."""
-    document = _read_json_object_or_none(os.environ["SETTINGS_PATH"])
-    if document is None:
-        return False
-    return bool(_registrations(document, _removable_hook(mode, os.environ["SESSION_LOG_OWNER_MARKER"])))
-
-
-def _plugin_registers_event(entries, matcher, name):
-    expected = plugin_hook_command(name)
-    return any(
-        isinstance(entry, dict)
-        and ((matcher is None and "matcher" not in entry) or entry.get("matcher") == matcher)
-        and isinstance(entry.get("hooks"), list)
-        and any(
-            isinstance(item, dict)
-            and item.get("type") == "command"
-            and item.get("command") == expected
-            for item in entry["hooks"]
-        )
-        for entry in entries
-    )
-
-
-def plugin_hooks_current():
-    """True when PLUGIN_ROOT's hooks/hooks.json registers every Claude lifecycle hook."""
-    plugin_root = os.environ["PLUGIN_ROOT"]
-    hooks_dir = os.path.join(plugin_root, "hooks")
-    hooks_path = os.path.join(hooks_dir, "hooks.json")
-    hook_path = os.path.join(plugin_root, PLUGIN_HOOK_RELATIVE)
-    if os.path.islink(hooks_dir) or os.path.islink(hooks_path) or not os.path.isfile(hooks_path):
-        return False
-    if os.path.islink(hook_path) or not os.path.isfile(hook_path):
-        return False
-    document = _read_json_object_or_none(hooks_path)
-    hooks = document.get("hooks") if document is not None else None
-    if not isinstance(hooks, dict):
-        return False
-    return all(
-        isinstance(hooks.get(event), list) and _plugin_registers_event(hooks[event], matcher, name)
-        for event, (matcher, name) in PLUGIN_EVENTS.items()
-    )
-
 
 
 def _normalized_legacy_path(token, legacy_scripts_dir):
@@ -1065,29 +838,12 @@ def migrate():
         os.close(parent_fd)
 
 
-def _mode(arguments, allowed):
-    """The single mode argument, which must be one of ``allowed``."""
-    if len(arguments) != 1 or arguments[0] not in allowed:
-        raise SystemExit(f"claude_settings: expected one mode of {', '.join(sorted(allowed))}")
-    return arguments[0]
-
-
 def main(argv):
     if not argv:
         raise SystemExit("claude_settings: missing operation")
-    operation, arguments = argv[0], argv[1:]
-    if operation == "install":
-        install()
-    elif operation == "remove":
-        remove(_mode(arguments, PLUGIN_MODES))
-    elif operation == "repair":
-        repair(_mode(arguments, REPAIR_MODES))
-    elif operation == "has-removable":
-        raise SystemExit(0 if has_removable(_mode(arguments, PLUGIN_MODES)) else 1)
-    elif operation == "plugin-enabled":
-        raise SystemExit(0 if plugin_enabled() else 1)
-    elif operation == "plugin-hooks-current":
-        raise SystemExit(0 if plugin_hooks_current() else 1)
+    operation = argv[0]
+    if operation == "remove":
+        remove()
     elif operation == "migrate":
         migrate()
     else:

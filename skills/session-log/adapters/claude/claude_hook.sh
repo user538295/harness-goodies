@@ -68,63 +68,37 @@ write_state_file() {
   mv -f "$temp" "$target" 2>/dev/null || unlink "$temp" 2>/dev/null || true
 }
 
-# The plugin's own SessionStart proves its hooks are active; a standalone copy reads this
-# marker so its on/status/repair stop registering duplicate settings.json hooks.
-record_plugin_root() {
-  local marker="$1"
-  if [[ -f "$marker" && ! -L "$marker" && "$(< "$marker")" == "$PACKAGE_ROOT" ]]; then
-    return 0
-  fi
-  write_state_file "$marker" "$PACKAGE_ROOT"
+# Whether older releases may have left session-log registrations in settings.json.
+legacy_leftovers_present() {
+  local settings="$CLAUDE_ROOT/settings.json"
+  [[ -f "$settings" && ! -L "$settings" ]] && grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=' "$settings"
 }
 
-# What a session-start repair depends on: settings.json, this package, the plugin's marker,
-# and whether each claude_hook.sh path settings.json names (bare or single-quoted) is a file,
-# so a removed copy's dead registrations are repaired. Paths spelled with JSON escapes or
-# double quotes are not resolved: their removal is repaired at the next settings change.
-repair_fingerprint() {
-  local settings="$1" marker="$2" hook
-  cksum < "$settings" || return 1
+# What the cleanup depends on: settings.json and this package.
+cleanup_fingerprint() {
+  local settings="$CLAUDE_ROOT/settings.json"
+  if [[ -f "$settings" && ! -L "$settings" ]]; then cksum < "$settings" || return 1; fi
   printf '%s\n%s\n' "$PACKAGE_ROOT" "$VERSION"
-  [[ ! -f "$marker" || -L "$marker" ]] || cat "$marker"
-  while IFS= read -r hook; do
-    hook="${hook#\'}"
-    hook="${hook%\'}"
-    if [[ -f "$hook" ]]; then printf 'file %s\n' "$hook"; else printf 'none %s\n' "$hook"; fi
-  done < <(grep -oE "'[^']*claude_hook\.sh'|[^\"' ]*claude_hook\.sh" "$settings" || true)
 }
 
-# Session start runs the shared repair, logging on or off: a plugin copy drops every
-# settings.json registration while enabled at user scope (its hooks/hooks.json owns the
-# hooks), otherwise only dead ones; a standalone copy collapses repeated or stale ones.
-# A plugin copy's removal clears the runtime markers before this hook writes its own (other
-# running sessions rewrite theirs on their next hook event). Best effort: it never fails the
-# hook and all output is discarded. A per-copy stamp of the last successful repair's
-# fingerprint skips it until that fingerprint changes; a file without session-log hooks costs
-# one grep.
-repair_settings_registrations() {
-  local settings="$CLAUDE_ROOT/settings.json" marker fingerprint stamp checksum
-  # shellcheck source=../../lib/common.sh
-  source "$PACKAGE_ROOT/lib/common.sh" || return 0
-  marker="$STATE_DIR/$PLUGIN_ROOT_MARKER_NAME"
-  if claude_plugin_package_path "$PACKAGE_ROOT"; then record_plugin_root "$marker"; fi
-  [[ -f "$settings" && ! -L "$settings" ]] || return 0
-  grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=' "$settings" || return 0
-  fingerprint="$(repair_fingerprint "$settings" "$marker")" || return 0
-  # One stamp per copy: a plugin and a standalone copy must not overwrite each other's.
-  checksum="$(printf '%s' "$PACKAGE_ROOT" | cksum)" || return 0
-  stamp="$STATE_DIR/settings-repair.${checksum%% *}.stamp"
+# Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never
+# fails the hook and all output is discarded. A stamp of the last successful cleanup's
+# fingerprint skips it until that fingerprint changes; with no leftover it costs one grep.
+cleanup_legacy_leftovers() {
+  local stamp="$STATE_DIR/legacy-cleanup.stamp" fingerprint
+  legacy_leftovers_present || return 0
+  fingerprint="$(cleanup_fingerprint)" || return 0
   if [[ -f "$stamp" && ! -L "$stamp" && "$(< "$stamp")" == "$fingerprint" ]]; then
     return 0
   fi
   bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || return 0
-  # Benign race: a write landing between the repair and this fingerprint is stamped unrepaired;
-  # the next change to the fingerprint triggers the repair again.
-  fingerprint="$(repair_fingerprint "$settings" "$marker")" || return 0
+  # Benign race: a write landing between the cleanup and this fingerprint is stamped uncleaned;
+  # the next change to the fingerprint triggers the cleanup again.
+  fingerprint="$(cleanup_fingerprint)" || return 0
   write_state_file "$stamp" "$fingerprint"
 }
 if [[ "${1:-}" == session-start ]]; then
-  repair_settings_registrations </dev/null >/dev/null 2>&1 || true
+  cleanup_legacy_leftovers </dev/null >/dev/null 2>&1 || true
 fi
 
 input="$(cat)"

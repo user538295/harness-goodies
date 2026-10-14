@@ -6,11 +6,9 @@ import os
 import shlex
 import shutil
 import sqlite3
-import stat
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -619,8 +617,9 @@ class DirectoryLifecycleTests(unittest.TestCase):
         native_open = settings.os.open
         native_directory_open = settings.pathsafe.open_directory
         with tempfile.TemporaryDirectory() as directory:
-            settings_path = str(Path(directory).resolve() / "settings.json")
-            for operation in ("install", "migrate"):
+            settings_path = Path(directory).resolve() / "settings.json"
+            settings_path.write_text("{}")
+            for operation in ("remove", "migrate"):
                 with self.subTest(operation=operation):
                     opened = []
 
@@ -635,8 +634,7 @@ class DirectoryLifecycleTests(unittest.TestCase):
                         return native_open(path, *args, **kwargs)
 
                     with patch.dict(os.environ, {
-                        "SETTINGS_PATH": settings_path,
-                        "HOOK_PATH": "/unused/hook.sh",
+                        "SETTINGS_PATH": str(settings_path),
                         "SESSION_LOG_OWNER_MARKER": "test-owner",
                         "CLAUDE_SCRIPTS_DIR": str(Path(directory).resolve() / "scripts"),
                     }), patch.object(settings.pathsafe, "open_directory", side_effect=record_directory), \
@@ -680,13 +678,7 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
         self.assertTrue(settings._remove_managed_hooks(document, settings._owned_hook(self.OWNER)))
         self.assertEqual(document, {"model": "opus"})
 
-    def test_install_replaces_owned_hooks_with_stale_paths(self):
-        settings = self.load()
-        document = {"hooks": {"Stop": [{"hooks": [self.owned("/old/1.14.1/claude_hook.sh", "stop")]}]}}
-        settings._inject_managed_hooks(document, "/stable/claude_hook.sh", self.OWNER)
-        self.assertEqual(document["hooks"]["Stop"], [{"hooks": [self.owned("/stable/claude_hook.sh", "stop")]}])
-
-    def test_install_replaces_unmarked_copies_and_keeps_lookalikes(self):
+    def test_remove_strips_unmarked_copies_and_keeps_lookalikes(self):
         settings = self.load()
         tail = PLUGIN_HOOK_TAIL
         unmarked = [
@@ -697,13 +689,10 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
         ]
         lookalikes = [f"bash /x/{tail} unknown-event", f"notify && bash /x/{tail} stop", "bash /x/other_hook.sh stop"]
         document = {"hooks": {"Stop": [{"hooks": [command_hook(value) for value in unmarked + lookalikes]}]}}
-        settings._inject_managed_hooks(document, "/stable/claude_hook.sh", self.OWNER)
-        self.assertEqual(document["hooks"]["Stop"], [
-            {"hooks": [command_hook(value) for value in lookalikes]},
-            {"hooks": [self.owned("/stable/claude_hook.sh", "stop")]},
-        ])
+        self.assertTrue(settings._remove_managed_hooks(document, settings._owned_hook(self.OWNER)))
+        self.assertEqual(document["hooks"]["Stop"], [{"hooks": [command_hook(value) for value in lookalikes]}])
 
-    def test_install_strips_owned_hooks_from_unmanaged_events_and_keeps_the_rest(self):
+    def test_remove_strips_owned_hooks_from_every_event_and_keeps_the_rest(self):
         settings = self.load()
         foreign = {"type": "command", "command": "cc-status compact"}
         document = {"hooks": {
@@ -711,10 +700,8 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
             "SessionEnd": [{"hooks": [self.owned("/old/claude_hook.sh", "stop")]}],
             "Notification": [],
         }}
-        settings._inject_managed_hooks(document, "/stable/claude_hook.sh", self.OWNER)
-        self.assertEqual(document["hooks"]["PreCompact"], [{"hooks": [foreign]}])
-        self.assertNotIn("SessionEnd", document["hooks"])
-        self.assertEqual(document["hooks"]["Notification"], [])
+        settings._remove_managed_hooks(document, settings._owned_hook(self.OWNER))
+        self.assertEqual(document["hooks"], {"PreCompact": [{"hooks": [foreign]}], "Notification": []})
 
     def test_windows_path_with_a_hash_is_recognized_as_a_claude_hook(self):
         settings = self.load()
@@ -726,7 +713,7 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             settings_path = Path(directory) / "settings.json"
             with patch.dict(os.environ, {"SETTINGS_PATH": str(settings_path), "SESSION_LOG_OWNER_MARKER": self.OWNER}):
-                settings.main(["remove", "plugin"])
+                settings.main(["remove"])
             self.assertFalse(settings_path.exists())
 
     def test_remove_keeps_the_matcher_and_extra_keys_of_a_mixed_entry(self):
@@ -743,64 +730,49 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
             [sys.executable, str(CLAUDE_SETTINGS_PATH), *arguments], env=environment, capture_output=True, text=True,
         )
 
-    def run_cli(self, environment, *arguments):
-        return self.cli(environment, *arguments).returncode
-
-    def removable_cases(self, home):
-        """``(command, plugin status, plugin-dead-only status)``: exit 0 when the mode removes the registration."""
+    def owned_commands(self, home):
+        """Every spelling of a session-log registration older releases wrote, live or dead, by name."""
         prefix = f"SESSION_LOG_OWNER={self.OWNER} bash"
         live_hook = home / "live" / PLUGIN_HOOK_TAIL
-        cached_hook = home / PLUGIN_CACHE_RELATIVE / PLUGIN_HOOK_TAIL
-        for hook in (live_hook, cached_hook):
-            hook.parent.mkdir(parents=True)
-            hook.write_text("")
-        cache_tail = f"{PLUGIN_CACHE_RELATIVE}/{PLUGIN_HOOK_TAIL}"
+        live_hook.parent.mkdir(parents=True)
+        live_hook.write_text("")
+        cache_tail = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/{PLUGIN_HOOK_TAIL}"
         windows_hook = "C:\\Users\\Jane Doe\\.claude\\" + PLUGIN_HOOK_TAIL.replace("/", "\\")
         return {
-            "foreign": ("cc-status", 1, 1),
-            "live absolute path": (f"{prefix} {live_hook} stop", 0, 1),
-            "missing absolute path": (f"{prefix} {home}/gone/{PLUGIN_HOOK_TAIL} stop", 0, 0),
-            "verbatim plugin command": (PLUGIN_COMMANDS_FOR_TESTS["stop"], 0, 0),
-            "owner-marked plugin root placeholder": (f'{prefix} "{PLUGIN_ROOT_PLACEHOLDER}/{PLUGIN_HOOK_TAIL}" stop', 0, 0),
-            "native Windows path": (f"{prefix} '{windows_hook}' stop", 0, 0),
-            "existing versioned plugin-cache copy": (f"{prefix} {cached_hook} stop", 0, 0),
-            "plugin-cache copy under $HOME": (f'{prefix} "$HOME/{cache_tail}" stop', 0, 0),
-            "plugin-cache copy under ~": (f"{prefix} ~/{cache_tail} stop", 0, 0),
-            "unparsable": (f"{prefix} '/unterminated/{PLUGIN_HOOK_TAIL} stop", 0, 1),
-            "path under ~": (f"{prefix} ~/gone/{PLUGIN_HOOK_TAIL} stop", 0, 1),
-            "path under $HOME": (f'{prefix} "$HOME/gone/{PLUGIN_HOOK_TAIL}" stop', 0, 1),
-            "path under ${HOME}": (f'{prefix} "${{HOME}}/gone/{PLUGIN_HOOK_TAIL}" stop', 0, 1),
-            "relative path": (f"{prefix} gone/{PLUGIN_HOOK_TAIL} stop", 0, 1),
+            "live absolute path": f"{prefix} {live_hook} stop",
+            "missing absolute path": f"{prefix} {home}/gone/{PLUGIN_HOOK_TAIL} stop",
+            "verbatim plugin command": PLUGIN_COMMANDS_FOR_TESTS["stop"],
+            "owner-marked plugin root placeholder": f'{prefix} "{PLUGIN_ROOT_PLACEHOLDER}/{PLUGIN_HOOK_TAIL}" stop',
+            "native Windows path": f"{prefix} '{windows_hook}' stop",
+            "versioned plugin-cache copy under $HOME": f'{prefix} "$HOME/{cache_tail}" stop',
+            "unparsable": f"{prefix} '/unterminated/{PLUGIN_HOOK_TAIL} stop",
+            "relative path": f"{prefix} gone/{PLUGIN_HOOK_TAIL} stop",
         }
 
-    def test_has_removable_cli_reports_owned_hooks_or_only_dead_ones(self):
+    def test_remove_cli_removes_every_owned_registration_and_reports_it(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             settings_path = home / "settings.json"
             environment = {**os.environ, "HOME": str(home), "SETTINGS_PATH": str(settings_path),
                            "SESSION_LOG_OWNER_MARKER": self.OWNER}
-            for name, (command, plugin_status, dead_only_status) in self.removable_cases(home).items():
+            for name, command in self.owned_commands(home).items():
                 with self.subTest(name):
                     settings_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [command_hook(command)]}]}}))
-                    self.assertEqual(self.run_cli(environment, "has-removable", "plugin"), plugin_status)
-                    self.assertEqual(self.run_cli(environment, "has-removable", "plugin-dead-only"), dead_only_status)
+                    result = self.cli(environment, "remove")
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    self.assertEqual(result.stdout,
+                                     f"removed 1 legacy session-log hook registration(s) from {settings_path}\n")
+                    self.assertEqual(json.loads(settings_path.read_text()), {})
 
-    def test_remove_cli_reports_only_what_it_removed(self):
+    def test_remove_cli_leaves_foreign_hooks_untouched_and_silent(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            settings_path = home / "settings.json"
-            environment = {**os.environ, "HOME": str(home), "SETTINGS_PATH": str(settings_path),
-                           "SESSION_LOG_OWNER_MARKER": self.OWNER}
-            removed_one = f"removed 1 session-log hook registration(s) from {settings_path}\n"
-            for name, (command, *statuses) in self.removable_cases(home).items():
-                for mode, status in zip(("plugin", "plugin-dead-only"), statuses):
-                    with self.subTest(name, mode=mode):
-                        document = {"hooks": {"Stop": [{"hooks": [command_hook(command)]}]}}
-                        settings_path.write_text(json.dumps(document))
-                        result = self.cli(environment, "remove", mode)
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                        self.assertEqual(result.stdout, removed_one if status == 0 else "")
-                        self.assertEqual(json.loads(settings_path.read_text()), {} if status == 0 else document)
+            settings_path = Path(directory).resolve() / "settings.json"
+            environment = {**os.environ, "SETTINGS_PATH": str(settings_path), "SESSION_LOG_OWNER_MARKER": self.OWNER}
+            settings_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [FOREIGN_HOOK]}]}}, indent=2))
+            original = settings_path.read_bytes()
+            result = self.cli(environment, "remove")
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+            self.assertEqual(settings_path.read_bytes(), original)
 
     def test_remove_cli_counts_every_removed_registration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -810,36 +782,17 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
                 "SessionStart": [{"hooks": [self.owned("/x/claude_hook.sh", "session-start")]}],
                 "Stop": [{"hooks": [self.owned("/x/claude_hook.sh", "stop"), self.owned("/y/claude_hook.sh", "stop")]}],
             }}))
-            result = self.cli(environment, "remove", "plugin")
+            result = self.cli(environment, "remove")
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, f"removed 3 session-log hook registration(s) from {settings_path}\n")
+            self.assertEqual(result.stdout, f"removed 3 legacy session-log hook registration(s) from {settings_path}\n")
 
-    def test_operations_refuse_a_missing_or_unknown_mode(self):
+    def test_unknown_operations_are_refused(self):
         environment = {**os.environ, "SETTINGS_PATH": "/nonexistent/settings.json", "SESSION_LOG_OWNER_MARKER": self.OWNER}
-        for arguments in (("repair",), ("repair", "bogus"), ("remove", "standalone"), ("has-removable",)):
-            with self.subTest(arguments=arguments):
-                result = self.cli(environment, *arguments)
+        for operation in ("install", "repair", "has-removable", "plugin-enabled", "plugin-hooks-current"):
+            with self.subTest(operation=operation):
+                result = self.cli(environment, operation)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("claude_settings: expected one mode of ", result.stderr)
-
-    def test_plugin_enabled_cli_accepts_only_a_true_user_scope_key(self):
-        with tempfile.TemporaryDirectory() as directory:
-            settings_path = Path(directory) / "settings.json"
-            environment = {**os.environ, "SETTINGS_PATH": str(settings_path), "PLUGIN_KEY": PLUGIN_KEY}
-            cases = {
-                "enabled": (json.dumps(USER_SCOPE_ENABLED).encode(), 0),
-                "malformed JSON": (b"{not json", 1),
-                "invalid UTF-8": (b'{"enabledPlugins": {"\xff": true}}', 1),
-                "root not an object": (json.dumps([USER_SCOPE_ENABLED]).encode(), 1),
-                "enabledPlugins not an object": (json.dumps({"enabledPlugins": [PLUGIN_KEY]}).encode(), 1),
-                "key false": (json.dumps({"enabledPlugins": {PLUGIN_KEY: False}}).encode(), 1),
-            }
-            for name, (contents, status) in cases.items():
-                with self.subTest(name):
-                    settings_path.write_bytes(contents)
-                    self.assertEqual(self.run_cli(environment, "plugin-enabled"), status)
-            settings_path.unlink()
-            self.assertEqual(self.run_cli(environment, "plugin-enabled"), 1)
+                self.assertIn(f"claude_settings: unknown operation: {operation}", result.stderr)
 
     def test_hooks_json_registers_the_plugin_hook_command_for_every_lifecycle(self):
         settings = self.load()
@@ -847,28 +800,12 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
             with self.subTest(event=event):
                 self.assertEqual(hook["command"], settings.plugin_hook_command(PLUGIN_EVENT_LIFECYCLES[event]))
 
-    def test_plugin_hooks_current_requires_the_repository_hooks_json(self):
-        with tempfile.TemporaryDirectory() as directory:
-            plugin_root = Path(directory)
-            hook = plugin_root / "skills/session-log/adapters/claude/claude_hook.sh"
-            hook.parent.mkdir(parents=True)
-            hook.write_text("#!/usr/bin/env bash\n")
-            environment = {**os.environ, "PLUGIN_ROOT": str(plugin_root)}
-            self.assertEqual(self.run_cli(environment, "plugin-hooks-current"), 1)
-            (plugin_root / "hooks").mkdir()
-            (plugin_root / "hooks/hooks.json").write_text((REPO / "hooks/hooks.json").read_text())
-            self.assertEqual(self.run_cli(environment, "plugin-hooks-current"), 0)
-            (plugin_root / "hooks/hooks.json").write_text(json.dumps({"hooks": {}}))
-            self.assertEqual(self.run_cli(environment, "plugin-hooks-current"), 1)
-
 
 PLUGIN_ROOT_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}"
-# Plugin-cache version directories: the current plugin, the release before it, an old release
-# whose dead paths earlier installs wrote into settings.json, and one that no longer exists.
+# Plugin-cache version directories: the current plugin, and an old release whose dead paths
+# earlier installs wrote into settings.json.
 PLUGIN_VERSION = "1.18.2"
-PREVIOUS_PLUGIN_VERSION = "1.18.1"
 OLD_PLUGIN_VERSION = "1.14.1"
-REMOVED_PLUGIN_VERSION = "1.0.0"
 CLAUDE_LIFECYCLE_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop", "SubagentStop")
 WINDOWS_USER_HOME = r"C:\Users\Jane Doe"
 WINDOWS_PLUGIN_ROOT = WINDOWS_USER_HOME + r"\.claude\plugins\cache\harness-goodies\claude-goodies" + "\\" + OLD_PLUGIN_VERSION
@@ -1028,8 +965,8 @@ class ClaudeWindowsHookTests(unittest.TestCase):
             self.assertFalse(runtime.exists(), "a logging-off session start kept the stale runtime marker")
 
 
-class ClaudeSettingsRepairTests(unittest.TestCase):
-    """Installing in plugin mode repairs every stale session-log registration in settings.json."""
+class ClaudeSettingsCleanupTests(unittest.TestCase):
+    """`on` and a plugin session start remove every session-log registration older releases left in settings.json."""
 
     maxDiff = None
 
@@ -1056,7 +993,7 @@ class ClaudeSettingsRepairTests(unittest.TestCase):
                 ],
                 "Stop": [{"hooks": [command_hook(f'bash "{windows_hook}" stop'), self.FOREIGN_STOP]}],
                 "SubagentStop": [
-                    {"hooks": [command_hook(f"{self.OWNER_PREFIX}bash {home}/.claude/skills/session-log/adapters/claude/claude_hook.sh subagent-stop")]},
+                    {"hooks": [command_hook(f"{self.OWNER_PREFIX}bash {home}/{SEEDED_RELATIVE}/adapters/claude/claude_hook.sh subagent-stop")]},
                     {"hooks": [command_hook(f"{self.OWNER_PREFIX}bash {home}/.claude/{PLUGIN_HOOK_TAIL} subagent-stop")]},
                 ],
                 "Notification": [{"hooks": [self.FOREIGN_NOTIFICATION]}],
@@ -1069,19 +1006,18 @@ class ClaudeSettingsRepairTests(unittest.TestCase):
             capture_output=True, text=True, env=harness_environment(home),
         )
 
-    def test_plugin_install_removes_stale_duplicate_and_windows_registrations(self):
+    def test_on_removes_stale_duplicate_and_windows_registrations(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             (home / ".Trash").mkdir()
             plugin_root = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE)
             settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps({**USER_SCOPE_ENABLED, **self.stale_settings(home)}, indent=2))
+            settings.write_text(json.dumps(self.stale_settings(home), indent=2))
 
             first = self.install_on(home, plugin_root)
             self.assertEqual(first.returncode, 0, first.stderr)
             repaired = settings.read_bytes()
             self.assertEqual(json.loads(repaired), {
-                **USER_SCOPE_ENABLED,
                 "model": "opus",
                 "hooks": {
                     "SessionStart": [{"hooks": [self.FOREIGN_SESSION_START]}],
@@ -1093,18 +1029,6 @@ class ClaudeSettingsRepairTests(unittest.TestCase):
             second = self.install_on(home, plugin_root)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(settings.read_bytes(), repaired)
-
-    def test_plugin_copy_with_stale_hooks_json_registers_the_stable_copy_on_on(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            (home / ".Trash").mkdir()
-            plugin_root = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE)
-            (plugin_root / "hooks/hooks.json").write_text(json.dumps({"hooks": {}}))
-            result = self.install_on(home, plugin_root)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            settings = (home / ".claude/settings.json").read_text()
-            self.assertEqual(json.loads(settings)["hooks"], claude_hooks_registered(home / STANDALONE_RELATIVE, 1))
-            self.assertNotIn("plugins/cache", settings)
 
     def test_plugin_session_start_removes_unmarked_stale_registrations(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1129,29 +1053,22 @@ class ClaudeSettingsRepairTests(unittest.TestCase):
 
 OWNER_MARKER = "universal-session-log"
 PLUGIN_CACHE_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{PLUGIN_VERSION}"
-STANDALONE_RELATIVE = ".claude/skills/session-log"
+# Where older releases seeded a copy of the package, whose hooks they registered in settings.json.
+SEEDED_RELATIVE = ".claude/skills/session-log"
 CLAUDE_MANAGED_MATCHERS = {"SessionStart": "startup|resume"}
 FOREIGN_HOOK = {"type": "command", "command": "cc-status notify"}
 REPEATED_REGISTRATIONS = 3
-PLUGIN_KEY = "claude-goodies@harness-goodies"
-USER_SCOPE_ENABLED = {"enabledPlugins": {PLUGIN_KEY: True}}
-PLUGIN_ROOT_MARKER_RELATIVE = ".claude/session-log/plugin-root"
 INSTALL_LOCK_RELATIVE = ".claude/session-log/.install.lock"
-PRIVATE_DIRECTORY_MODE = 0o700
+LEGACY_CLEANUP_STAMP_RELATIVE = ".claude/session-log/legacy-cleanup.stamp"
 EXECUTABLE_MODE = 0o755
 NATIVE_HARNESSES = (("codex", ".codex"), ("cursor", ".cursor"))
 NATIVE_LABELS = {"codex": "Codex", "cursor": "Cursor"}
-# Claude Code writes this into a plugin version directory it has replaced or uninstalled.
-ORPHANED_PLUGIN_MARKER = ".orphaned_at"
-ORPHANED_AT_MILLISECONDS = "1700000000000"
-# Settings.json registrations of a standalone copy that is not installed, so every one of them is dead.
+# Settings.json registrations of a seeded copy that is not installed, so every one of them is dead.
 DEAD_REGISTRATIONS = 2
-
-
-def repair_stamp(home, package):
-    """The session-start repair stamp of ``package``: one per copy, named by the `cksum` of its root."""
-    checksum = subprocess.run(["cksum"], input=str(package), capture_output=True, text=True, check=True).stdout.split()[0]
-    return home / f".claude/session-log/settings-repair.{checksum}.stamp"
+# State files older releases wrote that nothing reads any more.
+OBSOLETE_CLAUDE_STATE = ("adapter.version", "adapter.manifest", "desired.version", "plugin-root",
+                         "settings-repair.1322337178.stamp")
+CLAUDE_REPAIR_CLEAN = "Claude Code: repair found no duplicate or stale registrations\n"
 
 
 def harness_environment(home):
@@ -1182,13 +1099,9 @@ def harness_package(home, subroot):
     return package
 
 
-def standalone_package(home):
-    return harness_package(home, ".claude")
-
-
-def standalone_version():
-    """The VERSION of this repository's session-log package, which every test copy carries."""
-    return (REPO / "skills/session-log/VERSION").read_text().strip()
+def claude_package(home):
+    """The session-log package of a claude-goodies plugin installed under ``home``."""
+    return sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
 
 
 def claude_managed_hook(package, lifecycle):
@@ -1204,153 +1117,106 @@ def claude_managed_entry(package, event):
 
 
 def claude_hooks_registered(package, times):
+    """The settings.json hooks older releases registered for ``package``, each repeated ``times``."""
     return {event: [claude_managed_entry(package, event) for _ in range(times)] for event in CLAUDE_LIFECYCLE_EVENTS}
 
 
 class SessionLogRepairCommandTests(unittest.TestCase):
-    """`session-log repair` leaves each harness with exactly one current registration per lifecycle event."""
+    """`session-log repair` removes legacy leftovers and leaves each harness with its current registrations."""
 
     maxDiff = None
 
-    def test_claude_standalone_repair_collapses_repeated_and_stale_registrations(self):
+    def test_claude_repair_removes_every_legacy_registration(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            package = standalone_package(home)
+            package = claude_package(home)
             settings = home / ".claude/settings.json"
-            hooks = claude_hooks_registered(package, REPEATED_REGISTRATIONS)
+            hooks = claude_hooks_registered(home / SEEDED_RELATIVE, REPEATED_REGISTRATIONS)
             hooks["Stop"].append({"hooks": [claude_managed_hook(home / "old-install", "stop")]})
+            hooks["PreCompact"] = [{"hooks": [claude_managed_hook(home / SEEDED_RELATIVE, "stop"), FOREIGN_HOOK]}]
             hooks["Notification"] = [{"hooks": [FOREIGN_HOOK]}]
             settings.write_text(json.dumps({"model": "opus", "hooks": hooks}))
 
             first = run_session_log(package, home, "claude", "repair")
             self.assertEqual((first.returncode, first.stderr), (0, ""))
-            # Every repeat beyond the first per event, plus the stale old-install Stop hook.
-            removed = (REPEATED_REGISTRATIONS - 1) * len(CLAUDE_LIFECYCLE_EVENTS) + 1
-            self.assertIn(f"removed {removed} duplicate or stale hook registration(s)", first.stdout)
-            expected = {**claude_hooks_registered(package, 1), "Notification": [{"hooks": [FOREIGN_HOOK]}]}
-            self.assertEqual(json.loads(settings.read_text()), {"model": "opus", "hooks": expected})
+            removed = REPEATED_REGISTRATIONS * len(CLAUDE_LIFECYCLE_EVENTS) + 2
+            self.assertEqual(first.stdout,
+                             f"Claude Code: removed {removed} legacy session-log hook registration(s) from {settings}\n")
+            self.assertEqual(json.loads(settings.read_text()), {"model": "opus", "hooks": {
+                "PreCompact": [{"hooks": [FOREIGN_HOOK]}], "Notification": [{"hooks": [FOREIGN_HOOK]}],
+            }})
 
             repaired = settings.read_bytes()
             second = run_session_log(package, home, "claude", "repair")
-            self.assertEqual((second.returncode, second.stderr), (0, ""))
-            self.assertEqual(second.stdout, "Claude Code: repair found no duplicate or stale registrations\n")
+            self.assertEqual((second.returncode, second.stdout, second.stderr), (0, CLAUDE_REPAIR_CLEAN, ""))
             self.assertEqual(settings.read_bytes(), repaired)
 
     def test_claude_repair_leaves_unregistered_settings_untouched(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            package = standalone_package(home)
+            package = claude_package(home)
             settings = home / ".claude/settings.json"
             settings.write_text(json.dumps({"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}}))
             original = settings.read_bytes()
             result = run_session_log(package, home, "claude", "repair")
-            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CLAUDE_REPAIR_CLEAN, ""))
             self.assertEqual(settings.read_bytes(), original)
 
-    def test_claude_plugin_repair_removes_every_settings_registration_while_enabled_at_user_scope(self):
+    def test_claude_repair_removes_obsolete_state_and_keeps_runtime_markers(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            # Live standalone registrations go too: the user-scope plugin's hooks serve every project.
-            package = standalone_package(home)
-            settings = home / ".claude/settings.json"
-            hooks = claude_hooks_registered(package, REPEATED_REGISTRATIONS)
-            hooks["Notification"] = [{"hooks": [FOREIGN_HOOK]}]
-            settings.write_text(json.dumps({**USER_SCOPE_ENABLED, "hooks": hooks}))
-            result = run_session_log(plugin, home, "claude", "repair")
-            self.assertEqual((result.returncode, result.stderr), (0, ""))
-            removed = REPEATED_REGISTRATIONS * len(CLAUDE_LIFECYCLE_EVENTS)
-            self.assertEqual(result.stdout, f"Claude Code: removed {removed} duplicate or stale hook registration(s) from {settings}\n")
-            self.assertEqual(json.loads(settings.read_text()),
-                             {**USER_SCOPE_ENABLED, "hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}})
+            package = claude_package(home)
+            state = home / ".claude/session-log"
+            state.mkdir(parents=True)
+            for name in (*OBSOLETE_CLAUDE_STATE, "runtime.json", "runtime.1.json"):
+                (state / name).write_text("kept\n" if name.startswith("runtime") else "obsolete\n")
+            result = run_session_log(package, home, "claude", "repair")
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CLAUDE_REPAIR_CLEAN, ""))
+            self.assertEqual(sorted(path.name for path in state.iterdir()), ["runtime.1.json", "runtime.json"])
 
-    def test_claude_repair_removes_owned_registrations_under_unmanaged_events(self):
+    def test_claude_commands_never_register_hooks(self):
+        for command in ("on", "status", "usage", "off", "repair"):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = claude_package(home)
+                settings = home / ".claude/settings.json"
+                settings.write_text(json.dumps({"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}}, indent=2))
+                original = settings.read_bytes()
+                run_session_log(package, home, "claude", command)
+                self.assertEqual(settings.read_bytes(), original)
+
+    def test_claude_on_removes_repeated_registrations(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            package = standalone_package(home)
+            package = claude_package(home)
             settings = home / ".claude/settings.json"
-            hooks = claude_hooks_registered(package, 1)
-            hooks["PreCompact"] = [{"hooks": [claude_managed_hook(package, "stop"), FOREIGN_HOOK]}]
-            settings.write_text(json.dumps({"hooks": hooks}))
-
-            first = run_session_log(package, home, "claude", "repair")
-            self.assertEqual((first.returncode, first.stderr), (0, ""))
-            self.assertEqual(first.stdout, f"Claude Code: removed 1 duplicate or stale hook registration(s) from {settings}\n")
-            self.assertEqual(json.loads(settings.read_text())["hooks"],
-                             {**claude_hooks_registered(package, 1), "PreCompact": [{"hooks": [FOREIGN_HOOK]}]})
-
-            repaired = settings.read_bytes()
-            second = run_session_log(package, home, "claude", "repair")
-            self.assertEqual((second.returncode, second.stdout, second.stderr),
-                             (0, "Claude Code: repair found no duplicate or stale registrations\n", ""))
-            self.assertEqual(settings.read_bytes(), repaired)
-
-    def test_standalone_on_registers_nothing_while_the_plugin_hooks_are_active(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            package = standalone_package(home)
-            settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps({**USER_SCOPE_ENABLED, "hooks": claude_hooks_registered(package, 1)}))
-            started = run_claude_hook(plugin, home, "session-start")
-            self.assertEqual((started.returncode, started.stdout, started.stderr), (0, "", ""))
-            self.assertEqual((home / PLUGIN_ROOT_MARKER_RELATIVE).read_text(), str(plugin))
-            self.assertEqual(json.loads(settings.read_text()), USER_SCOPE_ENABLED)
-
-            for command in ("on", "status"):
-                with self.subTest(command=command):
-                    result = run_session_log(package, home, "claude", command)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(json.loads(settings.read_text()), USER_SCOPE_ENABLED)
+            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, REPEATED_REGISTRATIONS)}))
+            result = run_session_log(package, home, "claude", "on")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(settings.read_text()), {})
             self.assertTrue((home / ".claude/prompt-logs/.enabled").is_file())
 
-    def test_standalone_on_registers_hooks_once_the_plugin_is_disabled(self):
+    def test_session_start_removes_repeated_registrations(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            package = standalone_package(home)
-            (home / ".claude/session-log").mkdir(parents=True)
-            (home / PLUGIN_ROOT_MARKER_RELATIVE).write_text(str(plugin))
+            package = claude_package(home)
             settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps({"enabledPlugins": {PLUGIN_KEY: False}}))
-            result = run_session_log(package, home, "claude", "on")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(settings.read_text())["hooks"], claude_hooks_registered(package, 1))
-
-    def test_standalone_on_collapses_repeated_registrations(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            package = standalone_package(home)
-            settings = home / ".claude/settings.json"
-            installed = run_session_log(package, home, "claude", "on")
-            self.assertEqual(installed.returncode, 0, installed.stderr)
-            # The adapter is now current, which an existing registration still satisfies when repeated.
-            settings.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
-            result = run_session_log(package, home, "claude", "on")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(settings.read_text())["hooks"], claude_hooks_registered(package, 1))
-
-    def test_standalone_session_start_collapses_repeated_registrations(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            package = standalone_package(home)
-            settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
+            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, REPEATED_REGISTRATIONS)}))
             result = run_claude_hook(package, home, "session-start")
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-            self.assertEqual(json.loads(settings.read_text())["hooks"], claude_hooks_registered(package, 1))
+            self.assertEqual(json.loads(settings.read_text()), {})
 
     def test_session_start_skips_settings_without_session_log_hooks(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            package = standalone_package(home)
+            package = claude_package(home)
             settings = home / ".claude/settings.json"
             settings.write_text(json.dumps({"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}}, indent=2))
             original = settings.read_bytes()
             result = run_claude_hook(package, home, "session-start")
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
             self.assertEqual(settings.read_bytes(), original)
-            # The grep gate kept the repair command from running: it would have created the state directory.
+            # The grep gate kept the cleanup from running: it would have created the state directory.
             self.assertFalse((home / ".claude/session-log").exists())
 
     def native_hooks(self, harness, hook, times):
@@ -1389,77 +1255,6 @@ class SessionLogRepairCommandTests(unittest.TestCase):
                 self.assertEqual(config.read_bytes(), repaired)
 
 
-class PluginCopyWithoutUserScopeTests(unittest.TestCase):
-    """A plugin copy not enabled in user-scope settings removes only dead settings.json registrations.
-
-    Its plugin may be enabled for one project only, so a live standalone copy's hooks keep serving the rest.
-    """
-
-    maxDiff = None
-    NOT_ENABLED_AT_USER_SCOPE = {"key absent": {}, "key false": {"enabledPlugins": {PLUGIN_KEY: False}}}
-
-    def dead_hooks(self, home):
-        """A stale install path, an unsubstituted copy of the plugin's command, a removed cache version, and a
-        replaced cache version whose script still exists until Claude Code deletes the orphaned directory."""
-        removed_cache = home / PLUGIN_CACHE_RELATIVE.replace(PLUGIN_VERSION, REMOVED_PLUGIN_VERSION) / "skills/session-log"
-        orphaned_cache = home / PLUGIN_CACHE_RELATIVE.replace(PLUGIN_VERSION, PREVIOUS_PLUGIN_VERSION) / "skills/session-log"
-        orphaned_script = orphaned_cache / "adapters/claude/claude_hook.sh"
-        orphaned_script.parent.mkdir(parents=True, exist_ok=True)
-        orphaned_script.write_text("")
-        return [
-            claude_managed_hook(home / "old-install", "stop"),
-            command_hook(f'exec bash "{PLUGIN_ROOT_PLACEHOLDER}/{PLUGIN_HOOK_TAIL}" stop'),
-            claude_managed_hook(removed_cache, "stop"),
-            claude_managed_hook(orphaned_cache, "stop"),
-        ]
-
-    def prepare(self, directory, document):
-        """Settings holding a live standalone set plus dead registrations; returns what must survive."""
-        home = Path(directory).resolve()
-        plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-        package = standalone_package(home)
-        live = {**document, "hooks": {**claude_hooks_registered(package, 1), "Notification": [{"hooks": [FOREIGN_HOOK]}]}}
-        dirty = json.loads(json.dumps(live))
-        dirty["hooks"]["Stop"].append({"hooks": self.dead_hooks(home)})
-        settings = home / ".claude/settings.json"
-        settings.write_text(json.dumps(dirty))
-        return home, plugin, settings, live
-
-    def test_repair_removes_only_dead_registrations(self):
-        for name, document in self.NOT_ENABLED_AT_USER_SCOPE.items():
-            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
-                home, plugin, settings, live = self.prepare(directory, document)
-                result = run_session_log(plugin, home, "claude", "repair")
-                self.assertEqual((result.returncode, result.stderr), (0, ""))
-                removed = len(self.dead_hooks(home))
-                self.assertEqual(result.stdout, f"Claude Code: removed {removed} duplicate or stale hook registration(s) from {settings}\n")
-                self.assertEqual(json.loads(settings.read_text()), live)
-                again = run_session_log(plugin, home, "claude", "repair")
-                self.assertEqual((again.returncode, again.stdout, again.stderr),
-                                 (0, "Claude Code: repair found no duplicate or stale registrations\n", ""))
-
-    def test_session_start_on_and_off_keep_live_registrations_and_inject_none(self):
-        for command in ("session-start", "on", "status", "off"):
-            with self.subTest(command), tempfile.TemporaryDirectory() as directory:
-                home, plugin, settings, live = self.prepare(directory, {})
-                if command == "session-start":
-                    result = run_claude_hook(plugin, home, command)
-                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-                else:
-                    (home / ".claude/prompt-logs").mkdir(parents=True)
-                    (home / ".claude/prompt-logs/.enabled").write_text("")
-                    result = run_session_log(plugin, home, "claude", command)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(settings.read_text()), live)
-
-
-def write_plugin_root_marker(home, content):
-    marker = home / PLUGIN_ROOT_MARKER_RELATIVE
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(content)
-    return marker
-
-
 def process_start(pid):
     """The `ps -o lstart=` start time session-log records for liveness checks; skips where ps lacks that field."""
     result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True)
@@ -1477,227 +1272,19 @@ def hold_install_lock(home, harness_subroot=".claude"):
     (lock / "owner").write_text(f"{os.getpid()}\n{start}\n")
 
 
-class StandalonePluginDeferralTests(unittest.TestCase):
-    """A standalone copy defers to the plugin only for a live plugin-cache root enabled in user-scope settings."""
-
-    maxDiff = None
-
-    def standalone_on(self, prepare, settings_document=USER_SCOPE_ENABLED):
-        """Run the standalone `on` after ``prepare(home, plugin)``; returns the hooks it registered, if any."""
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            package = standalone_package(home)
-            settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps(settings_document))
-            prepare(home, plugin)
-            result = run_session_log(package, home, "claude", "on")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            hooks = json.loads(settings.read_text()).get("hooks")
-            if hooks is not None:
-                self.assertEqual(hooks, claude_hooks_registered(package, 1))
-            return hooks
-
-    def test_defers_to_a_live_plugin_enabled_in_user_settings(self):
-        self.assertIsNone(self.standalone_on(lambda home, plugin: write_plugin_root_marker(home, str(plugin))))
-
-    def test_defers_to_a_plugin_whose_hooks_json_differs_from_this_copy(self):
-        def prepare(home, plugin):
-            write_plugin_root_marker(home, str(plugin))
-            (plugin.parents[1] / "hooks/hooks.json").write_text(json.dumps({"hooks": {}}))
-        self.assertIsNone(self.standalone_on(prepare))
-
-    PLUGIN_PACKAGE_VERSION = f"{PLUGIN_VERSION}-plugin"
-    RESTART_REQUIRED = "Claude Code: on — restart required\n"
-
-    def deferring_status(self, runtime_version, prepare_plugin=lambda plugin: None, command="status"):
-        """``command``'s result for a standalone copy deferring to the plugin, once runtime.json records
-        ``runtime_version`` (the plugin package's VERSION when None)."""
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            (plugin / "VERSION").write_text(f"{self.PLUGIN_PACKAGE_VERSION}\n")
-            prepare_plugin(plugin)
-            package = standalone_package(home)
-            (home / ".claude/settings.json").write_text(json.dumps(USER_SCOPE_ENABLED))
-            write_plugin_root_marker(home, str(plugin))
-            enabled = run_session_log(package, home, "claude", "on")
-            self.assertEqual(enabled.returncode, 0, enabled.stderr)
-            # What the active hooks write: the plugin's hooks record their own package VERSION, not this copy's.
-            (home / ".claude/session-log/runtime.json").write_text(json.dumps({
-                "harness": "claude", "version": runtime_version or self.PLUGIN_PACKAGE_VERSION,
-                "session_id": "plugin-session", "nonce": "plugin-session", "loaded_at": str(int(time.time())),
-                "pid": str(os.getpid()), "process_start": process_start(os.getpid()),
-            }))
-            result = run_session_log(package, home, "claude", command)
-            self.assertEqual((result.returncode, result.stderr), (0, ""))
-            return result.stdout
-
-    def test_status_accepts_the_runtime_marker_the_plugin_hooks_record(self):
-        self.assertEqual(self.deferring_status(None), "Claude Code: on\n")
-
-    def test_on_after_a_plugin_session_reports_on(self):
-        self.assertEqual(self.deferring_status(None, command="on"), "Claude Code: on\n")
-
-    def test_status_rejects_this_copys_version_while_deferring(self):
-        self.assertEqual(self.deferring_status(standalone_version()), self.RESTART_REQUIRED)
-
-    def test_status_expects_this_copys_version_when_the_plugin_has_none(self):
-        def symlinked_version(plugin):
-            (plugin / "VERSION").unlink()
-            (plugin / "VERSION").symlink_to(plugin / "SKILL.md")
-
-        for name, prepare in {"missing": lambda plugin: (plugin / "VERSION").unlink(), "symlinked": symlinked_version}.items():
-            with self.subTest(name):
-                self.assertEqual(self.deferring_status(standalone_version(), prepare), "Claude Code: on\n")
-
-    def test_each_command_resolves_the_claude_settings_mode_once(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            home = root / "home"
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            package = standalone_package(home)
-            (home / ".claude/settings.json").write_text(json.dumps(USER_SCOPE_ENABLED))
-            write_plugin_root_marker(home, str(plugin))
-            shims = root / "shims"
-            shims.mkdir()
-            (shims / "python3").write_text(
-                f'#!/bin/sh\nprintf "%s\\n" "$*" >> "$SESSION_LOG_TEST_RECORD"\nexec "{sys.executable}" "$@"\n')
-            (shims / "python3").chmod(EXECUTABLE_MODE)
-            record = root / "record"
-            environment = {**harness_environment(home), "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}",
-                           "SESSION_LOG_TEST_RECORD": str(record)}
-            # Each copy's mode check: the plugin copy reads its hooks.json, and both read enabledPlugins.
-            checks = {"standalone": (package, ("plugin-enabled",)), "plugin": (plugin, ("plugin-hooks-current", "plugin-enabled"))}
-            for name, (copy, operations) in checks.items():
-                for command in ("on", "status", "repair", "off"):
-                    with self.subTest(copy=name, command=command):
-                        record.unlink(missing_ok=True)
-                        result = subprocess.run(
-                            ["bash", str(copy / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", command],
-                            capture_output=True, text=True, env=environment)
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                        calls = record.read_text().splitlines()
-                        for operation in operations:
-                            self.assertEqual(sum(call.endswith(f"claude_settings.py {operation}") for call in calls), 1, calls)
-
-    def test_registers_its_hooks_unless_the_plugin_is_enabled_in_user_settings(self):
-        documents = {
-            "key absent": {},
-            "key false": {"enabledPlugins": {PLUGIN_KEY: False}},
-            "key not a boolean": {"enabledPlugins": {PLUGIN_KEY: "true"}},
-            "enabledPlugins not an object": {"enabledPlugins": [PLUGIN_KEY]},
-        }
-        for name, document in documents.items():
-            with self.subTest(name):
-                hooks = self.standalone_on(lambda home, plugin: write_plugin_root_marker(home, str(plugin)), document)
-                self.assertIsNotNone(hooks)
-
-    def test_registers_its_hooks_when_the_marker_names_no_live_plugin(self):
-        def orphaned(home, plugin):
-            write_plugin_root_marker(home, str(plugin))
-            (plugin.parents[1] / ORPHANED_PLUGIN_MARKER).write_text(ORPHANED_AT_MILLISECONDS)
-
-        def orphaned_by_dangling_link(home, plugin):
-            write_plugin_root_marker(home, str(plugin))
-            (plugin.parents[1] / ORPHANED_PLUGIN_MARKER).symlink_to(home / "nowhere")
-
-        def symlinked(home, plugin):
-            target = home / "elsewhere"
-            target.write_text(str(plugin))
-            marker = home / PLUGIN_ROOT_MARKER_RELATIVE
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.symlink_to(target)
-
-        def removed(home, plugin):
-            write_plugin_root_marker(home, str(plugin).replace(PLUGIN_VERSION, REMOVED_PLUGIN_VERSION))
-
-        cases = {
-            "no marker": lambda home, plugin: None,
-            "orphaned plugin version": orphaned,
-            "orphaned plugin version marked by a dangling link": orphaned_by_dangling_link,
-            "symlinked marker": symlinked,
-            "dot-dot component": lambda home, plugin: write_plugin_root_marker(
-                home, str(plugin).replace(f"/{PLUGIN_VERSION}/", f"/{PLUGIN_VERSION}/../{PLUGIN_VERSION}/")),
-            "not a plugin-cache path": lambda home, plugin: write_plugin_root_marker(home, str(home / STANDALONE_RELATIVE)),
-            "plugin version directory removed": removed,
-        }
-        for name, prepare in cases.items():
-            with self.subTest(name):
-                self.assertIsNotNone(self.standalone_on(prepare))
-
-
-class PluginRootMarkerTests(unittest.TestCase):
-    """The plugin's SessionStart records its package root for standalone copies, refusing unsafe marker paths."""
-
-    def plugin_session_start(self, home, environment=None):
-        plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-        result = run_claude_hook(plugin, home, "session-start", environment=environment)
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-        return plugin
-
-    def test_unchanged_marker_is_not_rewritten(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            plugin = home / PLUGIN_CACHE_RELATIVE / "skills/session-log"
-            marker = write_plugin_root_marker(home, str(plugin))
-            before = marker.stat()
-            self.plugin_session_start(home)
-            self.assertEqual((marker.stat().st_ino, marker.stat().st_mtime_ns), (before.st_ino, before.st_mtime_ns))
-
-    def test_marker_follows_a_plugin_upgrade(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            marker = write_plugin_root_marker(home, str(home / PLUGIN_CACHE_RELATIVE).replace(PLUGIN_VERSION, PREVIOUS_PLUGIN_VERSION))
-            plugin = self.plugin_session_start(home)
-            self.assertEqual(marker.read_text(), str(plugin))
-
-    def test_marker_state_directory_is_private(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            self.plugin_session_start(home)
-            self.assertEqual(stat.S_IMODE((home / PLUGIN_ROOT_MARKER_RELATIVE).parent.stat().st_mode), PRIVATE_DIRECTORY_MODE)
-
-    def test_symlinked_or_directory_marker_is_left_alone(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            marker = home / PLUGIN_ROOT_MARKER_RELATIVE
-            marker.parent.mkdir(parents=True)
-            target = home / "target"
-            target.write_text("unrelated")
-            marker.symlink_to(target)
-            self.plugin_session_start(home)
-            self.assertTrue(marker.is_symlink())
-            self.assertEqual(target.read_text(), "unrelated")
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            marker = home / PLUGIN_ROOT_MARKER_RELATIVE
-            marker.mkdir(parents=True)
-            self.plugin_session_start(home)
-            self.assertTrue(marker.is_dir())
-
-    def test_failed_marker_write_leaves_no_temporary_file(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            home = root / "home"
-            tools = link_tools(root / "bin", tuple(tool for tool in GIT_BASH_TOOLS_WITHOUT_JQ if tool != "mv"))
-            record = root / "mv-called"
-            (tools / "mv").write_text('#!/bin/sh\nprintf called > "$SESSION_LOG_TEST_RECORD"\nexit 1\n')
-            (tools / "mv").chmod(EXECUTABLE_MODE)
-            self.plugin_session_start(
-                home, environment={"HOME": str(home), "PATH": str(tools), "SESSION_LOG_TEST_RECORD": str(record)})
-            self.assertTrue(record.exists(), "the failing mv was never reached")
-            state = home / ".claude/session-log"
-            self.assertEqual(sorted(path.name for path in state.iterdir()), [])
-
-
 RECORDING_SESSION_LOG = '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$SESSION_LOG_TEST_RECORD"\n'
+# A command the session-start gate matches but the cleanup must keep: it is not a session-log registration.
+LOOKALIKE_HOOK = command_hook(f"bash /x/{PLUGIN_HOOK_TAIL} unknown-event")
 
 
-class SessionStartRepairStampTests(unittest.TestCase):
-    """Session start repairs settings.json once per change, however the file spells the registered paths."""
+class SessionStartCleanupStampTests(unittest.TestCase):
+    """Session start runs the legacy cleanup once per change of settings.json or the package."""
 
-    def test_session_start_repairs_once_per_settings_change(self):
+    def recorded_session_start(self, package, home, record):
+        return run_claude_hook(package, home, "session-start",
+                               environment={**harness_environment(home), "SESSION_LOG_TEST_RECORD": str(record)})
+
+    def test_session_start_cleans_once_per_settings_change(self):
         variants = {
             "minified": ("home", lambda document: json.dumps(document, separators=(",", ":"))),
             "non-ASCII home escaped by json.dump": ("Jöhn Dœ", json.dumps),
@@ -1706,58 +1293,41 @@ class SessionStartRepairStampTests(unittest.TestCase):
         for name, (home_name, encode) in variants.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve() / home_name
-                package = standalone_package(home)
+                package = claude_package(home)
                 settings = home / ".claude/settings.json"
-                settings.write_text(encode({"hooks": claude_hooks_registered(package, 1)}))
+                settings.write_text(encode({"hooks": {"Stop": [{"hooks": [LOOKALIKE_HOOK]}]}}))
                 original = settings.read_bytes()
                 record = Path(directory) / "record"
-                environment = {**harness_environment(home), "SESSION_LOG_TEST_RECORD": str(record)}
 
-                first = run_claude_hook(package, home, "session-start", environment=environment)
+                first = run_claude_hook(package, home, "session-start")
                 self.assertEqual((first.returncode, first.stdout, first.stderr), (0, "", ""))
                 self.assertEqual(settings.read_bytes(), original)
-                self.assertTrue(repair_stamp(home, package).is_file())
+                self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
 
                 (package / "bin/session-log").write_text(RECORDING_SESSION_LOG)
-                run_claude_hook(package, home, "session-start", environment=environment)
-                self.assertFalse(record.exists(), "an unchanged settings.json was repaired again")
+                self.recorded_session_start(package, home, record)
+                self.assertFalse(record.exists(), "an unchanged settings.json was cleaned again")
 
-                hooks = claude_hooks_registered(package, 1)
-                hooks["Stop"] *= REPEATED_REGISTRATIONS
+                hooks = claude_hooks_registered(home / SEEDED_RELATIVE, 1)
+                hooks["Stop"].append({"hooks": [LOOKALIKE_HOOK]})
                 settings.write_text(encode({"hooks": hooks}))
-                run_claude_hook(package, home, "session-start", environment=environment)
+                self.recorded_session_start(package, home, record)
                 self.assertEqual(record.read_text(), "--entrypoint claude --harness claude repair\n")
 
-    def dirty_standalone(self, home):
-        package = standalone_package(home)
+    def dirty_settings(self, home):
+        package = claude_package(home)
         settings = home / ".claude/settings.json"
-        settings.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
+        settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, REPEATED_REGISTRATIONS)}))
         return package, settings
 
-    def assert_repaired(self, package, home, settings):
+    def assert_cleaned(self, package, home, settings):
         result = run_claude_hook(package, home, "session-start")
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-        self.assertEqual(json.loads(settings.read_text())["hooks"], claude_hooks_registered(package, 1))
+        self.assertEqual(json.loads(settings.read_text()), {})
         self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists(), "session-start left the install lock behind")
-
-    def test_session_start_repairs_dirty_settings_then_skips_them(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            package, settings = self.dirty_standalone(home)
-            self.assert_repaired(package, home, settings)
-            self.assertTrue(repair_stamp(home, package).is_file())
-            record = Path(directory) / "record"
-            (package / "bin/session-log").write_text(RECORDING_SESSION_LOG)
-            run_claude_hook(package, home, "session-start",
-                            environment={**harness_environment(home), "SESSION_LOG_TEST_RECORD": str(record)})
-            self.assertFalse(record.exists(), "the repaired settings.json was repaired again")
 
     def change_version(self, home, package):
         (package / "VERSION").write_text(f"{PLUGIN_VERSION}-changed\n")
-        return package
-
-    def change_plugin_marker(self, home, package):
-        write_plugin_root_marker(home, str(home / PLUGIN_CACHE_RELATIVE / "skills/session-log"))
         return package
 
     def change_package_location(self, home, package):
@@ -1765,66 +1335,27 @@ class SessionStartRepairStampTests(unittest.TestCase):
         (moved / "bin/session-log").write_text(RECORDING_SESSION_LOG)
         return moved
 
-    def test_session_start_repairs_again_when_the_package_or_plugin_marker_changes(self):
-        for change in (self.change_version, self.change_plugin_marker, self.change_package_location):
+    def test_session_start_cleans_again_when_the_package_changes(self):
+        for change in (self.change_version, self.change_package_location):
             with self.subTest(change.__name__), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
-                package = standalone_package(home)
-                (home / ".claude/settings.json").write_text(json.dumps({"hooks": claude_hooks_registered(package, 1)}))
+                package = claude_package(home)
+                (home / ".claude/settings.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [LOOKALIKE_HOOK]}]}}))
                 first = run_claude_hook(package, home, "session-start")
                 self.assertEqual((first.returncode, first.stdout, first.stderr), (0, "", ""))
-                self.assertTrue(repair_stamp(home, package).is_file())
+                self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
                 (package / "bin/session-log").write_text(RECORDING_SESSION_LOG)
                 record = Path(directory) / "record"
-                runner = change(home, package)
-                run_claude_hook(runner, home, "session-start",
-                                environment={**harness_environment(home), "SESSION_LOG_TEST_RECORD": str(record)})
+                self.recorded_session_start(change(home, package), home, record)
                 self.assertEqual(record.read_text() if record.exists() else None,
                                  "--entrypoint claude --harness claude repair\n")
 
-    def test_session_start_repairs_again_when_a_registered_hook_script_disappears(self):
-        for home_name in ("home", "Jane Doe"):
-            with self.subTest(home_name), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve() / home_name
-                # A plugin copy not enabled at user scope keeps the live standalone set until its script is gone.
-                plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-                package = standalone_package(home)
-                settings = home / ".claude/settings.json"
-                settings.write_text(json.dumps({"hooks": claude_hooks_registered(package, 1)}))
-                original = settings.read_bytes()
-                first = run_claude_hook(plugin, home, "session-start")
-                self.assertEqual((first.returncode, first.stdout, first.stderr), (0, "", ""))
-                self.assertEqual(settings.read_bytes(), original)
-                self.assertTrue(repair_stamp(home, plugin).is_file())
-
-                shutil.rmtree(package)
-                second = run_claude_hook(plugin, home, "session-start")
-                self.assertEqual((second.returncode, second.stdout, second.stderr), (0, "", ""))
-                self.assertEqual(json.loads(settings.read_text()), {})
-
-    def test_plugin_and_standalone_copies_keep_separate_stamps(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            package = standalone_package(home)
-            (home / ".claude/settings.json").write_text(json.dumps({"hooks": claude_hooks_registered(package, 1)}))
-            copies = (plugin, package)
-            for copy in copies:
-                result = run_claude_hook(copy, home, "session-start")
-                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-            record = Path(directory) / "record"
-            environment = {**harness_environment(home), "SESSION_LOG_TEST_RECORD": str(record)}
-            for copy in copies:
-                (copy / "bin/session-log").write_text(RECORDING_SESSION_LOG)
-                run_claude_hook(copy, home, "session-start", environment=environment)
-            self.assertFalse(record.exists(), "a copy repaired settings.json again after the other copy's session start")
-
-    def test_unsafe_stamp_path_never_skips_the_repair(self):
+    def test_unsafe_stamp_path_never_skips_the_cleanup(self):
         for kind in ("symlink", "directory"):
             with self.subTest(kind), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
-                package, settings = self.dirty_standalone(home)
-                stamp = repair_stamp(home, package)
+                package, settings = self.dirty_settings(home)
+                stamp = home / LEGACY_CLEANUP_STAMP_RELATIVE
                 stamp.parent.mkdir(parents=True)
                 target = home / "stamp-target"
                 if kind == "symlink":
@@ -1832,34 +1363,52 @@ class SessionStartRepairStampTests(unittest.TestCase):
                     stamp.symlink_to(target)
                 else:
                     stamp.mkdir()
-                self.assert_repaired(package, home, settings)
+                self.assert_cleaned(package, home, settings)
                 self.assertTrue(stamp.is_symlink() if kind == "symlink" else stamp.is_dir())
                 if kind == "symlink":
                     self.assertEqual(target.read_text(), "unrelated")
 
-    def test_failed_repair_leaves_no_stamp_and_the_next_session_repairs(self):
+    def test_failed_cleanup_leaves_no_stamp_and_the_next_session_cleans(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            package, settings = self.dirty_standalone(home)
+            package, settings = self.dirty_settings(home)
             original = settings.read_bytes()
             hold_install_lock(home)
             result = run_claude_hook(package, home, "session-start")
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
             self.assertEqual(settings.read_bytes(), original)
-            self.assertFalse(repair_stamp(home, package).exists())
+            self.assertFalse((home / LEGACY_CLEANUP_STAMP_RELATIVE).exists())
 
             shutil.rmtree(home / INSTALL_LOCK_RELATIVE)
-            self.assert_repaired(package, home, settings)
-            self.assertTrue(repair_stamp(home, package).is_file())
+            self.assert_cleaned(package, home, settings)
+            self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
 
-    def test_jq_less_plugin_session_start_repairs_settings(self):
+    def test_failed_stamp_write_leaves_no_temporary_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             home = root / "home"
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
+            package, settings = self.dirty_settings(home)
+            tools = link_tools(root / "bin", tuple(tool for tool in GIT_BASH_TOOLS_WITHOUT_JQ if tool != "mv"))
+            record = root / "mv-called"
+            (tools / "mv").write_text('#!/bin/sh\nprintf called > "$SESSION_LOG_TEST_RECORD"\nexit 1\n')
+            (tools / "mv").chmod(EXECUTABLE_MODE)
+            result = run_claude_hook(package, home, "session-start",
+                                     environment={"HOME": str(home), "PATH": str(tools), "SESSION_LOG_TEST_RECORD": str(record)})
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+            self.assertTrue(record.exists(), "the failing mv was never reached")
+            self.assertEqual(json.loads(settings.read_text()), {})
+            stamp = home / LEGACY_CLEANUP_STAMP_RELATIVE
+            self.assertEqual([path.name for path in stamp.parent.iterdir() if path.name.startswith(f".{stamp.name}")], [])
+            self.assertFalse(stamp.exists())
+
+    def test_jq_less_plugin_session_start_cleans_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home = root / "home"
+            plugin = claude_package(home)
             settings = home / ".claude/settings.json"
             settings.write_text(json.dumps({"hooks": {
-                **claude_hooks_registered(home / STANDALONE_RELATIVE, REPEATED_REGISTRATIONS),
+                **claude_hooks_registered(home / SEEDED_RELATIVE, REPEATED_REGISTRATIONS),
                 "Notification": [{"hooks": [FOREIGN_HOOK]}],
             }}))
             tools = link_tools(root / "git-bash-bin", GIT_BASH_TOOLS_WITHOUT_JQ)
@@ -1881,7 +1430,7 @@ class ClaudeHookSilentFailureTests(unittest.TestCase):
 
     def enabled_home(self, directory):
         home = Path(directory).resolve()
-        package = standalone_package(home)
+        package = claude_package(home)
         (home / ".claude/prompt-logs").mkdir(parents=True)
         (home / ".claude/prompt-logs/.enabled").write_text("")
         return home, package
@@ -1897,7 +1446,7 @@ class ClaudeHookSilentFailureTests(unittest.TestCase):
     def test_unsafe_claude_root_exits_silently(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            package = standalone_package(home / "package-home")
+            package = claude_package(home / "package-home")
             (home / ".claude").write_text("not a directory")
             self.assert_silent(run_claude_hook(package, home, "user-prompt"))
 
@@ -1906,7 +1455,7 @@ class ClaudeHookSilentFailureTests(unittest.TestCase):
             with self.subTest(relative), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
                 home = root / "home"
-                package = standalone_package(root / "package-home")
+                package = claude_package(root / "package-home")
                 target = root / "real"
                 target.mkdir()
                 link = home / relative
@@ -1988,25 +1537,6 @@ class RepairCommandEdgeTests(unittest.TestCase):
 
     maxDiff = None
 
-    def test_claude_repair_restores_a_partial_managed_set(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            package = standalone_package(home)
-            settings = home / ".claude/settings.json"
-            hooks = claude_hooks_registered(package, 1)
-            missing = ("SessionStart", "UserPromptSubmit")
-            for event in missing:
-                del hooks[event]
-            hooks["Stop"] *= REPEATED_REGISTRATIONS
-            settings.write_text(json.dumps({"hooks": hooks}))
-            result = run_session_log(package, home, "claude", "repair")
-            self.assertEqual((result.returncode, result.stderr), (0, ""))
-            self.assertEqual(result.stdout, (
-                f"Claude Code: removed {REPEATED_REGISTRATIONS - 1} duplicate or stale hook registration(s) from {settings}\n"
-                f"Claude Code: restored {len(missing)} missing hook registration(s) in {settings}\n"
-            ))
-            self.assertEqual(json.loads(settings.read_text())["hooks"], claude_hooks_registered(package, 1))
-
     def test_native_repair_restores_a_partial_managed_set(self):
         for harness, subroot in NATIVE_HARNESSES:
             with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
@@ -2050,7 +1580,7 @@ class RepairCommandEdgeTests(unittest.TestCase):
         for name, contents in self.invalid_documents("Stop").items():
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
-                package = standalone_package(home)
+                package = claude_package(home)
                 settings = home / ".claude/settings.json"
                 settings.write_text(contents)
                 self.assert_refused(run_session_log(package, home, "claude", "repair"), settings, contents.encode())
@@ -2078,57 +1608,27 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 self.assert_refused(run_session_log(package, home, harness, "repair"), target, original)
                 self.assertTrue((home / subroot / name).is_symlink())
 
-    def test_repair_refuses_a_missing_hook_asset(self):
-        cases = (("claude", ".claude", "settings.json", "adapters/claude/claude_hook.sh"),
-                 ("codex", ".codex", "hooks.json", "adapters/native/session_log_hook.py"))
-        for harness, subroot, name, asset in cases:
-            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, subroot)
-                config = home / subroot / name
-                config.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
-                original = config.read_bytes()
-                (package / asset).unlink()
-                self.assert_refused(run_session_log(package, home, harness, "repair"), config, original)
+    def test_native_repair_refuses_a_missing_hook_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = harness_package(home, ".codex")
+            config = home / ".codex/hooks.json"
+            config.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
+            original = config.read_bytes()
+            (package / "adapters/native/session_log_hook.py").unlink()
+            self.assert_refused(run_session_log(package, home, "codex", "repair"), config, original)
 
     def test_repair_fails_while_another_install_holds_the_lock(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            package = standalone_package(home)
+            package = claude_package(home)
             settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
+            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, REPEATED_REGISTRATIONS)}))
             original = settings.read_bytes()
             hold_install_lock(home)
             result = run_session_log(package, home, "claude", "repair")
             self.assert_refused(result, settings, original)
             self.assertIn("already in progress", result.stderr)
-
-    def test_plugin_copy_with_stale_hooks_json_reports_a_skipped_repair(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            (plugin.parents[1] / "hooks/hooks.json").write_text(json.dumps({"hooks": {}}))
-            settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / STANDALONE_RELATIVE, DEAD_REGISTRATIONS)}))
-            original = settings.read_bytes()
-            result = run_session_log(plugin, home, "claude", "repair")
-            self.assertEqual((result.returncode, result.stderr), (0, ""))
-            self.assertTrue(result.stdout.startswith("Claude Code: repair skipped: "), result.stdout)
-            self.assertNotIn("found no duplicate", result.stdout)
-            self.assertEqual(settings.read_bytes(), original)
-
-    def test_plugin_copy_with_stale_hooks_json_refuses_to_register_its_cache_path(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
-            (plugin.parents[1] / "hooks/hooks.json").write_text(json.dumps({"hooks": {}}))
-            settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps({"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}}))
-            original = settings.read_bytes()
-            result = run_session_log(plugin, home, "claude", "on")
-            self.assert_refused(result, settings, original)
-            self.assertIn("plugin-cache", result.stderr)
-            self.assertFalse((home / ".claude/prompt-logs/.enabled").exists())
 
     def test_native_repair_leaves_absent_or_unmanaged_hooks_files_untouched(self):
         for harness, subroot in NATIVE_HARNESSES:
@@ -2223,15 +1723,15 @@ HOOK_TOOLS_WITHOUT_PYTHON = tuple(tool for tool in GIT_BASH_TOOLS_WITHOUT_JQ if 
 
 
 class ClaudeHookWithoutPythonTests(unittest.TestCase):
-    """The SessionStart settings repair is best effort: without a working python3 the hook still exits 0 silently."""
+    """The SessionStart legacy cleanup is best effort: without a working python3 the hook still exits 0 silently."""
 
     def run_session_start(self, python3_stub):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             home = root / "home"
-            plugin = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE) / "skills/session-log"
+            plugin = claude_package(home)
             settings = home / ".claude/settings.json"
-            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / STANDALONE_RELATIVE, DEAD_REGISTRATIONS)}))
+            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, DEAD_REGISTRATIONS)}))
             tools = link_tools(root / "git-bash-bin", HOOK_TOOLS_WITHOUT_PYTHON)
             if python3_stub is not None:
                 (tools / "python3").write_text(python3_stub)
