@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # the expected usage lines hold the literal price text "$x.yy"
 # Golden test for the shared usage/price engine (skills/session-log/adapters/claude/scripts/prompt_log_usage.jq)
 # and the aggregator CLI (skills/session-log/adapters/claude/scripts/prompt_log_usage.sh), over a synthetic
 # session tree: one main transcript + four sub-agent transcripts (cascaded

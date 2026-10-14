@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # SessionStart hooks: non-zero exit is non-blocking (unlike UserPromptSubmit exit 2 which erases prompt), so no trap needed.
 

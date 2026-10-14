@@ -1,4 +1,5 @@
 # universal-session-log: managed
+# shellcheck shell=bash
 # Legacy cleanup for bin/session-log: removes, per harness, what older releases left behind.
 #
 # Sourced by bin/session-log after lib/adapter_install.sh, in the same shell, so it shares bin's

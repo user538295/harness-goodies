@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # The session-log skill's entrypoint: runs one command through this package's CLI for the harness
 # the host names. The harness plugin ships this package, so nothing is copied anywhere.
 set -euo pipefail

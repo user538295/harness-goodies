@@ -54,7 +54,7 @@ resolve_project_key() {
   printf '%s\n' "$1" | sed 's|[/._]|-|g'
 }
 _claude_path_components_secure() {
-  local path="$1" current="$1"
+  local current="$1"
   while :; do
     [ ! -L "$current" ] || return 1
     [ "$current" = "/" ] && break
@@ -616,6 +616,7 @@ create_session_file() {
     {
       printf '# Prompts — %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S')"
       printf '**Session ID:** %s\n' "$session_id"
+      # shellcheck disable=SC2016  # the backticks are Markdown code formatting, not command substitution
       printf '**Session file:** `%s`\n\n' "$session_jsonl"
       printf '%s\n\n' '---'
     } > "$session_file"

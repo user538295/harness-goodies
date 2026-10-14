@@ -1,8 +1,10 @@
 #!/bin/bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # Same contract as prompt_log_stop.sh: never write stdout, always exit 0.
 jsonl_snapshot=""
 meta_snapshot=""
+# shellcheck disable=SC2154  # snapshot is the loop variable inside the trap body, which shellcheck does not track
 trap 'for snapshot in "${jsonl_snapshot:-}" "${meta_snapshot:-}"; do [ -n "$snapshot" ] && unlink "$snapshot" 2>/dev/null || true; done; exit 0' EXIT
 umask 077
 [ -f "$HOME/.claude/prompt-logs/.enabled" ] || exit 0

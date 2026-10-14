@@ -1,4 +1,5 @@
 # universal-session-log: managed
+# shellcheck shell=bash
 # Adapter-install machinery for bin/session-log: Codex's hooks.json entries, the one adapter a
 # harness plugin does not register itself (see plugin_owns_hooks in bin/session-log). Its install
 # lock, state-directory checks, runtime-marker and repair-report helpers serve every harness.
@@ -178,6 +179,7 @@ print_repair_report() {
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     printf '%s: %s\n' "$HARNESS_LABEL" "$line"
+    # shellcheck disable=SC2034  # read by bin/session-log, which sources this file
     REPAIR_REPORTED=1
   done <<< "$1"
 }

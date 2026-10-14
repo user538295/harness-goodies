@@ -23,23 +23,23 @@ assert_not_contains() {
 }
 assert_exact() {
   local label="$1" expected="$2" actual="$3"
-  [[ "$actual" == "$expected" ]] && pass "$label" || fail "$label (expected: $expected; actual: $actual)"
+  if [[ "$actual" == "$expected" ]]; then pass "$label"; else fail "$label (expected: $expected; actual: $actual)"; fi
 }
 # `on` prints any cleanup report before its status line, so only that last line is compared.
 assert_last_line() {
   assert_exact "$1" "$2" "${3##*$'\n'}"
 }
-assert_file() { local label="$1" file="$2"; [[ -f "$file" ]] && pass "$label" || fail "$label (missing $file)"; }
-assert_not_file() { local label="$1" file="$2"; [[ ! -e "$file" && ! -L "$file" ]] && pass "$label" || fail "$label (present $file)"; }
+assert_file() { local label="$1" file="$2"; if [[ -f "$file" ]]; then pass "$label"; else fail "$label (missing $file)"; fi; }
+assert_not_file() { local label="$1" file="$2"; if [[ ! -e "$file" && ! -L "$file" ]]; then pass "$label"; else fail "$label (present $file)"; fi; }
 assert_mode() {
   local label="$1" expected="$2" file="$3" actual
   actual="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null)"
-  [[ "$actual" == "$expected" ]] && pass "$label" || fail "$label (expected $expected, got $actual)"
+  if [[ "$actual" == "$expected" ]]; then pass "$label"; else fail "$label (expected $expected, got $actual)"; fi
 }
 assert_link() {
   local label="$1" expected="$2" file="$3" actual
   actual="$(readlink "$file" 2>/dev/null || true)"
-  [[ -L "$file" && "$actual" == "$expected" ]] && pass "$label" || fail "$label (expected link $expected, got $actual)"
+  if [[ -L "$file" && "$actual" == "$expected" ]]; then pass "$label"; else fail "$label (expected link $expected, got $actual)"; fi
 }
 package_root_for() {
   case "$1" in
@@ -143,7 +143,7 @@ set +e
 install_mode_error="$(HOME="$DISPATCH_HOME" bash "$ENTRYPOINT" --install --harness all 2>&1)"
 install_mode_rc=$?
 set -e
-[[ "$install_mode_rc" -ne 0 ]] && pass "the entrypoint has no install mode" || fail "the entrypoint has no install mode"
+if [[ "$install_mode_rc" -ne 0 ]]; then pass "the entrypoint has no install mode"; else fail "the entrypoint has no install mode"; fi
 assert_contains "the install mode error names the argument" "unknown argument: --install" "$install_mode_error"
 assert_not_file "the all-harness installer wrapper is gone" "$REPO/install-universal-session-log.sh"
 place_test_packages
@@ -269,21 +269,21 @@ missing_rc=$?
 unknown_identity="$(run_session_log --entrypoint unknown --harness unknown status 2>&1)"
 unknown_rc=$?
 set -e
-[[ "$missing_rc" -ne 0 ]] && pass "missing harness identity fails" || fail "missing harness identity fails"
+if [[ "$missing_rc" -ne 0 ]]; then pass "missing harness identity fails"; else fail "missing harness identity fails"; fi
 assert_contains "missing identity is actionable" "active harness identity is required" "$missing_identity"
-[[ "$unknown_rc" -ne 0 ]] && pass "unknown harness identity fails" || fail "unknown harness identity fails"
+if [[ "$unknown_rc" -ne 0 ]]; then pass "unknown harness identity fails"; else fail "unknown harness identity fails"; fi
 assert_contains "unknown identity lists supported harnesses" "claude, codex, cursor, opencode, omp" "$unknown_identity"
 set +e
 trailing_status="$(run_harness claude status unexpected 2>&1)"
 trailing_status_rc=$?
 set -e
-[[ "$trailing_status_rc" -ne 0 ]] && pass "direct status rejects trailing arguments" || fail "direct status rejects trailing arguments"
+if [[ "$trailing_status_rc" -ne 0 ]]; then pass "direct status rejects trailing arguments"; else fail "direct status rejects trailing arguments"; fi
 assert_contains "trailing argument error is explicit" "trailing arguments are not valid for status" "$trailing_status"
 set +e
 unknown_before_command="$(run_harness claude --bogus status 2>&1)"
 unknown_before_command_rc=$?
 set -e
-[[ "$unknown_before_command_rc" -ne 0 ]] && pass "unknown CLI argument before command fails" || fail "unknown CLI argument before command fails"
+if [[ "$unknown_before_command_rc" -ne 0 ]]; then pass "unknown CLI argument before command fails"; else fail "unknown CLI argument before command fails"; fi
 assert_contains "unknown CLI argument error names the argument" "unknown argument: --bogus" "$unknown_before_command"
 set +e
 cli_home_unset="$(env -u HOME "$(package_root_for claude)/bin/session-log" --entrypoint claude --harness claude status 2>&1)"
@@ -303,7 +303,7 @@ while IFS='|' read -r entry_label entry_expected entry_arguments; do
   entry_output="$(HOME="$ENTRY_ARGS_HOME" bash "$ENTRYPOINT" $entry_arguments 2>&1)"
   entry_rc=$?
   set -e
-  [[ "$entry_rc" -ne 0 ]] && pass "entrypoint fails on $entry_label" || fail "entrypoint fails on $entry_label"
+  if [[ "$entry_rc" -ne 0 ]]; then pass "entrypoint fails on $entry_label"; else fail "entrypoint fails on $entry_label"; fi
   assert_exact "entrypoint names the problem with $entry_label" "session-log: $entry_expected" "$entry_output"
 done <<'EOF'
 a missing harness|--harness is required|
@@ -320,7 +320,7 @@ set +e
 claude_reloc="$(HOME="$CLAUDE_RELOCATED_HOME" CLAUDE_CONFIG_DIR="$WORKROOT/relocated-claude" bash "$ENTRYPOINT" --harness claude --arguments on 2>&1)"
 claude_reloc_rc=$?
 set -e
-[[ "$claude_reloc_rc" -ne 0 ]] && pass "relocated Claude root is refused" || fail "relocated Claude root is refused"
+if [[ "$claude_reloc_rc" -ne 0 ]]; then pass "relocated Claude root is refused"; else fail "relocated Claude root is refused"; fi
 assert_contains "relocated Claude root error is explicit" "Claude Code root is relocated" "$claude_reloc"
 assert_not_file "relocated Claude root leaves logging off" "$CLAUDE_RELOCATED_HOME/.claude/prompt-logs/.enabled"
 assert_not_file "relocated Claude root is not written" "$WORKROOT/relocated-claude/prompt-logs/.enabled"
@@ -344,6 +344,7 @@ assert_not_file "OMP on copies no package" "$OMP_HOME/.omp/agent/skills/session-
 OMP_PLUGIN_EXTENSION="$(jq -r '.omp.extensions[0]' "$REPO/package.json")"
 assert_exact "the omp plugin manifest names the session-log extension" "./skills/session-log/adapters/omp/session-log.js" "$OMP_PLUGIN_EXTENSION"
 set +e
+# shellcheck disable=SC2016  # ${name} is a JavaScript template literal for bun, not a shell expansion
 omp_plugin_smoke="$(
   HOME="$OMP_HOME" OMP_SESSION_LOG_PLUGIN="$REPO/${OMP_PLUGIN_EXTENSION#./}" \
     bun --eval 'const events = []; const pi = { registerCommand: (name) => events.push(`command:${name}`), on: (name) => events.push(name) }; const loaded = await import(process.env.OMP_SESSION_LOG_PLUGIN); loaded.default(pi); process.stdout.write(events.join(","));' \
@@ -351,7 +352,7 @@ omp_plugin_smoke="$(
 )"
 omp_plugin_smoke_rc=$?
 set -e
-[[ "$omp_plugin_smoke_rc" -eq 0 ]] && pass "OMP extension lifecycle API loads" || fail "OMP extension lifecycle API loads (actual: $omp_plugin_smoke)"
+if [[ "$omp_plugin_smoke_rc" -eq 0 ]]; then pass "OMP extension lifecycle API loads"; else fail "OMP extension lifecycle API loads (actual: $omp_plugin_smoke)"; fi
 assert_exact "OMP extension registers native handlers" "command:session-log,session_start,session_shutdown,before_agent_start,agent_end,session_stop" "$omp_plugin_smoke"
 assert_file "OMP extension lifecycle writes runtime state" "$OMP_HOME/.omp/agent/session-log/runtime.json"
 
@@ -404,7 +405,7 @@ unknown_native_event="$(
 )"
 unknown_native_event_rc=$?
 set -e
-[[ "$unknown_native_event_rc" -ne 0 ]] && pass "native hook rejects unknown lifecycle events" || fail "native hook rejects unknown lifecycle events"
+if [[ "$unknown_native_event_rc" -ne 0 ]]; then pass "native hook rejects unknown lifecycle events"; else fail "native hook rejects unknown lifecycle events"; fi
 assert_contains "unknown native event error is explicit" "unknown cursor lifecycle event" "$unknown_native_event"
 cursor_prompt_hook_output="$(
   printf '%s\n' '{"conversation_id":"cursor-session","generation_id":"cursor-generation","model":"fixture","workspace_roots":["/tmp/cursor-project"],"prompt":"cursor prompt"}' |
@@ -441,9 +442,11 @@ printf '%s\n' '{"conversation_id":"cursor-two","workspace_roots":["/tmp/two/shar
   HOME="$CURSOR_HOME" python3 "$CURSOR_HOOK" cursor user-prompt >/dev/null
 cursor_one_path=("$CURSOR_HOME/.cursor/prompt-logs/"*/session_cursor-one.md)
 cursor_two_path=("$CURSOR_HOME/.cursor/prompt-logs/"*/session_cursor-two.md)
-[[ "${cursor_one_path[0]%/*}" != "${cursor_two_path[0]%/*}" ]] &&
-  pass "native logs keep same-named projects separate" ||
+if [[ "${cursor_one_path[0]%/*}" != "${cursor_two_path[0]%/*}" ]]; then
+  pass "native logs keep same-named projects separate"
+else
   fail "native logs keep same-named projects separate"
+fi
 long_cursor_id="$(printf '%0300d' 0 | tr '0' 'a')"
 set +e
 long_cursor_output="$(
@@ -452,7 +455,7 @@ long_cursor_output="$(
 )"
 long_cursor_rc=$?
 set -e
-[[ "$long_cursor_rc" -eq 0 ]] && pass "native hook ignores overlong session IDs safely" || fail "native hook ignores overlong session IDs safely"
+if [[ "$long_cursor_rc" -eq 0 ]]; then pass "native hook ignores overlong session IDs safely"; else fail "native hook ignores overlong session IDs safely"; fi
 assert_exact "overlong Cursor session still allows the prompt" '{"continue":true}' "$long_cursor_output"
 assert_exact "overlong Cursor session creates no log" "" \
   "$(find "$CURSOR_HOME/.cursor/prompt-logs" -name "session_${long_cursor_id}.md" -print)"
@@ -463,7 +466,7 @@ home_unset_output="$(
 )"
 home_unset_rc=$?
 set -e
-[[ "$home_unset_rc" -ne 0 ]] && pass "native hook fails when HOME is unset" || fail "native hook fails when HOME is unset"
+if [[ "$home_unset_rc" -ne 0 ]]; then pass "native hook fails when HOME is unset"; else fail "native hook fails when HOME is unset"; fi
 assert_contains "native hook HOME error is explicit" "HOME is not set" "$home_unset_output"
 assert_exact "native hook writes no log under cwd when HOME unset" "" \
   "$(find "$PWD/.codex/prompt-logs" -name 'session_codex-session.md' -print 2>/dev/null)"
@@ -473,20 +476,22 @@ cursor_usage="$(run_skill_entrypoint "$REPO_PACKAGE/SKILL.md" "$CURSOR_HOME" cur
 assert_contains "source skill forwards usage --latest" "Cursor: usage" "$cursor_usage"
 assert_not_contains "Cursor usage no longer claims tokens are unavailable" "native token usage unavailable" "$cursor_usage"
 assert_contains "Cursor usage reports stop hook totals" "TOTAL (1 requests, 0 sub-agents)" "$cursor_usage"
+# shellcheck disable=SC2016  # $0.00 is the literal price text the usage line prints
 assert_contains "Cursor usage uses the Claude est. line" \
   'est. used token: input: 1, output: 2, cache_create: 1, cache_read: 3, total_tokens: 7, price: $0.00, model: ?, effort: unknown' "$cursor_usage"
 set +e
 cursor_tokenless="$(run_harness_at_home "$CURSOR_HOME" cursor usage cursor-session 2>&1)"
 cursor_tokenless_rc=$?
 set -e
-[[ "$cursor_tokenless_rc" -eq 0 ]] && pass "Cursor usage reports a prompt without stop tokens" || fail "Cursor usage reports a prompt without stop tokens"
+if [[ "$cursor_tokenless_rc" -eq 0 ]]; then pass "Cursor usage reports a prompt without stop tokens"; else fail "Cursor usage reports a prompt without stop tokens"; fi
+# shellcheck disable=SC2016  # $0.00 is the literal price text the usage line prints
 assert_contains "Cursor tokenless turn has an empty est. line" \
   'est. used token: input: 0, output: 0, cache_create: 0, cache_read: 0, total_tokens: 0, price: $0.00, model: -, effort: -' "$cursor_tokenless"
 set +e
 codex_check="$(HOME="$CODEX_HOME" bash "$ENTRYPOINT" --harness codex --arguments 'usage --check' 2>&1)"
 codex_check_rc=$?
 set -e
-[[ "$codex_check_rc" -ne 0 ]] && pass "Codex usage rejects Claude-only --check" || fail "Codex usage rejects Claude-only --check"
+if [[ "$codex_check_rc" -ne 0 ]]; then pass "Codex usage rejects Claude-only --check"; else fail "Codex usage rejects Claude-only --check"; fi
 assert_contains "Codex --check rejection is explicit" "--check is only valid for Claude Code" "$codex_check"
 
 
@@ -517,7 +522,7 @@ set +e
 relocated="$(XDG_CONFIG_HOME="$WORKROOT/relocated" run_harness opencode on 2>&1)"
 relocated_rc=$?
 set -e
-[[ "$relocated_rc" -ne 0 ]] && pass "relocated OpenCode root fails" || fail "relocated OpenCode root fails"
+if [[ "$relocated_rc" -ne 0 ]]; then pass "relocated OpenCode root fails"; else fail "relocated OpenCode root fails"; fi
 assert_contains "relocated root error is explicit" "relocated" "$relocated"
 assert_not_file "relocated root is not mutated" "$WORKROOT/relocated/prompt-logs/.enabled"
 
@@ -527,7 +532,7 @@ set +e
 install_root_error="$(HOME="$INSTALL_ROOT_HOME" XDG_CONFIG_HOME="$WORKROOT/custom-config" bash "$ENTRYPOINT" --harness opencode --arguments on 2>&1)"
 install_root_rc=$?
 set -e
-[[ "$install_root_rc" -ne 0 ]] && pass "entrypoint rejects relocated roots" || fail "entrypoint rejects relocated roots"
+if [[ "$install_root_rc" -ne 0 ]]; then pass "entrypoint rejects relocated roots"; else fail "entrypoint rejects relocated roots"; fi
 assert_contains "entrypoint relocation error is explicit" "OpenCode root is relocated" "$install_root_error"
 assert_not_file "entrypoint relocation leaves logging off" "$INSTALL_ROOT_HOME/.config/opencode/prompt-logs/.enabled"
 
@@ -540,7 +545,7 @@ codex_root_error="$(
 )"
 codex_root_rc=$?
 set -e
-[[ "$codex_root_rc" -ne 0 ]] && pass "entrypoint rejects relocated Codex root" || fail "entrypoint rejects relocated Codex root"
+if [[ "$codex_root_rc" -ne 0 ]]; then pass "entrypoint rejects relocated Codex root"; else fail "entrypoint rejects relocated Codex root"; fi
 assert_contains "Codex relocation error is explicit" "Codex root is relocated" "$codex_root_error"
 assert_not_file "Codex relocation leaves logging off" "$CODEX_ROOT_HOME/.codex/prompt-logs/.enabled"
 
@@ -564,7 +569,7 @@ set +e
 symlink_error="$(HOME="$SYMLINK_HOME" "$(package_root_for omp)/bin/session-log" --entrypoint omp --harness omp on 2>&1)"
 symlink_rc=$?
 set -e
-[[ "$symlink_rc" -ne 0 ]] && pass "symlinked enable flag is protected" || fail "symlinked enable flag is protected"
+if [[ "$symlink_rc" -ne 0 ]]; then pass "symlinked enable flag is protected"; else fail "symlinked enable flag is protected"; fi
 assert_contains "symlinked flag error is explicit" "symlinked enable flag" "$symlink_error"
 assert_contains "symlink target remains unchanged" "sentinel" "$(cat "$WORKROOT/sentinel")"
 
@@ -578,7 +583,7 @@ migration_symlink_rc=$?
 migration_symlink_on="$(HOME="$MIGRATION_SYMLINK_HOME" bash "$ENTRYPOINT" --harness claude --arguments on 2>&1)"
 migration_symlink_on_rc=$?
 set -e
-[[ "$migration_symlink_rc" -ne 0 ]] && pass "symlinked migration settings fail repair safely" || fail "symlinked migration settings fail repair safely"
+if [[ "$migration_symlink_rc" -ne 0 ]]; then pass "symlinked migration settings fail repair safely"; else fail "symlinked migration settings fail repair safely"; fi
 assert_contains "symlinked migration error is explicit" "symlinked Claude settings" "$migration_symlink_error"
 assert_exact "symlinked settings do not block on" "0" "$migration_symlink_on_rc"
 assert_exact "on reports the failed legacy cleanup before its status" \
@@ -663,7 +668,7 @@ set +e
 malformed_error="$(HOME="$MALFORMED_HOME" bash "$ENTRYPOINT" --harness claude --arguments repair 2>&1)"
 malformed_rc=$?
 set -e
-[[ "$malformed_rc" -ne 0 ]] && pass "malformed settings fail before migration" || fail "malformed settings fail before migration"
+if [[ "$malformed_rc" -ne 0 ]]; then pass "malformed settings fail before migration"; else fail "malformed settings fail before migration"; fi
 assert_file "malformed settings preserve legacy files" "$MALFORMED_HOME/.claude/scripts/prompt_log_save.sh"
 assert_contains "malformed settings error names the settings file" "malformed-home/.claude/settings.json: Expecting property name" "$malformed_error"
 
@@ -778,9 +783,11 @@ set +e
 plugin_upgrade_again="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude on 2>&1)"
 set -e
 assert_last_line "repeated plugin on without a live session reports restart required" "Claude Code: on — restart required" "$plugin_upgrade_again"
-cmp -s "$WORKROOT/plugin-upgrade-settings.first" "$PLUGIN_UPGRADE_SETTINGS" &&
-  pass "repeated plugin on leaves settings byte-identical" ||
+if cmp -s "$WORKROOT/plugin-upgrade-settings.first" "$PLUGIN_UPGRADE_SETTINGS"; then
+  pass "repeated plugin on leaves settings byte-identical"
+else
   fail "repeated plugin on leaves settings byte-identical"
+fi
 set +e
 plugin_upgrade_status="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude status 2>&1)"
 set -e
@@ -791,9 +798,11 @@ for read_or_flag_command in status off; do
   set +e
   (unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude "$read_or_flag_command") >/dev/null 2>&1
   set -e
-  cmp -s "$WORKROOT/plugin-upgrade-settings.stale" "$PLUGIN_UPGRADE_SETTINGS" &&
-    pass "plugin $read_or_flag_command leaves settings.json alone" ||
+  if cmp -s "$WORKROOT/plugin-upgrade-settings.stale" "$PLUGIN_UPGRADE_SETTINGS"; then
+    pass "plugin $read_or_flag_command leaves settings.json alone"
+  else
     fail "plugin $read_or_flag_command leaves settings.json alone"
+  fi
 done
 assert_not_file "plugin off disables logging" "$PLUGIN_UPGRADE_HOME/.claude/prompt-logs/.enabled"
 
@@ -818,9 +827,11 @@ printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
 plugin_hook_again_rc=$?
 set -e
 assert_exact "repeated plugin SessionStart cleanup succeeds" "0" "$plugin_hook_again_rc"
-cmp -s "$WORKROOT/plugin-hook-settings.first" "$PLUGIN_UPGRADE_SETTINGS" &&
-  pass "repeated plugin SessionStart leaves settings byte-identical" ||
+if cmp -s "$WORKROOT/plugin-hook-settings.first" "$PLUGIN_UPGRADE_SETTINGS"; then
+  pass "repeated plugin SessionStart leaves settings byte-identical"
+else
   fail "repeated plugin SessionStart leaves settings byte-identical"
+fi
 printf '{"hooks": "SESSION_LOG_OWNER=universal-session-log broken\n' > "$PLUGIN_UPGRADE_SETTINGS"
 cp "$PLUGIN_UPGRADE_SETTINGS" "$WORKROOT/plugin-hook-invalid.first"
 set +e
@@ -829,9 +840,11 @@ printf '%s\n' '{"session_id":"plugin-cleanup-session","cwd":"'"$PWD"'"}' |
 plugin_hook_invalid_rc=$?
 set -e
 assert_exact "plugin SessionStart never fails on invalid settings" "0" "$plugin_hook_invalid_rc"
-cmp -s "$WORKROOT/plugin-hook-invalid.first" "$PLUGIN_UPGRADE_SETTINGS" &&
-  pass "plugin SessionStart leaves invalid settings untouched" ||
+if cmp -s "$WORKROOT/plugin-hook-invalid.first" "$PLUGIN_UPGRADE_SETTINGS"; then
+  pass "plugin SessionStart leaves invalid settings untouched"
+else
   fail "plugin SessionStart leaves invalid settings untouched"
+fi
 
 printf '=== plugin on removes a skill-root symlink older releases pointed into the plugin cache ===\n'
 STALE_LINK_HOME="$WORKROOT/stale-link-home"
@@ -905,7 +918,7 @@ set +e
 claude_missing="$(run_harness claude usage --latest 2>&1)"
 claude_missing_rc=$?
 set -e
-[[ "$claude_missing_rc" -ne 0 ]] && pass "missing Claude transcript fails directly" || fail "missing Claude transcript fails directly"
+if [[ "$claude_missing_rc" -ne 0 ]]; then pass "missing Claude transcript fails directly"; else fail "missing Claude transcript fails directly"; fi
 assert_contains "Claude usage names harness on failure" "Claude Code: usage" "$claude_missing"
 
 CLAUDE_KEY="$(printf '%s' "$PWD" | sed 's|[/._]|-|g')"
@@ -926,7 +939,7 @@ set +e
 multiple_usage="$(run_harness claude usage --latest "$CLAUDE_PROJECT/universal.jsonl" 2>&1)"
 multiple_usage_rc=$?
 set -e
-[[ "$multiple_usage_rc" -ne 0 ]] && pass "usage rejects multiple transcript targets" || fail "usage rejects multiple transcript targets"
+if [[ "$multiple_usage_rc" -ne 0 ]]; then pass "usage rejects multiple transcript targets"; else fail "usage rejects multiple transcript targets"; fi
 assert_contains "multiple usage target error is explicit" "at most one session transcript target" "$multiple_usage"
 
 
@@ -951,7 +964,7 @@ set +e
 opencode_failure="$(run_harness_at_home "$OPENCODE_FAILURE_HOME" opencode usage --latest 2>&1)"
 opencode_failure_rc=$?
 set -e
-[[ "$opencode_failure_rc" -ne 0 ]] && pass "OpenCode SQLite failure returns nonzero" || fail "OpenCode SQLite failure returns nonzero"
+if [[ "$opencode_failure_rc" -ne 0 ]]; then pass "OpenCode SQLite failure returns nonzero"; else fail "OpenCode SQLite failure returns nonzero"; fi
 assert_contains "OpenCode SQLite failure is explicit" "native OpenCode usage failed" "$opencode_failure"
 assert_not_contains "OpenCode SQLite failure does not report totals" "TOTAL" "$opencode_failure"
 
@@ -1012,7 +1025,7 @@ omp_invalid_id="$(
 )"
 omp_invalid_id_rc=$?
 set -e
-[[ "$omp_invalid_id_rc" -eq 0 ]] && pass "OMP ignores invalid session IDs safely" || fail "OMP ignores invalid session IDs safely"
+if [[ "$omp_invalid_id_rc" -eq 0 ]]; then pass "OMP ignores invalid session IDs safely"; else fail "OMP ignores invalid session IDs safely (actual: $omp_invalid_id)"; fi
 assert_not_file "OMP invalid session ID creates no log" "$OMP_SAFE_HOME/.omp/agent/prompt-logs/omp-invalid-fixture/session_unknown-session.md"
 printf '{"type":"session","id":"omp-safe","cwd":"omp-symlink-fixture"}\n' \
   > "$OMP_SAFE_HOME/.omp/agent/sessions/omp-safe.jsonl"
@@ -1034,7 +1047,7 @@ omp_symlink_log="$(
 )"
 omp_symlink_log_rc=$?
 set -e
-[[ "$omp_symlink_log_rc" -ne 0 ]] && pass "OMP rejects symlinked log paths" || fail "OMP rejects symlinked log paths"
+if [[ "$omp_symlink_log_rc" -ne 0 ]]; then pass "OMP rejects symlinked log paths"; else fail "OMP rejects symlinked log paths (actual: $omp_symlink_log)"; fi
 assert_exact "OMP symlinked log target remains unchanged" "omp sentinel" "$(cat "$WORKROOT/omp-outside/sentinel")"
 
 mkdir -p "$OMP_SAFE_HOME/.omp/agent/session-log"
@@ -1069,7 +1082,7 @@ set +e
 omp_no_session="$(run_harness_at_home "$OMP_HOME" omp usage --no-session 2>&1)"
 omp_no_session_rc=$?
 set -e
-[[ "$omp_no_session_rc" -ne 0 ]] && pass "OMP no-session usage fails directly" || fail "OMP no-session usage fails directly"
+if [[ "$omp_no_session_rc" -ne 0 ]]; then pass "OMP no-session usage fails directly"; else fail "OMP no-session usage fails directly"; fi
 assert_contains "OMP no-session error explains missing reconstruction" "cannot be reconstructed" "$omp_no_session"
 
 printf '=== OMP and OpenCode usage --latest picks the newest user prompt ===\n'
@@ -1175,6 +1188,7 @@ assert_contains "double-quoted backslash before a normal char stays literal" 'un
 set +e
 dq_backslash="$(run_harness cursor --arguments '"\\"' 2>&1)"
 set -e
+# shellcheck disable=SC1003  # the trailing backslash is the argument under test, not a quote escape
 assert_contains "double-quoted double backslash collapses to one" 'unknown command: \' "$dq_backslash"
 set +e
 plain_escape="$(run_harness cursor --arguments 'unknown\ cmd' 2>&1)"
@@ -1184,67 +1198,68 @@ set +e
 unterminated_quote="$(run_harness cursor --arguments "'oops" 2>&1)"
 unterminated_quote_rc=$?
 set -e
-[[ "$unterminated_quote_rc" -ne 0 ]] && pass "unterminated quote fails" || fail "unterminated quote fails"
+if [[ "$unterminated_quote_rc" -ne 0 ]]; then pass "unterminated quote fails"; else fail "unterminated quote fails"; fi
 assert_contains "unterminated quote error is explicit" "unterminated quote in command arguments" "$unterminated_quote"
 set +e
+# shellcheck disable=SC1003  # the trailing backslash is the argument under test, not a quote escape
 unterminated_escape="$(run_harness cursor --arguments 'oops\' 2>&1)"
 unterminated_escape_rc=$?
 set -e
-[[ "$unterminated_escape_rc" -ne 0 ]] && pass "unterminated escape fails" || fail "unterminated escape fails"
+if [[ "$unterminated_escape_rc" -ne 0 ]]; then pass "unterminated escape fails"; else fail "unterminated escape fails"; fi
 assert_contains "unterminated escape error is explicit" "unterminated escape in command arguments" "$unterminated_escape"
 set +e
 empty_arguments="$(run_harness cursor --arguments "" 2>&1)"
 empty_arguments_rc=$?
 set -e
-[[ "$empty_arguments_rc" -ne 0 ]] && pass "empty arguments fail" || fail "empty arguments fail"
+if [[ "$empty_arguments_rc" -ne 0 ]]; then pass "empty arguments fail"; else fail "empty arguments fail"; fi
 assert_contains "empty arguments require a command" "session-log command is required" "$empty_arguments"
 set +e
 unknown_arguments="$(run_harness cursor --arguments bogus 2>&1)"
 unknown_arguments_rc=$?
 set -e
-[[ "$unknown_arguments_rc" -ne 0 ]] && pass "unknown command via arguments fails" || fail "unknown command via arguments fails"
+if [[ "$unknown_arguments_rc" -ne 0 ]]; then pass "unknown command via arguments fails"; else fail "unknown command via arguments fails"; fi
 assert_contains "unknown command via arguments is explicit" "unknown command: bogus" "$unknown_arguments"
 set +e
 entry_mismatch="$(run_session_log --entrypoint claude --harness codex status 2>&1)"
 entry_mismatch_rc=$?
 set -e
-[[ "$entry_mismatch_rc" -ne 0 ]] && pass "entrypoint and harness mismatch fails" || fail "entrypoint and harness mismatch fails"
+if [[ "$entry_mismatch_rc" -ne 0 ]]; then pass "entrypoint and harness mismatch fails"; else fail "entrypoint and harness mismatch fails"; fi
 assert_contains "entrypoint/harness mismatch is explicit" "conflicting native entrypoint and harness identities" "$entry_mismatch"
 set +e
 dup_harness="$(run_session_log --entrypoint cursor --harness cursor --harness cursor status 2>&1)"
 dup_harness_rc=$?
 set -e
-[[ "$dup_harness_rc" -ne 0 ]] && pass "duplicate harness flag fails" || fail "duplicate harness flag fails"
+if [[ "$dup_harness_rc" -ne 0 ]]; then pass "duplicate harness flag fails"; else fail "duplicate harness flag fails"; fi
 assert_contains "duplicate harness flag is explicit" "conflicting harness identity claims" "$dup_harness"
 set +e
 dup_entry="$(run_session_log --entrypoint cursor --entrypoint cursor --harness cursor status 2>&1)"
 dup_entry_rc=$?
 set -e
-[[ "$dup_entry_rc" -ne 0 ]] && pass "duplicate entrypoint flag fails" || fail "duplicate entrypoint flag fails"
+if [[ "$dup_entry_rc" -ne 0 ]]; then pass "duplicate entrypoint flag fails"; else fail "duplicate entrypoint flag fails"; fi
 assert_contains "duplicate entrypoint flag is explicit" "conflicting native entrypoint claims" "$dup_entry"
 set +e
 command_and_arguments="$(run_harness cursor --arguments foo status 2>&1)"
 command_and_arguments_rc=$?
 set -e
-[[ "$command_and_arguments_rc" -ne 0 ]] && pass "command combined with --arguments fails" || fail "command combined with --arguments fails"
+if [[ "$command_and_arguments_rc" -ne 0 ]]; then pass "command combined with --arguments fails"; else fail "command combined with --arguments fails"; fi
 assert_contains "command with --arguments conflict is explicit" "cannot combine a command with --arguments" "$command_and_arguments"
 set +e
 codex_reloc="$(HOME="$TEST_HOME" CODEX_HOME="$WORKROOT/relocated-codex" "$(package_root_for codex)/bin/session-log" --entrypoint codex --harness codex status 2>&1)"
 codex_reloc_rc=$?
 set -e
-[[ "$codex_reloc_rc" -ne 0 ]] && pass "relocated Codex root is refused" || fail "relocated Codex root is refused"
+if [[ "$codex_reloc_rc" -ne 0 ]]; then pass "relocated Codex root is refused"; else fail "relocated Codex root is refused"; fi
 assert_contains "relocated Codex root message is explicit" "Codex root is relocated" "$codex_reloc"
 set +e
 opencode_reloc="$(HOME="$TEST_HOME" XDG_DATA_HOME="$WORKROOT/relocated-data" "$(package_root_for opencode)/bin/session-log" --entrypoint opencode --harness opencode status 2>&1)"
 opencode_reloc_rc=$?
 set -e
-[[ "$opencode_reloc_rc" -ne 0 ]] && pass "relocated OpenCode data root is refused" || fail "relocated OpenCode data root is refused"
+if [[ "$opencode_reloc_rc" -ne 0 ]]; then pass "relocated OpenCode data root is refused"; else fail "relocated OpenCode data root is refused"; fi
 assert_contains "relocated OpenCode data root message is explicit" "OpenCode data root is relocated" "$opencode_reloc"
 set +e
 omp_reloc="$(HOME="$TEST_HOME" PI_CODING_AGENT_DIR="$WORKROOT/relocated-omp" "$(package_root_for omp)/bin/session-log" --entrypoint omp --harness omp status 2>&1)"
 omp_reloc_rc=$?
 set -e
-[[ "$omp_reloc_rc" -ne 0 ]] && pass "relocated OMP root is refused" || fail "relocated OMP root is refused"
+if [[ "$omp_reloc_rc" -ne 0 ]]; then pass "relocated OMP root is refused"; else fail "relocated OMP root is refused"; fi
 assert_contains "relocated OMP root message is explicit" "OMP root is relocated" "$omp_reloc"
 
 printf '=== native hooks honor the enabled flag and reject malformed payloads ===\n'
@@ -1261,7 +1276,7 @@ native_off_output="$(
 )"
 native_off_rc=$?
 set -e
-[[ "$native_off_rc" -eq 0 ]] && pass "disabled native hook exits cleanly" || fail "disabled native hook exits cleanly (actual: $native_off_output)"
+if [[ "$native_off_rc" -eq 0 ]]; then pass "disabled native hook exits cleanly"; else fail "disabled native hook exits cleanly (actual: $native_off_output)"; fi
 assert_not_file "disabled native hook removes stale runtime state" "$NATIVE_OFF_HOME/.codex/session-log/runtime.json"
 assert_exact "disabled native hook writes no prompt log" "" \
   "$(find "$NATIVE_OFF_HOME/.codex/prompt-logs" -name 'session_off-session.md' -print 2>/dev/null)"
@@ -1269,13 +1284,13 @@ set +e
 native_invalid="$(printf '%s\n' 'not-json' | HOME="$CURSOR_HOME" python3 "$CURSOR_HOOK" cursor user-prompt 2>&1)"
 native_invalid_rc=$?
 set -e
-[[ "$native_invalid_rc" -ne 0 ]] && pass "invalid native payload fails" || fail "invalid native payload fails"
+if [[ "$native_invalid_rc" -ne 0 ]]; then pass "invalid native payload fails"; else fail "invalid native payload fails"; fi
 assert_contains "invalid native payload error is explicit" "invalid cursor hook payload" "$native_invalid"
 set +e
 native_missing_id="$(printf '%s\n' '{"model":"fixture","prompt":"orphan prompt"}' | HOME="$CURSOR_HOME" python3 "$CURSOR_HOOK" cursor user-prompt 2>&1)"
 native_missing_id_rc=$?
 set -e
-[[ "$native_missing_id_rc" -eq 0 ]] && pass "native hook without a session id continues" || fail "native hook without a session id continues"
+if [[ "$native_missing_id_rc" -eq 0 ]]; then pass "native hook without a session id continues"; else fail "native hook without a session id continues"; fi
 assert_exact "session-less native prompt still continues submission" '{"continue":true}' "$native_missing_id"
 
 printf '=== Codex usage surfaces resolution failures ===\n'
@@ -1283,19 +1298,19 @@ set +e
 codex_no_rollout="$(run_harness_at_home_and_dir "$CODEX_HOME" "$WORKROOT" codex usage --latest 2>&1)"
 codex_no_rollout_rc=$?
 set -e
-[[ "$codex_no_rollout_rc" -ne 0 ]] && pass "Codex usage without a project rollout fails" || fail "Codex usage without a project rollout fails"
+if [[ "$codex_no_rollout_rc" -ne 0 ]]; then pass "Codex usage without a project rollout fails"; else fail "Codex usage without a project rollout fails"; fi
 assert_contains "missing Codex rollout error is explicit" "no Codex rollout transcript found" "$codex_no_rollout"
 set +e
 codex_missing_session="$(run_harness_at_home_and_dir "$CODEX_HOME" "$PWD" codex usage nonexistent-session 2>&1)"
 codex_missing_session_rc=$?
 set -e
-[[ "$codex_missing_session_rc" -ne 0 ]] && pass "Codex usage for an unknown session fails" || fail "Codex usage for an unknown session fails"
+if [[ "$codex_missing_session_rc" -ne 0 ]]; then pass "Codex usage for an unknown session fails"; else fail "Codex usage for an unknown session fails"; fi
 assert_contains "unknown Codex session error is explicit" "Codex session does not exist" "$codex_missing_session"
 set +e
 codex_invalid_session="$(run_harness_at_home_and_dir "$CODEX_HOME" "$PWD" codex usage 'bad!id' 2>&1)"
 codex_invalid_session_rc=$?
 set -e
-[[ "$codex_invalid_session_rc" -ne 0 ]] && pass "Codex usage rejects invalid session ids" || fail "Codex usage rejects invalid session ids"
+if [[ "$codex_invalid_session_rc" -ne 0 ]]; then pass "Codex usage rejects invalid session ids"; else fail "Codex usage rejects invalid session ids"; fi
 assert_contains "invalid Codex session id error is explicit" "invalid Codex session id" "$codex_invalid_session"
 # sha256_file shasum->sha256sum fallback intentionally not covered: exercising it requires
 # removing shasum from PATH globally, which would break unrelated hashing across the suite.
@@ -1319,7 +1334,7 @@ mkdir -p "$PSROOT/real"
 ln -s "$PSROOT/real" "$PSROOT/link"
 sym_out="$(SESSION_LOG_FILE="$PSROOT/link/f" SESSION_LOG_CONTENT=x python3 "$PSLIB/pathsafe.py" write-file 2>&1)"
 sym_rc=$?
-[[ "$sym_rc" -ne 0 ]] && pass "pathsafe refuses symlinked component" || fail "pathsafe refuses symlinked component (rc=$sym_rc)"
+if [[ "$sym_rc" -ne 0 ]]; then pass "pathsafe refuses symlinked component"; else fail "pathsafe refuses symlinked component (rc=$sym_rc; actual: $sym_out)"; fi
 assert_not_file "pathsafe did not write through symlinked component" "$PSROOT/real/f"
 
 # write_file refuses a symlinked target file
@@ -1518,7 +1533,7 @@ ln -s "$CS_SET" "$PSROOT/claude-settings/settings-link.json"
 printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s stop"}]}]}}\n' "$CS_OWNED" > "$CS_SET"
 SETTINGS_PATH="$PSROOT/claude-settings/settings-link.json" SESSION_LOG_OWNER_MARKER="ownerX" python3 "$PSLIB/claude_settings.py" remove >/dev/null 2>&1
 csl_rc=$?
-[[ "$csl_rc" -ne 0 ]] && pass "claude_settings refuses symlinked settings" || fail "claude_settings refuses symlinked settings (rc=$csl_rc)"
+if [[ "$csl_rc" -ne 0 ]]; then pass "claude_settings refuses symlinked settings"; else fail "claude_settings refuses symlinked settings (rc=$csl_rc)"; fi
 assert_contains "claude_settings leaves a symlinked target unchanged" "ownerX" "$(cat "$CS_SET")"
 
 # claude_settings migrate refuses a symlinked settings parent directory
@@ -1530,14 +1545,14 @@ mig_before="$(cat "$MIG_REAL/settings.json")"
 ln -s "$MIG_REAL" "$PSROOT/mig-link"
 SETTINGS_PATH="$PSROOT/mig-link/settings.json" CLAUDE_SCRIPTS_DIR="$MIG_LEGACY" python3 "$PSLIB/claude_settings.py" migrate >/dev/null 2>&1
 migp_rc=$?
-[[ "$migp_rc" -ne 0 ]] && pass "claude_settings migrate refuses symlinked settings parent" || fail "claude_settings migrate refuses symlinked settings parent (rc=$migp_rc)"
+if [[ "$migp_rc" -ne 0 ]]; then pass "claude_settings migrate refuses symlinked settings parent"; else fail "claude_settings migrate refuses symlinked settings parent (rc=$migp_rc)"; fi
 assert_exact "claude_settings migrate leaves symlinked-parent settings unchanged" "$mig_before" "$(cat "$MIG_REAL/settings.json")"
 MIG_BAD="$PSROOT/mig-bad"
 mkdir -p "$MIG_BAD"
 printf '{not-json\n' > "$MIG_BAD/settings.json"
 mig_bad_error="$(SETTINGS_PATH="$MIG_BAD/settings.json" CLAUDE_SCRIPTS_DIR="$MIG_LEGACY" python3 "$PSLIB/claude_settings.py" migrate 2>&1)"
 mig_bad_rc=$?
-[[ "$mig_bad_rc" -ne 0 ]] && pass "claude_settings migrate rejects malformed JSON" || fail "claude_settings migrate rejects malformed JSON (rc=$mig_bad_rc)"
+if [[ "$mig_bad_rc" -ne 0 ]]; then pass "claude_settings migrate rejects malformed JSON"; else fail "claude_settings migrate rejects malformed JSON (rc=$mig_bad_rc)"; fi
 assert_contains "claude_settings migrate reports malformed JSON cleanly" "cannot update Claude settings:" "$mig_bad_error"
 assert_not_contains "claude_settings migrate emits no raw traceback" "Traceback" "$mig_bad_error"
 set -e
@@ -1556,13 +1571,15 @@ hardlink_lock_error="$(
 )"
 hardlink_lock_rc=$?
 set -e
-[[ "$hardlink_lock_rc" -ne 0 ]] && pass "CLI rejects hard-linked enable locks" || fail "CLI rejects hard-linked enable locks"
+if [[ "$hardlink_lock_rc" -ne 0 ]]; then pass "CLI rejects hard-linked enable locks"; else fail "CLI rejects hard-linked enable locks"; fi
 assert_contains "hard-linked enable lock failure is explicit" "unsafe session-log enable lock" "$hardlink_lock_error"
 assert_exact "hard-linked enable lock target remains unchanged" "external lock sentinel" "$(cat "$HARDLINK_SENTINEL")"
 assert_mode "hard-linked enable lock keeps external permissions" "644" "$HARDLINK_SENTINEL"
-[[ "$HARDLINK_HOME/.claude/prompt-logs/.enabled.lock" -ef "$HARDLINK_SENTINEL" ]] &&
-  pass "hard-linked enable lock remains linked" ||
+if [[ "$HARDLINK_HOME/.claude/prompt-logs/.enabled.lock" -ef "$HARDLINK_SENTINEL" ]]; then
+  pass "hard-linked enable lock remains linked"
+else
   fail "hard-linked enable lock remains linked"
+fi
 
 FLAG_HARDLINK_HOME="$WORKROOT/flag-hardlink-home"
 FLAG_HARDLINK_SENTINEL="$WORKROOT/flag-hardlink-sentinel"
@@ -1577,13 +1594,15 @@ hardlink_flag_error="$(
 )"
 hardlink_flag_rc=$?
 set -e
-[[ "$hardlink_flag_rc" -ne 0 ]] && pass "CLI rejects hard-linked enable flags" || fail "CLI rejects hard-linked enable flags"
+if [[ "$hardlink_flag_rc" -ne 0 ]]; then pass "CLI rejects hard-linked enable flags"; else fail "CLI rejects hard-linked enable flags"; fi
 assert_contains "hard-linked flag failure is explicit" "unsafe session-log enable flag" "$hardlink_flag_error"
 assert_exact "hard-linked enable flag target remains unchanged" "external flag sentinel" "$(cat "$FLAG_HARDLINK_SENTINEL")"
 assert_mode "hard-linked enable flag keeps external permissions" "644" "$FLAG_HARDLINK_SENTINEL"
-[[ "$FLAG_HARDLINK_HOME/.claude/prompt-logs/.enabled" -ef "$FLAG_HARDLINK_SENTINEL" ]] &&
-  pass "hard-linked enable flag remains linked" ||
+if [[ "$FLAG_HARDLINK_HOME/.claude/prompt-logs/.enabled" -ef "$FLAG_HARDLINK_SENTINEL" ]]; then
+  pass "hard-linked enable flag remains linked"
+else
   fail "hard-linked enable flag remains linked"
+fi
 
 CLAUDE_ATOMIC_HOME="$WORKROOT/claude-atomic-home"
 CLAUDE_SETTINGS_SENTINEL="$WORKROOT/claude-settings-sentinel"
@@ -1600,13 +1619,15 @@ claude_atomic_output="$(
 )"
 claude_atomic_rc=$?
 set -e
-[[ "$claude_atomic_rc" -eq 0 ]] && pass "Claude installer atomically updates hard-linked settings" || fail "Claude installer atomically updates hard-linked settings (actual: $claude_atomic_output)"
+if [[ "$claude_atomic_rc" -eq 0 ]]; then pass "Claude installer atomically updates hard-linked settings"; else fail "Claude installer atomically updates hard-linked settings (actual: $claude_atomic_output)"; fi
 assert_contains "Claude installer keeps activation output" "Claude Code: on — logging starts with the next prompt" "$claude_atomic_output"
 assert_exact "settings hard-link target remains unchanged" "$CLAUDE_SETTINGS_SENTINEL_CONTENTS" "$(cat "$CLAUDE_SETTINGS_SENTINEL")"
 assert_mode "updated Claude settings preserve mode" "640" "$CLAUDE_ATOMIC_HOME/.claude/settings.json"
-[[ ! "$CLAUDE_ATOMIC_HOME/.claude/settings.json" -ef "$CLAUDE_SETTINGS_SENTINEL" ]] &&
-  pass "Claude settings update replaces rather than mutates hard links" ||
+if [[ ! "$CLAUDE_ATOMIC_HOME/.claude/settings.json" -ef "$CLAUDE_SETTINGS_SENTINEL" ]]; then
+  pass "Claude settings update replaces rather than mutates hard links"
+else
   fail "Claude settings update replaces rather than mutates hard links"
+fi
 assert_contains "updated Claude settings preserve existing values" "external settings" "$(cat "$CLAUDE_ATOMIC_HOME/.claude/settings.json")"
 assert_not_contains "updated Claude settings drop the legacy hook" "SESSION_LOG_OWNER" "$(cat "$CLAUDE_ATOMIC_HOME/.claude/settings.json")"
 

@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # A Stop hook that exits 2 blocks the session from stopping, and anything it
 # prints on stdout is fed back to the model — so this script never writes to

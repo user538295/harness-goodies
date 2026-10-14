@@ -1,4 +1,5 @@
 # universal-session-log: managed
+# shellcheck shell=bash
 # Shared helpers sourced by bin/session-log and install.sh.
 # Callers set SESSION_LOG_LOG_PREFIX before sourcing to control the fail prefix.
 
