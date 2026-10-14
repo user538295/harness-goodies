@@ -19,6 +19,9 @@ MAX_TEMP_FILE_ATTEMPTS = 20
 READ_FLAGS = pathsafe.FILE_FLAGS | os.O_NONBLOCK
 # Codex runs a new or changed hooks.json command only after the user reviews and trusts it.
 RESTORE_FOLLOW_UP = {"codex": "; review and trust them in Codex, then restart"}
+# argv lengths, program name included: mode, harness, config path, and hook path; `remove` takes no hook path.
+ARGUMENT_COUNT = 5
+REMOVE_ARGUMENT_COUNT = 4
 
 
 def _events(harness):
@@ -167,6 +170,18 @@ def repair(config, harness, hook):
         print(f"restored {events - current} missing hook registration(s) in {config}{RESTORE_FOLLOW_UP.get(harness, '')}")
 
 
+def has_managed_entries(document, harness):
+    """Whether any lifecycle event of a parsed hooks ``document`` holds a session-log entry; never fails."""
+    hooks = document.get("hooks") if isinstance(document, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    return any(
+        isinstance(hooks.get(event), list)
+        and any(is_managed_entry(entry, harness, lifecycle) for entry in hooks[event])
+        for event, lifecycle in _events(harness)
+    )
+
+
 def remove(config, harness):
     """Drop every session-log entry of ``harness`` from ``config``; every other entry stays."""
     if not os.path.lexists(config):
@@ -300,19 +315,21 @@ def atomic_write(path, document):
         os.close(parent_fd)
 
 def invalid_arguments(argv):
-    return len(argv) != 5 or argv[1] not in ("check", "install", "repair", "remove") or argv[2] not in ("cursor", "codex")
+    expected = REMOVE_ARGUMENT_COUNT if len(argv) > 1 and argv[1] == "remove" else ARGUMENT_COUNT
+    return len(argv) != expected or argv[1] not in ("check", "install", "repair", "remove") or argv[2] not in ("cursor", "codex")
 
 
 def main(argv=None):
     args = sys.argv if argv is None else [sys.argv[0], *argv]
     if invalid_arguments(args):
-        fail("hooks configurator requires check|install|repair|remove, cursor|codex, config path, and hook path")
-    mode, harness, config_path, hook_path = args[1:]
+        fail("hooks configurator requires check|install|repair, cursor|codex, config path, and hook path; "
+             "remove takes no hook path")
+    mode, harness, config_path = args[1:REMOVE_ARGUMENT_COUNT]
     config = Path(config_path)
     if mode == "remove":
         remove(config, harness)
         return
-    hook = Path(hook_path)
+    hook = Path(args[ARGUMENT_COUNT - 1])
     if not hook.is_file() or hook.is_symlink():
         fail(f"native lifecycle adapter is missing: {hook}")
     if mode == "repair":

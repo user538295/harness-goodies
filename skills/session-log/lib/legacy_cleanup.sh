@@ -21,6 +21,8 @@ readonly CLAUDE_LEGACY_SCRIPTS=(prompt_log_save.sh prompt_log_new_session.sh pro
 # plugin-root, pointed at the running plugin package, while a seeded copy the cleanup had to keep
 # still reads it.
 readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version plugin-root)
+# The adapter installer's version stamps and manifest older Cursor installs wrote; nothing reads them now.
+readonly CURSOR_OBSOLETE_STATE_FILES=(desired.version adapter.version adapter.manifest)
 
 # The cleanup of the current harness: any harness whose older releases left something behind has
 # its own legacy_cleanup_<harness> here, whether or not its plugin owns its hooks yet.
@@ -37,16 +39,24 @@ legacy_cleanup() {
 # Older releases registered the session-log hooks in ~/.cursor/hooks.json, pointing at the package
 # copy they seeded into ~/.cursor/skills; the cursor-goodies plugin's .cursor-plugin/hooks.json
 # registers them now, and Cursor runs both, so every entry install_hooks.py recognizes goes. Every
-# other entry stays. An unsafe or invalid hooks.json fails the cleanup with nothing changed.
+# other entry stays. An unsafe or invalid hooks.json fails the cleanup with nothing changed. The
+# obsolete adapter state files go silently; runtime markers stay.
 legacy_cleanup_cursor() {
-  local config="$HARNESS_ROOT/hooks.json" report
+  local config="$HARNESS_ROOT/hooks.json" report candidate
   require_command python3
   if [[ -e "$config" || -L "$config" ]]; then
     preflight_native_hooks
-    report="$(python3 "$(source_for configurator)" remove "$HARNESS" "$config" "$(source_for hook)")"
+    report="$(python3 "$(source_for configurator)" remove "$HARNESS" "$config")"
     print_repair_report "$report"
   fi
   remove_seeded_package "$HARNESS_ROOT/skills/session-log"
+  validate_state_dir
+  for candidate in "${CURSOR_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"; do
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    # A concurrent cleanup may have removed it already.
+    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
+      fail "cannot remove obsolete state file: $candidate"
+  done
 }
 
 # Unsafe settings.json fails the command with nothing changed. An unrecognized legacy script keeps

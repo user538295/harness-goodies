@@ -8,8 +8,10 @@ readonly PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 readonly VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
 readonly HOME_ROOT="$(cd "${HOME:?HOME is required}" && pwd -P)"
 readonly STORE="$HOME_ROOT/.local/share/universal-session-log"
-# Cursor loads plugin hooks only while this setting is on (and its server-side plugin import gate).
-readonly CURSOR_HOOKS_NOT_LOADED="on — plugin hooks not loaded; check that Include Third-Party Plugins, Skills, and Other Configs is on in Cursor Settings, then restart Cursor"
+# No hook of the running Cursor has seen the flag: the cursor-goodies plugin is missing or predates
+# its hooks, Cursor loads plugin hooks only while this setting is on (and its server-side plugin
+# import gate allows it), or Cursor has not restarted since.
+readonly CURSOR_HOOKS_NOT_LOADED="on — no plugin hook has run; install or update the cursor-goodies plugin, check that Include Third-Party Plugins, Skills, and Other Configs is on in Cursor Settings, then restart Cursor"
 HARNESS=""
 ENTRYPOINT=""
 COMMAND="status"

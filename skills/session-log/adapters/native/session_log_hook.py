@@ -16,6 +16,11 @@ from typing import Optional
 LIB_PATH = str(Path(__file__).resolve().parents[2] / "lib")
 if LIB_PATH not in sys.path:
     sys.path.insert(0, LIB_PATH)
+# install_hooks.py beside this script, also when a test loads this module from elsewhere.
+NATIVE_PATH = str(Path(__file__).resolve().parent)
+if NATIVE_PATH not in sys.path:
+    sys.path.insert(0, NATIVE_PATH)
+import install_hooks
 import pathsafe
 
 MAX_SESSION_ID_LENGTH = 128
@@ -26,7 +31,6 @@ SAFE_ID = re.compile(rf"^[A-Za-z0-9._-]{{1,{MAX_SESSION_ID_LENGTH}}}$")
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 TOKENS_SUFFIX = ".tokens.jsonl"
 PROMPT_HEAD_LENGTH = 60
-LEGACY_CURSOR_HOOK_NAME = "session_log_hook.py"
 
 
 def fail(message):
@@ -315,21 +319,22 @@ def process_payload(request, hooks=RuntimeHooks()):
 
 
 def has_legacy_cursor_hooks(root):
-    """Whether ~/.cursor/hooks.json may hold the session-log entries older releases registered there.
-
-    A cheap superset of the entries install_hooks.py recognizes as session-log's; keep the two in step.
-    """
+    """Whether ~/.cursor/hooks.json holds a session-log entry older releases registered there, by the
+    same recognizer `repair` removes them with. A symlinked or unreadable file counts as none."""
     config = root / "hooks.json"
     try:
-        return config.is_file() and not config.is_symlink() and LEGACY_CURSOR_HOOK_NAME in config.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        if config.is_symlink() or not config.is_file():
+            return False
+        document = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
+    return install_hooks.has_managed_entries(document, "cursor")
 
 
 def remove_legacy_cursor_hooks(root):
-    """Session start removes the legacy entries, logging on or off, since Cursor runs them beside
-    the plugin's hooks. Best effort: `repair` output is discarded and its failure is ignored; `on`
-    and `repair` report why it failed."""
+    """Session start removes the legacy entries, since Cursor runs them beside the plugin's hooks; the
+    plugin's hook commands start this script only while logging is on. Best effort: `repair` output
+    is discarded and its failure is ignored; `on` and `repair` report why it failed."""
     if not has_legacy_cursor_hooks(root):
         return
     session_log = Path(__file__).resolve().parents[2] / "bin" / "session-log"

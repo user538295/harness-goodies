@@ -3,31 +3,31 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor session-start",
+        "command": "[ -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || exit 0; exec python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor session-start",
         "timeout": 30
       }
     ],
     "beforeSubmitPrompt": [
       {
-        "command": "python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor user-prompt",
+        "command": "[ -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || exit 0; exec python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor user-prompt",
         "timeout": 30
       }
     ],
     "afterAgentResponse": [
       {
-        "command": "python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor assistant-response",
+        "command": "[ -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || exit 0; exec python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor assistant-response",
         "timeout": 30
       }
     ],
     "subagentStop": [
       {
-        "command": "python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor subagent-stop",
+        "command": "[ -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || exit 0; exec python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor subagent-stop",
         "timeout": 30
       }
     ],
     "stop": [
       {
-        "command": "python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor stop",
+        "command": "[ -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || exit 0; exec python3 \"${CURSOR_PLUGIN_ROOT}/skills/session-log/adapters/native/session_log_hook.py\" cursor stop",
         "timeout": 30
       }
     ]
