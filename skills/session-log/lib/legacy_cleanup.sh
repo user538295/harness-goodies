@@ -3,17 +3,18 @@
 #
 # Sourced by bin/session-log after lib/adapter_install.sh, in the same shell, so it shares bin's
 # globals (HARNESS, HARNESS_ROOT, STATE_DIR, HARNESS_LABEL, OWNER_MARKER_VALUE, ...). `on` and
-# `repair` run it under the install lock; Claude Code's SessionStart hook runs it silently through
-# `repair`, and so does a Cursor session start while logging is on and ~/.cursor/hooks.json still
-# holds a legacy session-log entry; the OMP extension starts `repair` in the background when it
-# loads. Cursor and OMP `status` and `usage` never run it; in Codex and OpenCode, `status` and
-# `usage` run it too when they repair an enabled adapter, so an unowned file at a legacy path fails
-# them, as the old installer did before every command. It removes only what is proven to be
-# session-log's and never clears runtime markers: a harness plugin's own hooks keep logging
-# whatever duplicate registration goes. Claude Code and Cursor removals of registrations, scripts,
-# and package copies, Codex package copies, and OMP removals of adapter links and package copies
-# are reported through print_repair_report; obsolete state files, the OMP standalone extension
-# copy, and the OpenCode/OMP leftovers of pre-universal releases go silently.
+# `repair` run it under the install lock. Claude Code's SessionStart hook and the OpenCode plugin's
+# setup run it silently through `repair`, and so does a Cursor session start while logging is on and
+# ~/.cursor/hooks.json still holds a legacy session-log entry; the OMP extension starts `repair` in
+# the background when it loads. Claude Code, Cursor, OMP, and OpenCode `status` and `usage` never run
+# it; in Codex, `status` and `usage` run it too when they repair an enabled adapter, so an unowned
+# file at a legacy path fails them, as the old installer did before every command. It removes only
+# what is proven to be session-log's and never clears runtime markers: a harness plugin's own hooks
+# keep logging whatever duplicate registration goes. Claude Code, Cursor, and OpenCode removals of
+# registrations, adapters, commands, scripts, and package copies, Codex package copies, and OMP
+# removals of adapter links and package copies are reported through print_repair_report; obsolete
+# state files, the OMP standalone extension copy, and the session-log-omp leftovers of pre-universal
+# releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
@@ -25,9 +26,9 @@ readonly CLAUDE_LEGACY_SCRIPTS=(prompt_log_save.sh prompt_log_new_session.sh pro
 # plugin-root, pointed at the running plugin package, while a seeded copy the cleanup had to keep
 # still reads it.
 readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version plugin-root)
-# The adapter installer's version stamps and manifest that older Cursor, Codex, and OMP installs
-# wrote; nothing reads them now (the Cursor and OMP plugins own their hooks, and Codex's hooks.json
-# command names no package).
+# The adapter installer's version stamps and manifest that older Cursor, Codex, OMP, and OpenCode
+# installs wrote; nothing reads them now (the Cursor, OMP, and OpenCode plugins own their hooks, and
+# Codex's hooks.json command names no package).
 readonly ADAPTER_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version)
 
 # The cleanup of the current harness: any harness whose older releases left something behind has
@@ -149,19 +150,57 @@ PY
   ((status != not_named))
 }
 
-# The standalone adapter copies (regular files) and the session-log-omp entrypoints of earlier
-# releases. A symlink at a standalone copy's path is the current adapter link, which the adapter
-# install and repair_registrations manage, so this cleanup leaves it alone.
+# What releases before the opencode-goodies package registered session-log itself left in OpenCode's
+# config root (the plugin runs this through `repair` once per installed package): the adapter and
+# usage links, or marked standalone copies, `on` installed; the markdown /session-log
+# command, which would override the package's; the seeded package copy; the adapter installer's
+# state files; and the session-log-omp entrypoints of pre-universal releases. A foreign file at an
+# adapter path stays; a foreign command stays too, but is named, as it hides the package's.
 legacy_cleanup_opencode() {
-  local plugin="$HARNESS_ROOT/plugins/session-log.js" usage="$HARNESS_ROOT/scripts/session_log_usage.sh"
-  [[ -L "$plugin" ]] || validate_managed_path "$plugin"
-  [[ -L "$usage" ]] || validate_managed_path "$usage"
+  require_command python3
+  # The command and the seeded copy first: they break the plugin's /session-log.
+  remove_legacy_opencode_command
+  remove_seeded_package "$HARNESS_ROOT/skills/session-log"
+  remove_legacy_opencode_adapter plugins/session-log.js adapters/opencode/session-log.js
+  remove_legacy_opencode_adapter scripts/session_log_usage.sh adapters/opencode/session_log_usage.sh
+  validate_state_dir
+  remove_obsolete_state_files "${ADAPTER_OBSOLETE_STATE_FILES[@]/#/"$STATE_DIR"/}"
   validate_managed_path "$HARNESS_ROOT/commands/session-log-omp.md"
   validate_managed_path "$HARNESS_ROOT/plugins/session-log-omp.js"
-  [[ -L "$plugin" ]] || remove_managed_path "$plugin"
-  [[ -L "$usage" ]] || remove_managed_path "$usage"
   remove_managed_path "$HARNESS_ROOT/commands/session-log-omp.md"
   remove_managed_path "$HARNESS_ROOT/plugins/session-log-omp.js"
+}
+
+# Removes the adapter at $HARNESS_ROOT/$1 when it is a link to adapter $2 inside a session-log
+# package or the release store, or a copy carrying the ownership marker.
+remove_legacy_opencode_adapter() {
+  local path="$HARNESS_ROOT/$1" relative="$2" destination
+  # Nothing to remove: a symlinked plugins/ or scripts/ directory (dotfiles) is no reason to fail.
+  [[ -e "$path" || -L "$path" ]] || return 0
+  ensure_safe_parent "$path"
+  if [[ -L "$path" ]]; then
+    destination="$(readlink "$path")"
+    case "/$destination/" in */../*|*/./*) return 0 ;; esac
+    [[ "$destination" == */skills/session-log/"$relative" || "$destination" == "$STORE/releases/"*/"$relative" ]] ||
+      return 0
+    unlink "$path"
+    print_repair_report "removed legacy adapter link $path"
+  elif has_exact_ownership_marker "$path"; then
+    remove_checked_path "$path"
+    print_repair_report "removed legacy adapter copy $path"
+  fi
+}
+
+remove_legacy_opencode_command() {
+  local command="$HARNESS_ROOT/commands/session-log.md"
+  ensure_safe_parent "$command"
+  [[ -e "$command" || -L "$command" ]] || return 0
+  if has_exact_ownership_marker "$command"; then
+    remove_checked_path "$command"
+    print_repair_report "removed legacy command $command"
+  else
+    print_repair_report "kept $command: it is not session-log's and overrides the plugin's /session-log command; move it aside"
+  fi
 }
 
 # What older releases left in the OMP root: the extension link (or standalone copy) `on` made, the
@@ -376,17 +415,9 @@ validate_managed_path() {
   if [[ -L "$path" ]]; then
     target="$(readlink "$path")"
     case "$path:$target" in
-      "$HOME_ROOT/.config/opencode/plugins/session-log.js:$PACKAGE_ROOT/adapters/opencode/session-log.js"|\
-      "$HOME_ROOT/.config/opencode/plugins/session-log.js:$HOME_ROOT/.config/opencode/skills/session-log/adapters/opencode/session-log.js"|\
-      "$HOME_ROOT/.config/opencode/plugins/session-log.js:$STORE/releases/"*/adapters/opencode/session-log.js|\
-      "$HOME_ROOT/.config/opencode/plugins/session-log.js:$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session-log.js|\
-      "$HOME_ROOT/.config/opencode/plugins/session-log.js:$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session-log.js|\
       "$HOME_ROOT/.config/opencode/plugins/session-log-omp.js:$PACKAGE_ROOT/adapters/omp/session-log.js"|\
       "$HOME_ROOT/.config/opencode/plugins/session-log-omp.js:$HOME_ROOT/.omp/agent/skills/session-log/adapters/omp/session-log.js"|\
       "$HOME_ROOT/.config/opencode/plugins/session-log-omp.js:$STORE/releases/"*/adapters/omp/session-log.js|\
-      "$HOME_ROOT/.config/opencode/scripts/session_log_usage.sh:$PACKAGE_ROOT/adapters/opencode/session_log_usage.sh"|\
-      "$HOME_ROOT/.config/opencode/scripts/session_log_usage.sh:$HOME_ROOT/.config/opencode/skills/session-log/adapters/opencode/session_log_usage.sh"|\
-      "$HOME_ROOT/.config/opencode/scripts/session_log_usage.sh:$STORE/releases/"*/adapters/opencode/session_log_usage.sh|\
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$PACKAGE_ROOT/adapters/omp/session-log.js"|\
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$HOME_ROOT/.omp/agent/skills/session-log/adapters/omp/session-log.js"|\
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$STORE/releases/"*/adapters/omp/session-log.js)

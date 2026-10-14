@@ -8,15 +8,6 @@
 # INSTALL_LOCK_OWNER_START, REPAIR_REPORTED, VERSION, STORE, HOME_ROOT,
 # PACKAGE_ROOT, OWNER_MARKER_VALUE, ...) and the harness descriptor tables declared in bin.
 
-adapter_asset_current() {
-  local kind source target
-  kind="$1"
-  source="$(source_for "$kind")"
-  target="$(target_for "$kind")"
-  [[ -L "$target" ]] || return 1
-  [[ "$(readlink "$target")" == "$source" ]]
-}
-
 native_hooks_current() {
   local config="$HARNESS_ROOT/hooks.json"
   require_command python3
@@ -88,7 +79,6 @@ adapter_current() {
   [[ "$(cat "$STATE_DIR/adapter.version")" == "$VERSION" ]] || return 1
   manifest_current || return 1
   case "$HARNESS" in
-    opencode) adapter_asset_current plugin && adapter_asset_current usage ;;
   esac
 }
 
@@ -145,59 +135,12 @@ preflight_install_lock() {
   return 0
 }
 
-# True when "harness:kind:linktarget" ($1) points at a claude-goodies plugin-cache adapter.
-is_plugin_cache_adapter_link() {
-  case "$1" in
-    opencode:plugin:"$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session-log.js|\
-    opencode:usage:"$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session_log_usage.sh|\
-    opencode:plugin:"$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session-log.js|\
-    opencode:usage:"$HOME/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log/adapters/opencode/session_log_usage.sh)
-      return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # True when link destination $2 is adapter kind $1 inside any session-log package: the copy older
 # releases seeded into the skill root, or another package version a harness plugin ships.
 is_package_adapter_link() {
   local relative="${ADAPTER_SOURCES[$HARNESS:$1]}" destination="$2"
   case "/$destination/" in */../*|*/./*) return 1 ;; esac
   [[ "$destination" == */skills/session-log/"$relative" ]]
-}
-
-preflight_adapter_target() {
-  local kind="$1" source target existing
-  source="$(source_for "$kind")"
-  target="$(target_for "$kind")"
-  [[ -f "$source" && ! -L "$source" ]] ||
-    fail "adapter asset is missing: $source"
-  ensure_safe_parent "$target"
-  if [[ -L "$target" ]]; then
-    existing="$(readlink "$target")"
-    if is_package_adapter_link "$kind" "$existing"; then
-      :
-    else
-      case "$HARNESS:$kind:$existing" in
-        "opencode:plugin:$source"|\
-        opencode:plugin:"$STORE/releases/"*/adapters/opencode/session-log.js|\
-        "opencode:usage:$source"|\
-        opencode:usage:"$STORE/releases/"*/adapters/opencode/session_log_usage.sh) ;;
-        *) fail "refusing to overwrite unowned adapter link: $target" ;;
-      esac
-    fi
-  elif [[ -e "$target" ]]; then
-    [[ -f "$target" && ! -L "$target" ]] ||
-      fail "refusing to overwrite non-file adapter target: $target"
-    cmp -s "$source" "$target" ||
-      fail "refusing to overwrite unowned adapter file: $target"
-  fi
-}
-
-preflight_adapter_targets() {
-  local kind
-  for kind in ${HARNESS_KINDS[$HARNESS]}; do
-    preflight_adapter_target "$kind"
-  done
 }
 
 preflight_native_hooks() {
@@ -225,7 +168,6 @@ preflight_state_files() {
 preflight_adapter() {
   case "$HARNESS" in
     codex) preflight_native_hooks ;;
-    opencode) preflight_adapter_targets ;;
   esac
 }
 
@@ -289,15 +231,6 @@ release_install_lock() {
   _install_lock_operation release || true
 }
 
-atomic_link() {
-  local source="$1" target="$2"
-  [[ -f "$source" && ! -L "$source" ]] || fail "adapter asset is missing: $source"
-  ensure_safe_parent "$target"
-  SESSION_LOG_SOURCE="$source" SESSION_LOG_TARGET="$target" SESSION_LOG_STORE="$STORE" \
-    SESSION_LOG_ADAPTER_RELATIVE="${source#"$PACKAGE_ROOT/"}" \
-    python3 "$SESSION_LOG_LIB/pathsafe.py" link-adapter ||
-    fail "cannot safely install adapter link: $target"
-}
 clear_runtime_markers() {
   local candidate
   ensure_safe_parent "$RUNTIME_FILE"
@@ -307,26 +240,6 @@ clear_runtime_markers() {
     [[ ! -d "$candidate" ]] || fail "refusing to remove runtime directory: $candidate"
     unlink "$candidate"
   done
-}
-
-remove_recognized_dangling_adapter_link() {
-  local kind="$1" target destination
-  target="$(target_for "$kind")"
-  [[ -L "$target" && ! -e "$target" ]] || return 0
-  destination="$(readlink "$target")"
-  if is_plugin_cache_adapter_link "$HARNESS:$kind:$destination"; then
-    unlink "$target"
-  fi
-}
-
-repair_dangling_adapter_link() {
-  local kind="$1" target
-  target="$(target_for "$kind")"
-  [[ -L "$target" ]] || return 0
-  remove_recognized_dangling_adapter_link "$kind"
-  [[ ! -L "$target" ]] || return 0
-  printf '%s: removed dangling adapter link %s\n' "$HARNESS_LABEL" "$target"
-  REPAIR_REPORTED=1
 }
 
 # Prints "<harness>: <line>" for each line of a repair report and records that one was printed.
@@ -349,19 +262,14 @@ repair_native_hooks() {
 }
 
 # Collapse duplicate and stale session-log registrations to the one set the harness
-# needs: hooks.json entries (Codex), dangling plugin-cache adapter links (OpenCode;
-# legacy_cleanup removes its legacy session-log-omp adapters first). Without a
-# codex-goodies plugin package the Codex entries stay: the command that replaces them would run
-# nothing, while an older release's entry may still run its package.
+# needs: hooks.json entries (Codex). Without a codex-goodies plugin package the Codex entries
+# stay: the command that replaces them would run nothing, while an older release's entry may still
+# run its package.
 # Callers hold the install lock.
 repair_registrations() {
   case "$HARNESS" in
     codex)
       if codex_plugin_package_present; then repair_native_hooks; fi
-      ;;
-    opencode)
-      repair_dangling_adapter_link plugin
-      repair_dangling_adapter_link usage
       ;;
   esac
 }
@@ -371,12 +279,6 @@ install_adapter() {
     codex)
       python3 "$(source_for configurator)" install "$HARNESS" \
         "$HARNESS_ROOT/hooks.json" "$(source_for hook)"
-      ;;
-    opencode)
-      remove_recognized_dangling_adapter_link plugin
-      remove_recognized_dangling_adapter_link usage
-      atomic_link "$(source_for plugin)" "$(target_for plugin)"
-      atomic_link "$(source_for usage)" "$(target_for usage)"
       ;;
   esac
   if adapter_is_versioned; then

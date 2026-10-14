@@ -52,7 +52,6 @@ declare -rA HARNESS_SUBROOTS=(
   [opencode]=".config/opencode" [omp]=".omp/agent"
 )
 declare -rA ADAPTER_SOURCES=(
-  [opencode:plugin]="adapters/opencode/session-log.js"
   [opencode:usage]="adapters/opencode/session_log_usage.sh"
   [omp:extension]="adapters/omp/session-log.js"
   [omp:usage]="adapters/omp/session_log_usage.ts"
@@ -64,11 +63,8 @@ declare -rA ADAPTER_SOURCES=(
   [cursor:usage]="adapters/cursor/session_log_usage.py"
 )
 declare -rA ADAPTER_TARGETS=(
-  [opencode:plugin]="plugins/session-log.js"
-  [opencode:usage]="scripts/session_log_usage.sh"
 )
 declare -rA HARNESS_KINDS=(
-  [opencode]="plugin usage"
 )
 
 split_command_string() {
@@ -335,7 +331,7 @@ set_disabled() {
 # here; the leftovers of its older releases go in its legacy_cleanup_<harness>
 # (lib/legacy_cleanup.sh).
 plugin_owns_hooks() {
-  [[ "$HARNESS" == claude || "$HARNESS" == cursor || "$HARNESS" == omp ]]
+  [[ "$HARNESS" == claude || "$HARNESS" == cursor || "$HARNESS" == omp || "$HARNESS" == opencode ]]
 }
 
 # True when the runtime marker means "the extension is loaded" rather than "the hooks saw the flag":

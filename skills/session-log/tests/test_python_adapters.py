@@ -2992,7 +2992,6 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
 
 
 ADAPTER_LINKS = {
-    "opencode": (".config/opencode", "plugins/session-log.js", "adapters/opencode/session-log.js"),
 }
 PLUGIN_CACHE_PACKAGE_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/skills/session-log"
 
@@ -3867,6 +3866,204 @@ WINDOWS_STORE_PYTHON_ALIAS = (
     f"exit {WINDOWS_STORE_ALIAS_STATUS}\n"
 )
 HOOK_TOOLS_WITHOUT_PYTHON = tuple(tool for tool in GIT_BASH_TOOLS_WITHOUT_JQ if tool != "python3")
+
+
+OPENCODE_SUBROOT = ".config/opencode"
+OPENCODE_PACKAGE_RELATIVE = ".cache/opencode/npm/git-harness-goodies-0123/1791000000000/node_modules/opencode-goodies/skills/session-log"
+OPENCODE_REPAIR_CLEAN = "OpenCode: repair found no duplicate or stale registrations\n"
+OPENCODE_ON_FIRST = "OpenCode: on — logging starts with the next prompt\n"
+# The adapter files older releases' `on` linked (or copied) into OpenCode's config root.
+LEGACY_OPENCODE_ADAPTERS = (("plugins/session-log.js", "adapters/opencode/session-log.js"),
+                            ("scripts/session_log_usage.sh", "adapters/opencode/session_log_usage.sh"))
+LEGACY_OPENCODE_COMMAND = "commands/session-log.md"
+LEGACY_OPENCODE_COMMAND_TEXT = ("---\ndescription: Manage session prompt logging\n---\n"
+                                "<!-- universal-session-log: managed -->\n\nlegacy command\n")
+OBSOLETE_OPENCODE_STATE = ("adapter.version", "adapter.manifest", "desired.version")
+
+
+def opencode_package(home):
+    """The session-log package of the opencode-goodies package OpenCode installed under ``home``."""
+    package = home / OPENCODE_PACKAGE_RELATIVE
+    package.parent.mkdir(parents=True)
+    shutil.copytree(REPO / "skills/session-log", package)
+    return package
+
+
+class OpenCodePluginOwnershipTests(unittest.TestCase):
+    """The opencode-goodies plugin registers session-log itself: `on`/`off` flip the flag, legacy installs go."""
+
+    maxDiff = None
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        self.root = self.home / OPENCODE_SUBROOT
+        self.package = opencode_package(self.home)
+
+    def run_opencode(self, *arguments):
+        # OpenCode refuses relocated roots, so the developer's own XDG/OPENCODE variables must not leak in.
+        environment = {key: value for key, value in harness_environment(self.home).items()
+                       if key not in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "OPENCODE_CONFIG_DIR")}
+        return subprocess.run(
+            ["bash", str(self.package / "bin/session-log"), "--entrypoint", "opencode", "--harness", "opencode", *arguments],
+            capture_output=True, text=True, env=environment,
+        )
+
+    def write_runtime_marker(self):
+        state = self.root / "session-log"
+        state.mkdir(parents=True, exist_ok=True)
+        marker = {"harness": "opencode", "version": (REPO / "skills/session-log/VERSION").read_text().strip(),
+                  "pid": os.getpid(), "process_start": process_start(os.getpid()), "nonce": "fixture"}
+        (state / "runtime.json").write_text(json.dumps(marker) + "\n")
+
+    def test_on_and_off_only_flip_the_enable_flag(self):
+        enabled = self.run_opencode("on")
+        self.assertEqual((enabled.returncode, enabled.stdout, enabled.stderr), (0, OPENCODE_ON_FIRST, ""))
+        self.assertTrue((self.root / "prompt-logs/.enabled").is_file())
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["prompt-logs", "session-log"])
+        self.assertEqual(sorted(path.name for path in (self.root / "session-log").iterdir()), [])
+        disabled = self.run_opencode("off")
+        self.assertEqual((disabled.returncode, disabled.stdout, disabled.stderr), (0, "OpenCode: off\n", ""))
+        self.assertFalse((self.root / "prompt-logs/.enabled").exists())
+
+    def test_on_and_status_report_on_once_the_plugin_wrote_its_runtime_marker(self):
+        self.write_runtime_marker()
+        enabled = self.run_opencode("on")
+        self.assertEqual((enabled.returncode, enabled.stdout, enabled.stderr), (0, "OpenCode: on\n", ""))
+        status = self.run_opencode("status")
+        self.assertEqual((status.returncode, status.stdout, status.stderr), (0, "OpenCode: on\n", ""))
+
+    def test_on_again_without_a_runtime_marker_requires_a_restart(self):
+        self.run_opencode("on")
+        again = self.run_opencode("on")
+        self.assertEqual((again.returncode, again.stdout, again.stderr), (0, "OpenCode: on — restart required\n", ""))
+
+    def test_off_removes_the_runtime_marker(self):
+        self.run_opencode("on")
+        self.write_runtime_marker()
+        self.run_opencode("off")
+        self.assertFalse((self.root / "session-log/runtime.json").exists())
+
+    def test_status_and_usage_only_read(self):
+        self.run_opencode("on")
+        link = self.root / LEGACY_OPENCODE_ADAPTERS[0][0]
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.lexists(link):
+            link.unlink()
+        link.symlink_to(self.home / PLUGIN_CACHE_PACKAGE_RELATIVE / LEGACY_OPENCODE_ADAPTERS[0][1])
+        status = self.run_opencode("status")
+        self.assertEqual((status.returncode, status.stdout, status.stderr), (0, "OpenCode: on — restart required\n", ""))
+        usage = self.run_opencode("usage")
+        # No OpenCode database exists here, so the native report fails after the harness label.
+        self.assertEqual((usage.returncode, usage.stdout), (1, "OpenCode: usage\n"))
+        self.assertIn("native OpenCode usage failed", usage.stderr)
+        self.assertTrue(link.is_symlink())
+        self.assertFalse((self.root / "session-log/adapter.version").exists())
+
+    def test_repair_removes_every_legacy_install_and_is_idempotent(self):
+        # The package copy older releases seeded into OpenCode's skill root, proven by its manifest.
+        other_package = harness_package(self.home, OPENCODE_SUBROOT)
+        write_seeded_manifest(other_package)
+        # The plugin link dangles into a removed claude-goodies cache; the usage link is live.
+        destinations = (self.home / PLUGIN_CACHE_PACKAGE_RELATIVE, other_package)
+        for (target, source), destination in zip(LEGACY_OPENCODE_ADAPTERS, destinations):
+            (self.root / target).parent.mkdir(parents=True)
+            (self.root / target).symlink_to(destination / source)
+        command = self.root / LEGACY_OPENCODE_COMMAND
+        command.parent.mkdir(parents=True)
+        command.write_text(LEGACY_OPENCODE_COMMAND_TEXT)
+        state = self.root / "session-log"
+        state.mkdir()
+        for name in (*OBSOLETE_OPENCODE_STATE, "runtime.json"):
+            (state / name).write_text("state\n")
+        repaired = self.run_opencode("repair")
+        self.assertEqual((repaired.returncode, repaired.stderr), (0, ""))
+        self.assertEqual(repaired.stdout, "".join((
+            f"OpenCode: removed legacy command {command}\n",
+            f"OpenCode: removed legacy package copy {other_package}\n",
+            *(f"OpenCode: removed legacy adapter link {self.root / target}\n" for target, _ in LEGACY_OPENCODE_ADAPTERS),
+        )))
+        for target, _ in LEGACY_OPENCODE_ADAPTERS:
+            self.assertFalse(os.path.lexists(self.root / target))
+        self.assertFalse(os.path.lexists(command))
+        self.assertFalse(os.path.lexists(other_package))
+        self.assertEqual(sorted(path.name for path in state.iterdir()), ["runtime.json"])
+        again = self.run_opencode("repair")
+        self.assertEqual((again.returncode, again.stdout, again.stderr), (0, OPENCODE_REPAIR_CLEAN, ""))
+
+    def test_repair_removes_links_into_any_session_log_package_and_the_release_store(self):
+        # Another installed package version, and a release in ~/.local/share/universal-session-log,
+        # where releases before the harness plugins kept their packages.
+        destinations = (self.home / "cache/1.0.0/skills/session-log",
+                        self.home / ".local/share/universal-session-log/releases/1.0.0")
+        target, source = LEGACY_OPENCODE_ADAPTERS[0]
+        link = self.root / target
+        link.parent.mkdir(parents=True)
+        for destination in destinations:
+            with self.subTest(destination=destination):
+                link.symlink_to(destination / source)
+                repaired = self.run_opencode("repair")
+                self.assertEqual((repaired.returncode, repaired.stdout, repaired.stderr),
+                                 (0, f"OpenCode: removed legacy adapter link {link}\n", ""))
+                self.assertFalse(os.path.lexists(link))
+
+    def test_repair_removes_marked_standalone_adapter_copies(self):
+        for target, _ in LEGACY_OPENCODE_ADAPTERS:
+            (self.root / target).parent.mkdir(parents=True)
+            (self.root / target).write_text("// universal-session-log: managed\nlegacy standalone copy\n")
+        repaired = self.run_opencode("repair")
+        self.assertEqual((repaired.returncode, repaired.stderr), (0, ""))
+        self.assertEqual(repaired.stdout, "".join(
+            f"OpenCode: removed legacy adapter copy {self.root / target}\n" for target, _ in LEGACY_OPENCODE_ADAPTERS))
+        for target, _ in LEGACY_OPENCODE_ADAPTERS:
+            self.assertFalse(os.path.lexists(self.root / target))
+
+    def test_repair_keeps_foreign_files_and_names_a_foreign_command(self):
+        plugin = self.root / LEGACY_OPENCODE_ADAPTERS[0][0]
+        plugin.parent.mkdir(parents=True)
+        plugin.write_text("user plugin\n")
+        usage_target, usage_source = LEGACY_OPENCODE_ADAPTERS[1]
+        usage = self.root / usage_target
+        usage.parent.mkdir(parents=True)
+        # A foreign file, and a lookalike of the usage adapter whose `..` component leaves the package.
+        foreign = (str(self.home / "elsewhere/session_log_usage.sh"), f"{self.home}/evil/../skills/session-log/{usage_source}")
+        command = self.root / LEGACY_OPENCODE_COMMAND
+        command.parent.mkdir(parents=True)
+        command.write_text("---\ndescription: my own command\n---\nmine\n")
+        for destination in foreign:
+            with self.subTest(destination=destination):
+                usage.symlink_to(destination)
+                repaired = self.run_opencode("repair")
+                self.assertEqual((repaired.returncode, repaired.stderr), (0, ""))
+                self.assertEqual(repaired.stdout, f"OpenCode: kept {command}: it is not session-log's and overrides "
+                                                  "the plugin's /session-log command; move it aside\n")
+                self.assertEqual(os.readlink(usage), destination)
+                usage.unlink()
+        self.assertEqual(plugin.read_text(), "user plugin\n")
+        self.assertEqual(command.read_text(), "---\ndescription: my own command\n---\nmine\n")
+
+    def test_repair_beside_a_symlinked_plugins_directory_still_removes_the_command_and_copy(self):
+        dotfiles = self.home / "dotfiles/plugins"
+        dotfiles.mkdir(parents=True)
+        self.root.mkdir(parents=True)
+        (self.root / "plugins").symlink_to(dotfiles)
+        command = self.root / LEGACY_OPENCODE_COMMAND
+        command.parent.mkdir(parents=True)
+        command.write_text(LEGACY_OPENCODE_COMMAND_TEXT)
+        repaired = self.run_opencode("repair")
+        self.assertEqual((repaired.returncode, repaired.stdout, repaired.stderr),
+                         (0, f"OpenCode: removed legacy command {command}\n", ""))
+        self.assertFalse(os.path.lexists(command))
+
+    def test_on_runs_the_legacy_cleanup_first(self):
+        command = self.root / LEGACY_OPENCODE_COMMAND
+        command.parent.mkdir(parents=True)
+        command.write_text(LEGACY_OPENCODE_COMMAND_TEXT)
+        enabled = self.run_opencode("on")
+        self.assertEqual((enabled.returncode, enabled.stderr), (0, ""))
+        self.assertEqual(enabled.stdout, f"OpenCode: removed legacy command {command}\n{OPENCODE_ON_FIRST}")
+        self.assertFalse(os.path.lexists(command))
 
 
 class ClaudeHookWithoutPythonTests(unittest.TestCase):
