@@ -120,13 +120,12 @@ if [[ "${1:-}" == session-start ]]; then
   cleanup_legacy_leftovers </dev/null >/dev/null 2>&1 || true
 fi
 
-input="$(cat)"
-# Cursor (3.23.12) imports enabled Claude Code plugins and ~/.claude/settings.json hooks and runs them
-# itself. Its workbench sends a JSON payload carrying "cursor_version", a key absent from Claude Code's
-# payloads for these four events (a prompt that merely mentions it arrives JSON-escaped); its agent-host
-# daemon appends the payload as a heredoc that binds to the hook command's final `exit 0`, so this script
-# reads nothing, while Claude Code always sends a payload. Cursor's sessions are not Claude's: past the
-# legacy cleanup above, this hook neither logs them nor touches Claude's runtime markers.
+input="$(cat)" || exit 0
+# Claude Code passes hook input as JSON on stdin (https://code.claude.com/docs/en/hooks). Cursor 3.23.12
+# also runs enabled Claude Code plugins' hooks: its workbench sends JSON carrying "cursor_version" (a
+# prompt that merely mentions it arrives JSON-escaped), and its agent-host daemon's heredoc binds to the
+# hook command's final `exit 0`, leaving this script no input. This detection relies on that Cursor
+# behaviour. Past the legacy cleanup above, Cursor's runs neither log nor touch Claude's runtime markers.
 [[ -n "$input" && "$input" != *'"cursor_version":'* ]] || exit 0
 enabled_file="$CLAUDE_ROOT/prompt-logs/.enabled"
 runtime="$STATE_DIR/runtime.json"
