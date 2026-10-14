@@ -68,7 +68,7 @@ Powered by the [`devils-advocate`](https://user538295.github.io/harness-goodies/
 - [**`/status-report`**](https://user538295.github.io/harness-goodies/handout/skill-status-report.html) — Kicked off a long task and don't know when it'll finish. Reports status on demand or on a recurring schedule — cancel anytime with `off`.
 - [**`/session-log`**](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) — One stable package for Claude Code, Codex, Cursor, OpenCode, and OMP. The host selects its identity explicitly; the package never guesses from paths, processes, or environment variables. Logging and usage stay native to each harness.
 
-Each harness plugin ships the package; nothing else is installed. In Claude Code the plugin's hooks stay idle until `/session-log on`, which takes effect with the next prompt (`on — logging starts with the next prompt`); when logging was already on but no hook of the running session has seen it, `on` reports `on — restart required`. In the other harnesses, restart after `/session-log on` when it reports `on — restart required`; Codex instead reports `on — trust review/restart required`, because its new `hooks.json` commands require review before restart.
+Each harness plugin ships the package; nothing else is installed. In Claude Code and OpenCode the plugin's hooks stay idle until `/session-log on`, which takes effect with the next prompt (`on — logging starts with the next prompt`; OpenCode reports `on` once its plugin has loaded); when logging was already on but no hook of the running session has seen it, `on` reports `on — restart required`. In the other harnesses, restart after `/session-log on` when it reports `on — restart required`; Codex instead reports `on — trust review/restart required`, because its new `hooks.json` commands require review before restart.
 
 One script bundle handles the progress plumbing — [`scripts-plan`](https://user538295.github.io/harness-goodies/handout/scripts-plan.html) prints the next-task progress header — `/implement` reads it once in NEXT mode, and on every iteration in ALL mode. The [`session-log`](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) skill archives the prompt and response text exposed by each harness as per-project Markdown; the universal package owns activation and migration for all five harnesses. See the [session-log handout](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) for details.
 
@@ -145,13 +145,13 @@ Installed `claude-goodies@user538295` in Codex before this plugin existed? Switc
 opencode plugin add github:user538295/harness-goodies
 ```
 
-Requires OpenCode V2. OpenCode installs the `opencode-goodies` package (`package.json` plus `.opencode-plugin/index.js`) into its package cache, adds it to `~/.config/opencode/opencode.json`, and loads it without a restart. The plugin registers every skill and the `devils-advocate` subagent. To update later:
+Requires OpenCode V2. OpenCode installs the `opencode-goodies` package (`package.json` plus `.opencode-plugin/index.js`) into its package cache, adds it to `~/.config/opencode/opencode.json`, and loads it without a restart. The plugin registers every skill, the `devils-advocate` subagent, and session-log's `/session-log` command and logging handlers. To update later:
 
 ```bash
 opencode plugin update
 ```
 
-Skills and agents with the same names under `~/.config/opencode/skills` and `~/.config/opencode/agents` take precedence over the plugin's copies; remove those copies to use the plugin's versions. Session logging stays opt-in through `/session-log on`.
+Skills and agents with the same names under `~/.config/opencode/skills` and `~/.config/opencode/agents` take precedence over the plugin's copies; remove those copies to use the plugin's versions. Session logging stays opt-in through `/session-log on`, which only creates the enable flag the plugin's handlers wait for. `/session-log` runs the package's CLI and shows its output as a notice in the session; the model sees it with your next prompt. Older releases linked a session-log adapter into `~/.config/opencode/plugins`, which OpenCode V2 no longer loads, and installed a `commands/session-log.md` that overrides the plugin's command; the plugin's setup (while such a leftover exists), `/session-log on`, and `repair` remove those links and that command, and the package copy under `~/.config/opencode/skills/session-log` when its ownership manifest proves every file unchanged. A command or copy that is not provably session-log's is named so you can move it aside.
 
 ### Universal session-log package
 
@@ -161,11 +161,11 @@ Each harness plugin above ships the package, so there is nothing to install sepa
 bash skills/session-log/install.sh --harness opencode --arguments "on"
 ```
 
-Earlier releases copied the package into every harness's skill root; Claude Code's `/session-log on`, `repair`, and session start remove that copy (see the Claude Code section above).
+Earlier releases copied the package into every harness's skill root; Claude Code's `/session-log on`, `repair`, and session start, and OpenCode's `/session-log on`, `repair`, and plugin setup remove that copy (see the Claude Code and OpenCode sections above).
 
 The supported identities are exactly `claude`, `codex`, `cursor`, `opencode`, and `omp`. The universal `SKILL.md` requires the current host/model to choose one explicitly; identity is never inferred from directories, processes, or environment variables.
 
-Only default roots are supported: Claude Code `~/.claude`, Codex `~/.codex`, Cursor `~/.cursor`, OpenCode `~/.config/opencode`, and OMP `~/.omp/agent`. OpenCode also reads native data from `~/.local/share/opencode`; relocated config or data roots fail explicitly. Logging remains off until enabled separately in each harness. In Codex, Cursor, OpenCode, and OMP, `status` and `usage` repair a missing or outdated adapter while logging is enabled; Claude Code has no adapter to repair.
+Only default roots are supported: Claude Code `~/.claude`, Codex `~/.codex`, Cursor `~/.cursor`, OpenCode `~/.config/opencode`, and OMP `~/.omp/agent`. OpenCode also reads native data from `~/.local/share/opencode`; relocated config or data roots fail explicitly. Logging remains off until enabled separately in each harness. In Codex, Cursor, and OMP, `status` and `usage` repair a missing or outdated adapter while logging is enabled; Claude Code and OpenCode have no adapter to repair.
 
 OpenCode and OMP keep per-process runtime records alongside the shared runtime pointer. The adapters bound their in-memory session history; after a process restart, the on-disk logs remain the source of recorded prompts and responses.
 
