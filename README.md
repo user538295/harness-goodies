@@ -68,7 +68,7 @@ Powered by the [`devils-advocate`](https://user538295.github.io/harness-goodies/
 - [**`/status-report`**](https://user538295.github.io/harness-goodies/handout/skill-status-report.html) — Kicked off a long task and don't know when it'll finish. Reports status on demand or on a recurring schedule — cancel anytime with `off`.
 - [**`/session-log`**](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) — One stable package for Claude Code, Codex, Cursor, OpenCode, and OMP. The host selects its identity explicitly; the package never guesses from paths, processes, or environment variables. Logging and usage stay native to each harness.
 
-Install the universal package once. After `/session-log on`, restart the selected harness when it reports `on — restart required`; Codex instead reports `on — trust review/restart required`, because its new `hooks.json` commands require review before restart.
+Each harness plugin ships the package; nothing else is installed. In Claude Code the plugin's hooks stay idle until `/session-log on`, which takes effect with the next prompt. In the other harnesses, restart after `/session-log on` when it reports `on — restart required`; Codex instead reports `on — trust review/restart required`, because its new `hooks.json` commands require review before restart.
 
 One script bundle handles the progress plumbing — [`scripts-plan`](https://user538295.github.io/harness-goodies/handout/scripts-plan.html) prints the next-task progress header — `/implement` reads it once in NEXT mode, and on every iteration in ALL mode. The [`session-log`](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) skill archives the prompt and response text exposed by each harness as per-project Markdown; the universal package owns activation and migration for all five harnesses. See the [session-log handout](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) for details.
 
@@ -84,7 +84,7 @@ claude plugin marketplace add user538295/harness-goodies
 claude plugin install claude-goodies
 ```
 
-The marketplace plugin bundles the Claude skill, runtime, and native hooks. While the plugin is enabled at user scope (`enabledPlugins` in `~/.claude/settings.json` sets `claude-goodies@<marketplace>` to `true`, which `claude plugin install` writes by default), its `hooks/hooks.json` owns the session-log hooks: `/session-log on`, `off`, `repair`, and (while logging is on) `status` remove every session-log hook from `~/.claude/settings.json`, and a new session does the same silently, which clears dead paths that older releases wrote into the versioned plugin cache. A session repeats that cleanup only when `settings.json`, the session-log package (its location or `VERSION`), the plugin version that last started a session, or the presence of a hook script that `settings.json` registers changed since that session-log copy's last successful cleanup; `/session-log repair` runs it on demand and reports what it changed. Once the plugin's hooks have started a session, a standalone session-log copy under `~/.claude/skills` defers to them and registers no `settings.json` hooks of its own, unless Claude Code has orphaned that plugin version after an update or uninstall. With the plugin enabled only at project, local, or managed scope, the plugin removes only dead session-log registrations (those whose script no longer exists or lies in the versioned plugin cache) and the standalone copy keeps its `settings.json` hooks, so that project may log twice. With the plugin enabled at user scope but disabled at project or local scope, that project does not log, because the standalone copy still defers to the plugin. After uninstalling or disabling the plugin, run `/session-log on` once to register the standalone copy's hooks again. Restart Claude Code (or start a new session) for plugin changes to load. To update later:
+The marketplace plugin bundles the Claude skill, runtime, and native hooks. Its `hooks/hooks.json` always registers the session-log hooks, which do nothing until `/session-log on` creates the enable flag: `on` and `off` only flip that flag, and `status` only reads it together with the runtime marker the hooks of a running session write. Claude Code logs only through the plugin; a session-log copy anywhere else registers no hooks. Older releases registered the hooks in `~/.claude/settings.json` and copied the package to `~/.claude/skills/session-log`, which went stale after plugin updates; `/session-log on`, `repair`, and every new session remove those leftovers, and removing them never makes `status` report a restart. The copy goes only when its ownership manifest proves every file in it unchanged; otherwise `repair` names it so you can move it aside. A session repeats that cleanup only when `settings.json`, the session-log package (its location or `VERSION`), or the presence of that copy changed since the last successful cleanup; `/session-log repair` runs it on demand and reports what it changed. Restart Claude Code (or start a new session) for plugin changes to load. To update later:
 
 ```bash
 claude plugin update claude-goodies@user538295
@@ -104,7 +104,7 @@ omp plugin marketplace update user538295
 omp plugin upgrade omp-goodies@user538295
 ```
 
-Session logging is opt-in: `/skill:session-log on` seeds the stable package under `~/.omp/agent` and links its extension; restart omp once, after which `/session-log status|on|off|usage|repair` works directly.
+Session logging is opt-in: `/skill:session-log on` links the extension of the package it runs from; restart omp once, after which `/session-log status|on|off|usage|repair` works directly.
 
 Each entrypoint passes its native harness identity explicitly; it never infers a harness from directories or environment variables. `off` never installs an absent adapter.
 
@@ -155,33 +155,17 @@ Skills and agents with the same names under `~/.config/opencode/skills` and `~/.
 
 ### Universal session-log package
 
-From a checkout of this repository:
-
-```bash
-bash install-universal-session-log.sh
-```
-
-The wrapper seeds or updates the complete stable package without enabling logging under the five default harness roots: Claude Code `~/.claude`, Codex `~/.codex`, Cursor `~/.cursor`, OpenCode `~/.config/opencode`, and OMP `~/.omp/agent`. It also installs OpenCode's command entrypoint.
-
-To install or update one harness from the checkout, use its explicit identity:
-
-```bash
-bash skills/session-log/install.sh --install --harness claude
-bash skills/session-log/install.sh --install --harness codex
-bash skills/session-log/install.sh --install --harness cursor
-bash skills/session-log/install.sh --install --harness opencode
-bash skills/session-log/install.sh --install --harness omp
-```
-
-A normal command also bootstraps or updates that harness's stable package before dispatching the command:
+Each harness plugin above ships the package, so there is nothing to install separately. The skill's `install.sh` runs one command through the package it belongs to, for the identity the host names; from a checkout of this repository:
 
 ```bash
 bash skills/session-log/install.sh --harness opencode --arguments "on"
 ```
 
+Earlier releases copied the package into every harness's skill root; Claude Code's `/session-log on`, `repair`, and session start remove that copy (see the Claude Code section above).
+
 The supported identities are exactly `claude`, `codex`, `cursor`, `opencode`, and `omp`. The universal `SKILL.md` requires the current host/model to choose one explicitly; identity is never inferred from directories, processes, or environment variables.
 
-Only default roots are supported. OpenCode also reads native data from `~/.local/share/opencode`; relocated config or data roots fail explicitly. Logging remains off until enabled separately in each harness. When logging is already enabled, `status` and `usage` repair a missing or outdated adapter after the package bootstrap.
+Only default roots are supported: Claude Code `~/.claude`, Codex `~/.codex`, Cursor `~/.cursor`, OpenCode `~/.config/opencode`, and OMP `~/.omp/agent`. OpenCode also reads native data from `~/.local/share/opencode`; relocated config or data roots fail explicitly. Logging remains off until enabled separately in each harness. In Codex, Cursor, OpenCode, and OMP, `status` and `usage` repair a missing or outdated adapter while logging is enabled; Claude Code has no adapter to repair.
 
 OpenCode and OMP keep per-process runtime records alongside the shared runtime pointer. The adapters bound their in-memory session history; after a process restart, the on-disk logs remain the source of recorded prompts and responses.
 
@@ -208,7 +192,7 @@ If that's not your speed, this repo isn't for you. If it is — install in 30 se
 
 - Universal session-log: Claude Code, Codex, Cursor, OpenCode, or OMP.
 - macOS or Linux — or Windows via WSL.
-- Native Windows is partial: the Claude Code plugin's session-log hooks run under Git Bash (install Git for Windows), exit 0 silently when their script is missing, and need no jq while logging is off. `/session-log on`, `off`, `repair`, the session-start `settings.json` cleanup, and the package install need WSL. While `settings.json` holds session-log hooks, each session start on native Windows attempts that cleanup, which fails silently and is retried at the next session start (a small startup delay), because only a successful cleanup is recorded. Use WSL to log sessions on Windows.
+- Native Windows is partial: the Claude Code plugin's session-log hooks run under Git Bash (install Git for Windows), exit 0 silently when their script is missing, and need no jq while logging is off. `/session-log on`, `off`, `repair`, and the session-start legacy cleanup need WSL. While older releases' leftovers remain, each session start on native Windows attempts that cleanup, which fails silently and is retried at the next session start (a small startup delay), because only a successful cleanup is recorded. Use WSL to log sessions on Windows.
 - bash, Python 3, jq, standard POSIX utilities, and `shasum` or `sha256sum`.
 - sqlite3 for OpenCode native usage reports.
 - Bun for OMP native usage reports.
