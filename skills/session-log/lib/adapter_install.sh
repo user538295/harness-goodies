@@ -46,11 +46,30 @@ manifest_current() {
   done
 }
 
+# True when a package version stamp and asset manifest decide whether the adapter is current.
+# Codex's hooks.json command picks the newest plugin package itself, so no version stamp or asset
+# hash decides whether its adapter is current, and it has neither.
+adapter_is_versioned() {
+  [[ "$HARNESS" != codex ]]
+}
+
+# Where Codex caches the codex-goodies plugin, relative to ~/.codex: the marketplace CODEX_MARKETPLACE
+# in adapters/native/install_hooks.py names, whose CODEX_COMMAND runs the newest package found here.
+readonly CODEX_PLUGIN_CACHE="plugins/cache/user538295/codex-goodies"
+
+# Codex's hooks.json command runs only a codex-goodies plugin package, so `on` without one would
+# register hooks that never log.
+require_codex_plugin_package() {
+  local hook
+  for hook in "$HARNESS_ROOT/$CODEX_PLUGIN_CACHE"/*/skills/session-log/adapters/native/session_log_hook.py; do
+    [[ -f "$hook" ]] && return 0
+  done
+  fail "Codex hooks run the codex-goodies plugin package; install the plugin (codex plugin add codex-goodies@user538295), then rerun on"
+}
+
 adapter_current() {
   validate_state_dir
-  # Codex's hooks.json command picks the newest plugin package itself, so no package version or
-  # asset hash decides whether it is current.
-  if [[ "$HARNESS" == codex ]]; then
+  if ! adapter_is_versioned; then
     native_hooks_current
     return
   fi
@@ -60,7 +79,7 @@ adapter_current() {
   [[ "$(cat "$STATE_DIR/adapter.version")" == "$VERSION" ]] || return 1
   manifest_current || return 1
   case "$HARNESS" in
-    codex|cursor) native_hooks_current ;;
+    cursor) native_hooks_current ;;
     opencode) adapter_asset_current plugin && adapter_asset_current usage ;;
     omp) adapter_asset_current extension && adapter_asset_current usage ;;
   esac
@@ -195,9 +214,11 @@ preflight_native_hooks() {
 
 preflight_state_files() {
   validate_state_dir
-  preflight_state_file "$STATE_DIR/desired.version"
-  preflight_state_file "$STATE_DIR/adapter.version"
-  preflight_state_file "$STATE_DIR/adapter.manifest"
+  if adapter_is_versioned; then
+    preflight_state_file "$STATE_DIR/desired.version"
+    preflight_state_file "$STATE_DIR/adapter.version"
+    preflight_state_file "$STATE_DIR/adapter.manifest"
+  fi
   preflight_state_file "$RUNTIME_FILE"
   preflight_install_lock
 }
@@ -365,7 +386,7 @@ install_adapter() {
       atomic_link "$(source_for usage)" "$(target_for usage)"
       ;;
   esac
-  if [[ "$HARNESS" != codex ]]; then
+  if adapter_is_versioned; then
     write_private_file "$STATE_DIR/desired.version" "$VERSION"
     write_private_file "$STATE_DIR/adapter.version" "$VERSION"
     write_manifest

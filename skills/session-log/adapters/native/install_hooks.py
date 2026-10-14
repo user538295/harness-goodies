@@ -19,15 +19,22 @@ MAX_TEMP_FILE_ATTEMPTS = 20
 READ_FLAGS = pathsafe.FILE_FLAGS | os.O_NONBLOCK
 # Codex runs a new or changed hooks.json command only after the user reviews and trusts it.
 RESTORE_FOLLOW_UP = {"codex": "; review and trust them in Codex, then restart"}
+# The marketplace Codex caches codex-goodies under: the "name" of .agents/plugins/marketplace.json.
+# Pinning it keeps another marketplace's codex-goodies from running under the trusted command, and
+# leaves `sort -V` comparing version directories only. lib/adapter_install.sh (CODEX_PLUGIN_CACHE)
+# checks the same cache before `on` registers the command.
+CODEX_MARKETPLACE = "user538295"
 # The command Codex runs from ~/.codex/hooks.json. It names no package: when the hook runs it picks
-# the newest installed codex-goodies package (the order the session-log skill's locator uses) and
-# does nothing once none is installed. Codex trusts a hook by a hash of this text, so plugin updates
-# never ask for a new review. `sh -c` keeps it POSIX whatever the user's $SHELL, which Codex runs it
-# with; `exec` makes the Codex process the hook's parent, which its runtime marker records.
+# the highest codex-goodies version with `sort -V` (Codex keeps one version directory per plugin, so
+# that is the version Codex runs) and does nothing once none is installed. Codex trusts a hook by its
+# hooks.json position plus a hash of its handler config (command text, event, matcher, timeout);
+# plugin updates change none of these, so they never ask for a new review. `sh -c` keeps it POSIX
+# whatever the user's $SHELL, which Codex runs it with; `exec` makes the Codex process the hook's
+# parent, which its runtime marker records.
 CODEX_COMMAND = (
-    "sh -c 'd=$(ls -d \"$HOME\"/.codex/plugins/cache/*/codex-goodies/*/skills/session-log 2>/dev/null"
-    " | sort -V | tail -1); [ -f \"$d/adapters/native/session_log_hook.py\" ] || exit 0;"
-    " exec python3 \"$d/adapters/native/session_log_hook.py\" codex {lifecycle}'"
+    "sh -c 'package=$(ls -d \"$HOME\"/.codex/plugins/cache/" + CODEX_MARKETPLACE + "/codex-goodies/*/skills/session-log"
+    " 2>/dev/null | sort -V | tail -1); [ -f \"$package/adapters/native/session_log_hook.py\" ] || exit 0;"
+    " exec python3 \"$package/adapters/native/session_log_hook.py\" codex {lifecycle}'"
 )
 
 
@@ -137,6 +144,23 @@ def require_hook_arrays(document, harness):
             fail(f"{harness} hooks.{event} must be an array")
 
 
+def replace_managed_entries(entries, expected, harness, lifecycle):
+    """``entries`` with ``expected`` in place of the first managed entry, the other managed ones dropped.
+
+    ``expected`` is appended when no entry is managed. Codex keys a hook's trust by its index in the
+    event's list, so taking the first managed entry's place keeps every foreign hook before it trusted.
+    """
+    replaced = []
+    placed = False
+    for entry in entries:
+        if not is_managed_entry(entry, harness, lifecycle):
+            replaced.append(entry)
+        elif not placed:
+            replaced.append(expected)
+            placed = True
+    return replaced if placed else [*replaced, expected]
+
+
 def update(document, harness, hook):
     require_hook_arrays(document, harness)
     hooks = document.setdefault("hooks", {})
@@ -144,9 +168,9 @@ def update(document, harness, hook):
         prepare_cursor_document(document)
     expected_for = _expected_builder(harness)
     for event, lifecycle in _events(harness):
-        entries = hooks.setdefault(event, [])
-        kept = [entry for entry in entries if not is_managed_entry(entry, harness, lifecycle)]
-        hooks[event] = kept + [expected_for(harness, hook, lifecycle)]
+        hooks[event] = replace_managed_entries(
+            hooks.get(event, []), expected_for(harness, hook, lifecycle), harness, lifecycle
+        )
 
 
 def managed_entry_counts(document, harness, hook):

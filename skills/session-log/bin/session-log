@@ -487,6 +487,7 @@ main() {
         enable_plugin_hooks
         return
       fi
+      [[ "$HARNESS" != codex ]] || require_codex_plugin_package
       # Legacy cleanup comes before the adapter preflight: it removes standalone adapter
       # copies of earlier releases that sit where the adapter goes.
       preflight_enable_flag

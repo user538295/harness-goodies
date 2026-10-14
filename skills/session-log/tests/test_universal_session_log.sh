@@ -350,9 +350,29 @@ assert_file "OpenCode plugin lifecycle writes runtime state" "$OPENCODE_HOME/.co
 assert_exact "OMP extension registers native handlers" "command:session-log,session_start,session_shutdown,before_agent_start,agent_end,session_stop" "$omp_plugin_smoke"
 assert_file "OMP extension lifecycle writes runtime state" "$OMP_HOME/.omp/agent/session-log/runtime.json"
 
+CODEX_NO_PLUGIN_HOME="$WORKROOT/codex-no-plugin-home"
+mkdir -p "$CODEX_NO_PLUGIN_HOME/.Trash" "$CODEX_NO_PLUGIN_HOME/.codex"
+set +e
+codex_no_plugin="$(HOME="$CODEX_NO_PLUGIN_HOME" bash "$ENTRYPOINT" --harness codex --arguments on 2>&1)"
+codex_no_plugin_rc=$?
+set -e
+if [[ "$codex_no_plugin_rc" -ne 0 ]]; then
+  pass "Codex on fails without the codex-goodies plugin"
+else
+  fail "Codex on fails without the codex-goodies plugin"
+fi
+assert_exact "Codex on names the missing plugin" \
+  "session-log: Codex hooks run the codex-goodies plugin package; install the plugin (codex plugin add codex-goodies@user538295), then rerun on" \
+  "$codex_no_plugin"
+assert_not_file "Codex on without the plugin leaves logging off" "$CODEX_NO_PLUGIN_HOME/.codex/prompt-logs/.enabled"
+assert_not_file "Codex on without the plugin registers no hooks" "$CODEX_NO_PLUGIN_HOME/.codex/hooks.json"
+
 CURSOR_HOME="$WORKROOT/cursor-home"
 CODEX_HOME="$WORKROOT/codex-home"
-mkdir -p "$CURSOR_HOME/.Trash" "$CURSOR_HOME/.cursor" "$CODEX_HOME/.Trash" "$CODEX_HOME/.codex"
+# The hooks.json command Codex `on` registers runs the codex-goodies plugin package, not this checkout.
+CODEX_PLUGIN_PACKAGE="$CODEX_HOME/.codex/plugins/cache/user538295/codex-goodies/$PACKAGE_VERSION/skills/session-log"
+mkdir -p "$CURSOR_HOME/.Trash" "$CURSOR_HOME/.cursor" "$CODEX_HOME/.Trash" "$CODEX_HOME/.codex" "$(dirname "$CODEX_PLUGIN_PACKAGE")"
+cp -R "$REPO/skills/session-log" "$CODEX_PLUGIN_PACKAGE"
 printf '%s\n' '{"version":1,"hooks":{"afterFileEdit":[{"command":"echo keep-cursor"}]}}' > "$CURSOR_HOME/.cursor/hooks.json"
 printf '%s\n' '{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo keep-codex"}]}]}}' > "$CODEX_HOME/.codex/hooks.json"
 cursor_on="$(HOME="$CURSOR_HOME" bash "$ENTRYPOINT" --harness cursor --arguments on 2>&1)"
@@ -1300,9 +1320,10 @@ assert_contains "relocated OMP root message is explicit" "OMP root is relocated"
 
 printf '=== native hooks honor the enabled flag and reject malformed payloads ===\n'
 NATIVE_OFF_HOME="$WORKROOT/native-off-home"
-mkdir -p "$NATIVE_OFF_HOME/.Trash" "$NATIVE_OFF_HOME/.codex/skills" "$NATIVE_OFF_HOME/.codex/session-log"
-cp -R "$REPO/skills/session-log" "$NATIVE_OFF_HOME/.codex/skills/session-log"
-NATIVE_OFF_HOOK="$NATIVE_OFF_HOME/.codex/skills/session-log/adapters/native/session_log_hook.py"
+NATIVE_OFF_PACKAGE="$NATIVE_OFF_HOME/.codex/plugins/cache/user538295/codex-goodies/$PACKAGE_VERSION/skills/session-log"
+mkdir -p "$NATIVE_OFF_HOME/.Trash" "$(dirname "$NATIVE_OFF_PACKAGE")" "$NATIVE_OFF_HOME/.codex/session-log"
+cp -R "$REPO/skills/session-log" "$NATIVE_OFF_PACKAGE"
+NATIVE_OFF_HOOK="$NATIVE_OFF_PACKAGE/adapters/native/session_log_hook.py"
 printf '{"stale":true}\n' > "$NATIVE_OFF_HOME/.codex/session-log/runtime.json"
 set +e
 native_off_output="$(

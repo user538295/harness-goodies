@@ -59,17 +59,21 @@ legacy_cleanup_claude() {
 
 # The package copy (or link) older install.sh releases seeded into ~/.codex/skills, and their
 # adapter stamps. Their hooks.json entries, which name a package's hook by path, are replaced by
-# repair_registrations or the adapter install that follows.
+# repair_registrations or the adapter install that follows. Codex sessions keep running the hooks
+# they loaded at start, and a hook whose script is gone blocks every prompt, so while hooks.json
+# still names the seeded copy's hook the copy stays; a run after the restart removes it.
 legacy_cleanup_codex() {
-  local candidate
+  local candidate seeded="$HARNESS_ROOT/skills/session-log" config="$HARNESS_ROOT/hooks.json"
   require_command python3
-  remove_seeded_package "$HARNESS_ROOT/skills/session-log"
+  if [[ -e "$seeded" || -L "$seeded" ]] && [[ -f "$config" && ! -L "$config" ]] &&
+      grep -qF "$seeded/adapters/native/session_log_hook.py" "$config"; then
+    print_repair_report "kept legacy package copy $seeded: Codex sessions started before this change still run its hooks; restart Codex, then run repair"
+  else
+    remove_seeded_package "$seeded"
+  fi
   validate_state_dir
   for candidate in "${CODEX_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"; do
-    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
-    # A concurrent cleanup may have removed it already.
-    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
-      fail "cannot remove obsolete state file: $candidate"
+    remove_obsolete_state_file "$candidate"
   done
 }
 
@@ -166,14 +170,20 @@ remove_claude_obsolete_state() {
     record_running_plugin_root
   fi
   for candidate in "${CLAUDE_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}" "$STATE_DIR"/settings-repair.*.stamp; do
-    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
     if [[ "$candidate" == "$STATE_DIR/plugin-root" ]] && [[ -e "$seeded" || -L "$seeded" ]]; then
       continue
     fi
-    # A concurrent cleanup may have removed it already.
-    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
-      fail "cannot remove obsolete state file: $candidate"
+    remove_obsolete_state_file "$candidate"
   done
+}
+
+# Removes state file $1 when it is a regular file; a symlink or anything else stays.
+remove_obsolete_state_file() {
+  local file="$1"
+  [[ -f "$file" && ! -L "$file" ]] || return 0
+  # A concurrent cleanup may have removed it already.
+  unlink "$file" 2>/dev/null || [[ ! -e "$file" ]] ||
+    fail "cannot remove obsolete state file: $file"
 }
 
 # Points plugin-root at this package when it is a claude-goodies plugin-cache package; any other
