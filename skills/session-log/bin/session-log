@@ -3,9 +3,10 @@ set -euo pipefail
 
 readonly SUPPORTED_HARNESSES="claude, codex, cursor, opencode, omp"
 readonly OWNER_MARKER_VALUE="universal-session-log"
-# What makes Codex run hooks.json commands it has not run yet: it asks to trust new or changed hooks
-# at startup on its "Hooks need review" screen, and /hooks manages them.
-readonly CODEX_TRUST_INSTRUCTION="restart Codex, then choose 'Trust all and continue' on the 'Hooks need review' screen (or approve the session-log hooks in /hooks)"
+# What makes Codex run hooks.json commands it has not run yet: trusting them in /hooks reloads the
+# running session's hooks, and a restart shows the "Hooks need review" screen while any hook is new
+# or changed. RESTORE_FOLLOW_UP in adapters/native/install_hooks.py says the same (tests check it).
+readonly CODEX_TRUST_INSTRUCTION="approve the session-log hooks in /hooks, or restart Codex and choose 'Trust all and continue' if it shows the 'Hooks need review' screen"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 readonly VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"

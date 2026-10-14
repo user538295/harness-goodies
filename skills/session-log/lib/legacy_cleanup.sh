@@ -61,12 +61,18 @@ legacy_cleanup_claude() {
 # adapter stamps. Their hooks.json entries, which name a package's hook by path, are replaced by
 # repair_registrations or the adapter install that follows. Codex sessions keep running the hooks
 # they loaded at start, and a hook whose script is gone blocks every prompt, so while hooks.json
-# may still name the seeded copy's hook the copy stays; a run after the restart removes it.
+# may still name the seeded copy's hook the copy stays; a run after the restart removes it. Without
+# a codex-goodies plugin package repair_registrations leaves those entries, so only `on` (which
+# needs the plugin) replaces them.
 legacy_cleanup_codex() {
   local candidate seeded="$HARNESS_ROOT/skills/session-log"
   require_command python3
   if [[ -e "$seeded" || -L "$seeded" ]] && codex_hooks_may_name_seeded_copy; then
-    print_repair_report "kept legacy package copy $seeded: ~/.codex/hooks.json still names its hook; once no entry there names it, restart Codex, then run repair"
+    if codex_plugin_package_present; then
+      print_repair_report "kept legacy package copy $seeded: Codex sessions started before session-log replaced its hooks.json entries may still run it; restart Codex, then run repair"
+    else
+      print_repair_report "kept legacy package copy $seeded: ~/.codex/hooks.json may still run it; install the codex-goodies plugin, then run on"
+    fi
   else
     remove_seeded_package "$seeded"
   fi

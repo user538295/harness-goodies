@@ -17,12 +17,14 @@ import pathsafe
 MAX_TEMP_FILE_ATTEMPTS = 20
 # O_NONBLOCK keeps a FIFO swapped in for the hooks file from blocking the open.
 READ_FLAGS = pathsafe.FILE_FLAGS | os.O_NONBLOCK
-# Codex runs a new or changed hooks.json command only after the user trusts it: at startup on its
-# "Hooks need review" screen, or in /hooks.
-RESTORE_FOLLOW_UP = {
-    "codex": "; restart Codex, then choose 'Trust all and continue' on the 'Hooks need review' screen"
-    " (or approve them in /hooks)"
-}
+# Codex runs a new or changed hooks.json command only after the user trusts it: in /hooks, which
+# reloads the running session's hooks, or on the "Hooks need review" screen a restart shows.
+# bin/session-log's CODEX_TRUST_INSTRUCTION says the same (tests check it).
+CODEX_TRUST_INSTRUCTION = (
+    "approve the session-log hooks in /hooks, or restart Codex and choose 'Trust all and continue'"
+    " if it shows the 'Hooks need review' screen"
+)
+RESTORE_FOLLOW_UP = {"codex": f"; {CODEX_TRUST_INSTRUCTION}"}
 # The marketplace Codex caches codex-goodies under: the "name" of .agents/plugins/marketplace.json.
 # Pinning it keeps another marketplace's codex-goodies from running under the trusted command, and
 # leaves `sort -V` comparing version directories only. lib/adapter_install.sh (CODEX_MARKETPLACE)

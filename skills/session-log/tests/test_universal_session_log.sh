@@ -379,7 +379,7 @@ cursor_on="$(HOME="$CURSOR_HOME" bash "$ENTRYPOINT" --harness cursor --arguments
 codex_on="$(HOME="$CODEX_HOME" bash "$ENTRYPOINT" --harness codex --arguments on 2>&1)"
 assert_exact "Cursor on status is exact" "Cursor: on — restart required" "$cursor_on"
 assert_exact "Codex on tells how to trust its hooks" \
-  "Codex: on — restart Codex, then choose 'Trust all and continue' on the 'Hooks need review' screen (or approve the session-log hooks in /hooks)" \
+  "Codex: on — approve the session-log hooks in /hooks, or restart Codex and choose 'Trust all and continue' if it shows the 'Hooks need review' screen" \
   "$codex_on"
 assert_file "Cursor native hooks config installed" "$CURSOR_HOME/.cursor/hooks.json"
 assert_file "Codex native hooks config installed" "$CODEX_HOME/.codex/hooks.json"
