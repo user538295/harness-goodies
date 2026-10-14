@@ -2432,9 +2432,9 @@ class OpenCodePluginOwnershipTests(unittest.TestCase):
         repaired = self.run_opencode("repair")
         self.assertEqual((repaired.returncode, repaired.stderr), (0, ""))
         self.assertEqual(repaired.stdout, "".join((
-            *(f"OpenCode: removed legacy adapter link {self.root / target}\n" for target, _ in LEGACY_OPENCODE_ADAPTERS),
             f"OpenCode: removed legacy command {command}\n",
             f"OpenCode: removed legacy package copy {other_package}\n",
+            *(f"OpenCode: removed legacy adapter link {self.root / target}\n" for target, _ in LEGACY_OPENCODE_ADAPTERS),
         )))
         for target, _ in LEGACY_OPENCODE_ADAPTERS:
             self.assertFalse(os.path.lexists(self.root / target))
@@ -2494,6 +2494,19 @@ class OpenCodePluginOwnershipTests(unittest.TestCase):
                 usage.unlink()
         self.assertEqual(plugin.read_text(), "user plugin\n")
         self.assertEqual(command.read_text(), "---\ndescription: my own command\n---\nmine\n")
+
+    def test_repair_beside_a_symlinked_plugins_directory_still_removes_the_command_and_copy(self):
+        dotfiles = self.home / "dotfiles/plugins"
+        dotfiles.mkdir(parents=True)
+        self.root.mkdir(parents=True)
+        (self.root / "plugins").symlink_to(dotfiles)
+        command = self.root / LEGACY_OPENCODE_COMMAND
+        command.parent.mkdir(parents=True)
+        command.write_text(LEGACY_OPENCODE_COMMAND_TEXT)
+        repaired = self.run_opencode("repair")
+        self.assertEqual((repaired.returncode, repaired.stdout, repaired.stderr),
+                         (0, f"OpenCode: removed legacy command {command}\n", ""))
+        self.assertFalse(os.path.lexists(command))
 
     def test_on_runs_the_legacy_cleanup_first(self):
         command = self.root / LEGACY_OPENCODE_COMMAND

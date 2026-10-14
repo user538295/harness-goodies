@@ -257,7 +257,7 @@ assert_not_file "OpenCode status installs no adapter" \
 OPENCODE_RECOVERY_ROOT="$(cd "$OPENCODE_RECOVERY_HOME" && pwd -P)/.config/opencode"
 opencode_recovery_repair="$(HOME="$OPENCODE_RECOVERY_HOME" bash "$ENTRYPOINT" --harness opencode --arguments repair 2>&1)"
 assert_exact "OpenCode repair reports the links of earlier releases it removes" \
-  "OpenCode: removed legacy adapter link $OPENCODE_RECOVERY_ROOT/plugins/session-log.js"$'\n'"OpenCode: removed legacy package link $OPENCODE_RECOVERY_ROOT/skills/session-log" \
+  "OpenCode: removed legacy package link $OPENCODE_RECOVERY_ROOT/skills/session-log"$'\n'"OpenCode: removed legacy adapter link $OPENCODE_RECOVERY_ROOT/plugins/session-log.js" \
   "$opencode_recovery_repair"
 assert_not_file "OpenCode repair removes the dead plugin link" "$OPENCODE_RECOVERY_HOME/.config/opencode/plugins/session-log.js"
 assert_not_file "OpenCode repair removes the skill-root link" "$OPENCODE_RECOVERY_HOME/.config/opencode/skills/session-log"

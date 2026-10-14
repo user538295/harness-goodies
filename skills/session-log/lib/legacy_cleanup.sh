@@ -64,10 +64,11 @@ legacy_cleanup_claude() {
 # adapter path stays; a foreign command stays too, but is named, as it hides the package's.
 legacy_cleanup_opencode() {
   require_command python3
-  remove_legacy_opencode_adapter plugins/session-log.js adapters/opencode/session-log.js
-  remove_legacy_opencode_adapter scripts/session_log_usage.sh adapters/opencode/session_log_usage.sh
+  # The command and the seeded copy first: they break the plugin's /session-log.
   remove_legacy_opencode_command
   remove_seeded_package "$HARNESS_ROOT/skills/session-log"
+  remove_legacy_opencode_adapter plugins/session-log.js adapters/opencode/session-log.js
+  remove_legacy_opencode_adapter scripts/session_log_usage.sh adapters/opencode/session_log_usage.sh
   remove_opencode_obsolete_state
   validate_managed_path "$HARNESS_ROOT/commands/session-log-omp.md"
   validate_managed_path "$HARNESS_ROOT/plugins/session-log-omp.js"
@@ -79,6 +80,8 @@ legacy_cleanup_opencode() {
 # package or the release store, or a copy carrying the ownership marker.
 remove_legacy_opencode_adapter() {
   local path="$HARNESS_ROOT/$1" relative="$2" destination
+  # Nothing to remove: a symlinked plugins/ or scripts/ directory (dotfiles) is no reason to fail.
+  [[ -e "$path" || -L "$path" ]] || return 0
   ensure_safe_parent "$path"
   if [[ -L "$path" ]]; then
     destination="$(readlink "$path")"

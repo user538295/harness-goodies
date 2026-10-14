@@ -68,8 +68,16 @@ const CONFIG_DIR = path.join(canonicalPath(defaultConfigHome), "opencode");
 const LOGS_DIR = path.join(CONFIG_DIR, "prompt-logs");
 const ENABLED_FLAG = path.join(LOGS_DIR, ".enabled");
 const STATE_DIR = path.join(CONFIG_DIR, "session-log");
+// Leftovers of older releases that break this package's `/session-log` or logging: the markdown
+// command that overrides it, the seeded package copy whose old install.sh re-creates both, and the
+// V1 adapter link OpenCode rejects at every start. The startup cleanup runs again when one appears.
+const DISRUPTIVE_LEFTOVERS = ["commands/session-log.md", "skills/session-log", "plugins/session-log.js"];
+// What `repair` prints when it found nothing to remove.
+const CLEAN_REPAIR_REPORT = "repair found no duplicate or stale registrations";
 
-const reportError = (error) => process.stderr.write(`session-log: ${error?.message || error}\n`);
+// Writes one line to OpenCode's log (its stderr).
+const writeLog = (message) => process.stderr.write(`session-log: ${message}\n`);
+const reportError = (error) => writeLog(error?.message || error);
 // The roots bin/session-log refuses (guard_relocated_root), so the handlers never log where every
 // command would fail. Returns why the root is unsupported, or "" when it is supported.
 const describeUnsupportedRoot = () => {
@@ -987,25 +995,39 @@ const commandArguments = (text, sessionID) => {
   return argumentsText === USAGE_COMMAND && validId(sessionID) ? `${USAGE_COMMAND} ${sessionID}` : argumentsText;
 };
 
-// Runs `repair` once per installed package (its location and VERSION), whether or not it succeeds:
-// it removes what older releases left in ~/.config/opencode and is proven session-log's, including a
-// markdown /session-log command that would override this package's. Its report or failure goes to
-// OpenCode's log; `on` and `repair` run the same cleanup and show the user what it did or why it failed.
+// What the startup cleanup depends on: this package (its location and VERSION) and which
+// disruptive leftovers exist.
+const cleanupFingerprint = () => [
+  PACKAGE_ROOT, VERSION,
+  ...DISRUPTIVE_LEFTOVERS.filter((relative) => {
+    try {
+      fs.lstatSync(path.join(CONFIG_DIR, relative));
+      return true;
+    } catch {
+      return false;
+    }
+  }),
+].join("\n") + "\n";
+
+// Runs `repair`, which removes what older releases left in ~/.config/opencode and is proven
+// session-log's, including a markdown /session-log command that would override this package's. The
+// fingerprint taken after each attempt, successful or not, skips it until this package or a
+// disruptive leftover changes, so a cleanup that cannot succeed does not rerun at every start. Its
+// report or failure goes to OpenCode's log; `on` and `repair` show the user what it did or why it failed.
 export async function cleanupLegacyLeftovers() {
   const stamp = path.join(STATE_DIR, "legacy-cleanup.stamp");
-  const fingerprint = `${PACKAGE_ROOT}\n${VERSION}\n`;
   try {
-    if (fs.lstatSync(stamp).isFile() && fs.readFileSync(stamp, "utf8") === fingerprint) return;
+    if (fs.lstatSync(stamp).isFile() && fs.readFileSync(stamp, "utf8") === cleanupFingerprint()) return;
   } catch {}
   try {
     const report = await runSessionLogCli("repair");
-    if (report) reportError(report);
+    if (report && !report.endsWith(CLEAN_REPAIR_REPORT)) writeLog(report);
   } catch (error) {
     reportError(error);
   }
   try {
     ensureFile(stamp);
-    fs.writeFileSync(stamp, fingerprint, { mode: 0o600 });
+    fs.writeFileSync(stamp, cleanupFingerprint(), { mode: 0o600 });
   } catch (error) {
     reportError(error);
   }
@@ -1030,19 +1052,26 @@ let openInstances = 0;
 // Registers `/session-log`, then (unless the configuration root is unsupported) the logging
 // handlers. Returns the cleanup that stops them and waits for pending log writes.
 export async function setupSessionLog(ctx) {
+  // Whether this instance's logging handlers run; only then may `/session-log` mark the runtime.
+  let handlersActive = false;
+  const markRuntimeWhileActive = () => {
+    if (handlersActive) markRuntimeWhileEnabled();
+  };
   await ctx.command.transform((editor) => {
     editor.add({
       name: COMMAND_NAME,
       description: COMMAND_DESCRIPTION,
       execute: async ({ sessionID, prompt }) => {
+        // These handlers already run, so `status` and a repeated `on` need no restart; after `on`
+        // creates the flag, they log from the next prompt on.
+        markRuntimeWhileActive();
         let output;
         try {
           output = await runSessionLogCli(commandArguments(prompt?.text ?? "", sessionID));
         } catch (error) {
           output = error.message;
         }
-        // After `on`, these handlers log from the next prompt on, so `status` may say so at once.
-        markRuntimeWhileEnabled();
+        markRuntimeWhileActive();
         await ctx.session.synthetic({ sessionID, text: output, description: output, resume: false });
       },
     });
@@ -1052,7 +1081,8 @@ export async function setupSessionLog(ctx) {
     reportError(unsupported);
     return () => {};
   }
-  const cleanup = cleanupLegacyLeftovers();
+  // Not awaited, even on close: a hung `repair` must not hold up OpenCode; its timeout ends it.
+  void cleanupLegacyLeftovers();
   const sessionLog = createSessionLog(ctx);
   const promptHook = await ctx.session.hook("prompt", (input) => {
     sessionLog.onPrompt(input);
@@ -1060,11 +1090,13 @@ export async function setupSessionLog(ctx) {
   const controller = new AbortController();
   void pumpEvents(ctx, sessionLog, controller.signal);
   openInstances += 1;
+  handlersActive = true;
   markRuntimeWhileEnabled();
   return async () => {
+    handlersActive = false;
     controller.abort();
     await promptHook?.dispose?.();
-    await Promise.all([cleanup, sessionLog.waitUntilIdle()]);
+    await sessionLog.waitUntilIdle();
     openInstances -= 1;
     if (openInstances === 0) removeProcessRuntime();
   };

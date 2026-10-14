@@ -541,10 +541,9 @@ test("/session-log runs the package CLI and posts its output, or why it failed, 
 
 test("/session-log on records the runtime marker, so status reports the running plugin", () => {
   fs.unlinkSync(enabledFlag);
-  // This package's startup cleanup already ran, so it holds no install lock while `on` runs.
-  fs.mkdirSync(stateDirectory, { mode: 0o700 });
-  fs.writeFileSync(path.join(stateDirectory, "legacy-cleanup.stamp"), `${packageRoot}\n${packageVersion}\n`);
   const result = runPlugin(`
+    // This package's startup cleanup already ran, so it holds no install lock while \`on\` runs.
+    await sessionLog.cleanupLegacyLeftovers();
     const { registered } = await setup();
     const [command] = registered.commands;
     for (const text of ["on", "status"]) {
@@ -553,6 +552,47 @@ test("/session-log on records the runtime marker, so status reports the running 
     process.stdout.write(JSON.stringify(registered.notices.map(({ text }) => text)));
   `);
   expect(JSON.parse(result.stdout)).toEqual(["OpenCode: on — logging starts with the next prompt", "OpenCode: on"]);
+});
+
+test("/session-log status reports the running plugin after logging was turned on outside OpenCode", () => {
+  fs.unlinkSync(enabledFlag);
+  const result = runPlugin(`
+    const { registered } = await setup();
+    fs.writeFileSync(path.join(process.env.HOME, ".config/opencode/prompt-logs/.enabled"), "enabled", { mode: 0o600 });
+    await registered.commands[0].execute({ sessionID: "ses_outside", prompt: { text: "status" }, delivery: "steer" });
+    process.stdout.write(registered.notices[0].text);
+  `);
+  expect(result.stdout).toBe("OpenCode: on");
+});
+
+test("/session-log records no runtime marker once its handlers are gone or never ran", () => {
+  const marker = path.join(stateDirectory, "runtime.json");
+  runPlugin(`
+    const { registered, cleanup } = await setup();
+    await cleanup();
+    fs.rmSync(path.join(process.env.HOME, ".config/opencode/session-log/runtime.json"), { force: true });
+    await registered.commands[0].execute({ sessionID: "ses_closed", prompt: { text: "status" }, delivery: "steer" });
+  `);
+  expect(fs.existsSync(marker)).toBe(false);
+  const relocated = fs.mkdtempSync(path.join(home, "relocated-"));
+  runPlugin(`
+    const { registered } = await setup();
+    await registered.commands[0].execute({ sessionID: "ses_relocated", prompt: { text: "status" }, delivery: "steer" });
+  `, { XDG_CONFIG_HOME: relocated });
+  expect(fs.existsSync(marker)).toBe(false);
+});
+
+test("closing the plugin does not wait for a startup cleanup still running", () => {
+  // A repair that would hang well past the child timeout.
+  const wrapper = wrapperDirectory("bash", ["sleep 600"]);
+  const result = runPlugin(`
+    const { cleanup } = await setup();
+    const started = Date.now();
+    await cleanup();
+    process.stdout.write(String((Date.now() - started) / 1000));
+    process.exit(0);
+  `, { PATH: pathWith(wrapper) });
+  expect(Number(result.stdout)).toBeLessThan(5);
 });
 
 test("the CLI's timeout ends the commands it started too", () => {
@@ -584,32 +624,47 @@ test("/session-log usage without a target reports the session it ran in", () => 
     `${path.join(packageRoot, "install.sh")}|--harness|opencode|--arguments|usage ses_usage|`);
 });
 
-test("the legacy cleanup runs `repair` once per installed package, whether or not a leftover remains", () => {
+test("the legacy cleanup runs `repair` again only when the package or a disruptive leftover changes", () => {
   const legacyCommand = path.join(configDirectory, "commands", "session-log.md");
-  const stamp = path.join(stateDirectory, "legacy-cleanup.stamp");
+  const record = path.join(home, "repairs");
+  // Counts each CLI run (not install.sh's own inner bash) and passes it on to the real bash.
+  const wrapper = wrapperDirectory("bash", [`case "$1" in */install.sh) echo repair >> "${record}" ;; esac`, `exec "${Bun.which("bash")}" "$@"`]);
+  const cleanup = () => runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapper) });
+  const repairs = () => fs.readFileSync(record, "utf8").split("\n").filter(Boolean).length;
   fs.mkdirSync(path.dirname(legacyCommand), { recursive: true });
   fs.writeFileSync(legacyCommand, LEGACY_COMMAND_TEXT);
-  runPlugin("await sessionLog.cleanupLegacyLeftovers();");
+  cleanup();
   expect(fs.existsSync(legacyCommand)).toBe(false);
-  expect(fs.readFileSync(stamp, "utf8")).toBe(`${packageRoot}\n${packageVersion}\n`);
+  cleanup();
+  expect(repairs()).toBe(1);
+  // An older package copy re-seeded the command after the stamp was written.
   fs.writeFileSync(legacyCommand, LEGACY_COMMAND_TEXT);
-  runPlugin("await sessionLog.cleanupLegacyLeftovers();");
-  expect(fs.existsSync(legacyCommand)).toBe(true);
-  fs.writeFileSync(stamp, "another package\n");
-  runPlugin("await sessionLog.cleanupLegacyLeftovers();");
+  cleanup();
   expect(fs.existsSync(legacyCommand)).toBe(false);
+  expect(repairs()).toBe(2);
 });
 
-test("the startup cleanup writes repair's report or failure to OpenCode's log and stamps the attempt", () => {
-  const stamp = path.join(stateDirectory, "legacy-cleanup.stamp");
+test("a cleanup that cannot remove a leftover is not retried until something changes", () => {
+  const legacyCommand = path.join(configDirectory, "commands", "session-log.md");
+  const record = path.join(home, "repairs");
+  const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, "echo 'cannot clean' >&2", "exit 1"]);
+  fs.mkdirSync(path.dirname(legacyCommand), { recursive: true });
+  fs.writeFileSync(legacyCommand, LEGACY_COMMAND_TEXT);
+  for (let run = 0; run < 2; run += 1) runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapper) });
+  expect(fs.readFileSync(record, "utf8")).toBe("repair\n");
+  expect(fs.existsSync(legacyCommand)).toBe(true);
+});
+
+test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run", () => {
   for (const [lines, expected] of [
-    [["echo 'OpenCode: kept /x/commands/session-log.md: move it aside'"], "session-log: OpenCode: kept /x/commands/session-log.md: move it aside"],
-    [["echo 'cannot clean' >&2", "exit 1"], "session-log: cannot clean"],
+    [["echo 'OpenCode: kept /x/commands/session-log.md: move it aside'"], "session-log: OpenCode: kept /x/commands/session-log.md: move it aside\n"],
+    [["echo 'cannot clean' >&2", "exit 1"], "session-log: cannot clean\n"],
+    [["echo 'OpenCode: repair found no duplicate or stale registrations'"], ""],
   ]) {
     fs.rmSync(stateDirectory, { recursive: true, force: true });
     const result = runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapperDirectory("bash", lines)) });
-    expect(result.stderr).toContain(expected);
-    expect(fs.readFileSync(stamp, "utf8")).toBe(`${packageRoot}\n${packageVersion}\n`);
+    expect(result.stderr).toBe(expected);
+    expect(fs.existsSync(path.join(stateDirectory, "legacy-cleanup.stamp"))).toBe(true);
   }
 });
 
