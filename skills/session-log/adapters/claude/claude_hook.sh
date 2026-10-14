@@ -121,11 +121,13 @@ if [[ "${1:-}" == session-start ]]; then
 fi
 
 input="$(cat)"
-# Cursor (3.23.12) imports Claude Code plugins and ~/.claude/settings.json hooks and runs them itself.
-# Its hook payloads carry "cursor_version", which Claude Code's never do (a prompt that merely mentions
-# it arrives JSON-escaped). Cursor's sessions are not Claude's: past the legacy cleanup above, this hook
-# neither logs them nor touches Claude's runtime markers.
-[[ "$input" != *'"cursor_version":'* ]] || exit 0
+# Cursor (3.23.12) imports enabled Claude Code plugins and ~/.claude/settings.json hooks and runs them
+# itself. Its workbench sends a JSON payload carrying "cursor_version", a key absent from Claude Code's
+# payloads for these four events (a prompt that merely mentions it arrives JSON-escaped); its agent-host
+# daemon appends the payload as a heredoc that binds to the hook command's final `exit 0`, so this script
+# reads nothing, while Claude Code always sends a payload. Cursor's sessions are not Claude's: past the
+# legacy cleanup above, this hook neither logs them nor touches Claude's runtime markers.
+[[ -n "$input" && "$input" != *'"cursor_version":'* ]] || exit 0
 enabled_file="$CLAUDE_ROOT/prompt-logs/.enabled"
 runtime="$STATE_DIR/runtime.json"
 process_runtime="$STATE_DIR/runtime.${PPID}.json"

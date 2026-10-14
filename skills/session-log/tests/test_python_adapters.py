@@ -1056,7 +1056,7 @@ CLAUDE_REPAIR_CLEAN = "Claude Code: repair found no duplicate or stale registrat
 
 def harness_environment(home):
     environment = {key: value for key, value in os.environ.items()
-                   if key not in ("CLAUDE_PLUGIN_ROOT", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "CURSOR_VERSION")}
+                   if key not in ("CLAUDE_PLUGIN_ROOT", "CLAUDE_CONFIG_DIR", "CODEX_HOME")}
     return {**environment, "HOME": str(home)}
 
 
@@ -1655,12 +1655,18 @@ LIFECYCLE_SCRIPT_STDOUT = "hook output"
 FAILING_LIFECYCLE_SCRIPT = f'#!/usr/bin/env bash\nprintf "{LIFECYCLE_SCRIPT_STDOUT}"\necho "session-log: failed" >&2\nexit 1\n'
 
 
-# Cursor (3.23.12) imports enabled Claude Code plugins and ~/.claude/settings.json hooks and runs them itself.
-# Both of its hook runners (workbench and agent-host daemon) put `cursor_version` into the JSON payload, which
-# Claude Code never sends; its hook environment also sets CURSOR_VERSION, but child processes inherit that.
+# Cursor (3.23.12) imports enabled Claude Code plugins and ~/.claude/settings.json hooks and runs them itself,
+# through two runners. The workbench writes `JSON.stringify` of a request carrying `cursor_version` to the hook's
+# stdin (workbench.desktop.main.js `_executeCommandHookScript`). The agent-host daemon's default `argv_heredoc`
+# transport appends `<<'CURSOR_HOOK_EOF'` with that JSON to the command (daemon.cjs `executeCommandScript`), so for
+# hooks/hooks.json's `...; exec bash "$s" <event>; exit 0` the heredoc feeds the final `exit 0` and the hook reads
+# nothing. Both runners also export CURSOR_VERSION, which child processes such as `claude -p` inherit.
 CURSOR_VERSION_UNDER_TEST = "3.23.12"
 CURSOR_HOOK_EVENTS = {"session-start": "sessionStart", "user-prompt": "beforeSubmitPrompt",
                       "stop": "stop", "subagent-stop": "subagentStop"}
+CLAUDE_HOOK_EVENTS = {"session-start": "SessionStart", "user-prompt": "UserPromptSubmit",
+                      "stop": "Stop", "subagent-stop": "SubagentStop"}
+CURSOR_HEREDOC_DELIMITER = "CURSOR_HOOK_EOF"
 
 
 def enabled_claude_home(directory):
@@ -1677,44 +1683,68 @@ def prompt_log_transcripts(home):
 
 
 class ClaudeHookInsideCursorTests(unittest.TestCase):
-    """Run by Cursor instead of Claude Code, the Claude hook only runs the legacy cleanup: it never logs or
-    writes Claude runtime state. Claude Code keeps logging even when it inherits Cursor's environment."""
+    """Run by Cursor instead of Claude Code, the Claude hook only runs the session-start legacy cleanup: it never
+    logs, writes, or removes Claude runtime state. Claude Code keeps logging when it inherits Cursor's environment."""
+
+    def setUp(self):
+        if shutil.which("jq") is None:
+            # Without jq the hook stops before writing anything, so a missing guard would go unnoticed.
+            self.skipTest("jq is not installed")
 
     def build_cursor_environment(self, home, plugin):
         return {**harness_environment(home), "CURSOR_VERSION": CURSOR_VERSION_UNDER_TEST,
                 "CURSOR_PROJECT_DIR": str(home), "CLAUDE_PROJECT_DIR": str(home),
                 "CURSOR_PLUGIN_ROOT": str(plugin.parents[1]), "CLAUDE_PLUGIN_ROOT": str(plugin.parents[1])}
 
-    def build_cursor_payload(self, home, lifecycle, *, with_session=True):
-        payload = {"conversation_id": "cursor-conversation", "hook_event_name": CURSOR_HOOK_EVENTS[lifecycle],
-                   "cursor_version": CURSOR_VERSION_UNDER_TEST, "workspace_roots": [str(home)],
-                   "prompt": "cursor prompt", "cwd": str(home)}
-        if with_session:
-            payload["session_id"] = "cursor-conversation"
-        return json.dumps(payload, separators=(",", ":"))
+    def build_cursor_payload(self, home, lifecycle):
+        return json.dumps({"conversation_id": "cursor-conversation", "session_id": "cursor-conversation",
+                           "hook_event_name": CURSOR_HOOK_EVENTS[lifecycle], "cursor_version": CURSOR_VERSION_UNDER_TEST,
+                           "workspace_roots": [str(home)], "prompt": "cursor prompt", "cwd": str(home)},
+                          separators=(",", ":"))
 
-    def build_claude_payload(self, home, prompt="claude prompt"):
+    def build_claude_payload(self, home, lifecycle, prompt="claude prompt"):
         return json.dumps({"session_id": "claude-session", "cwd": str(home), "prompt": prompt,
-                           "hook_event_name": "UserPromptSubmit"})
+                           "hook_event_name": CLAUDE_HOOK_EVENTS[lifecycle]})
 
-    def assert_nothing_logged(self, home):
-        self.assertFalse((home / ".claude/session-log/runtime.json").exists(), "Cursor's hook wrote a Claude runtime marker")
-        self.assertEqual(list((home / ".claude/session-log").glob("runtime*.json"))
-                         if (home / ".claude/session-log").exists() else [], [])
+    def write_runtime_markers(self, home):
+        """Markers a running Claude Code session wrote; Cursor must leave them alone, logging on or off."""
+        state = home / ".claude/session-log"
+        state.mkdir(parents=True, exist_ok=True)
+        markers = [state / "runtime.json", state / "runtime.1.json"]
+        for marker in markers:
+            marker.write_text('{"harness": "claude"}')
+        return {marker: marker.read_bytes() for marker in markers}
+
+    def assert_untouched(self, home, markers=None):
+        expected = markers or {}
+        state = home / ".claude/session-log"
+        actual = {path: path.read_bytes() for path in state.glob("runtime*.json")} if state.exists() else {}
+        self.assertEqual(actual, expected, "Cursor's hook wrote or removed a Claude runtime marker")
         self.assertEqual(prompt_log_transcripts(home), [], "Cursor's hook logged into the Claude prompt logs")
+        self.assertFalse((home / ".claude/session-maps").exists(), "Cursor's hook wrote Claude session state")
 
     def test_every_lifecycle_stays_out_of_claude_logging(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home, plugin = enabled_claude_home(directory)
-            for lifecycle in CURSOR_HOOK_EVENTS:
-                for with_session in (True, False):
-                    with self.subTest(lifecycle=lifecycle, with_session=with_session):
-                        result = run_claude_hook(
-                            plugin, home, lifecycle,
-                            payload=self.build_cursor_payload(home, lifecycle, with_session=with_session),
-                            environment=self.build_cursor_environment(home, plugin))
-                        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-                        self.assert_nothing_logged(home)
+        for lifecycle in CURSOR_HOOK_EVENTS:
+            with self.subTest(lifecycle=lifecycle), tempfile.TemporaryDirectory() as directory:
+                home, plugin = enabled_claude_home(directory)
+                result = run_claude_hook(plugin, home, lifecycle, payload=self.build_cursor_payload(home, lifecycle),
+                                         environment=self.build_cursor_environment(home, plugin))
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+                self.assert_untouched(home)
+
+    def test_logging_off_keeps_claude_runtime_markers(self):
+        for lifecycle in CURSOR_HOOK_EVENTS:
+            for payload_kind in ("payload", "empty stdin"):
+                with self.subTest(lifecycle=lifecycle, payload=payload_kind), \
+                        tempfile.TemporaryDirectory() as directory:
+                    home, plugin = enabled_claude_home(directory)
+                    (home / ".claude/prompt-logs/.enabled").unlink()
+                    markers = self.write_runtime_markers(home)
+                    payload = self.build_cursor_payload(home, lifecycle) if payload_kind == "payload" else ""
+                    result = run_claude_hook(plugin, home, lifecycle, payload=payload,
+                                             environment=self.build_cursor_environment(home, plugin))
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+                    self.assert_untouched(home, markers)
 
     def test_cursor_session_start_still_removes_legacy_registrations(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1727,29 +1757,55 @@ class ClaudeHookInsideCursorTests(unittest.TestCase):
                                      environment=self.build_cursor_environment(home, plugin))
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
             self.assertEqual(json.loads(settings.read_text()), {"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}})
-            self.assert_nothing_logged(home)
+            self.assert_untouched(home)
 
-    def test_plugin_hook_command_stays_out_of_claude_logging(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home, plugin = enabled_claude_home(directory)
-            hook = next(hook for event, hook in plugin_hooks() if event == "UserPromptSubmit")
-            result = run_plugin_hook_command("bash", hook, str(plugin.parents[1]), substituted=False,
-                                             environment=self.build_cursor_environment(home, plugin),
-                                             payload=self.build_cursor_payload(home, "user-prompt"))
-            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-            self.assert_nothing_logged(home)
+    def test_plugin_hook_commands_stay_out_of_claude_logging_on_stdin(self):
+        for event, hook in plugin_hooks():
+            lifecycle = PLUGIN_EVENT_LIFECYCLES[event]
+            with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
+                home, plugin = enabled_claude_home(directory)
+                result = run_plugin_hook_command("bash", hook, str(plugin.parents[1]), substituted=False,
+                                                 environment=self.build_cursor_environment(home, plugin),
+                                                 payload=self.build_cursor_payload(home, lifecycle))
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+                self.assert_untouched(home)
 
-    def test_claude_code_logs_even_with_cursor_environment_inherited(self):
-        if shutil.which("jq") is None:
-            self.skipTest("jq is not installed")
-        prompts = {"plain": "claude prompt", "mentions the key": 'look at "cursor_version": "x" here'}
+    def test_plugin_hook_commands_stay_out_of_claude_logging_with_a_heredoc_payload(self):
+        for event, hook in plugin_hooks():
+            lifecycle = PLUGIN_EVENT_LIFECYCLES[event]
+            for logging_on in (True, False):
+                with self.subTest(event=event, logging_on=logging_on), tempfile.TemporaryDirectory() as directory:
+                    home, plugin = enabled_claude_home(directory)
+                    if not logging_on:
+                        (home / ".claude/prompt-logs/.enabled").unlink()
+                    markers = self.write_runtime_markers(home)
+                    command = (f"{hook['command']} <<'{CURSOR_HEREDOC_DELIMITER}'\n"
+                               f"{self.build_cursor_payload(home, lifecycle)}\n{CURSOR_HEREDOC_DELIMITER}")
+                    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                            env=self.build_cursor_environment(home, plugin))
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+                    self.assert_untouched(home, markers)
+
+    def test_claude_code_logs_every_lifecycle_with_cursor_environment_inherited(self):
+        for lifecycle in CURSOR_HOOK_EVENTS:
+            with self.subTest(lifecycle=lifecycle), tempfile.TemporaryDirectory() as directory:
+                home, plugin = enabled_claude_home(directory)
+                result = run_claude_hook(plugin, home, lifecycle, payload=self.build_claude_payload(home, lifecycle),
+                                         environment=self.build_cursor_environment(home, plugin))
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                self.assertTrue((home / ".claude/session-log/runtime.json").is_file(),
+                                "Claude Code's hook wrote no runtime marker under Cursor's environment")
+
+    def test_claude_code_logs_prompts_that_mention_the_key(self):
+        prompts = {"plain": "claude prompt", "exactly the key name": "cursor_version",
+                   "key-like text": 'look at "cursor_version": "x" here'}
         for name, prompt in prompts.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 home, plugin = enabled_claude_home(directory)
-                result = run_claude_hook(plugin, home, "user-prompt", payload=self.build_claude_payload(home, prompt),
+                result = run_claude_hook(plugin, home, "user-prompt",
+                                         payload=self.build_claude_payload(home, "user-prompt", prompt),
                                          environment=self.build_cursor_environment(home, plugin))
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
-                self.assertTrue((home / ".claude/session-log/runtime.json").is_file())
                 transcripts = prompt_log_transcripts(home)
                 self.assertEqual(len(transcripts), 1, transcripts)
                 self.assertIn(prompt, transcripts[0].read_text())
@@ -1811,6 +1867,7 @@ class ClaudeHookSilentFailureTests(unittest.TestCase):
 
     @unittest.skipIf(os.geteuid() == 0, "root reads files whatever their mode")
     def test_unreadable_package_version_exits_silently(self):
+        """Pins behaviour that predates the SC2155 split of the VERSION read, so the split cannot regress it."""
         with tempfile.TemporaryDirectory() as directory:
             home, package = self.enabled_home(directory)
             (package / "VERSION").chmod(0)
