@@ -26,6 +26,7 @@ SAFE_ID = re.compile(rf"^[A-Za-z0-9._-]{{1,{MAX_SESSION_ID_LENGTH}}}$")
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 TOKENS_SUFFIX = ".tokens.jsonl"
 PROMPT_HEAD_LENGTH = 60
+LEGACY_CURSOR_HOOK_NAME = "session_log_hook.py"
 
 
 def fail(message):
@@ -313,6 +314,32 @@ def process_payload(request, hooks=RuntimeHooks()):
     respond(harness, event)
 
 
+def has_legacy_cursor_hooks(root):
+    """Whether ~/.cursor/hooks.json may hold the session-log entries older releases registered there.
+
+    A cheap superset of the entries install_hooks.py recognizes as session-log's; keep the two in step.
+    """
+    config = root / "hooks.json"
+    try:
+        return config.is_file() and not config.is_symlink() and LEGACY_CURSOR_HOOK_NAME in config.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def remove_legacy_cursor_hooks(root):
+    """Session start removes the legacy entries, logging on or off, since Cursor runs them beside
+    the plugin's hooks. Best effort: `repair` output is discarded and its failure is ignored; `on`
+    and `repair` report why it failed."""
+    if not has_legacy_cursor_hooks(root):
+        return
+    session_log = Path(__file__).resolve().parents[2] / "bin" / "session-log"
+    try:
+        subprocess.run(["bash", str(session_log), "--entrypoint", "cursor", "--harness", "cursor", "repair"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    except OSError:
+        pass
+
+
 def main(argv=None):
     supported = {"cursor": ".cursor", "codex": ".codex"}
     events = {
@@ -334,6 +361,8 @@ def main(argv=None):
     flag = root / "prompt-logs" / ".enabled"
     runtime = state_dir / "runtime.json"
     ensure_directory(root, harness)
+    if harness == "cursor" and event == "session-start":
+        remove_legacy_cursor_hooks(root)
     safe_regular(flag, harness)
     safe_regular(runtime, harness)
     if not flag.is_file():

@@ -2476,6 +2476,46 @@ class CursorPluginHooksTests(unittest.TestCase):
                 self.assertTrue(result.stderr.startswith("session-log: "), result.stderr)
                 self.assertEqual(self.config.read_text(), contents)
 
+    def test_session_start_removes_legacy_registrations_with_logging_on_or_off(self):
+        seeded_hook = self.home / CURSOR_SEEDED_RELATIVE / "adapters/native/session_log_hook.py"
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                if enabled:
+                    self.assertEqual(self.run_cursor("on").returncode, 0)
+                document = cursor_legacy_hooks(seeded_hook)
+                document["hooks"]["stop"].append(CURSOR_FOREIGN_HOOK)
+                self.config.write_text(json.dumps(document))
+                result = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "{}\n", ""))
+                self.assertEqual(json.loads(self.config.read_text()),
+                                 {"version": 1, "hooks": {"stop": [CURSOR_FOREIGN_HOOK]}})
+
+    def test_session_start_runs_no_cleanup_without_legacy_registrations(self):
+        self.config.write_text(json.dumps({"version": 1, "hooks": {"stop": [CURSOR_FOREIGN_HOOK]}}))
+        original = self.config.read_bytes()
+        for event in CURSOR_EVENT_LIFECYCLES:
+            with self.subTest(event=event):
+                result = self.run_plugin_hook(event, {"conversation_id": "plugin-session"})
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                self.assertEqual(self.config.read_bytes(), original)
+                # `repair` would have created the state directory for its install lock.
+                self.assertFalse((self.home / ".cursor/session-log").exists())
+
+    def test_session_start_never_fails_when_the_cleanup_fails(self):
+        contents = '{"hooks": {"stop": "session_log_hook.py"}}'
+        self.config.write_text(contents)
+        result = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "{}\n", ""))
+        self.assertEqual(self.config.read_text(), contents)
+
+    def test_other_events_leave_legacy_registrations_to_session_start(self):
+        document = cursor_legacy_hooks(self.home / CURSOR_SEEDED_RELATIVE / "adapters/native/session_log_hook.py")
+        self.config.write_text(json.dumps(document))
+        original = self.config.read_bytes()
+        result = self.run_plugin_hook("stop", {"conversation_id": "plugin-session"})
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(self.config.read_bytes(), original)
+
     def test_usage_and_status_never_touch_legacy_registrations(self):
         legacy_hook = self.home / CURSOR_SEEDED_RELATIVE / "adapters/native/session_log_hook.py"
         self.config.write_text(json.dumps(cursor_legacy_hooks(legacy_hook)))
