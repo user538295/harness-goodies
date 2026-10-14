@@ -1114,7 +1114,16 @@ omp_symlink_runtime="$(
 )"
 omp_symlink_runtime_rc=$?
 set -e
-[[ "$omp_symlink_runtime_rc" -ne 0 ]] && pass "OMP rejects symlinked runtime state" || fail "OMP rejects symlinked runtime state"
+# A throwing factory would fail omp's plugin install, so the extension names the error and keeps only /session-log.
+if [[ "$omp_symlink_runtime_rc" -eq 0 ]]; then
+  pass "OMP loads despite symlinked runtime state"
+else
+  fail "OMP loads despite symlinked runtime state"
+fi
+# The extension names the canonical path (mktemp's directory may sit behind a symlink such as macOS /var).
+assert_contains "OMP rejects symlinked runtime state" \
+  "session-log: OMP path is not a safe file: $(cd "$OMP_SAFE_HOME" && pwd -P)/.omp/agent/session-log/runtime.json" \
+  "$omp_symlink_runtime"
 assert_exact "OMP symlinked runtime target remains unchanged" "omp runtime sentinel" "$(cat "$WORKROOT/omp-runtime-sentinel")"
 
 

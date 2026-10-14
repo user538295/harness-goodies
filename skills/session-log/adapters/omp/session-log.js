@@ -501,11 +501,12 @@ const version = fs.readFileSync(path.join(packageRoot, "VERSION"), "utf8").trim(
 // omp runs a marketplace plugin from <plugins>/cache/plugins/<marketplace>___<plugin>___<version>,
 // linked as <plugins>/node_modules/<package name>, and an upgrade deletes the version a running
 // session loaded this module from. The package that link names then runs the session's commands.
-// It is found at load, while the loaded version's package.json still exists. Project-scope installs
-// keep their node_modules link under the project, so this fallback (the user-scope link) does not
-// apply there and the restart error appears instead.
+// It is found at load, while the loaded version's package.json still exists. Every install scope
+// shares that one cache, so for a project-scope install this fallback runs the package the
+// user-scope link names, which may be another installed version; with no such link the restart
+// error appears instead.
 const CACHE_DIR_SEGMENTS = ["cache", "plugins"];
-const PACKAGE_REMOVED_MESSAGE = "session-log: an upgrade removed the package this omp session loaded; restart omp";
+const PACKAGE_REMOVED_MESSAGE = "session-log: the session-log package this omp session loaded is gone (upgraded or uninstalled); restart omp";
 // packageRoot is <plugin root>/skills/session-log.
 const pluginRoot = path.dirname(path.dirname(packageRoot));
 // The plugin root sits in <plugins>/cache/plugins.
@@ -521,13 +522,15 @@ function resolveLinkedPackageRoot() {
 }
 const linkedPackageRoot = resolveLinkedPackageRoot();
 // Starts `bin/session-log --entrypoint omp --harness omp <cliArguments>` through `start` with the
-// loaded package's CLI, or the linked package's once an upgrade deleted the loaded one.
+// loaded package's CLI, or the linked package's once an upgrade deleted the loaded one. A missing
+// interpreter fails with ENOENT too, so only a CLI that is gone moves on to the next package.
 function spawnSessionLogCli(start, cliArguments) {
 	for (const root of [packageRoot, linkedPackageRoot].filter(Boolean)) {
+		const cli = path.join(root, "bin", "session-log");
 		try {
-			return start([path.join(root, "bin", "session-log"), "--entrypoint", "omp", "--harness", "omp", ...cliArguments]);
+			return start([cli, "--entrypoint", "omp", "--harness", "omp", ...cliArguments]);
 		} catch (error) {
-			if (error?.code !== "ENOENT") throw error;
+			if (error?.code !== "ENOENT" || fs.existsSync(cli)) throw error;
 		}
 	}
 	throw new Error(PACKAGE_REMOVED_MESSAGE);
@@ -985,7 +988,8 @@ function currentSessionFile(ctx) {
 
 // Older releases linked an extension into the OMP root and seeded a package copy into its skill
 // root; omp loads such an extension beside this one. `repair` removes them in the background, once
-// per process, logging on or off; a failed attempt is reported on stderr and runs again at the next start.
+// per process, logging on or off; a failed attempt is reported on stderr and runs again at the next
+// start, and so does one skipped because another session-log command holds the install lock.
 const LEGACY_LEFTOVERS = [
 	path.join(agentDir, "extensions", "session-log.js"),
 	path.join(agentDir, "extensions", "session-log-omp.js"),
@@ -993,23 +997,35 @@ const LEGACY_LEFTOVERS = [
 	path.join(agentDir, "skills", "session-log", ".universal-session-log.manifest"),
 ];
 const CLI_MESSAGE_PREFIX = "session-log: ";
+const CLI_REPORT_PREFIX = "OMP: ";
+// A repair report that needs the user: a package copy it kept and asks them to move aside.
+const KEPT_REPORT_PREFIX = `${CLI_REPORT_PREFIX}kept `;
+// What acquire_install_lock (lib/adapter_install.sh) fails with while another command holds the lock.
+const INSTALL_LOCK_BUSY_MESSAGE = "another session-log command is already in progress";
 let legacyCleanupStarted = false;
 const pathPresent = (candidate) => {
 	try { return Boolean(fs.lstatSync(candidate)); } catch { return false; }
 };
 const reportLegacyCleanupFailure = (detail) => {
 	const reason = detail.startsWith(CLI_MESSAGE_PREFIX) ? detail.slice(CLI_MESSAGE_PREFIX.length) : detail;
-	process.stderr.write(`session-log: legacy cleanup failed: ${reason}; run /session-log repair\n`);
+	process.stderr.write(`session-log: legacy cleanup failed: ${reason}; /session-log repair shows the details\n`);
+};
+const reportKeptLeftovers = (stdout) => {
+	for (const line of stdout.split("\n")) {
+		if (line.startsWith(KEPT_REPORT_PREFIX)) process.stderr.write(`${CLI_MESSAGE_PREFIX}${line.slice(CLI_REPORT_PREFIX.length)}\n`);
+	}
 };
 function cleanupLegacyLeftovers() {
 	if (legacyCleanupStarted || !LEGACY_LEFTOVERS.some(pathPresent)) return;
 	legacyCleanupStarted = true;
 	try {
-		const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "pipe" }), ["repair"]);
+		const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe" }), ["repair"]);
 		child.unref();
-		Promise.all([child.exited, new Response(child.stderr).text()]).then(([exitCode, stderr]) => {
+		Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]).then(([exitCode, stdout, stderr]) => {
+			reportKeptLeftovers(stdout);
 			if (exitCode === 0) return;
 			const lastLine = stderr.split("\n").filter((line) => line.trim()).pop();
+			if (lastLine?.includes(INSTALL_LOCK_BUSY_MESSAGE)) return;
 			reportLegacyCleanupFailure(lastLine || `exit status ${exitCode}`);
 		}).catch((error) => reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error)));
 	} catch (error) {
@@ -1076,7 +1092,14 @@ export default function sessionLogOmp(pi, options = {}) {
 		return;
 	}
 	const now = options.now ?? Date.now;
-	markLoaded();
+	// A throwing factory fails omp's plugin install, which would leave /session-log unregistered too.
+	try {
+		markLoaded();
+	} catch (error) {
+		process.stderr.write(`${CLI_MESSAGE_PREFIX}${error instanceof Error ? error.message : String(error)}\n`);
+		registerSessionLogCommand(pi);
+		return;
+	}
 	cleanupLegacyLeftovers();
 	registerSessionLogCommand(pi);
 	const promptStates = new Map();

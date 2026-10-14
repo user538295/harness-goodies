@@ -1879,12 +1879,41 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 self.assertEqual(config.read_bytes(), original)
 
 
-LEGACY_PACKAGE_PATH = REPO / "skills/session-log/lib/legacy_package.py"
+class ClaudeOffTests(unittest.TestCase):
+    """Claude Code `off` removes the flag and the runtime markers under the install lock."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        self.package = claude_package(self.home)
+        self.assertEqual(run_session_log(self.package, self.home, "claude", "on").returncode, 0)
+        self.flag = self.home / ".claude/prompt-logs/.enabled"
+
+    def test_off_removes_the_flag_and_every_runtime_marker(self):
+        state = self.home / ".claude/session-log"
+        for name in ("runtime.json", "runtime.1.json"):
+            (state / name).write_text("{}\n")
+        result = run_session_log(self.package, self.home, "claude", "off")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "Claude Code: off\n", ""))
+        self.assertFalse(os.path.lexists(self.flag))
+        self.assertEqual([path.name for path in state.glob("runtime*.json")], [])
+
+    def test_off_fails_while_another_command_holds_the_install_lock(self):
+        hold_install_lock(self.home)
+        result = run_session_log(self.package, self.home, "claude", "off")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("another session-log command is already in progress", result.stderr)
+        self.assertTrue(self.flag.is_file())
+
+
+LEGACY_PACKAGE_PATH =REPO / "skills/session-log/lib/legacy_package.py"
 SEEDED_MANIFEST = ".universal-session-log.manifest"
 PLUGIN_CACHE_LINK_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/skills/session-log"
 # A remover that blocks (e.g. on a FIFO) fails the test instead of hanging the suite.
 LEGACY_PACKAGE_TIMEOUT_SECONDS = 30
-RELEASE_STORE_LINK_RELATIVE = ".local/share/universal-session-log/releases/1.0.0/skills/session-log"
+RELEASE_STORE_RELEASE_RELATIVE = ".local/share/universal-session-log/releases/1.0.0"
+RELEASE_STORE_LINK_RELATIVE = f"{RELEASE_STORE_RELEASE_RELATIVE}/skills/session-log"
 
 
 def write_seeded_manifest(copy):
@@ -2393,6 +2422,21 @@ class OmpPluginOwnedTests(unittest.TestCase):
         result = self.run_omp("off")
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "OMP: off\n", ""))
         self.assertFalse(os.path.lexists(flag))
+        self.assertTrue((self.home / OMP_SUBROOT / Path(INSTALL_LOCK_RELATIVE).relative_to(".claude") / "owner").is_file())
+
+    def test_every_command_refuses_a_relocated_root_and_names_the_supported_one(self):
+        relocated = str(self.home / "relocated")
+        messages = {
+            "PI_CODING_AGENT_DIR": "OMP root is relocated; session-log supports only ~/.omp/agent",
+            "OMP_PROMPT_LOG_DIR": "OMP prompt-log root is relocated; session-log supports only ~/.omp/agent/prompt-logs",
+        }
+        for variable, message in messages.items():
+            with self.subTest(variable):
+                result = subprocess.run(
+                    ["bash", str(self.package / "bin/session-log"), "--entrypoint", "omp", "--harness", "omp", "status"],
+                    capture_output=True, text=True, env={**harness_environment(self.home), variable: relocated},
+                )
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", f"session-log: {message}\n"))
 
     def test_repair_removes_the_seeded_install_and_obsolete_state(self):
         seeded, extension = omp_seeded_install(self.home)
@@ -2422,7 +2466,7 @@ class OmpPluginOwnedTests(unittest.TestCase):
     def test_repair_removes_extension_links_every_older_release_made(self):
         destinations = {
             "plugin cache": self.home / PLUGIN_CACHE_PACKAGE_RELATIVE / OMP_EXTENSION_SOURCE,
-            "release store": self.home / RELEASE_STORE_LINK_RELATIVE.replace("/skills/session-log", "") / OMP_EXTENSION_SOURCE,
+            "release store": self.home / RELEASE_STORE_RELEASE_RELATIVE / OMP_EXTENSION_SOURCE,
             "this package": self.package / OMP_EXTENSION_SOURCE,
         }
         extension = self.home / OMP_EXTENSION_LINK_RELATIVE
@@ -2483,7 +2527,7 @@ class OmpPluginOwnedTests(unittest.TestCase):
         seeded, extension = omp_seeded_install(self.home)
         usage = seeded / OMP_USAGE_LINK
         usage.unlink()
-        usage.symlink_to(self.home / RELEASE_STORE_LINK_RELATIVE.replace("/skills/session-log", "") / OMP_USAGE_SOURCE)
+        usage.symlink_to(self.home / RELEASE_STORE_RELEASE_RELATIVE / OMP_USAGE_SOURCE)
         result = self.run_omp("repair")
         self.assertEqual((result.returncode, result.stderr), (0, ""))
         self.assertEqual(result.stdout, (f"OMP: removed legacy adapter link {extension}\n"

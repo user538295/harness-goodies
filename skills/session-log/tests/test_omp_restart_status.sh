@@ -95,5 +95,7 @@ expect "OMP status after off and on" 'OMP: on' "$(session_log status)"
 kill "$OMP_PID"
 wait "$OMP_PID" 2>/dev/null || true
 OMP_PID=""
+# A clean repair reports nothing the user must act on.
+expect "the extension's stderr" "" "$(cat "$WORKROOT/omp.err")"
 expect "OMP post-exit status" 'OMP: on — restart required' "$(session_log status)"
 printf 'PASS: OMP post-restart status\n'
