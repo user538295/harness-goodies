@@ -555,7 +555,7 @@ set -e
 assert_contains "symlinked migration error is explicit" "symlinked Claude settings" "$migration_symlink_error"
 assert_exact "symlinked settings do not block on" "0" "$migration_symlink_on_rc"
 assert_exact "on reports the failed legacy cleanup before its status" \
-  "Claude Code: legacy cleanup failed: refusing to update symlinked Claude settings: $(cd "$MIGRATION_SYMLINK_HOME" && pwd -P)/.claude/settings.json; run repair to retry"$'\n'"Claude Code: on — logging starts with the next prompt" \
+  "Claude Code: legacy cleanup failed: refusing to update symlinked Claude settings: $(cd "$MIGRATION_SYMLINK_HOME" && pwd -P)/.claude/settings.json; fix it, then run repair"$'\n'"Claude Code: on — logging starts with the next prompt" \
   "$migration_symlink_on"
 assert_link "symlinked migration settings remain unchanged" "$WORKROOT/settings-sentinel" "$MIGRATION_SYMLINK_HOME/.claude/settings.json"
 assert_contains "symlinked migration target remains unchanged" "settings sentinel" "$(cat "$WORKROOT/settings-sentinel")"

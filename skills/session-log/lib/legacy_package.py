@@ -214,7 +214,10 @@ def remove(path, home):
             if stat.S_ISLNK(info.st_mode):
                 if not _recognized_link(os.readlink(name, dir_fd=parent_fd), home):
                     return ""
-                os.unlink(name, dir_fd=parent_fd)
+                try:
+                    os.unlink(name, dir_fd=parent_fd)
+                except OSError as error:
+                    raise Kept(f"cannot remove it: {error.strerror}") from error
                 return RESULT_REMOVED_LINK
             if not stat.S_ISDIR(info.st_mode):
                 return ""
@@ -222,7 +225,7 @@ def remove(path, home):
         except Kept as kept:
             return f"{RESULT_KEPT_PREFIX}{kept}"
         except OSError:
-            return ""  # every error after the manifest was read is a Kept
+            return ""  # every error after ownership is proven is a Kept
     finally:
         os.close(parent_fd)
 

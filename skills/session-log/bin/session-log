@@ -429,17 +429,15 @@ run_repair() {
     printf '%s: repair found no duplicate or stale registrations\n' "$HARNESS_LABEL"
 }
 
-# `on` for a plugin-owned harness: legacy cleanup, then the enable flag. A failed cleanup is
-# reported but never blocks the flag; `repair` repeats it and fails with the details. Without a
-# current runtime marker, a flag this command created takes effect at the next prompt; a flag that
-# was already on means the hooks of the running session never saw it, so they are not loaded.
-enable_plugin_hooks() {
-  local was_enabled=0 error_file error status
-  preflight_enable_flag
-  validate_state_dir
-  preflight_install_lock
-  require_command jq
-  acquire_install_lock
+# The legacy cleanup `on` runs for a plugin-owned harness, best effort: it is skipped while another
+# session-log command holds the install lock (that command runs the same cleanup), and a failure is
+# reported without failing `on`; `repair` repeats it and fails with the error.
+run_best_effort_cleanup() {
+  local error_file error status
+  if ! try_acquire_install_lock; then
+    printf '%s: legacy cleanup skipped: another session-log command is running\n' "$HARNESS_LABEL"
+    return 0
+  fi
   trap release_install_lock EXIT
   error_file="$(mktemp "${TMPDIR:-/tmp}/session-log-cleanup.XXXXXX")"
   # The cleanup runs in an errexit subshell, so its first failing step ends only the cleanup; its
@@ -451,13 +449,25 @@ enable_plugin_hooks() {
   set -e
   error="$(awk 'NF { line = $0 } END { print line }' "$error_file")"
   unlink "$error_file"
-  if ((status != 0)); then
-    if [[ -n "$error" ]]; then
-      printf '%s: legacy cleanup failed: %s; run repair to retry\n' "$HARNESS_LABEL" "${error#"$SESSION_LOG_LOG_PREFIX: "}"
-    else
-      printf '%s: legacy cleanup failed; run repair to retry\n' "$HARNESS_LABEL"
-    fi
+  release_install_lock
+  trap - EXIT
+  ((status != 0)) || return 0
+  if [[ -n "$error" ]]; then
+    printf '%s: legacy cleanup failed: %s; fix it, then run repair\n' "$HARNESS_LABEL" "${error#"$SESSION_LOG_LOG_PREFIX: "}"
+  else
+    printf '%s: legacy cleanup failed; run repair to see why\n' "$HARNESS_LABEL"
   fi
+}
+
+# `on` for a plugin-owned harness: best-effort legacy cleanup, then the enable flag. Without a
+# current runtime marker, a flag this command created takes effect at the next prompt; a flag that
+# was already on means the hooks of the running session never saw it, so they are not loaded.
+enable_plugin_hooks() {
+  local was_enabled=0
+  preflight_enable_flag
+  validate_state_dir
+  require_command jq
+  run_best_effort_cleanup
   [[ ! -e "$FLAG_FILE" ]] || was_enabled=1
   set_enabled
   if runtime_current; then
@@ -467,8 +477,6 @@ enable_plugin_hooks() {
   else
     printf '%s: on — logging starts with the next prompt\n' "$HARNESS_LABEL"
   fi
-  release_install_lock
-  trap - EXIT
 }
 
 main() {

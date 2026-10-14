@@ -4,10 +4,12 @@
 # Sourced by bin/session-log after lib/adapter_install.sh, in the same shell, so it shares bin's
 # globals (HARNESS, HARNESS_ROOT, STATE_DIR, HARNESS_LABEL, OWNER_MARKER_VALUE, ...). `on` and
 # `repair` run it under the install lock; Claude Code's SessionStart hook runs it silently through
-# `repair`. It removes only what is proven to be session-log's, prints one line per removed
-# registration, script, or package copy through print_repair_report (obsolete state files go
-# silently), and never clears runtime markers: a harness plugin's own hooks keep logging whatever
-# duplicate registration goes.
+# `repair`; outside Claude Code, `status` and `usage` run it too when they repair an enabled adapter,
+# so an unowned file at a legacy path fails them, as the old installer did before every command.
+# It removes only what is proven to be session-log's and never clears runtime markers: a harness
+# plugin's own hooks keep logging whatever duplicate registration goes. Claude Code removals of
+# registrations, scripts, and package copies are reported through print_repair_report; obsolete
+# state files and the OpenCode/OMP leftovers of pre-universal releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
@@ -16,7 +18,8 @@ readonly CLAUDE_LEGACY_SCRIPTS=(prompt_log_save.sh prompt_log_new_session.sh pro
 # Claude Code state files that older releases wrote and nothing reads any more: the adapter
 # installer's version stamps and manifest, and the plugin-root marker standalone copies read.
 # remove_claude_obsolete_state also removes their per-copy settings-repair.*.stamp files, but keeps
-# plugin-root while a seeded copy the cleanup had to keep still reads it.
+# plugin-root, pointed at the running plugin package, while a seeded copy the cleanup had to keep
+# still reads it.
 readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version plugin-root)
 
 # The cleanup of the current harness: any harness whose older releases left something behind has
@@ -30,22 +33,24 @@ legacy_cleanup() {
   esac
 }
 
-# Validates before it removes anything: unsafe settings.json or an unrecognized legacy script fails
-# the command with nothing changed.
+# Unsafe settings.json fails the command with nothing changed. An unrecognized legacy script keeps
+# the legacy scripts and their prompt_log hooks but not the rest of the cleanup, which then fails
+# naming that script.
 legacy_cleanup_claude() {
-  local settings="$HARNESS_ROOT/settings.json" report
+  local settings="$HARNESS_ROOT/settings.json" report unrecognized
   require_command python3
   preflight_claude_settings
-  validate_claude_legacy_scripts
-  if [[ -f "$settings" ]]; then
+  unrecognized="$(unrecognized_claude_legacy_script)" || unrecognized=""
+  if [[ -z "$unrecognized" && -f "$settings" ]]; then
     report="$(SETTINGS_PATH="$settings" CLAUDE_SCRIPTS_DIR="$HARNESS_ROOT/scripts" \
       python3 "$SESSION_LOG_LIB/claude_settings.py" migrate)"
     print_repair_report "$report"
   fi
   remove_claude_settings_registrations
-  remove_claude_legacy_scripts
+  [[ -n "$unrecognized" ]] || remove_claude_legacy_scripts
   remove_seeded_package "$HARNESS_ROOT/skills/session-log"
   remove_claude_obsolete_state
+  [[ -z "$unrecognized" ]] || fail "refusing to remove unrecognized legacy Claude script: $unrecognized"
 }
 
 # The standalone adapter copies (regular files) and the session-log-omp entrypoints of earlier
@@ -132,19 +137,36 @@ remove_seeded_package() {
 }
 
 remove_claude_obsolete_state() {
-  local candidate
+  local candidate seeded="$HARNESS_ROOT/skills/session-log"
   validate_state_dir
+  # A kept seeded copy runs older code (package VERSION 2.0.0, shipped with plugin 1.19.0) that
+  # registers its own settings.json hooks again unless plugin-root names a live plugin package, and
+  # Claude Code orphans the version that wrote it at the next plugin update.
+  if [[ -e "$seeded" || -L "$seeded" ]]; then
+    record_running_plugin_root
+  fi
   for candidate in "${CLAUDE_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}" "$STATE_DIR"/settings-repair.*.stamp; do
     [[ -f "$candidate" && ! -L "$candidate" ]] || continue
-    # Without this marker, a kept 1.19.0 copy registers its own settings.json hooks again.
-    if [[ "$candidate" == "$STATE_DIR/plugin-root" ]] &&
-      [[ -e "$HARNESS_ROOT/skills/session-log" || -L "$HARNESS_ROOT/skills/session-log" ]]; then
+    if [[ "$candidate" == "$STATE_DIR/plugin-root" ]] && [[ -e "$seeded" || -L "$seeded" ]]; then
       continue
     fi
     # A concurrent cleanup may have removed it already.
     unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
       fail "cannot remove obsolete state file: $candidate"
   done
+}
+
+# Points plugin-root at this package when it is a claude-goodies plugin-cache package; any other
+# package leaves the marker as it is.
+record_running_plugin_root() {
+  local marker="$STATE_DIR/plugin-root"
+  case "$PACKAGE_ROOT" in
+    "$HOME_ROOT/.claude/plugins/cache/"*/claude-goodies/*/skills/session-log) ;;
+    *) return 0 ;;
+  esac
+  [[ ! -L "$marker" && ! -d "$marker" ]] || return 0
+  [[ -f "$marker" && "$(< "$marker")" == "$PACKAGE_ROOT" ]] && return 0
+  write_private_file "$marker" "$PACKAGE_ROOT"
 }
 
 has_exact_ownership_marker() {
@@ -315,21 +337,25 @@ legacy_script_is_tracked() {
   return 1
 }
 
-validate_claude_legacy_scripts() {
+# Prints the first legacy script that is neither session-log-marked nor a known release's copy.
+unrecognized_claude_legacy_script() {
   local name path
   for name in "${CLAUDE_LEGACY_SCRIPTS[@]}"; do
-    path="$HOME_ROOT/.claude/scripts/$name"
+    path="$HARNESS_ROOT/scripts/$name"
     [[ -e "$path" || -L "$path" ]] || continue
-    legacy_script_is_tracked "$name" "$path" ||
-      fail "refusing to remove unrecognized legacy Claude script: $path"
+    legacy_script_is_tracked "$name" "$path" && continue
+    printf '%s\n' "$path"
+    return 0
   done
+  return 1
 }
 
-# legacy_cleanup_claude validates them first; remove_known_path checks each one again.
+# legacy_cleanup_claude calls it only when unrecognized_claude_legacy_script finds none; remove_known_path
+# checks each one again.
 remove_claude_legacy_scripts() {
   local name path
   for name in "${CLAUDE_LEGACY_SCRIPTS[@]}"; do
-    path="$HOME_ROOT/.claude/scripts/$name"
+    path="$HARNESS_ROOT/scripts/$name"
     [[ -e "$path" || -L "$path" ]] || continue
     remove_known_path "$path"
     print_repair_report "removed legacy script $path"

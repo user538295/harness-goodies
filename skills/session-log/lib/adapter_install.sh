@@ -107,7 +107,7 @@ preflight_install_lock() {
   if kill -0 "$owner_pid" 2>/dev/null; then
     actual_start="$(ps -p "$owner_pid" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
     if [[ -n "$actual_start" && "$actual_start" == "$owner_start" ]]; then
-      fail "adapter installation is already in progress for $HARNESS"
+      fail "another session-log command is already in progress for $HARNESS"
     fi
   fi
   return 0
@@ -240,6 +240,12 @@ _install_lock_operation() {
 }
 
 acquire_install_lock() {
+  try_acquire_install_lock ||
+    fail "another session-log command is already in progress for $HARNESS"
+}
+
+# acquire_install_lock that returns 1 instead of failing while another live command holds the lock.
+try_acquire_install_lock() {
   validate_state_dir
   ensure_safe_parent "$INSTALL_LOCK/owner"
   [[ ! -L "$INSTALL_LOCK" ]] ||
@@ -250,8 +256,7 @@ acquire_install_lock() {
   INSTALL_LOCK_OWNER_START="$(ps -p "$$" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
   [[ -n "$INSTALL_LOCK_OWNER_START" ]] ||
     fail "cannot determine install lock owner"
-  _install_lock_operation acquire ||
-    fail "adapter installation is already in progress for $HARNESS"
+  _install_lock_operation acquire
 }
 
 release_install_lock() {
