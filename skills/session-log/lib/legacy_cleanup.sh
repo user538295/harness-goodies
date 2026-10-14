@@ -171,6 +171,15 @@ legacy_cleanup_opencode() {
   remove_managed_path "$HARNESS_ROOT/plugins/session-log-omp.js"
 }
 
+# True when link destination $2 names adapter $1 (its path inside the package) where older releases
+# linked it: inside any session-log package (a seeded copy, a plugin cache, a checkout) or the
+# release store. A destination with a `.` or `..` component never does.
+is_legacy_adapter_link() {
+  local relative="$1" destination="$2"
+  case "/$destination/" in */../*|*/./*) return 1 ;; esac
+  [[ "$destination" == */skills/session-log/"$relative" || "$destination" == "$STORE/releases/"*/"$relative" ]]
+}
+
 # Removes the adapter at $HARNESS_ROOT/$1 when it is a link to adapter $2 inside a session-log
 # package or the release store, or a copy carrying the ownership marker.
 remove_legacy_opencode_adapter() {
@@ -180,9 +189,7 @@ remove_legacy_opencode_adapter() {
   ensure_safe_parent "$path"
   if [[ -L "$path" ]]; then
     destination="$(readlink "$path")"
-    case "/$destination/" in */../*|*/./*) return 0 ;; esac
-    [[ "$destination" == */skills/session-log/"$relative" || "$destination" == "$STORE/releases/"*/"$relative" ]] ||
-      return 0
+    is_legacy_adapter_link "$relative" "$destination" || return 0
     unlink "$path"
     print_repair_report "removed legacy adapter link $path"
   elif has_exact_ownership_marker "$path"; then
@@ -231,11 +238,7 @@ validate_legacy_omp_link() {
   local kind="$1" link="$2" destination
   ensure_safe_parent "$link"
   destination="$(readlink "$link")"
-  is_package_adapter_link "$kind" "$destination" && return 0
-  case "/$destination/" in
-    */../*|*/./*) ;;
-    *) [[ "$destination" != "$STORE/releases/"*/"${ADAPTER_SOURCES[omp:$kind]}" ]] || return 0 ;;
-  esac
+  is_legacy_adapter_link "${ADAPTER_SOURCES[omp:$kind]}" "$destination" && return 0
   fail "refusing to remove unowned legacy path: $link"
 }
 

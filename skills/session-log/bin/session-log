@@ -62,10 +62,6 @@ declare -rA ADAPTER_SOURCES=(
   [codex:usage]="adapters/codex/session_log_usage.py"
   [cursor:usage]="adapters/cursor/session_log_usage.py"
 )
-declare -rA ADAPTER_TARGETS=(
-)
-declare -rA HARNESS_KINDS=(
-)
 
 split_command_string() {
   local input="$1" char state="plain" token="" token_started=0 escaped=0 i
@@ -260,12 +256,6 @@ source_for() {
   local relative="${ADAPTER_SOURCES[$HARNESS:$1]:-}"
   [[ -n "$relative" ]] || fail "no adapter asset for $HARNESS/$1"
   printf '%s\n' "$PACKAGE_ROOT/$relative"
-}
-
-target_for() {
-  local relative="${ADAPTER_TARGETS[$HARNESS:$1]:-}"
-  [[ -n "$relative" ]] || fail "no adapter target for $HARNESS/$1"
-  printf '%s\n' "$HARNESS_ROOT/$relative"
 }
 
 # True when the hooks of a running session have written their runtime marker, for this VERSION.

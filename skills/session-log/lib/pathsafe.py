@@ -5,7 +5,7 @@
 Every directory walk goes through :func:`open_directory`, which opens each path
 component with ``O_NOFOLLOW`` so a symlink can never be traversed, and creates
 missing components privately (mode 0o700) in a race-safe way. This module owns
-the generic link/write/remove primitives. The specialized locked writers
+the generic write/remove primitives. The specialized locked writers
 (``claude_settings.py``, ``enable_flag.py``, ``locking.py``) keep their own
 minimal O_NOFOLLOW walkers because their traversals raise domain-specific errors
 and hold flock/mkdir locks; each is small and audited in its own module.
@@ -16,8 +16,7 @@ import os
 import random
 import stat
 import sys
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -29,15 +28,6 @@ CONFLICT_NAME_BYTES = 8
 
 DARWIN_RENAME_EXCL = 0x00000004
 LINUX_RENAME_NOREPLACE = 0x00000001
-
-
-@dataclass(frozen=True)
-class AdapterLinkOptions:
-    source: str
-    target: str
-    store: str
-    # The adapter's path inside its session-log package, e.g. adapters/omp/session-log.js.
-    package_relative: str
 
 
 @dataclass(frozen=True)
@@ -54,22 +44,6 @@ class AtomicReplacement:
     target_name: str
     expected: object
     expected_source: object
-
-
-@dataclass(frozen=True)
-class TemporaryEntry:
-    name: str
-
-
-@dataclass(frozen=True)
-class BackupEntry:
-    name: str
-
-
-@dataclass
-class ReplacementResources:
-    temporary: Optional[TemporaryEntry] = None
-    backup: Optional[BackupEntry] = None
 
 
 def open_directory(path, *, create):
@@ -190,180 +164,6 @@ def remove_path(target):
             os.unlink(name, dir_fd=parent_fd)
     finally:
         os.close(parent_fd)
-
-
-def _read_all(fd):
-    chunks = []
-    while True:
-        chunk = os.read(fd, 1024 * 1024)
-        if not chunk:
-            return b"".join(chunks)
-        chunks.append(chunk)
-
-
-def _classify(dir_fd, name, target):
-    try:
-        item = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return None
-    if stat.S_ISLNK(item.st_mode):
-        return ("link", os.readlink(name, dir_fd=dir_fd))
-    if not stat.S_ISREG(item.st_mode):
-        raise SystemExit(f"refusing to overwrite non-file adapter target: {target}")
-    descriptor = os.open(name, FILE_FLAGS, dir_fd=dir_fd)
-    try:
-        return ("file", _read_all(descriptor))
-    finally:
-        os.close(descriptor)
-
-
-def _is_safe_regular_file(info):
-    return stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-
-
-def _is_managed_release_link(existing, store):
-    return existing.startswith(f"{store}/releases/")
-
-
-def _is_package_adapter_link(existing, package_relative):
-    """True when ``existing`` is the same adapter inside another session-log package (an older
-    release's seeded copy or another plugin version); ``..`` and ``.`` components never match."""
-    parts = existing.split("/")
-    return ".." not in parts and "." not in parts and existing.endswith(f"/skills/session-log/{package_relative}")
-
-
-def _create_temporary_link(target_dir_fd, directory, source):
-    for _ in range(MAX_TEMP_FILE_ATTEMPTS):
-        candidate = f".session-log.{os.getpid()}.{random.randrange(1 << 30):08x}"
-        try:
-            os.symlink(source, candidate, dir_fd=target_dir_fd)
-            return candidate
-        except FileExistsError:
-            continue
-    raise SystemExit(f"cannot create temporary link in: {directory}")
-
-
-@dataclass
-class AdapterLinkContext:
-    source: str
-    target: str
-    name: str
-    target_dir_fd: object
-    initial: object = None
-    state: ReplacementResources = field(default_factory=ReplacementResources)
-
-
-def _stage_adapter_backup(context):
-    state = context.state
-    for attempt in range(MAX_TEMP_FILE_ATTEMPTS):
-        candidate = (
-            f".session-log-backup.{os.getpid()}.{random.randrange(1 << 30):08x}.{attempt}"
-        )
-        if move_no_replace(context.target_dir_fd, context.name, candidate):
-            state.backup = BackupEntry(candidate)
-            break
-    if state.backup is None:
-        raise SystemExit(f"cannot stage adapter target: {context.target}")
-    if _classify(context.target_dir_fd, state.backup.name, context.target) != context.initial:
-        if move_no_replace(context.target_dir_fd, state.backup.name, context.name):
-            state.backup = None
-        raise SystemExit(f"adapter target changed during update: {context.target}")
-
-
-def _replace_adapter_target(context):
-    state = context.state
-    if context.initial is None:
-        os.unlink(state.temporary.name, dir_fd=context.target_dir_fd)
-        state.temporary = None
-        try:
-            os.symlink(context.source, context.name, dir_fd=context.target_dir_fd)
-        except FileExistsError:
-            raise SystemExit(f"adapter target changed during update: {context.target}")
-        return
-    _stage_adapter_backup(context)
-    os.unlink(state.temporary.name, dir_fd=context.target_dir_fd)
-    state.temporary = None
-    try:
-        os.symlink(context.source, context.name, dir_fd=context.target_dir_fd)
-    except FileExistsError:
-        message = f"adapter target changed during update: {context.target}"
-        rename_to_conflict(
-            context.target_dir_fd,
-            ConflictRenameOptions(
-                source_name=context.name,
-                prefix=state.backup.name,
-                exhaust_message=message,
-            ),
-        )
-        if move_no_replace(context.target_dir_fd, state.backup.name, context.name):
-            state.backup = None
-        raise SystemExit(message)
-    os.unlink(state.backup.name, dir_fd=context.target_dir_fd)
-    state.backup = None
-
-
-def _cleanup_adapter_link(context):
-    state = context.state
-    if state.temporary is not None:
-        try:
-            os.unlink(state.temporary.name, dir_fd=context.target_dir_fd)
-        except OSError:
-            pass
-    if state.backup is not None:
-        try:
-            os.stat(context.name, dir_fd=context.target_dir_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            try:
-                if move_no_replace(context.target_dir_fd, state.backup.name, context.name):
-                    state.backup = None
-            except OSError:
-                pass
-
-
-def link_adapter(options):
-    """Atomically point the target at the source without clobbering unowned files."""
-    source, target, store = options.source, options.target, options.store
-    package_relative = options.package_relative
-    directory, name = os.path.split(target)
-    source_directory, source_name = os.path.split(source)
-    source_dir_fd = open_directory(source_directory, create=True)
-    try:
-        target_dir_fd = open_directory(directory, create=True)
-        context = AdapterLinkContext(
-            source=source, target=target, name=name, target_dir_fd=target_dir_fd
-        )
-        source_fd = None
-        try:
-            source_fd = os.open(source_name, FILE_FLAGS, dir_fd=source_dir_fd)
-            source_stat = os.fstat(source_fd)
-            if not _is_safe_regular_file(source_stat):
-                raise SystemExit(f"adapter asset is not a safe regular file: {source}")
-            source_data = _read_all(source_fd)
-            initial = _classify(target_dir_fd, name, target)
-            context.initial = initial
-            if initial is not None and initial[0] == "link":
-                existing = initial[1]
-                if existing == source:
-                    raise SystemExit(0)
-                if not (_is_managed_release_link(existing, store)
-                        or _is_package_adapter_link(existing, package_relative)):
-                    raise SystemExit(f"refusing to overwrite unowned adapter link: {target}")
-            elif initial is not None and initial[1] != source_data:
-                raise SystemExit(f"refusing to overwrite unowned adapter file: {target}")
-            context.state.temporary = TemporaryEntry(
-                _create_temporary_link(target_dir_fd, directory, source)
-            )
-            if _classify(target_dir_fd, name, target) != initial:
-                raise SystemExit(f"adapter target changed during update: {target}")
-            _replace_adapter_target(context)
-            os.fsync(target_dir_fd)
-        finally:
-            if source_fd is not None:
-                os.close(source_fd)
-            _cleanup_adapter_link(context)
-            os.close(target_dir_fd)
-    finally:
-        os.close(source_dir_fd)
 
 
 def _rename_no_replace(dir_fd, source_name, target_name):
@@ -548,15 +348,6 @@ def main(argv):
         write_file(os.environ["SESSION_LOG_FILE"], os.environ["SESSION_LOG_CONTENT"])
     elif operation == "remove":
         remove_path(os.environ["SESSION_LOG_REMOVE_PATH"])
-    elif operation == "link-adapter":
-        link_adapter(
-            AdapterLinkOptions(
-                source=os.environ["SESSION_LOG_SOURCE"],
-                target=os.environ["SESSION_LOG_TARGET"],
-                store=os.environ["SESSION_LOG_STORE"],
-                package_relative=os.environ["SESSION_LOG_ADAPTER_RELATIVE"],
-            )
-        )
     else:
         raise SystemExit(f"pathsafe: unknown operation: {operation}")
 

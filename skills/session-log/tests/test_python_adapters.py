@@ -1101,6 +1101,8 @@ NATIVE_LABELS = {"codex": "Codex"}
 # Settings.json registrations of a seeded copy that is not installed, so every one of them is dead.
 DEAD_REGISTRATIONS = 2
 # State files older releases wrote that nothing reads any more.
+# The adapter state files older Codex, Cursor, OMP, and OpenCode installs wrote; nothing reads them now.
+OBSOLETE_ADAPTER_STATE = ("adapter.version", "adapter.manifest", "desired.version")
 OBSOLETE_CLAUDE_STATE = ("adapter.version", "adapter.manifest", "desired.version", "plugin-root",
                          "settings-repair.1322337178.stamp")
 # The scripts the pre-plugin Claude Code install copied into ~/.claude/scripts, in cleanup order.
@@ -2450,8 +2452,6 @@ CODEX_LIFECYCLES = {"SessionStart": "session-start", "UserPromptSubmit": "user-p
                     "SubagentStop": "subagent-stop"}
 CODEX_STATE_RELATIVE = ".codex/session-log"
 CODEX_FLAG_RELATIVE = ".codex/prompt-logs/.enabled"
-# State files older releases wrote for Codex that nothing reads any more.
-OBSOLETE_CODEX_STATE = ("adapter.version", "adapter.manifest", "desired.version")
 # codex-goodies releases older than PLUGIN_VERSION, whose packages or registrations the tests place.
 STALE_PLUGIN_VERSION = "1.9.0"
 LEGACY_PLUGIN_VERSION = "1.18.0"
@@ -2552,11 +2552,11 @@ class CodexHomeTestCase(unittest.TestCase):
 
     def seed_obsolete_state(self):
         self.state.mkdir(parents=True, exist_ok=True)
-        for name in OBSOLETE_CODEX_STATE:
+        for name in OBSOLETE_ADAPTER_STATE:
             (self.state / name).write_text("2.0.0\n")
 
     def assert_no_obsolete_state(self):
-        for name in OBSOLETE_CODEX_STATE:
+        for name in OBSOLETE_ADAPTER_STATE:
             self.assertFalse(os.path.lexists(self.state / name), name)
 
     def seed_copy(self):
@@ -2767,7 +2767,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         `repair` never meets a read-only state directory: taking the install lock makes it private (0700) again.
         """
         self.seed_obsolete_state()
-        stamp = self.state / OBSOLETE_CODEX_STATE[0]
+        stamp = self.state / OBSOLETE_ADAPTER_STATE[0]
         self.state.chmod(READ_ONLY_DIRECTORY_MODE)
         try:
             result = subprocess.run(
@@ -2991,153 +2991,7 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
         self.assert_no_obsolete_state()
 
 
-ADAPTER_LINKS = {
-}
 PLUGIN_CACHE_PACKAGE_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/skills/session-log"
-
-
-class AdapterLinkRepairTests(unittest.TestCase):
-    """Link repair removes only dangling plugin-cache adapter links, and `on` runs it first."""
-
-    def test_repair_keeps_live_and_unrecognized_links_and_is_idempotent(self):
-        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
-            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, subroot)
-                link = home / subroot / target
-                link.parent.mkdir(parents=True)
-                clean = run_session_log(package, home, harness, "repair").stdout
-                for destination in (package / source, home / "nowhere/session-log.js"):
-                    link.symlink_to(destination)
-                    result = run_session_log(package, home, harness, "repair")
-                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, clean, ""))
-                    self.assertEqual(os.readlink(link), str(destination))
-                    link.unlink()
-                link.symlink_to(home / PLUGIN_CACHE_PACKAGE_RELATIVE / source)
-                repaired = run_session_log(package, home, harness, "repair")
-                self.assertEqual((repaired.returncode, repaired.stderr), (0, ""))
-                self.assertIn(f"removed dangling adapter link {link}", repaired.stdout)
-                self.assertFalse(os.path.lexists(link))
-                again = run_session_log(package, home, harness, "repair")
-                self.assertEqual((again.returncode, again.stdout, again.stderr), (0, clean, ""))
-
-    def test_on_repairs_dangling_adapter_links(self):
-        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
-            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, subroot)
-                link = home / subroot / target
-                link.parent.mkdir(parents=True)
-                link.symlink_to(home / PLUGIN_CACHE_PACKAGE_RELATIVE / source)
-                result = run_session_log(package, home, harness, "on")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"removed dangling adapter link {link}", result.stdout)
-                self.assertEqual(os.readlink(link), str(package / source))
-
-    def test_on_relinks_an_adapter_link_into_another_session_log_package(self):
-        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
-            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, "cache/2.0.0")
-                # The copy older releases seeded into the skill root, and another package version.
-                for previous in (harness_package(home, subroot), harness_package(home, "cache/1.0.0")):
-                    link = home / subroot / target
-                    link.parent.mkdir(parents=True, exist_ok=True)
-                    if os.path.lexists(link):
-                        link.unlink()
-                    link.symlink_to(previous / source)
-                    result = run_session_log(package, home, harness, "on")
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(os.readlink(link), str(package / source))
-
-    def foreign_destinations(self, home, source):
-        """Link targets that are not a session-log package's adapter, including dotted lookalikes."""
-        return (str(home / "elsewhere/session-log.js"), f"{home}/evil/../skills/session-log/{source}",
-                f"../skills/session-log/{source}", f"./skills/session-log/{source}")
-
-    def test_on_refuses_an_adapter_link_to_a_foreign_file(self):
-        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
-            with tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, "cache/2.0.0")
-                link = home / subroot / target
-                link.parent.mkdir(parents=True)
-                for destination in self.foreign_destinations(home, source):
-                    with self.subTest(harness=harness, destination=destination):
-                        link.symlink_to(destination)
-                        result = run_session_log(package, home, harness, "on")
-                        # The shell preflight refuses it before anything is installed.
-                        self.assertEqual((result.returncode, result.stderr),
-                                         (1, f"session-log: refusing to overwrite unowned adapter link: {link}\n"))
-                        self.assertEqual(os.readlink(link), destination)
-                        self.assertFalse((home / subroot / "prompt-logs/.enabled").exists())
-                        link.unlink()
-
-    def test_link_adapter_refuses_a_dotted_package_lookalike(self):
-        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
-            with tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, "cache/2.0.0")
-                link = home / subroot / target
-                link.parent.mkdir(parents=True)
-                for destination in self.foreign_destinations(home, source)[1:]:
-                    with self.subTest(harness=harness, destination=destination):
-                        link.symlink_to(destination)
-                        result = subprocess.run(
-                            [sys.executable, str(package / "lib/pathsafe.py"), "link-adapter"], capture_output=True, text=True,
-                            env={**harness_environment(home), "SESSION_LOG_SOURCE": str(package / source),
-                                 "SESSION_LOG_TARGET": str(link), "SESSION_LOG_STORE": str(home / "store"),
-                                 "SESSION_LOG_ADAPTER_RELATIVE": source})
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn("refusing to overwrite unowned adapter link", result.stderr)
-                        self.assertEqual(os.readlink(link), destination)
-                        link.unlink()
-
-    def test_on_migrates_a_marked_standalone_adapter_copy(self):
-        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
-            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, "cache/2.0.0")
-                standalone = home / subroot / target
-                standalone.parent.mkdir(parents=True)
-                standalone.write_text("// universal-session-log: managed\nlegacy standalone copy\n")
-                result = run_session_log(package, home, harness, "on")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(os.readlink(standalone), str(package / source))
-
-    def test_status_with_logging_on_migrates_a_marked_standalone_adapter_copy(self):
-        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
-            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, "cache/2.0.0")
-                standalone = home / subroot / target
-                standalone.parent.mkdir(parents=True)
-                standalone.write_text("// universal-session-log: managed\nlegacy standalone copy\n")
-                flag = home / subroot / "prompt-logs/.enabled"
-                flag.parent.mkdir(parents=True)
-                flag.write_text("enabled\n")
-                flag.chmod(0o600)
-                result = run_session_log(package, home, harness, "status")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(os.readlink(standalone), str(package / source))
-
-    def test_on_collapses_repeated_native_hook_registrations(self):
-        for harness, subroot in NATIVE_HARNESSES:
-            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = harness_package(home, NATIVE_PACKAGE_ROOTS[harness])
-                installed = run_session_log(package, home, harness, "on")
-                self.assertEqual(installed.returncode, 0, installed.stderr)
-                config = home / subroot / "hooks.json"
-                expected = json.loads(config.read_text())
-                repeated = json.loads(config.read_text())
-                for event, entries in repeated["hooks"].items():
-                    repeated["hooks"][event] = entries * REPEATED_REGISTRATIONS
-                config.write_text(json.dumps(repeated))
-                result = run_session_log(package, home, harness, "on")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("duplicate or stale hook registration(s)", result.stdout)
-                self.assertEqual(json.loads(config.read_text()), expected)
 
 
 CURSOR_PLUGIN_HOOKS_PATH = REPO / ".cursor-plugin/hooks.json"
@@ -3165,8 +3019,6 @@ CURSOR_LOCK_BUSY = "Cursor: legacy cleanup skipped: another session-log command 
 CURSOR_FOREIGN_HOOK = {"command": "echo keep-cursor"}
 # A user hook that mentions the hook script's name but is not one session-log registered.
 CURSOR_LOOKALIKE_HOOK = {"command": "python3 /opt/tools/session_log_hook.py cursor stop"}
-# The adapter state files older Cursor installs wrote and nothing reads any more.
-CURSOR_OBSOLETE_STATE = ("desired.version", "adapter.version", "adapter.manifest")
 # A bin/session-log stand-in that records each run beside itself, in <script>.launched, and changes nothing.
 CURSOR_RECORDING_SESSION_LOG = '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$0.launched"\n'
 # A top-level key of the user's own that the cleanup must keep.
@@ -3398,7 +3250,7 @@ class CursorPluginHooksTests(unittest.TestCase):
 
     def test_repair_removes_obsolete_adapter_state_and_keeps_runtime_markers(self):
         self.state_dir.mkdir(parents=True)
-        for name in (*CURSOR_OBSOLETE_STATE, "runtime.json"):
+        for name in (*OBSOLETE_ADAPTER_STATE, "runtime.json"):
             (self.state_dir / name).write_text("old\n")
         result = self.run_cursor("repair")
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CURSOR_REPAIR_CLEAN, ""))
@@ -3441,14 +3293,14 @@ class CursorPluginHooksTests(unittest.TestCase):
     def test_repair_failing_on_an_invalid_hooks_file_keeps_the_copy_and_the_state(self):
         seeded = seed_cursor_copy(self.home)
         self.state_dir.mkdir(parents=True)
-        for name in CURSOR_OBSOLETE_STATE:
+        for name in OBSOLETE_ADAPTER_STATE:
             (self.state_dir / name).write_text("old\n")
         self.config.write_text("[]")
         result = self.run_cursor("repair")
         self.assertEqual((result.returncode, result.stdout, result.stderr),
                          (1, "", "session-log: hooks root must be an object\n"))
         self.assertTrue((seeded / "SKILL.md").is_file())
-        self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), sorted(CURSOR_OBSOLETE_STATE))
+        self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), sorted(OBSOLETE_ADAPTER_STATE))
 
     def test_repair_keeps_a_symlinked_obsolete_state_file(self):
         target = self.home / "elsewhere.version"
@@ -3479,7 +3331,7 @@ class CursorPluginHooksTests(unittest.TestCase):
 
     def seed_obsolete_state(self):
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        for name in CURSOR_OBSOLETE_STATE:
+        for name in OBSOLETE_ADAPTER_STATE:
             (self.state_dir / name).write_text("old\n")
 
     def test_session_start_with_logging_on_removes_legacy_registrations_the_seeded_copy_and_obsolete_state(self):
@@ -3522,7 +3374,7 @@ class CursorPluginHooksTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "{}\n", ""))
         self.assertEqual(self.config.read_bytes(), original)
         self.assertTrue((seeded / "SKILL.md").is_file())
-        self.assertTrue(all((self.state_dir / name).is_file() for name in CURSOR_OBSOLETE_STATE))
+        self.assertTrue(all((self.state_dir / name).is_file() for name in OBSOLETE_ADAPTER_STATE))
 
     def test_session_start_runs_no_cleanup_for_a_hooks_file_repair_would_refuse(self):
         self.enable()
@@ -3584,7 +3436,7 @@ class CursorPluginHooksTests(unittest.TestCase):
         self.config.write_text(json.dumps(build_cursor_legacy_hooks(self.seeded_hook)))
         seeded = seed_cursor_copy(self.home)
         self.state_dir.mkdir(parents=True)
-        for name in CURSOR_OBSOLETE_STATE:
+        for name in OBSOLETE_ADAPTER_STATE:
             (self.state_dir / name).write_text("old\n")
         self.flag.parent.mkdir(parents=True)
         self.flag.write_text("enabled\n")
@@ -3596,7 +3448,7 @@ class CursorPluginHooksTests(unittest.TestCase):
             "session-log: native Cursor usage failed: no Cursor token usage records found for the current project\n")))
         self.assertEqual(self.config.read_bytes(), original)
         self.assertTrue((seeded / "SKILL.md").is_file())
-        self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), sorted(CURSOR_OBSOLETE_STATE))
+        self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), sorted(OBSOLETE_ADAPTER_STATE))
 
 
 
@@ -3608,7 +3460,6 @@ OMP_EXTENSION_LINK_RELATIVE = ".omp/agent/extensions/session-log.js"
 OMP_EXTENSION_SOURCE = "adapters/omp/session-log.js"
 OMP_USAGE_LINK = "scripts/session_log_usage.ts"
 OMP_USAGE_SOURCE = "adapters/omp/session_log_usage.ts"
-OMP_OBSOLETE_STATE = ("adapter.version", "adapter.manifest", "desired.version")
 OMP_REPAIR_CLEAN = "OMP: repair found no duplicate or stale registrations\n"
 OMP_RESTART_REQUIRED = "OMP: on — restart required\n"
 
@@ -3711,7 +3562,7 @@ class OmpPluginOwnedTests(unittest.TestCase):
         seeded, extension = omp_seeded_install(self.home)
         state = self.home / OMP_SUBROOT / "session-log"
         state.mkdir(parents=True)
-        for name in (*OMP_OBSOLETE_STATE, "runtime.json", "runtime.1.json"):
+        for name in (*OBSOLETE_ADAPTER_STATE, "runtime.json", "runtime.1.json"):
             (state / name).write_text("kept\n" if name.startswith("runtime") else "obsolete\n")
         first = self.run_omp("repair")
         self.assertEqual((first.returncode, first.stderr), (0, ""))
@@ -3878,7 +3729,6 @@ LEGACY_OPENCODE_ADAPTERS = (("plugins/session-log.js", "adapters/opencode/sessio
 LEGACY_OPENCODE_COMMAND = "commands/session-log.md"
 LEGACY_OPENCODE_COMMAND_TEXT = ("---\ndescription: Manage session prompt logging\n---\n"
                                 "<!-- universal-session-log: managed -->\n\nlegacy command\n")
-OBSOLETE_OPENCODE_STATE = ("adapter.version", "adapter.manifest", "desired.version")
 
 
 def opencode_package(home):
@@ -3975,7 +3825,7 @@ class OpenCodePluginOwnershipTests(unittest.TestCase):
         command.write_text(LEGACY_OPENCODE_COMMAND_TEXT)
         state = self.root / "session-log"
         state.mkdir()
-        for name in (*OBSOLETE_OPENCODE_STATE, "runtime.json"):
+        for name in (*OBSOLETE_ADAPTER_STATE, "runtime.json"):
             (state / name).write_text("state\n")
         repaired = self.run_opencode("repair")
         self.assertEqual((repaired.returncode, repaired.stderr), (0, ""))

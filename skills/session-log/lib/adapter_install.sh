@@ -1,6 +1,6 @@
 # universal-session-log: managed
-# Adapter-install machinery for bin/session-log, for the harnesses whose plugin does not
-# register the session-log hooks itself (see plugin_owns_hooks in bin/session-log). Its install
+# Adapter-install machinery for bin/session-log: Codex's hooks.json entries, the one adapter a
+# harness plugin does not register itself (see plugin_owns_hooks in bin/session-log). Its install
 # lock, state-directory checks, runtime-marker and repair-report helpers serve every harness.
 #
 # Sourced by bin/session-log right after lib/common.sh. Runs in the same shell,
@@ -13,35 +13,6 @@ native_hooks_current() {
   require_command python3
   [[ -f "$config" && ! -L "$config" ]] || return 1
   python3 "$(source_for configurator)" check "$HARNESS" "$config" "$(source_for hook)"
-}
-
-manifest_asset_hash() {
-  local asset="$1"
-  awk -v wanted="asset=$asset" '
-    $0 == wanted { if (getline && $0 ~ /^sha256=/) { sub(/^sha256=/, ""); print; exit } }
-  ' "$STATE_DIR/adapter.manifest" 2>/dev/null
-}
-
-manifest_current() {
-  local kind source expected version
-  [[ -f "$STATE_DIR/adapter.manifest" && ! -L "$STATE_DIR/adapter.manifest" ]] || return 1
-  version="$(awk -F= '
-    $1 == "version" { value=$2; count++ }
-    END { if (count != 1) exit 1; print value }
-  ' "$STATE_DIR/adapter.manifest")" || return 1
-  [[ "$version" == "$VERSION" ]] || return 1
-  for kind in ${HARNESS_KINDS[$HARNESS]}; do
-    source="$(source_for "$kind")"
-    expected="$(sha256_file "$source")"
-    [[ "$(manifest_asset_hash "$kind")" == "$expected" ]] || return 1
-  done
-}
-
-# True when a package version stamp and asset manifest decide whether the adapter is current.
-# Codex's hooks.json command picks the newest plugin package itself, so no version stamp or asset
-# hash decides whether its adapter is current, and it has neither.
-adapter_is_versioned() {
-  [[ "$HARNESS" != codex ]]
 }
 
 # The marketplace Codex installs codex-goodies from: the "name" of .agents/plugins/marketplace.json,
@@ -67,19 +38,11 @@ require_codex_plugin_package() {
     fail "Codex hooks run the codex-goodies plugin package; install it with 'codex plugin marketplace add user538295/harness-goodies' and 'codex plugin add codex-goodies@$CODEX_MARKETPLACE', then rerun on"
 }
 
+# Codex's hooks.json command picks the newest plugin package itself, so the adapter is current
+# exactly when hooks.json holds that command for every lifecycle event.
 adapter_current() {
   validate_state_dir
-  if ! adapter_is_versioned; then
-    native_hooks_current
-    return
-  fi
-  [[ -f "$STATE_DIR/desired.version" && ! -L "$STATE_DIR/desired.version" ]] || return 1
-  [[ "$(cat "$STATE_DIR/desired.version")" == "$VERSION" ]] || return 1
-  [[ -f "$STATE_DIR/adapter.version" && ! -L "$STATE_DIR/adapter.version" ]] || return 1
-  [[ "$(cat "$STATE_DIR/adapter.version")" == "$VERSION" ]] || return 1
-  manifest_current || return 1
-  case "$HARNESS" in
-  esac
+  native_hooks_current
 }
 
 validate_state_dir() {
@@ -135,14 +98,6 @@ preflight_install_lock() {
   return 0
 }
 
-# True when link destination $2 is adapter kind $1 inside any session-log package: the copy older
-# releases seeded into the skill root, or another package version a harness plugin ships.
-is_package_adapter_link() {
-  local relative="${ADAPTER_SOURCES[$HARNESS:$1]}" destination="$2"
-  case "/$destination/" in */../*|*/./*) return 1 ;; esac
-  [[ "$destination" == */skills/session-log/"$relative" ]]
-}
-
 preflight_native_hooks() {
   local config="$HARNESS_ROOT/hooks.json"
   [[ -f "$(source_for hook)" && ! -L "$(source_for hook)" ]] ||
@@ -156,11 +111,6 @@ preflight_native_hooks() {
 
 preflight_state_files() {
   validate_state_dir
-  if adapter_is_versioned; then
-    preflight_state_file "$STATE_DIR/desired.version"
-    preflight_state_file "$STATE_DIR/adapter.version"
-    preflight_state_file "$STATE_DIR/adapter.manifest"
-  fi
   preflight_state_file "$RUNTIME_FILE"
   preflight_install_lock
 }
@@ -175,26 +125,6 @@ preflight_off() {
   preflight_enable_flag
   validate_state_dir
   preflight_install_lock
-}
-
-write_manifest() {
-  local content kind source target
-  ensure_safe_parent "$STATE_DIR/adapter.manifest"
-  [[ ! -L "$STATE_DIR/adapter.manifest" ]] ||
-    fail "refusing to overwrite symlink: $STATE_DIR/adapter.manifest"
-  [[ ! -d "$STATE_DIR/adapter.manifest" ]] ||
-    fail "refusing to overwrite directory: $STATE_DIR/adapter.manifest"
-  content="$(
-    printf 'version=%s\n' "$VERSION"
-    for kind in ${HARNESS_KINDS[$HARNESS]}; do
-      printf 'asset=%s\n' "$kind"
-      printf 'sha256=%s\n' "$(sha256_file "$(source_for "$kind")")"
-      if [[ -n "${ADAPTER_TARGETS[$HARNESS:$kind]:-}" ]]; then
-        printf 'target=%s\n' "$(target_for "$kind")"
-      fi
-    done
-  )"
-  write_private_file "$STATE_DIR/adapter.manifest" "$content"
 }
 
 # Per-harness install lock on lib/locking.py: the
@@ -281,11 +211,6 @@ install_adapter() {
         "$HARNESS_ROOT/hooks.json" "$(source_for hook)"
       ;;
   esac
-  if adapter_is_versioned; then
-    write_private_file "$STATE_DIR/desired.version" "$VERSION"
-    write_private_file "$STATE_DIR/adapter.version" "$VERSION"
-    write_manifest
-  fi
   clear_runtime_markers
 }
 
