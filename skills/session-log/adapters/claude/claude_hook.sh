@@ -3,12 +3,7 @@
 set -euo pipefail
 # A hook never reports an error: every failure below exits 0 without output.
 
-# Cursor imports Claude Code plugins and ~/.claude/settings.json hooks and runs them itself, always
-# exporting CURSOR_VERSION to the hook (its hook environment builder); Claude Code never sets it.
-# Cursor's sessions are logged by Cursor's own adapter, so this one stays out of them.
-[[ -z "${CURSOR_VERSION:-}" ]] || exit 0
-
-PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)" || exit 0
 readonly PACKAGE_ROOT
 VERSION="$(tr -d '[:space:]' 2>/dev/null < "$PACKAGE_ROOT/VERSION")" || VERSION=""
 readonly VERSION
@@ -126,6 +121,11 @@ if [[ "${1:-}" == session-start ]]; then
 fi
 
 input="$(cat)"
+# Cursor (3.23.12) imports Claude Code plugins and ~/.claude/settings.json hooks and runs them itself.
+# Its hook payloads carry "cursor_version", which Claude Code's never do (a prompt that merely mentions
+# it arrives JSON-escaped). Cursor's sessions are not Claude's: past the legacy cleanup above, this hook
+# neither logs them nor touches Claude's runtime markers.
+[[ "$input" != *'"cursor_version":'* ]] || exit 0
 enabled_file="$CLAUDE_ROOT/prompt-logs/.enabled"
 runtime="$STATE_DIR/runtime.json"
 process_runtime="$STATE_DIR/runtime.${PPID}.json"
