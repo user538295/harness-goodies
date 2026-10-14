@@ -3,7 +3,8 @@
 """Removal of the package copies older install.sh releases seeded into harness skill roots.
 
 Usage:
-    python3 legacy_package.py remove <skill-root>/session-log   # reads $HOME
+    python3 legacy_package.py remove <skill-root>/session-log       # reads $HOME
+    python3 legacy_package.py neutralize <skill-root>/session-log
 
 A copy goes only when its ownership manifest proves every file in it: each regular file is
 the manifest itself or an asset the manifest lists with the same SHA-256, apart from the
@@ -14,7 +15,12 @@ its target is never touched. No symlink is ever followed, including a symlinked 
 
 Prints ``removed`` or ``removed link``; ``kept: <reason>`` when the copy carries session-log's
 ownership marks but cannot be proven unchanged or cannot be read; nothing when the path is not
-session-log's or cannot be read far enough to tell.
+session-log's or cannot be read far enough to tell. A copy kept despite a valid manifest is
+neutralized first, and ``neutralized`` precedes the ``kept`` line: every SKILL.md in it that the
+manifest proves unchanged goes, so no harness loads the copy as a skill (Codex discovers SKILL.md
+files at any depth below a user skill root) and its older code can no longer be invoked to
+register its hooks again. `neutralize` does only that, for a copy a harness must keep because
+running sessions' hooks still run it, and prints ``neutralized`` when it removed anything.
 """
 import errno
 import fnmatch
@@ -38,6 +44,7 @@ FINDER_METADATA = ".DS_Store"
 RESULT_REMOVED = "removed"
 RESULT_REMOVED_LINK = "removed link"
 RESULT_KEPT_PREFIX = "kept: "
+RESULT_NEUTRALIZED = "neutralized"
 # Where older releases pointed a skill-root symlink, below the home directory.
 LINK_DESTINATIONS = (
     ".claude/plugins/cache/*/claude-goodies/*/skills/session-log",
@@ -47,6 +54,8 @@ LINK_DESTINATIONS = (
 
 class Kept(Exception):
     """The copy carries session-log's ownership marks but cannot be proven unchanged."""
+
+    neutralized = False
 
 
 def _identity(info):
@@ -146,6 +155,34 @@ def _remove_tree(dir_fd, prefix, checked):
             raise Kept(f"{relative} changed during removal")
 
 
+def _neutralize(dir_fd, prefix, assets):
+    """Remove every SKILL.md below ``dir_fd`` that ``assets`` proves unchanged, through one-component
+    descriptors only; anything unreadable, changed, or replaced meanwhile stays. Returns whether one went."""
+    removed = False
+    try:
+        names = sorted(os.listdir(dir_fd))
+    except OSError:
+        return False
+    for name in names:
+        relative = prefix + name
+        try:
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                child_fd = os.open(name, pathsafe.DIR_FLAGS, dir_fd=dir_fd)
+                try:
+                    removed = _neutralize(child_fd, relative + "/", assets) or removed
+                finally:
+                    os.close(child_fd)
+            elif (name == SKILL_FILE and stat.S_ISREG(info.st_mode) and relative in assets
+                  and hashlib.sha256(_read_regular(dir_fd, name)).hexdigest() == assets[relative]
+                  and _identity(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) == _identity(info)):
+                os.unlink(name, dir_fd=dir_fd)
+                removed = True
+        except OSError:
+            continue
+    return removed
+
+
 def _has_ownership_marker(copy_fd):
     """Whether the copy's SKILL.md carries session-log's ownership line; unreadable means no."""
     try:
@@ -173,7 +210,11 @@ def _remove_copy(parent_fd, name):
             if _has_ownership_marker(copy_fd):
                 raise Kept("it has no ownership manifest")
             return ""
-        checked = _inventory(copy_fd, "", assets)
+        try:
+            checked = _inventory(copy_fd, "", assets)
+        except Kept as kept:
+            kept.neutralized = _neutralize(copy_fd, "", assets)
+            raise
         try:
             _remove_tree(copy_fd, "", checked)
             # The manifest goes last and only from an otherwise empty copy, so a run that stops
@@ -223,17 +264,53 @@ def remove(path, home):
                 return ""
             return _remove_copy(parent_fd, name)
         except Kept as kept:
-            return f"{RESULT_KEPT_PREFIX}{kept}"
+            return _kept_report(kept)
         except OSError:
             return ""  # every error after ownership is proven is a Kept
     finally:
         os.close(parent_fd)
 
 
+def _kept_report(kept):
+    return f"{RESULT_NEUTRALIZED}\n{RESULT_KEPT_PREFIX}{kept}" if kept.neutralized else f"{RESULT_KEPT_PREFIX}{kept}"
+
+
+def neutralize(path):
+    """Remove the manifest-proven SKILL.md files of the seeded copy at ``path`` and keep the rest.
+
+    Returns ``neutralized`` when one went, ``kept: <reason>`` when the copy carries session-log's
+    ownership marks but no valid manifest, or an empty string otherwise (absent, a symlink, not
+    session-log's, nothing left to remove, or unreadable before its manifest was read).
+    """
+    directory, name = os.path.split(os.path.abspath(path))
+    try:
+        parent_fd = pathsafe.open_directory(directory, create=False)
+    except OSError:
+        return ""
+    try:
+        try:
+            if not stat.S_ISDIR(os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode):
+                return ""
+            copy_fd = os.open(name, pathsafe.DIR_FLAGS, dir_fd=parent_fd)
+        except OSError:
+            return ""
+        try:
+            assets = _manifest_assets(copy_fd)
+            if assets is None:
+                return f"{RESULT_KEPT_PREFIX}it has no ownership manifest" if _has_ownership_marker(copy_fd) else ""
+            return RESULT_NEUTRALIZED if _neutralize(copy_fd, "", assets) else ""
+        except Kept as kept:
+            return f"{RESULT_KEPT_PREFIX}{kept}"
+        finally:
+            os.close(copy_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def main(argv):
-    if len(argv) != 2 or argv[0] != "remove":
-        raise SystemExit("legacy_package: usage: legacy_package.py remove <path>")
-    result = remove(argv[1], os.environ["HOME"])
+    if len(argv) != 2 or argv[0] not in ("remove", "neutralize"):
+        raise SystemExit("legacy_package: usage: legacy_package.py remove|neutralize <path>")
+    result = remove(argv[1], os.environ["HOME"]) if argv[0] == "remove" else neutralize(argv[1])
     if result:
         print(result)
 

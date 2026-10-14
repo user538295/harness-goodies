@@ -92,6 +92,7 @@ legacy_cleanup_codex() {
   local seeded="$HARNESS_ROOT/skills/session-log"
   require_command python3
   if [[ -e "$seeded" || -L "$seeded" ]] && codex_hooks_may_name_seeded_copy; then
+    neutralize_seeded_package "$seeded"
     if codex_plugin_package_present; then
       print_repair_report "kept legacy package copy $seeded: Codex sessions started before session-log replaced its hooks.json entries may still run it; restart Codex, then run repair"
     else
@@ -296,13 +297,29 @@ remove_claude_settings_registrations() {
 # they put there. lib/legacy_package.py removes it only when proven session-log's, and reports a
 # copy that carries session-log's ownership marks but holds a changed or foreign file.
 remove_seeded_package() {
-  local target="$1" result
+  local target="$1" result line
   result="$(python3 "$SESSION_LOG_LIB/legacy_package.py" remove "$target")"
-  case "$result" in
-    removed) print_repair_report "removed legacy package copy $target" ;;
-    "removed link") print_repair_report "removed legacy package link $target" ;;
-    kept:*) print_repair_report "kept legacy package copy $target:${result#kept:}; move it aside" ;;
-  esac
+  while IFS= read -r line; do
+    case "$line" in
+      removed) print_repair_report "removed legacy package copy $target" ;;
+      "removed link") print_repair_report "removed legacy package link $target" ;;
+      neutralized) report_neutralized_package "$target" ;;
+      kept:*) print_repair_report "kept legacy package copy $target:${line#kept:}; move it aside" ;;
+    esac
+  done <<< "$result"
+}
+
+# Removes the manifest-proven SKILL.md files of the seeded copy at $1 and keeps the rest, for a
+# copy that running sessions' hooks may still run: no harness loads it as a skill any more, so its
+# older code can no longer be invoked to register its hooks again.
+neutralize_seeded_package() {
+  local target="$1" result
+  result="$(python3 "$SESSION_LOG_LIB/legacy_package.py" neutralize "$target")"
+  [[ "$result" != neutralized ]] || report_neutralized_package "$target"
+}
+
+report_neutralized_package() {
+  print_repair_report "removed the SKILL.md of legacy package copy $1, so it is no longer loaded as a skill"
 }
 
 remove_claude_obsolete_state() {

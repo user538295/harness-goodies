@@ -1212,6 +1212,24 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CLAUDE_REPAIR_CLEAN, ""))
             self.assertEqual(settings.read_bytes(), original)
 
+    def test_claude_repair_neutralizes_a_changed_seeded_copy_it_keeps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            seeded = home / SEEDED_RELATIVE
+            seeded.parent.mkdir(parents=True)
+            shutil.copytree(REPO / "skills/session-log", seeded)
+            write_seeded_manifest(seeded)
+            (seeded / "notes.md").write_text("mine\n")
+            result = run_session_log(package, home, "claude", "repair")
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertEqual(result.stdout.splitlines(), [
+                neutralized_seeded_copy_report("Claude Code", seeded),
+                f"Claude Code: kept legacy package copy {seeded}: notes.md is not a file session-log installed; move it aside",
+            ])
+            self.assertFalse(os.path.lexists(seeded / "SKILL.md"))
+            self.assertEqual((seeded / "notes.md").read_text(), "mine\n")
+
     def test_claude_repair_removes_obsolete_state_and_keeps_runtime_markers(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
@@ -2252,9 +2270,24 @@ class LegacyPackageCopyTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stderr), (0, ""))
         return result.stdout
 
+    def run_legacy_package(self, operation, path=None):
+        result = subprocess.run(
+            [sys.executable, str(LEGACY_PACKAGE_PATH), operation, str(path or self.copy)],
+            capture_output=True, text=True, env=harness_environment(self.home), timeout=LEGACY_PACKAGE_TIMEOUT_SECONDS,
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        return result.stdout
+
     def assert_kept(self, reason):
+        """The copy stays exactly as it was: nothing in it is proven to be session-log's SKILL.md."""
         files = sorted(path for path in self.copy.rglob("*"))
         self.assertEqual(self.remove(), f"kept: {reason}\n")
+        self.assertEqual(sorted(path for path in self.copy.rglob("*")), files)
+
+    def assert_kept_and_neutralized(self, reason):
+        """The copy stays but loses its manifest-proven SKILL.md files, so no harness loads it as a skill."""
+        files = sorted(path for path in self.copy.rglob("*") if path.name != "SKILL.md")
+        self.assertEqual(self.remove(), f"neutralized\nkept: {reason}\n")
         self.assertEqual(sorted(path for path in self.copy.rglob("*")), files)
 
     def test_removes_a_copy_its_manifest_proves(self):
@@ -2279,13 +2312,46 @@ class LegacyPackageCopyTests(unittest.TestCase):
     def test_keeps_a_copy_with_a_file_it_did_not_install(self):
         copy = self.seeded()
         (copy / "notes.md").write_text("mine\n")
-        self.assert_kept("notes.md is not a file session-log installed")
+        self.assert_kept_and_neutralized("notes.md is not a file session-log installed")
 
     def test_keeps_a_copy_holding_a_symlink(self):
         copy = self.seeded()
         (copy / "scripts").mkdir()
         (copy / "scripts/session_log_usage.ts").symlink_to(copy / "adapters/omp/session_log_usage.ts")
-        self.assert_kept("scripts/session_log_usage.ts is not a file session-log installed")
+        self.assert_kept_and_neutralized("scripts/session_log_usage.ts is not a file session-log installed")
+
+    def test_neutralizes_every_proven_skill_file_of_a_kept_copy_but_never_a_changed_one(self):
+        copy = self.seeded()
+        nested = copy / "templates/opencode/SKILL.md"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("an older release's template\n")
+        changed = copy / "templates/omp/SKILL.md"
+        changed.parent.mkdir(parents=True)
+        changed.write_text("as installed\n")
+        write_seeded_manifest(copy)
+        changed.write_text("changed by the user\n")
+        self.assertEqual(self.remove(), "neutralized\nkept: templates/omp/SKILL.md was changed\n")
+        self.assertFalse(os.path.lexists(copy / "SKILL.md"))
+        self.assertFalse(os.path.lexists(nested))
+        self.assertEqual(changed.read_text(), "changed by the user\n")
+        self.assertTrue((copy / "bin/session-log").is_file())
+
+    def test_neutralize_removes_only_the_proven_skill_files_and_a_later_remove_takes_the_rest(self):
+        copy = self.seeded()
+        self.assertEqual(self.run_legacy_package("neutralize"), "neutralized\n")
+        self.assertFalse(os.path.lexists(copy / "SKILL.md"))
+        self.assertTrue((copy / "adapters/native/session_log_hook.py").is_file())
+        self.assertTrue((copy / SEEDED_MANIFEST).is_file())
+        self.assertEqual(self.run_legacy_package("neutralize"), "")
+        self.assertEqual(self.remove(), "removed\n")
+        self.assertFalse(os.path.lexists(copy))
+
+    def test_neutralize_leaves_unproven_copies_alone(self):
+        self.copy.parent.mkdir(parents=True)
+        shutil.copytree(REPO / "skills/session-log", self.copy)
+        self.assertEqual(self.run_legacy_package("neutralize"), "kept: it has no ownership manifest\n")
+        self.assertTrue((self.copy / "SKILL.md").is_file())
+        self.assertEqual(self.run_legacy_package("neutralize", self.home / "absent/session-log"), "")
 
     def test_keeps_a_marked_copy_without_a_manifest(self):
         self.copy.parent.mkdir(parents=True)
@@ -2329,7 +2395,7 @@ class LegacyPackageCopyTests(unittest.TestCase):
                 copy = self.seeded()
                 (copy / relative).parent.mkdir(exist_ok=True)
                 (copy / relative).write_bytes(b"not session-log's")
-                self.assert_kept(f"{relative} is not a file session-log installed")
+                self.assert_kept_and_neutralized(f"{relative} is not a file session-log installed")
 
     def test_tolerates_the_finder_metadata_macos_writes(self):
         copy = self.seeded()
@@ -2343,8 +2409,9 @@ class LegacyPackageCopyTests(unittest.TestCase):
         copy = self.seeded()
         (copy / "lib").chmod(0)
         self.addCleanup((copy / "lib").chmod, PRIVATE_DIRECTORY_MODE)
-        self.assertEqual(self.remove(), "kept: cannot read lib: Permission denied\n")
+        self.assertEqual(self.remove(), "neutralized\nkept: cannot read lib: Permission denied\n")
         self.assertTrue((copy / SEEDED_MANIFEST).is_file())
+        self.assertFalse(os.path.lexists(copy / "SKILL.md"))
 
     def in_process(self):
         with patch.object(sys, "path", [str(LEGACY_PACKAGE_PATH.parent), *sys.path]):
@@ -2563,6 +2630,11 @@ def kept_seeded_copy_report(seeded):
             "hooks.json entries may still run it; restart Codex, then run repair")
 
 
+def neutralized_seeded_copy_report(label, seeded):
+    """What a cleanup reports when it removes the SKILL.md files of a seeded copy it keeps."""
+    return f"{label}: removed the SKILL.md of legacy package copy {seeded}, so it is no longer loaded as a skill"
+
+
 def kept_seeded_copy_without_plugin_report(seeded):
     """What `repair` reports for a seeded copy it keeps while no codex-goodies plugin is installed."""
     return (f"Codex: kept legacy package copy {seeded}: ~/.codex/hooks.json may still run it; install the "
@@ -2635,6 +2707,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         (self.seeded / "notes.md").write_text("mine\n")
         result = self.run_codex("repair")
         self.assertEqual(result.stdout, (
+            f"{neutralized_seeded_copy_report('Codex', self.seeded)}\n"
             f"Codex: kept legacy package copy {self.seeded}: notes.md is not a file session-log installed; "
             "move it aside\n"))
         self.assertEqual((self.seeded / "notes.md").read_text(), "mine\n")
@@ -2660,12 +2733,22 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.assertEqual(codex_hook_commands(self.config), codex_stable_commands())
         self.assertTrue((self.home / CODEX_FLAG_RELATIVE).is_file())
 
+    def test_a_kept_seeded_copy_loses_its_skill_file_but_keeps_the_hook_sessions_run(self):
+        """Codex can no longer load the old skill and re-add its entries, while running sessions' hooks still work."""
+        self.seed_copy()
+        self.write_legacy_hooks(self.seeded)
+        result = self.run_codex("repair")
+        self.assertEqual(result.stdout.splitlines()[:2],
+                         [neutralized_seeded_copy_report("Codex", self.seeded), kept_seeded_copy_report(self.seeded)])
+        self.assertFalse(os.path.lexists(self.seeded / "SKILL.md"))
+        self.assertTrue((self.seeded / "adapters/native/session_log_hook.py").is_file())
+
     def test_repair_keeps_the_seeded_copy_while_hooks_json_runs_its_hooks(self):
         """Sessions started earlier keep running the hooks they loaded, so the copy goes only at a later run."""
         self.seed_copy()
         self.write_legacy_hooks(self.seeded)
         first = self.run_codex("repair")
-        self.assertEqual(first.stdout.splitlines()[0], kept_seeded_copy_report(self.seeded))
+        self.assertEqual(first.stdout.splitlines()[:2], [neutralized_seeded_copy_report("Codex", self.seeded), kept_seeded_copy_report(self.seeded)])
         self.assertIn(f"Codex: removed {len(CODEX_LIFECYCLES)} duplicate or stale hook registration(s)", first.stdout)
         self.assertTrue(self.seeded.is_dir())
         self.assertEqual(codex_hook_commands(self.config), codex_stable_commands())
@@ -2678,7 +2761,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.write_legacy_hooks(self.seeded)
         self.enable_flag()
         result = self.run_codex("status")
-        self.assertEqual(result.stdout, f"{kept_seeded_copy_report(self.seeded)}\n{CODEX_TRUST_STATUS}\n")
+        self.assertEqual(result.stdout, f"{neutralized_seeded_copy_report("Codex", self.seeded)}\n{kept_seeded_copy_report(self.seeded)}\n{CODEX_TRUST_STATUS}\n")
         self.assertEqual(codex_hook_commands(self.config), codex_stable_commands())
         self.assertTrue(self.seeded.is_dir())
 
@@ -2687,7 +2770,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.write_legacy_hooks(self.seeded)
         result = self.run_codex("on")
         lines = result.stdout.splitlines()
-        self.assertEqual(lines[0], kept_seeded_copy_report(self.seeded))
+        self.assertEqual(lines[:2], [neutralized_seeded_copy_report("Codex", self.seeded), kept_seeded_copy_report(self.seeded)])
         self.assertIn(f"Codex: removed {len(CODEX_LIFECYCLES)} duplicate or stale hook registration(s)", result.stdout)
         self.assertEqual(lines[-1], CODEX_TRUST_STATUS)
         self.assertTrue(self.seeded.is_dir())
@@ -2713,7 +2796,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.remove_plugin()
         result = run_session_log(checkout, self.home, "codex", "repair")
         self.assertEqual((result.returncode, result.stdout, result.stderr),
-                         (0, f"{kept_seeded_copy_without_plugin_report(self.seeded)}\n", ""))
+                         (0, f"{neutralized_seeded_copy_report("Codex", self.seeded)}\n{kept_seeded_copy_without_plugin_report(self.seeded)}\n", ""))
         self.assertTrue(self.seeded.is_dir())
 
     def test_a_kept_seeded_copy_still_loses_the_obsolete_state(self):
@@ -2721,7 +2804,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.write_legacy_hooks(self.seeded)
         self.seed_obsolete_state()
         result = self.run_codex("repair")
-        self.assertEqual(result.stdout.splitlines()[0], kept_seeded_copy_report(self.seeded))
+        self.assertEqual(result.stdout.splitlines()[:2], [neutralized_seeded_copy_report("Codex", self.seeded), kept_seeded_copy_report(self.seeded)])
         self.assertTrue(self.seeded.is_dir())
         self.assert_no_obsolete_state()
 
@@ -2757,7 +2840,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         edited["hooks"].append(FOREIGN_HOOK)
         self.write_hooks({"Stop": [edited]})
         result = self.run_codex("repair")
-        self.assertEqual(result.stdout, f"{kept_seeded_copy_report(self.seeded)}\n")
+        self.assertEqual(result.stdout, f"{neutralized_seeded_copy_report("Codex", self.seeded)}\n{kept_seeded_copy_report(self.seeded)}\n")
         self.assertTrue(self.seeded.is_dir())
 
     @unittest.skipIf(os.geteuid() == 0, "root reads files without read permission")
@@ -2782,7 +2865,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.assertNotIn(probe, self.config.read_text())
         self.assertIn(escaped, self.config.read_text())
         result = self.run_codex("repair")
-        self.assertEqual(result.stdout.splitlines()[0], kept_seeded_copy_report(self.seeded))
+        self.assertEqual(result.stdout.splitlines()[:2], [neutralized_seeded_copy_report("Codex", self.seeded), kept_seeded_copy_report(self.seeded)])
         self.assertTrue(self.seeded.is_dir())
 
     def test_repair_keeps_the_seeded_copy_hooks_json_names_through_a_symlinked_home(self):
@@ -2794,7 +2877,7 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.write_legacy_hooks(linked_home / CODEX_SEEDED_RELATIVE)
         result = run_session_log(self.package, linked_home, "codex", "repair")
         self.assertEqual((result.returncode, result.stderr), (0, ""))
-        self.assertEqual(result.stdout.splitlines()[0], kept_seeded_copy_report(self.seeded))
+        self.assertEqual(result.stdout.splitlines()[:2], [neutralized_seeded_copy_report("Codex", self.seeded), kept_seeded_copy_report(self.seeded)])
         self.assertTrue(self.seeded.is_dir())
 
     def run_codex_allowing_failure(self, command):
