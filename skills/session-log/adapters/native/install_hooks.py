@@ -19,6 +19,10 @@ MAX_TEMP_FILE_ATTEMPTS = 20
 READ_FLAGS = pathsafe.FILE_FLAGS | os.O_NONBLOCK
 # Codex runs a new or changed hooks.json command only after the user reviews and trusts it.
 RESTORE_FOLLOW_UP = {"codex": "; review and trust them in Codex, then restart"}
+# argv, program name included: mode, harness, config path, and hook path; `remove` takes no hook path.
+HOOK_PATH_INDEX = 4
+ARGUMENT_COUNT = HOOK_PATH_INDEX + 1
+REMOVE_ARGUMENT_COUNT = HOOK_PATH_INDEX
 
 
 def _events(harness):
@@ -62,16 +66,8 @@ def managed_command(value, harness, lifecycle):
     )
 
 
-def expected_cursor(harness, hook, lifecycle):
-    return {"command": build_command(harness, hook, lifecycle), "timeout": 30}
-
-
 def expected_codex(harness, hook, lifecycle):
     return {"hooks": [{"type": "command", "command": build_command(harness, hook, lifecycle)}]}
-
-
-def _expected_builder(harness):
-    return expected_cursor if harness == "cursor" else expected_codex
 
 
 def is_cursor_managed_entry(entry, harness, lifecycle):
@@ -91,23 +87,15 @@ def is_managed_entry(entry, harness, lifecycle):
     return is_codex_managed_entry(entry, harness, lifecycle)
 
 
-def prepare_cursor_document(document):
-    version = document.get("version", 1)
-    if version != 1:
-        fail("Cursor hooks version must be 1")
-    document["version"] = 1
-
-
 def is_current(document, harness, hook):
     hooks = document.get("hooks")
     if not isinstance(hooks, dict):
         return False
-    expected_for = _expected_builder(harness)
     for event, lifecycle in _events(harness):
         entries = hooks.get(event)
         if not isinstance(entries, list):
             return False
-        if expected_for(harness, hook, lifecycle) not in entries:
+        if expected_codex(harness, hook, lifecycle) not in entries:
             return False
     return True
 
@@ -125,24 +113,20 @@ def require_hook_arrays(document, harness):
 def update(document, harness, hook):
     require_hook_arrays(document, harness)
     hooks = document.setdefault("hooks", {})
-    if harness == "cursor":
-        prepare_cursor_document(document)
-    expected_for = _expected_builder(harness)
     for event, lifecycle in _events(harness):
         entries = hooks.setdefault(event, [])
         kept = [entry for entry in entries if not is_managed_entry(entry, harness, lifecycle)]
-        hooks[event] = kept + [expected_for(harness, hook, lifecycle)]
+        hooks[event] = kept + [expected_codex(harness, hook, lifecycle)]
 
 
 def managed_entry_counts(document, harness, hook):
     """(managed entries found, of which current) — one current entry per event is the clean state."""
     hooks = document.get("hooks", {})
-    expected_for = _expected_builder(harness)
     found = current = 0
     for event, lifecycle in _events(harness):
         managed = [entry for entry in hooks.get(event, []) if is_managed_entry(entry, harness, lifecycle)]
         found += len(managed)
-        current += min(1, managed.count(expected_for(harness, hook, lifecycle)))
+        current += min(1, managed.count(expected_codex(harness, hook, lifecycle)))
     return found, current
 
 
@@ -165,6 +149,39 @@ def repair(config, harness, hook):
         print(f"removed {found - current} duplicate or stale hook registration(s) from {config}")
     if events > current:
         print(f"restored {events - current} missing hook registration(s) in {config}{RESTORE_FOLLOW_UP.get(harness, '')}")
+
+
+def has_managed_entries(document, harness):
+    """Whether a parsed hooks ``document`` that `remove` accepts holds a session-log entry; never fails.
+    A document ``require_hook_arrays`` refuses holds none, since `remove` could not drop it."""
+    hooks = document.get("hooks", {}) if isinstance(document, dict) else None
+    if not isinstance(hooks, dict) or not all(isinstance(hooks.get(event, []), list) for event, _ in _events(harness)):
+        return False
+    return any(is_managed_entry(entry, harness, lifecycle)
+               for event, lifecycle in _events(harness) for entry in hooks.get(event, []))
+
+
+def remove(config, harness):
+    """Drop every session-log entry of ``harness`` from ``config``; every other entry stays."""
+    if not os.path.lexists(config):
+        return
+    document = load(config)
+    require_hook_arrays(document, harness)
+    hooks = document.get("hooks", {})
+    removed = 0
+    for event, lifecycle in _events(harness):
+        entries = hooks.get(event, [])
+        kept = [entry for entry in entries if not is_managed_entry(entry, harness, lifecycle)]
+        if len(kept) == len(entries):
+            continue
+        removed += len(entries) - len(kept)
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
+    if removed:
+        atomic_write(config, document)
+        print(f"removed {removed} legacy hook registration(s) from {config}")
 
 
 def safe_parent(path):
@@ -277,16 +294,23 @@ def atomic_write(path, document):
         os.close(parent_fd)
 
 def invalid_arguments(argv):
-    return len(argv) != 5 or argv[1] not in ("check", "install", "repair") or argv[2] not in ("cursor", "codex")
+    """Codex is checked, installed, and repaired; the Cursor plugin registers its own hooks, so Cursor only removes."""
+    if len(argv) == REMOVE_ARGUMENT_COUNT and argv[1] == "remove":
+        return argv[2] not in ("cursor", "codex")
+    return len(argv) != ARGUMENT_COUNT or argv[1] not in ("check", "install", "repair") or argv[2] != "codex"
 
 
 def main(argv=None):
     args = sys.argv if argv is None else [sys.argv[0], *argv]
     if invalid_arguments(args):
-        fail("hooks configurator requires check|install|repair, cursor|codex, config path, and hook path")
-    mode, harness, config_path, hook_path = args[1:]
+        fail("hooks configurator requires check|install|repair with codex, a config path, and a hook path, "
+             "or remove with cursor|codex and a config path")
+    mode, harness, config_path = args[1:HOOK_PATH_INDEX]
     config = Path(config_path)
-    hook = Path(hook_path)
+    if mode == "remove":
+        remove(config, harness)
+        return
+    hook = Path(args[HOOK_PATH_INDEX])
     if not hook.is_file() or hook.is_symlink():
         fail(f"native lifecycle adapter is missing: {hook}")
     if mode == "repair":

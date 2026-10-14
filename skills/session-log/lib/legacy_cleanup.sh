@@ -4,12 +4,14 @@
 # Sourced by bin/session-log after lib/adapter_install.sh, in the same shell, so it shares bin's
 # globals (HARNESS, HARNESS_ROOT, STATE_DIR, HARNESS_LABEL, OWNER_MARKER_VALUE, ...). `on` and
 # `repair` run it under the install lock; Claude Code's SessionStart hook runs it silently through
-# `repair`; outside Claude Code, `status` and `usage` run it too when they repair an enabled adapter,
-# so an unowned file at a legacy path fails them, as the old installer did before every command.
-# It removes only what is proven to be session-log's and never clears runtime markers: a harness
-# plugin's own hooks keep logging whatever duplicate registration goes. Claude Code removals of
-# registrations, scripts, and package copies are reported through print_repair_report; obsolete
-# state files and the OpenCode/OMP leftovers of pre-universal releases go silently.
+# `repair`, and so does a Cursor session start while logging is on and ~/.cursor/hooks.json still
+# holds a legacy session-log entry. Cursor `status` and `usage` never run it; in Codex, OpenCode, and
+# OMP, `status` and `usage` run it too when they repair an enabled adapter, so an unowned file at a
+# legacy path fails them, as the old installer did before every command. It removes only what is
+# proven to be session-log's and never clears runtime markers: a harness plugin's own hooks keep
+# logging whatever duplicate registration goes. Claude Code and Cursor removals of registrations,
+# scripts, and package copies are reported through print_repair_report; obsolete state files and the
+# OpenCode/OMP leftovers of pre-universal releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
@@ -21,16 +23,42 @@ readonly CLAUDE_LEGACY_SCRIPTS=(prompt_log_save.sh prompt_log_new_session.sh pro
 # plugin-root, pointed at the running plugin package, while a seeded copy the cleanup had to keep
 # still reads it.
 readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version plugin-root)
+# The adapter installer's version stamps and manifest older Cursor installs wrote; nothing reads them now.
+readonly CURSOR_OBSOLETE_STATE_FILES=(desired.version adapter.version adapter.manifest)
 
 # The cleanup of the current harness: any harness whose older releases left something behind has
 # its own legacy_cleanup_<harness> here, whether or not its plugin owns its hooks yet.
 legacy_cleanup() {
   case "$HARNESS" in
     claude) legacy_cleanup_claude ;;
-    codex|cursor) ;;
+    codex) ;;
+    cursor) legacy_cleanup_cursor ;;
     opencode) legacy_cleanup_opencode ;;
     omp) legacy_cleanup_omp ;;
   esac
+}
+
+# Older releases registered the session-log hooks in ~/.cursor/hooks.json, pointing at the package
+# copy they seeded into ~/.cursor/skills; the cursor-goodies plugin's .cursor-plugin/hooks.json
+# registers them now, and Cursor runs both, so every entry install_hooks.py recognizes goes. Every
+# other entry stays. An unsafe or invalid hooks.json fails the cleanup with nothing changed. The
+# obsolete adapter state files go silently; runtime markers stay.
+legacy_cleanup_cursor() {
+  local config="$HARNESS_ROOT/hooks.json" report candidate
+  require_command python3
+  if [[ -e "$config" || -L "$config" ]]; then
+    preflight_native_hooks
+    report="$(python3 "$(source_for configurator)" remove "$HARNESS" "$config")"
+    print_repair_report "$report"
+  fi
+  remove_seeded_package "$HARNESS_ROOT/skills/session-log"
+  validate_state_dir
+  for candidate in "${CURSOR_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"; do
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    # A concurrent cleanup may have removed it already.
+    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
+      fail "cannot remove obsolete state file: $candidate"
+  done
 }
 
 # Unsafe settings.json fails the command with nothing changed. An unrecognized legacy script keeps
