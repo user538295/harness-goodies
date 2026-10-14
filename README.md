@@ -131,7 +131,7 @@ codex plugin marketplace add user538295/harness-goodies
 codex plugin add codex-goodies@user538295
 ```
 
-Codex reads its own manifests (`.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json`) and installs `codex-goodies`: every skill, namespaced as `codex-goodies:<skill>`. Codex plugins carry no agents, so `devils-advocate` is not included; `da-review` and `iterative-review` fall back to generic subagents that read the persona from the plugin's `agents/devils-advocate.md`. The plugin ships no hooks; session logging stays opt-in through the `session-log` skill's `on` command. Start a new session to load it. To update later:
+Codex reads its own manifests (`.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json`) and installs `codex-goodies`: every skill, namespaced as `codex-goodies:<skill>`. Codex plugins carry no agents, so `devils-advocate` is not included; `da-review` and `iterative-review` fall back to generic subagents that read the persona from the plugin's `agents/devils-advocate.md`. The plugin ships no hooks; session logging stays opt-in through the `session-log` skill's `on` command, which adds four commands to `~/.codex/hooks.json`. Each one runs the newest installed codex-goodies package and does nothing once the plugin is removed, so its text never changes: review and trust them once in `/hooks`, then restart, and plugin updates keep them trusted. `on` and `repair` also replace the entries older releases registered by package path and remove the package copy they seeded into `~/.codex/skills/session-log` (a copy with a changed or foreign file is named, not removed). Start a new session to load it. To update later:
 
 ```bash
 codex plugin marketplace upgrade user538295
@@ -161,7 +161,7 @@ Each harness plugin above ships the package, so there is nothing to install sepa
 bash skills/session-log/install.sh --harness opencode --arguments "on"
 ```
 
-Earlier releases copied the package into every harness's skill root; Claude Code's `/session-log on`, `repair`, and session start remove that copy (see the Claude Code section above).
+Earlier releases copied the package into every harness's skill root; Claude Code's `/session-log on`, `repair`, and session start remove that copy (see the Claude Code section above), and so do Codex's `on` and `repair` (see the Codex section above).
 
 The supported identities are exactly `claude`, `codex`, `cursor`, `opencode`, and `omp`. The universal `SKILL.md` requires the current host/model to choose one explicitly; identity is never inferred from directories, processes, or environment variables.
 

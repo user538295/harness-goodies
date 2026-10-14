@@ -8,8 +8,9 @@
 # so an unowned file at a legacy path fails them, as the old installer did before every command.
 # It removes only what is proven to be session-log's and never clears runtime markers: a harness
 # plugin's own hooks keep logging whatever duplicate registration goes. Claude Code removals of
-# registrations, scripts, and package copies are reported through print_repair_report; obsolete
-# state files and the OpenCode/OMP leftovers of pre-universal releases go silently.
+# registrations, scripts, and package copies, and Codex package copies, are reported through
+# print_repair_report; obsolete state files and the OpenCode/OMP leftovers of pre-universal
+# releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
