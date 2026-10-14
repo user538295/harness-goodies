@@ -27,10 +27,26 @@ readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.v
 legacy_cleanup() {
   case "$HARNESS" in
     claude) legacy_cleanup_claude ;;
-    codex|cursor) ;;
+    codex) ;;
+    cursor) legacy_cleanup_cursor ;;
     opencode) legacy_cleanup_opencode ;;
     omp) legacy_cleanup_omp ;;
   esac
+}
+
+# Older releases registered the session-log hooks in ~/.cursor/hooks.json, pointing at the package
+# copy they seeded into ~/.cursor/skills; the cursor-goodies plugin's .cursor-plugin/hooks.json
+# registers them now, and Cursor runs both, so every entry install_hooks.py recognizes goes. Every
+# other entry stays. An unsafe or invalid hooks.json fails the cleanup with nothing changed.
+legacy_cleanup_cursor() {
+  local config="$HARNESS_ROOT/hooks.json" report
+  require_command python3
+  if [[ -e "$config" || -L "$config" ]]; then
+    preflight_native_hooks
+    report="$(python3 "$(source_for configurator)" remove "$HARNESS" "$config" "$(source_for hook)")"
+    print_repair_report "$report"
+  fi
+  remove_seeded_package "$HARNESS_ROOT/skills/session-log"
 }
 
 # Unsafe settings.json fails the command with nothing changed. An unrecognized legacy script keeps

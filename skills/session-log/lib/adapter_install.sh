@@ -54,7 +54,7 @@ adapter_current() {
   [[ "$(cat "$STATE_DIR/adapter.version")" == "$VERSION" ]] || return 1
   manifest_current || return 1
   case "$HARNESS" in
-    codex|cursor) native_hooks_current ;;
+    codex) native_hooks_current ;;
     opencode) adapter_asset_current plugin && adapter_asset_current usage ;;
     omp) adapter_asset_current extension && adapter_asset_current usage ;;
   esac
@@ -198,7 +198,7 @@ preflight_state_files() {
 
 preflight_adapter() {
   case "$HARNESS" in
-    codex|cursor) preflight_native_hooks ;;
+    codex) preflight_native_hooks ;;
     opencode|omp) preflight_adapter_targets ;;
   esac
 }
@@ -323,12 +323,12 @@ repair_native_hooks() {
 }
 
 # Collapse duplicate and stale session-log registrations to the one set the harness
-# needs: hooks.json entries (Codex, Cursor), dangling plugin-cache adapter links (OpenCode,
+# needs: hooks.json entries (Codex), dangling plugin-cache adapter links (OpenCode,
 # OMP; legacy_cleanup removes their legacy session-log-omp adapters first).
 # Callers hold the install lock.
 repair_registrations() {
   case "$HARNESS" in
-    codex|cursor) repair_native_hooks ;;
+    codex) repair_native_hooks ;;
     opencode)
       repair_dangling_adapter_link plugin
       repair_dangling_adapter_link usage
@@ -342,7 +342,7 @@ repair_registrations() {
 
 install_adapter() {
   case "$HARNESS" in
-    codex|cursor)
+    codex)
       python3 "$(source_for configurator)" install "$HARNESS" \
         "$HARNESS_ROOT/hooks.json" "$(source_for hook)"
       ;;

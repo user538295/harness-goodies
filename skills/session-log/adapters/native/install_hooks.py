@@ -167,6 +167,29 @@ def repair(config, harness, hook):
         print(f"restored {events - current} missing hook registration(s) in {config}{RESTORE_FOLLOW_UP.get(harness, '')}")
 
 
+def remove(config, harness):
+    """Drop every session-log entry of ``harness`` from ``config``; every other entry stays."""
+    if not os.path.lexists(config):
+        return
+    document = load(config)
+    require_hook_arrays(document, harness)
+    hooks = document.get("hooks", {})
+    removed = 0
+    for event, lifecycle in _events(harness):
+        entries = hooks.get(event, [])
+        kept = [entry for entry in entries if not is_managed_entry(entry, harness, lifecycle)]
+        if len(kept) == len(entries):
+            continue
+        removed += len(entries) - len(kept)
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
+    if removed:
+        atomic_write(config, document)
+        print(f"removed {removed} legacy hook registration(s) from {config}")
+
+
 def safe_parent(path):
     current = Path(path.anchor)
     for part in path.parts[1:-1]:
@@ -277,15 +300,18 @@ def atomic_write(path, document):
         os.close(parent_fd)
 
 def invalid_arguments(argv):
-    return len(argv) != 5 or argv[1] not in ("check", "install", "repair") or argv[2] not in ("cursor", "codex")
+    return len(argv) != 5 or argv[1] not in ("check", "install", "repair", "remove") or argv[2] not in ("cursor", "codex")
 
 
 def main(argv=None):
     args = sys.argv if argv is None else [sys.argv[0], *argv]
     if invalid_arguments(args):
-        fail("hooks configurator requires check|install|repair, cursor|codex, config path, and hook path")
+        fail("hooks configurator requires check|install|repair|remove, cursor|codex, config path, and hook path")
     mode, harness, config_path, hook_path = args[1:]
     config = Path(config_path)
+    if mode == "remove":
+        remove(config, harness)
+        return
     hook = Path(hook_path)
     if not hook.is_file() or hook.is_symlink():
         fail(f"native lifecycle adapter is missing: {hook}")

@@ -1041,8 +1041,9 @@ PRIVATE_DIRECTORY_MODE = 0o700
 LEGACY_CLEANUP_STAMP_RELATIVE = ".claude/session-log/legacy-cleanup.stamp"
 EXECUTABLE_MODE = 0o755
 READ_ONLY_DIRECTORY_MODE = 0o555
-NATIVE_HARNESSES = (("codex", ".codex"), ("cursor", ".cursor"))
-NATIVE_LABELS = {"codex": "Codex", "cursor": "Cursor"}
+# The harnesses whose `on` registers hooks.json entries; the cursor-goodies plugin registers Cursor's.
+NATIVE_HARNESSES = (("codex", ".codex"),)
+NATIVE_LABELS = {"codex": "Codex"}
 # Settings.json registrations of a seeded copy that is not installed, so every one of them is dead.
 DEAD_REGISTRATIONS = 2
 # State files older releases wrote that nothing reads any more.
@@ -2309,6 +2310,182 @@ class AdapterLinkRepairTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("duplicate or stale hook registration(s)", result.stdout)
                 self.assertEqual(json.loads(config.read_text()), expected)
+
+
+CURSOR_PLUGIN_HOOKS_PATH = REPO / ".cursor-plugin/hooks.json"
+CURSOR_PLUGIN_ROOT_PLACEHOLDER = "${CURSOR_PLUGIN_ROOT}"
+# A cursor-goodies install: Cursor caches it per commit, here with a space in the path.
+CURSOR_PLUGIN_CACHE_RELATIVE = ".cursor/plugins/cache/harness-goodies/cursor-goodies/0123abcd with space"
+CURSOR_SEEDED_RELATIVE = ".cursor/skills/session-log"
+CURSOR_EVENT_LIFECYCLES = {
+    "sessionStart": "session-start", "beforeSubmitPrompt": "user-prompt", "afterAgentResponse": "assistant-response",
+    "subagentStop": "subagent-stop", "stop": "stop",
+}
+CURSOR_REPAIR_CLEAN = "Cursor: repair found no duplicate or stale registrations\n"
+CURSOR_HOOKS_NOT_LOADED = ("Cursor: on — plugin hooks not loaded; check that Include Third-Party Plugins, Skills, "
+                           "and Other Configs is on in Cursor Settings, then restart Cursor\n")
+CURSOR_FOREIGN_HOOK = {"command": "echo keep-cursor"}
+
+
+def cursor_plugin_root(home):
+    """A cursor-goodies plugin root under ``home`` holding this repository's session-log package and hooks."""
+    plugin_root = home / CURSOR_PLUGIN_CACHE_RELATIVE
+    (plugin_root / "skills").mkdir(parents=True)
+    shutil.copytree(REPO / "skills/session-log", plugin_root / "skills/session-log")
+    shutil.copytree(REPO / ".cursor-plugin", plugin_root / ".cursor-plugin")
+    return plugin_root
+
+
+def cursor_legacy_hooks(hook, times=1):
+    """The ~/.cursor/hooks.json entries older releases registered for ``hook``, each repeated ``times``."""
+    installer = load_module(INSTALL_PATH, "install_hooks_cursor_legacy")
+    document = {"hooks": {}}
+    installer.update(document, "cursor", hook)
+    for event, entries in document["hooks"].items():
+        document["hooks"][event] = entries * times
+    return document
+
+
+class CursorPluginHooksTests(unittest.TestCase):
+    """The cursor-goodies plugin registers the hooks; `on`/`off` flip the flag; legacy registrations go."""
+
+    maxDiff = None
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        self.plugin_root = cursor_plugin_root(self.home)
+        self.package = self.plugin_root / "skills/session-log"
+        self.config = self.home / ".cursor/hooks.json"
+        self.flag = self.home / ".cursor/prompt-logs/.enabled"
+
+    def run_cursor(self, *arguments):
+        return run_session_log(self.package, self.home, "cursor", *arguments)
+
+    def run_plugin_hook(self, event, payload):
+        """Run a plugin hook the way Cursor does: substitute the placeholder, `sh -c` from the plugin root."""
+        command = next(hook["command"] for hook in json.loads(CURSOR_PLUGIN_HOOKS_PATH.read_text())["hooks"][event])
+        return subprocess.run(
+            ["/bin/sh", "-c", command.replace(CURSOR_PLUGIN_ROOT_PLACEHOLDER, str(self.plugin_root))],
+            input=json.dumps(payload), capture_output=True, text=True, cwd=self.plugin_root,
+            env={**harness_environment(self.home), "CURSOR_PLUGIN_ROOT": str(self.plugin_root)},
+        )
+
+    def test_plugin_manifest_registers_the_native_hook_for_every_cursor_event(self):
+        manifest = json.loads((REPO / ".cursor-plugin/plugin.json").read_text())
+        self.assertEqual(manifest["hooks"], "./.cursor-plugin/hooks.json")
+        document = json.loads(CURSOR_PLUGIN_HOOKS_PATH.read_text())
+        script = f'"{CURSOR_PLUGIN_ROOT_PLACEHOLDER}/skills/session-log/adapters/native/session_log_hook.py"'
+        self.assertEqual(document, {"version": 1, "hooks": {
+            event: [{"command": f"python3 {script} cursor {lifecycle}", "timeout": 30}]
+            for event, lifecycle in CURSOR_EVENT_LIFECYCLES.items()
+        }})
+        installer = load_module(INSTALL_PATH, "install_hooks_cursor_events")
+        self.assertEqual(dict(installer._events("cursor")), CURSOR_EVENT_LIFECYCLES)
+
+    def test_plugin_hooks_log_only_while_the_flag_exists(self):
+        payload = {"conversation_id": "plugin-session", "generation_id": "plugin-generation",
+                   "workspace_roots": [str(self.home)], "prompt": "plugin prompt"}
+        disabled = self.run_plugin_hook("beforeSubmitPrompt", payload)
+        self.assertEqual((disabled.returncode, disabled.stdout.strip(), disabled.stderr), (0, '{"continue":true}', ""))
+        self.assertFalse((self.home / ".cursor/prompt-logs").exists())
+        self.assertEqual(self.run_cursor("on").returncode, 0)
+        enabled = self.run_plugin_hook("beforeSubmitPrompt", payload)
+        self.assertEqual((enabled.returncode, enabled.stdout.strip(), enabled.stderr), (0, '{"continue":true}', ""))
+        log = next(self.home.glob(".cursor/prompt-logs/*/session_plugin-session.md"))
+        self.assertIn("plugin prompt", log.read_text())
+        runtime = json.loads((self.home / ".cursor/session-log/runtime.json").read_text())
+        self.assertEqual((runtime["harness"], runtime["session_id"]), ("cursor", "plugin-session"))
+
+    def test_on_and_off_only_flip_the_flag(self):
+        self.config.write_text(json.dumps({"version": 1, "hooks": {"stop": [CURSOR_FOREIGN_HOOK]}}, indent=2))
+        original = self.config.read_bytes()
+        enabled = self.run_cursor("on")
+        self.assertEqual((enabled.returncode, enabled.stdout, enabled.stderr),
+                         (0, "Cursor: on — logging starts with the next prompt\n", ""))
+        self.assertTrue(self.flag.is_file())
+        self.assertEqual(self.config.read_bytes(), original)
+        self.assertEqual(sorted(path.name for path in (self.home / ".cursor/session-log").iterdir()), [])
+        disabled = self.run_cursor("off")
+        self.assertEqual((disabled.returncode, disabled.stdout, disabled.stderr), (0, "Cursor: off\n", ""))
+        self.assertFalse(self.flag.exists())
+        self.assertEqual(self.config.read_bytes(), original)
+
+    def test_status_reports_plugin_hooks_that_have_not_loaded(self):
+        self.assertEqual(self.run_cursor("status").stdout, "Cursor: off\n")
+        self.assertEqual(self.run_cursor("on").returncode, 0)
+        self.assertEqual(self.run_cursor("status").stdout, CURSOR_HOOKS_NOT_LOADED)
+        repeated = self.run_cursor("on")
+        self.assertEqual((repeated.returncode, repeated.stdout), (0, CURSOR_HOOKS_NOT_LOADED))
+        hooked = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
+        self.assertEqual(hooked.returncode, 0, hooked.stderr)
+        # The plugin hook recorded /bin/sh's parent, this test process, as the running Cursor.
+        self.assertEqual(self.run_cursor("status").stdout, "Cursor: on\n")
+
+    def test_on_removes_only_the_legacy_hook_registrations(self):
+        seeded_hook = self.home / CURSOR_SEEDED_RELATIVE / "adapters/native/session_log_hook.py"
+        document = cursor_legacy_hooks(seeded_hook, REPEATED_REGISTRATIONS)
+        document["hooks"]["stop"].append(CURSOR_FOREIGN_HOOK)
+        document["hooks"]["afterFileEdit"] = [CURSOR_FOREIGN_HOOK]
+        self.config.write_text(json.dumps(document))
+        result = self.run_cursor("on")
+        removed = REPEATED_REGISTRATIONS * len(CURSOR_EVENT_LIFECYCLES)
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(result.stdout, (
+            f"Cursor: removed {removed} legacy hook registration(s) from {self.config}\n"
+            "Cursor: on — logging starts with the next prompt\n"))
+        self.assertEqual(json.loads(self.config.read_text()), {"version": 1, "hooks": {
+            "stop": [CURSOR_FOREIGN_HOOK], "afterFileEdit": [CURSOR_FOREIGN_HOOK],
+        }})
+
+    def test_repair_removes_legacy_registrations_and_the_seeded_copy_once(self):
+        seeded = self.home / CURSOR_SEEDED_RELATIVE
+        shutil.copytree(REPO / "skills/session-log", seeded)
+        write_seeded_manifest(seeded)
+        self.config.write_text(json.dumps(cursor_legacy_hooks(seeded / "adapters/native/session_log_hook.py")))
+        first = self.run_cursor("repair")
+        self.assertEqual((first.returncode, first.stderr), (0, ""))
+        self.assertEqual(first.stdout, (
+            f"Cursor: removed {len(CURSOR_EVENT_LIFECYCLES)} legacy hook registration(s) from {self.config}\n"
+            f"Cursor: removed legacy package copy {seeded}\n"))
+        self.assertEqual(json.loads(self.config.read_text()), {"version": 1, "hooks": {}})
+        self.assertFalse(os.path.lexists(seeded))
+        repaired = self.config.read_bytes()
+        second = self.run_cursor("repair")
+        self.assertEqual((second.returncode, second.stdout, second.stderr), (0, CURSOR_REPAIR_CLEAN, ""))
+        self.assertEqual(self.config.read_bytes(), repaired)
+
+    def test_repair_keeps_a_changed_seeded_copy_and_reports_it(self):
+        seeded = self.home / CURSOR_SEEDED_RELATIVE
+        shutil.copytree(REPO / "skills/session-log", seeded)
+        write_seeded_manifest(seeded)
+        (seeded / "SKILL.md").write_text("<!-- universal-session-log: managed -->\nedited\n")
+        result = self.run_cursor("repair")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertTrue(result.stdout.startswith(f"Cursor: kept legacy package copy {seeded}:"), result.stdout)
+        self.assertTrue(result.stdout.endswith("; move it aside\n"), result.stdout)
+        self.assertTrue((seeded / "SKILL.md").is_file())
+
+    def test_repair_refuses_invalid_hooks_files_without_touching_them(self):
+        for name, contents in {"malformed JSON": "{not json", "event not an array": json.dumps({"hooks": {"stop": {}}})}.items():
+            with self.subTest(name):
+                self.config.write_text(contents)
+                result = self.run_cursor("repair")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertTrue(result.stderr.startswith("session-log: "), result.stderr)
+                self.assertEqual(self.config.read_text(), contents)
+
+    def test_usage_and_status_never_touch_legacy_registrations(self):
+        legacy_hook = self.home / CURSOR_SEEDED_RELATIVE / "adapters/native/session_log_hook.py"
+        self.config.write_text(json.dumps(cursor_legacy_hooks(legacy_hook)))
+        self.flag.parent.mkdir(parents=True)
+        self.flag.write_text("enabled\n")
+        original = self.config.read_bytes()
+        for command in ("status", "usage"):
+            with self.subTest(command):
+                self.run_cursor(command)
+                self.assertEqual(self.config.read_bytes(), original)
 
 
 # Python stand-ins Git Bash may find on Windows: none at all, or the Microsoft Store
