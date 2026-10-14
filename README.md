@@ -68,7 +68,7 @@ Powered by the [`devils-advocate`](https://user538295.github.io/harness-goodies/
 - [**`/status-report`**](https://user538295.github.io/harness-goodies/handout/skill-status-report.html) — Kicked off a long task and don't know when it'll finish. Reports status on demand or on a recurring schedule — cancel anytime with `off`.
 - [**`/session-log`**](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) — One stable package for Claude Code, Codex, Cursor, OpenCode, and OMP. The host selects its identity explicitly; the package never guesses from paths, processes, or environment variables. Logging and usage stay native to each harness.
 
-Each harness plugin ships the package; nothing else is installed. In Claude Code the plugin's hooks stay idle until `/session-log on`, which takes effect with the next prompt (`on — logging starts with the next prompt`); when logging was already on but no hook of the running session has seen it, `on` reports `on — restart required`. In the other harnesses, restart after `/session-log on` when it reports `on — restart required`; Codex instead reports `on — trust review/restart required`, because its new `hooks.json` commands require review before restart.
+Each harness plugin ships the package; nothing else is installed. In Claude Code the plugin's hooks stay idle until `/session-log on`, which takes effect with the next prompt (`on — logging starts with the next prompt`); when logging was already on but no hook of the running session has seen it, `on` reports `on — restart required`. In OMP the plugin's extension stays idle until `/session-log on` and reads that flag at every prompt; `on` reports `on — restart required` until a restarted omp has loaded it. In the other harnesses, restart after `/session-log on` when it reports `on — restart required`; Codex instead reports `on — trust review/restart required`, because its new `hooks.json` commands require review before restart.
 
 One script bundle handles the progress plumbing — [`scripts-plan`](https://user538295.github.io/harness-goodies/handout/scripts-plan.html) prints the next-task progress header — `/implement` reads it once in NEXT mode, and on every iteration in ALL mode. The [`session-log`](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) skill archives the prompt and response text exposed by each harness as per-project Markdown; the universal package owns activation and migration for all five harnesses. See the [session-log handout](https://user538295.github.io/harness-goodies/handout/skill-session-log.html) for details.
 
@@ -104,7 +104,7 @@ omp plugin marketplace update user538295
 omp plugin upgrade omp-goodies@user538295
 ```
 
-Session logging is opt-in: `/skill:session-log on` links the extension of the package it runs from; restart omp once, after which `/session-log status|on|off|usage|repair` works directly.
+The plugin's `package.json` registers the session-log extension (its `omp.extensions` entry), which does nothing until `/session-log on` (or `/skill:session-log on`) creates the enable flag: `on` and `off` only flip that flag, the loaded extension reads it at every prompt, and `status` only reads it together with the runtime marker the extension writes when it loads. `/reload-plugins` does not reload extensions, so restart omp after installing or upgrading the plugin; until then `on` and `status` report `on — restart required`. A session started before an upgrade keeps the extension it loaded, and its `/session-log` command runs the upgraded package. Older releases linked `~/.omp/agent/extensions/session-log.js` into a package copy seeded at `~/.omp/agent/skills/session-log`, and omp would load that extension beside the plugin's; `on`, `repair`, and each omp start (in the background) remove them, the copy only when its ownership manifest proves every file in it unchanged; otherwise `repair` names it so you can move it aside.
 
 Each entrypoint passes its native harness identity explicitly; it never infers a harness from directories or environment variables. `off` never installs an absent adapter.
 
@@ -161,11 +161,11 @@ Each harness plugin above ships the package, so there is nothing to install sepa
 bash skills/session-log/install.sh --harness opencode --arguments "on"
 ```
 
-Earlier releases copied the package into every harness's skill root; Claude Code's `/session-log on`, `repair`, and session start remove that copy (see the Claude Code section above).
+Earlier releases copied the package into every harness's skill root; in Claude Code and OMP, `/session-log on`, `repair`, and each start remove that copy (see their sections above).
 
 The supported identities are exactly `claude`, `codex`, `cursor`, `opencode`, and `omp`. The universal `SKILL.md` requires the current host/model to choose one explicitly; identity is never inferred from directories, processes, or environment variables.
 
-Only default roots are supported: Claude Code `~/.claude`, Codex `~/.codex`, Cursor `~/.cursor`, OpenCode `~/.config/opencode`, and OMP `~/.omp/agent`. OpenCode also reads native data from `~/.local/share/opencode`; relocated config or data roots fail explicitly. Logging remains off until enabled separately in each harness. In Codex, Cursor, OpenCode, and OMP, `status` and `usage` repair a missing or outdated adapter while logging is enabled; Claude Code has no adapter to repair.
+Only default roots are supported: Claude Code `~/.claude`, Codex `~/.codex`, Cursor `~/.cursor`, OpenCode `~/.config/opencode`, and OMP `~/.omp/agent`. OpenCode also reads native data from `~/.local/share/opencode`; relocated config or data roots fail explicitly. Logging remains off until enabled separately in each harness. In Codex, Cursor, and OpenCode, `status` and `usage` repair a missing or outdated adapter while logging is enabled; the Claude Code and OMP plugins ship theirs, so there is no adapter to repair.
 
 OpenCode and OMP keep per-process runtime records alongside the shared runtime pointer. The adapters bound their in-memory session history; after a process restart, the on-disk logs remain the source of recorded prompts and responses.
 
