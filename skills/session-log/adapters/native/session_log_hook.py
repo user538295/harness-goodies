@@ -20,7 +20,6 @@ if LIB_PATH not in sys.path:
 NATIVE_PATH = str(Path(__file__).resolve().parent)
 if NATIVE_PATH not in sys.path:
     sys.path.insert(0, NATIVE_PATH)
-import install_hooks
 import pathsafe
 
 MAX_SESSION_ID_LENGTH = 128
@@ -328,6 +327,8 @@ def has_legacy_cursor_hooks(root):
         document = json.loads(config.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
+    # Imported here so that only a Cursor session start loads the configurator.
+    import install_hooks
     return install_hooks.has_managed_entries(document, "cursor")
 
 

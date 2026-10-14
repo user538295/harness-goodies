@@ -4,12 +4,14 @@
 # Sourced by bin/session-log after lib/adapter_install.sh, in the same shell, so it shares bin's
 # globals (HARNESS, HARNESS_ROOT, STATE_DIR, HARNESS_LABEL, OWNER_MARKER_VALUE, ...). `on` and
 # `repair` run it under the install lock; Claude Code's SessionStart hook runs it silently through
-# `repair`; outside Claude Code, `status` and `usage` run it too when they repair an enabled adapter,
-# so an unowned file at a legacy path fails them, as the old installer did before every command.
-# It removes only what is proven to be session-log's and never clears runtime markers: a harness
-# plugin's own hooks keep logging whatever duplicate registration goes. Claude Code removals of
-# registrations, scripts, and package copies are reported through print_repair_report; obsolete
-# state files and the OpenCode/OMP leftovers of pre-universal releases go silently.
+# `repair`, and so does a Cursor session start while logging is on and ~/.cursor/hooks.json still
+# holds a legacy session-log entry. Cursor `status` and `usage` never run it; in Codex, OpenCode, and
+# OMP, `status` and `usage` run it too when they repair an enabled adapter, so an unowned file at a
+# legacy path fails them, as the old installer did before every command. It removes only what is
+# proven to be session-log's and never clears runtime markers: a harness plugin's own hooks keep
+# logging whatever duplicate registration goes. Claude Code and Cursor removals of registrations,
+# scripts, and package copies are reported through print_repair_report; obsolete state files and the
+# OpenCode/OMP leftovers of pre-universal releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.

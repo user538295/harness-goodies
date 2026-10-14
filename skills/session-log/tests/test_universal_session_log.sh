@@ -357,7 +357,8 @@ printf '%s\n' '{"version":1,"hooks":{"afterFileEdit":[{"command":"echo keep-curs
 printf '%s\n' '{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo keep-codex"}]}]}}' > "$CODEX_HOME/.codex/hooks.json"
 cursor_on="$(HOME="$CURSOR_HOME" bash "$ENTRYPOINT" --harness cursor --arguments on 2>&1)"
 codex_on="$(HOME="$CODEX_HOME" bash "$ENTRYPOINT" --harness codex --arguments on 2>&1)"
-assert_exact "Cursor on only creates the flag the plugin hooks wait for" "Cursor: on — logging starts with the next prompt" "$cursor_on"
+assert_exact "Cursor on only creates the flag the plugin hooks wait for" \
+  "Cursor: on — logging starts with the next prompt once the cursor-goodies hooks run; run status after it to confirm" "$cursor_on"
 assert_exact "Codex on reports trust review honestly" "Codex: on — trust review/restart required" "$codex_on"
 assert_file "Cursor flag created" "$CURSOR_HOME/.cursor/prompt-logs/.enabled"
 assert_file "Codex native hooks config installed" "$CODEX_HOME/.codex/hooks.json"

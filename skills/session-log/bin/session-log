@@ -8,10 +8,13 @@ readonly PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 readonly VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
 readonly HOME_ROOT="$(cd "${HOME:?HOME is required}" && pwd -P)"
 readonly STORE="$HOME_ROOT/.local/share/universal-session-log"
-# No hook of the running Cursor has seen the flag: the cursor-goodies plugin is missing or predates
-# its hooks, Cursor loads plugin hooks only while this setting is on (and its server-side plugin
-# import gate allows it), or Cursor has not restarted since.
-readonly CURSOR_HOOKS_NOT_LOADED="on — no plugin hook has run; install or update the cursor-goodies plugin, check that Include Third-Party Plugins, Skills, and Other Configs is on in Cursor Settings, then restart Cursor"
+# No hook of this package's version has seen the flag in the running Cursor: the cursor-goodies
+# plugin is missing or predates its hooks, Cursor still runs the hooks of an older plugin version
+# (the runtime marker must carry this VERSION), Cursor loads plugin hooks only while this setting is
+# on (and its server-side plugin import gate allows it), or Cursor has not restarted since.
+readonly CURSOR_HOOKS_NOT_LOADED="on — no hook of this cursor-goodies version has run; install or update the plugin, check that Include Third-Party Plugins, Skills, and Other Configs is on in Cursor Settings, then restart Cursor"
+# Cursor's first `on`: the flag exists, but only a hook run proves the plugin hooks are loaded.
+readonly CURSOR_ON_UNTIL_HOOKS_RUN="on — logging starts with the next prompt once the cursor-goodies hooks run; run status after it to confirm"
 HARNESS=""
 ENTRYPOINT=""
 COMMAND="status"
@@ -465,8 +468,9 @@ run_best_effort_cleanup() {
 }
 
 # `on` for a plugin-owned harness: best-effort legacy cleanup, then the enable flag. Without a
-# current runtime marker, a flag this command created takes effect at the next prompt; a flag that
-# was already on means the hooks of the running session never saw it, so they are not loaded.
+# current runtime marker, a flag this command created takes effect at the next prompt (in Cursor
+# only once its plugin hooks run, which nothing here can see yet); a flag that was already on means
+# the hooks of the running session never saw it, so they are not loaded.
 enable_plugin_hooks() {
   local was_enabled=0
   preflight_enable_flag
@@ -481,6 +485,8 @@ enable_plugin_hooks() {
     printf '%s: %s\n' "$HARNESS_LABEL" "$CURSOR_HOOKS_NOT_LOADED"
   elif ((was_enabled)); then
     printf '%s: on — restart required\n' "$HARNESS_LABEL"
+  elif [[ "$HARNESS" == cursor ]]; then
+    printf '%s: %s\n' "$HARNESS_LABEL" "$CURSOR_ON_UNTIL_HOOKS_RUN"
   else
     printf '%s: on — logging starts with the next prompt\n' "$HARNESS_LABEL"
   fi
