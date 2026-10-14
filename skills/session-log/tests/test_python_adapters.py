@@ -1907,7 +1907,7 @@ class ClaudeOffTests(unittest.TestCase):
         self.assertTrue(self.flag.is_file())
 
 
-LEGACY_PACKAGE_PATH =REPO / "skills/session-log/lib/legacy_package.py"
+LEGACY_PACKAGE_PATH = REPO / "skills/session-log/lib/legacy_package.py"
 SEEDED_MANIFEST = ".universal-session-log.manifest"
 PLUGIN_CACHE_LINK_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/skills/session-log"
 # A remover that blocks (e.g. on a FIFO) fails the test instead of hanging the suite.
@@ -2423,6 +2423,14 @@ class OmpPluginOwnedTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "OMP: off\n", ""))
         self.assertFalse(os.path.lexists(flag))
         self.assertTrue((self.home / OMP_SUBROOT / Path(INSTALL_LOCK_RELATIVE).relative_to(".claude") / "owner").is_file())
+
+    def test_on_skips_the_cleanup_and_enables_while_the_extension_repair_holds_the_install_lock(self):
+        hold_install_lock(self.home, OMP_SUBROOT)
+        result = self.run_omp("on")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(result.stdout, "OMP: legacy cleanup skipped: another session-log command is running\n"
+                                        + OMP_RESTART_REQUIRED)
+        self.assertTrue((self.home / OMP_SUBROOT / "prompt-logs/.enabled").is_file())
 
     def test_every_command_refuses_a_relocated_root_and_names_the_supported_one(self):
         relocated = str(self.home / "relocated")

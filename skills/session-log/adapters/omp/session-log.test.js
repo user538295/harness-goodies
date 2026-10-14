@@ -131,6 +131,10 @@ const NON_EXECUTABLE_MODE = 0o644;
 const PACKAGE_REMOVED_MESSAGE = "session-log: the session-log package this omp session loaded is gone (upgraded or uninstalled); restart omp";
 const LOCK_BUSY_ERROR = "session-log: another session-log command is already in progress for omp";
 const KEPT_COPY_REPORT = "OMP: kept legacy package copy /home/u/.omp/agent/skills/session-log: SKILL.md was changed; move it aside";
+const PRIVATE_DIRECTORY_MODE = 0o700;
+const SEEDED_MANIFEST = ".universal-session-log.manifest";
+const SEEDED_MANIFEST_HEAD = "format=1\nowner=universal-session-log\nversion=2.0.0\n";
+const SHA256_HEX_LENGTH = 64;
 const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 // Records each call, then prints each `stdout` and `stderr` line and exits with `exitCode`, the way a repair reports.
 const recordingCli = (label, { stdout = [], stderr = [], exitCode = 0 } = {}) => [
@@ -147,11 +151,13 @@ const isPackageTests = (source) => {
 };
 const pluginsDirectory = (home) => path.join(home, ".omp", "plugins");
 const cliOf = (root) => path.join(root, "skills", "session-log", "bin", "session-log");
+// With `behaviour` null the plugin keeps the package's real CLI; otherwise a recording stub replaces it.
 const installPlugin = (home, version, behaviour = {}) => {
 	const root = path.join(pluginsDirectory(home), "cache", "plugins", `user538295___omp-goodies___${version}`);
 	fs.mkdirSync(path.join(root, "skills"), { recursive: true });
 	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: PLUGIN_PACKAGE_NAME, version }));
 	fs.cpSync(PACKAGE_DIR, path.join(root, "skills", "session-log"), { recursive: true, filter: (source) => !isPackageTests(source) });
+	if (behaviour === null) return root;
 	fs.writeFileSync(cliOf(root), recordingCli(version, behaviour));
 	// writeFileSync applies its mode only to a file it creates, and the copied CLI already exists.
 	fs.chmodSync(cliOf(root), EXECUTABLE_MODE);
@@ -438,6 +444,33 @@ describe("legacy cleanup at load", () => {
 			const { stderr } = loadExtension(home, extensionOf(plugin), { WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
 			expect(stderr).toBe(expected);
 			expect(cliCalls(home)).toBe("1.0.0 --entrypoint omp --harness omp repair\n");
+		}, BACKGROUND_TEST_TIMEOUT_MS);
+	}
+	// The same outcomes from the package's real CLI, so a reworded repair report or lock error fails here.
+	const realRepairOutcomes = {
+		"stays silent when the real CLI finds the install lock held by a live command": (agent) => {
+			leaveSessionLogOmpExtension(agent);
+			const lock = path.join(agent, "session-log", ".install.lock");
+			fs.mkdirSync(lock, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+			const start = Bun.spawnSync(["ps", "-p", String(process.pid), "-o", "lstart="]).stdout.toString().trim();
+			fs.writeFileSync(path.join(lock, "owner"), `${process.pid}\n${start}\n`);
+			return "";
+		},
+		"reports the seeded copy the real CLI keeps": (agent) => {
+			const seeded = path.join(agent, "skills", "session-log");
+			fs.mkdirSync(seeded, { recursive: true });
+			fs.writeFileSync(path.join(seeded, "SKILL.md"), "edited\n");
+			fs.writeFileSync(path.join(seeded, SEEDED_MANIFEST), `${SEEDED_MANIFEST_HEAD}asset=SKILL.md\nsha256=${"0".repeat(SHA256_HEX_LENGTH)}\n`);
+			return `session-log: kept legacy package copy ${seeded}: SKILL.md was changed; move it aside\n`;
+		},
+	};
+	for (const [name, leave] of Object.entries(realRepairOutcomes)) {
+		test(name, () => {
+			const home = temporaryDirectory();
+			const plugin = installPlugin(home, "1.0.0", null);
+			const expected = leave(path.join(home, ".omp", "agent"));
+			const { stderr } = loadExtension(home, extensionOf(plugin), { WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
+			expect(stderr).toBe(expected);
 		}, BACKGROUND_TEST_TIMEOUT_MS);
 	}
 });
