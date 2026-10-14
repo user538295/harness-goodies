@@ -46,7 +46,7 @@ const childEnvironment = (env) => {
 // ctx.session.get, `log` is a createSessionLog instance on the injected `clock`, `event(type, data)`
 // delivers one V2 event, `step(...)` one assistant step, `prompt(...)` one prompt hook call, and
 // `setup(overrides)` runs setupSessionLog with a full context double and returns what it registered.
-const runPlugin = (source, env = {}) => {
+const runPlugin = (source, env = {}, { cwd } = {}) => {
   const result = spawnSync(process.execPath, ["--eval", `
     import fs from "node:fs";
     import path from "node:path";
@@ -99,7 +99,7 @@ const runPlugin = (source, env = {}) => {
     };
     ${source}
     await log.waitUntilIdle();
-  `], { env: childEnvironment(env), encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
+  `], { env: childEnvironment(env), encoding: "utf8", timeout: CHILD_TIMEOUT_MS, cwd });
   if (result.status !== 0) throw new Error(`plugin run failed (${result.signal ?? result.status}): ${result.stderr}`);
   return result;
 };
@@ -109,6 +109,13 @@ const readProjectLog = (project) => {
     .filter((name) => name.endsWith(".md"))
     .map((name) => fs.readFileSync(path.join(directory, name), "utf8")).join("\n");
 };
+// Writes an executable `name` into a fresh directory to put first on PATH; returns that directory.
+const wrapperDirectory = (name, lines) => {
+  const directory = fs.mkdtempSync(path.join(home, `${name}-wrapper-`));
+  fs.writeFileSync(path.join(directory, name), ["#!/bin/sh", ...lines].join("\n") + "\n", { mode: 0o700 });
+  return directory;
+};
+const pathWith = (directory) => `${directory}:${process.env.PATH}`;
 const projectLogFiles = (project) => fs.readdirSync(path.join(logDirectory, project)).filter((name) => name.endsWith(".md"));
 
 test("logs the root prompt and each root step in the release log format", () => {
@@ -126,6 +133,18 @@ test("logs the root prompt and each root step in the release log format", () => 
     "est\\. used token: input: 2, output: 3, reasoning: 0, cache_write: 0, cache_read: 0, total: 5, cost: \\$0\\.0000, model: fixture-model\\n---\\n\\n"));
   expect(log).toMatch(new RegExp(`### ${CLOCK_LINE} response\\n\\nFirst part\\.\\nSecond part\\.\\n\\nworking time: 00:00:02\\n` +
     "est\\. used token: input: 10, output: 20, reasoning: 3, cache_write: 5, cache_read: 4, total: 42, cost: \\$0\\.0123, model: fixture-model\\n---\\n\\n$"));
+});
+
+test("an event without a positive created time is timed by the plugin's clock", () => {
+  runPlugin(`
+    sessions.set("ses_untimed", undefined);
+    clock = 5_000;
+    event("session.step.started", { sessionID: "ses_untimed", assistantMessageID: "msg_untimed", agent: "build", model: { id: "m", providerID: "p" } }, 0);
+    clock = 7_000;
+    event("session.step.ended", { sessionID: "ses_untimed", assistantMessageID: "msg_untimed", finish: "stop", cost: 0,
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, 0);
+  `, { SESSION_LOG_FIXTURE: "fixture/untimed" });
+  expect(readProjectLog("fixture-untimed")).toContain("working time: 00:00:02\n");
 });
 
 test("times a step by its events' own created times", () => {
@@ -321,21 +340,49 @@ test("refuses a symlinked log directory without throwing into OpenCode", () => {
   expect(result.stderr).toContain("not a safe directory");
 });
 
-test("retries a write that failed once and logs it a single time", () => {
-  const wrapperDirectory = fs.mkdtempSync(path.join(home, "python-wrapper-"));
-  const failedOnce = path.join(wrapperDirectory, "failed-once");
-  // The first append helper run fails; every other Python run passes through.
-  fs.writeFileSync(path.join(wrapperDirectory, "python3"), [
-    "#!/bin/sh",
-    `if [ -n "$SESSION_LOG_EXPECTED_INO" ] && [ ! -e "${failedOnce}" ]; then : > "${failedOnce}"; echo "transient failure" >&2; exit 1; fi`,
-    `exec "${Bun.which("python3")}" "$@"`,
-  ].join("\n"), { mode: 0o700 });
+test("retries a write whose helper failed after appending, without logging it twice", () => {
+  const runs = path.join(home, "append-runs");
+  // The first append helper run appends, then fails; every other Python run passes through.
+  const wrapper = wrapperDirectory("python3", [
+    `if [ -n "$SESSION_LOG_EXPECTED_INO" ]; then echo run >> "${runs}"; fi`,
+    `"${Bun.which("python3")}" "$@" || exit $?`,
+    `if [ -n "$SESSION_LOG_EXPECTED_INO" ] && [ "$(wc -l < "${runs}")" -eq 1 ]; then echo "transient failure" >&2; exit 1; fi`,
+  ]);
   runPlugin(`
     sessions.set("ses_retry", undefined);
     await prompt("ses_retry", "Retried.");
-  `, { SESSION_LOG_FIXTURE: "fixture/retry", PATH: `${wrapperDirectory}:${process.env.PATH}` });
-  expect(fs.existsSync(failedOnce)).toBe(true);
+  `, { SESSION_LOG_FIXTURE: "fixture/retry", PATH: pathWith(wrapper) });
+  expect(fs.readFileSync(runs, "utf8")).toBe("run\nrun\n");
   expect(readProjectLog("fixture-retry").match(/Retried\./g)).toHaveLength(1);
+});
+
+test("gives up on a write after its last attempt and reports why", () => {
+  const runs = path.join(home, "append-runs");
+  const wrapper = wrapperDirectory("python3", [
+    `if [ -n "$SESSION_LOG_EXPECTED_INO" ]; then echo run >> "${runs}"; echo "disk full" >&2; exit 1; fi`,
+    `exec "${Bun.which("python3")}" "$@"`,
+  ]);
+  const result = runPlugin(`
+    sessions.set("ses_full", undefined);
+    await prompt("ses_full", "Never written.");
+  `, { SESSION_LOG_FIXTURE: "fixture/full", PATH: pathWith(wrapper) });
+  expect(fs.readFileSync(runs, "utf8")).toBe("run\nrun\nrun\n");
+  expect(result.stderr).toContain("session-log: disk full");
+  expect(readProjectLog("fixture-full")).not.toContain("Never written.");
+});
+
+test("the Python helpers never import modules from the working directory", () => {
+  const project = fs.mkdtempSync(path.join(home, "project-"));
+  const imported = path.join(home, "imported");
+  for (const module of ["json", "hashlib", "base64", "subprocess"]) {
+    fs.writeFileSync(path.join(project, `${module}.py`), `open(${JSON.stringify(imported)}, "a").write("${module}\\n")\n`);
+  }
+  runPlugin(`
+    sessions.set("ses_isolated", undefined);
+    await prompt("ses_isolated", "Isolated.");
+  `, { SESSION_LOG_FIXTURE: "fixture/isolated" }, { cwd: project });
+  expect(fs.existsSync(imported)).toBe(false);
+  expect(readProjectLog("fixture-isolated")).toContain("Isolated.");
 });
 
 test("setup records the runtime marker while logging is on, and a prompt restores it after `off`", () => {
@@ -364,6 +411,19 @@ test("setup writes no runtime marker while logging is off", () => {
   fs.unlinkSync(enabledFlag);
   runPlugin("const { cleanup } = await setup(); await cleanup();");
   expect(fs.existsSync(path.join(stateDirectory, "runtime.json"))).toBe(false);
+});
+
+test("each instance in a process keeps this process's runtime marker until the last one closes", () => {
+  const result = runPlugin(`
+    const first = await setup();
+    const second = await setup();
+    const marker = path.join(process.env.HOME, ".config/opencode/session-log/runtime." + process.pid + ".json");
+    await first.cleanup();
+    const afterFirst = fs.existsSync(marker);
+    await second.cleanup();
+    process.stdout.write(JSON.stringify({ afterFirst, afterSecond: fs.existsSync(marker) }));
+  `);
+  expect(JSON.parse(result.stdout)).toEqual({ afterFirst: true, afterSecond: false });
 });
 
 test("a symlinked runtime marker is refused without throwing into OpenCode", () => {
@@ -436,6 +496,19 @@ test("a failed event stream is reported and subscribed again", () => {
   expect(result.stdout).toBe("2");
 });
 
+test("a symlinked config root logs nothing but keeps /session-log", () => {
+  const realConfig = fs.mkdtempSync(path.join(home, "dotfiles-"));
+  fs.cpSync(path.join(home, ".config"), realConfig, { recursive: true });
+  fs.rmSync(path.join(home, ".config"), { recursive: true });
+  fs.symlinkSync(realConfig, path.join(home, ".config"));
+  const result = runPlugin(`
+    const { registered } = await setup();
+    process.stdout.write(JSON.stringify({ commands: registered.commands.map(({ name }) => name), hooks: registered.hooks }));
+  `);
+  expect(JSON.parse(result.stdout)).toEqual({ commands: ["session-log"], hooks: [] });
+  expect(result.stderr).toContain("OpenCode root contains an unsafe symlink");
+});
+
 for (const [variable, label] of [["XDG_CONFIG_HOME", "config"], ["OPENCODE_CONFIG_DIR", "config"], ["XDG_DATA_HOME", "data"]]) {
   test(`a relocated OpenCode ${label} root (${variable}) logs nothing but keeps /session-log`, () => {
     const relocated = fs.mkdtempSync(path.join(home, "relocated-"));
@@ -452,34 +525,63 @@ for (const [variable, label] of [["XDG_CONFIG_HOME", "config"], ["OPENCODE_CONFI
   });
 }
 
-test("/session-log runs the package CLI and posts its output as a notice; a failure throws its message", () => {
+test("/session-log runs the package CLI and posts its output, or why it failed, as a notice", () => {
   fs.unlinkSync(enabledFlag);
   const result = runPlugin(`
     const { registered } = await setup();
     const [command] = registered.commands;
-    await command.execute({ sessionID: "ses_command", prompt: { text: "  " }, delivery: "steer" });
-    await command.execute({ sessionID: "ses_command", prompt: { text: "status" }, delivery: "steer" });
-    let failure = "";
-    try { await command.execute({ sessionID: "ses_command", prompt: { text: "bogus" }, delivery: "steer" }); }
-    catch (error) { failure = error.message; }
-    process.stdout.write(JSON.stringify({ notices: registered.notices, failure }));
+    for (const text of ["  ", "status", "bogus"]) {
+      await command.execute({ sessionID: "ses_command", prompt: { text }, delivery: "steer" });
+    }
+    process.stdout.write(JSON.stringify(registered.notices));
   `);
-  const { notices, failure } = JSON.parse(result.stdout);
-  const notice = { sessionID: "ses_command", text: "OpenCode: off", description: "OpenCode: off", resume: false };
-  expect(notices).toEqual([notice, notice]);
-  expect(failure).toBe("session-log: unknown command: bogus");
+  const notice = (text) => ({ sessionID: "ses_command", text, description: text, resume: false });
+  expect(JSON.parse(result.stdout)).toEqual([notice("OpenCode: off"), notice("OpenCode: off"), notice("session-log: unknown command: bogus")]);
+});
+
+test("/session-log on records the runtime marker, so status reports the running plugin", () => {
+  fs.unlinkSync(enabledFlag);
+  // This package's startup cleanup already ran, so it holds no install lock while `on` runs.
+  fs.mkdirSync(stateDirectory, { mode: 0o700 });
+  fs.writeFileSync(path.join(stateDirectory, "legacy-cleanup.stamp"), `${packageRoot}\n${packageVersion}\n`);
+  const result = runPlugin(`
+    const { registered } = await setup();
+    const [command] = registered.commands;
+    for (const text of ["on", "status"]) {
+      await command.execute({ sessionID: "ses_on", prompt: { text }, delivery: "steer" });
+    }
+    process.stdout.write(JSON.stringify(registered.notices.map(({ text }) => text)));
+  `);
+  expect(JSON.parse(result.stdout)).toEqual(["OpenCode: on — logging starts with the next prompt", "OpenCode: on"]);
+});
+
+test("the CLI's timeout ends the commands it started too", () => {
+  // A CLI whose child keeps the output pipes open after the CLI itself is killed.
+  const wrapper = wrapperDirectory("bash", ["sleep 600"]);
+  const result = runPlugin(`
+    const started = Date.now();
+    let failure = "";
+    try { await sessionLog.runSessionLogCli("status", { timeoutMs: 200 }); }
+    catch (error) { failure = error.message; }
+    process.stdout.write(JSON.stringify({ failure, seconds: (Date.now() - started) / 1000 }));
+  `, { PATH: pathWith(wrapper) });
+  const { failure, seconds } = JSON.parse(result.stdout);
+  expect(failure).toContain("timed out");
+  expect(seconds).toBeLessThan(10);
 });
 
 test("/session-log usage without a target reports the session it ran in", () => {
-  const wrapperDirectory = fs.mkdtempSync(path.join(home, "bash-wrapper-"));
-  const record = path.join(wrapperDirectory, "arguments");
-  // Records the CLI invocation instead of running the native usage report.
-  fs.writeFileSync(path.join(wrapperDirectory, "bash"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${record}"\necho recorded\n`, { mode: 0o700 });
+  const record = path.join(home, "arguments");
+  // Records each CLI invocation's arguments (setup's legacy cleanup runs one too) instead of running it.
+  // One write per invocation, so the concurrent cleanup's record cannot interleave with it.
+  const wrapper = wrapperDirectory("bash", [`line=$(printf '%s|' "$@")`, `printf '%s\\n' "$line" >> "${record}"`, "echo recorded"]);
   runPlugin(`
-    const { registered } = await setup();
+    const { registered, cleanup } = await setup();
     await registered.commands[0].execute({ sessionID: "ses_usage", prompt: { text: "usage" }, delivery: "steer" });
-  `, { PATH: `${wrapperDirectory}:${process.env.PATH}` });
-  expect(fs.readFileSync(record, "utf8").split("\n").slice(-3)).toEqual(["--arguments", "usage ses_usage", ""]);
+    await cleanup();
+  `, { PATH: pathWith(wrapper) });
+  expect(fs.readFileSync(record, "utf8").split("\n")).toContain(
+    `${path.join(packageRoot, "install.sh")}|--harness|opencode|--arguments|usage ses_usage|`);
 });
 
 test("the legacy cleanup runs `repair` once per installed package, whether or not a leftover remains", () => {
@@ -496,6 +598,19 @@ test("the legacy cleanup runs `repair` once per installed package, whether or no
   fs.writeFileSync(stamp, "another package\n");
   runPlugin("await sessionLog.cleanupLegacyLeftovers();");
   expect(fs.existsSync(legacyCommand)).toBe(false);
+});
+
+test("the startup cleanup writes repair's report or failure to OpenCode's log and stamps the attempt", () => {
+  const stamp = path.join(stateDirectory, "legacy-cleanup.stamp");
+  for (const [lines, expected] of [
+    [["echo 'OpenCode: kept /x/commands/session-log.md: move it aside'"], "session-log: OpenCode: kept /x/commands/session-log.md: move it aside"],
+    [["echo 'cannot clean' >&2", "exit 1"], "session-log: cannot clean"],
+  ]) {
+    fs.rmSync(stateDirectory, { recursive: true, force: true });
+    const result = runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapperDirectory("bash", lines)) });
+    expect(result.stderr).toContain(expected);
+    expect(fs.readFileSync(stamp, "utf8")).toBe(`${packageRoot}\n${packageVersion}\n`);
+  }
 });
 
 test("failed second runtime rename restores the previous shared runtime record", () => {

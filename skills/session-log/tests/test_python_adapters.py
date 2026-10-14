@@ -2354,7 +2354,13 @@ class OpenCodePluginOwnershipTests(unittest.TestCase):
         self.package = opencode_package(self.home)
 
     def run_opencode(self, *arguments):
-        return run_session_log(self.package, self.home, "opencode", *arguments)
+        # OpenCode refuses relocated roots, so the developer's own XDG/OPENCODE variables must not leak in.
+        environment = {key: value for key, value in harness_environment(self.home).items()
+                       if key not in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "OPENCODE_CONFIG_DIR")}
+        return subprocess.run(
+            ["bash", str(self.package / "bin/session-log"), "--entrypoint", "opencode", "--harness", "opencode", *arguments],
+            capture_output=True, text=True, env=environment,
+        )
 
     def write_runtime_marker(self):
         state = self.root / "session-log"

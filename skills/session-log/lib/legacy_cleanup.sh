@@ -63,6 +63,7 @@ legacy_cleanup_claude() {
 # state files; and the session-log-omp entrypoints of pre-universal releases. A foreign file at an
 # adapter path stays; a foreign command stays too, but is named, as it hides the package's.
 legacy_cleanup_opencode() {
+  require_command python3
   remove_legacy_opencode_adapter plugins/session-log.js adapters/opencode/session-log.js
   remove_legacy_opencode_adapter scripts/session_log_usage.sh adapters/opencode/session_log_usage.sh
   remove_legacy_opencode_command

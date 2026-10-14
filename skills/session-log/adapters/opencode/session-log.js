@@ -6,8 +6,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFile, execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -28,6 +28,8 @@ const MAX_APPEND_ATTEMPTS = 3;
 const APPEND_RETRY_DELAY_MS = 250;
 const RESUBSCRIBE_DELAY_MS = 1_000;
 const UNSAFE_PATH_CODE = "SESSION_LOG_UNSAFE_PATH";
+// Random bytes that keep runtime temporary names unique between instances of one process.
+const NONCE_BYTES = 8;
 
 const stableKey = (...parts) => createHash("sha256").update(parts.map((part) => String(part)).join("\0")).digest("hex");
 const canonicalPath = (value) => {
@@ -589,13 +591,16 @@ finally:
 print("1")
 `;
 // Runs a Python helper without blocking OpenCode's event loop; one that outlives
-// HELPER_TIMEOUT_MS is killed and fails.
+// HELPER_TIMEOUT_MS is killed and fails. Isolated mode (-I) keeps the project directory and
+// PYTHON* variables from replacing the modules the helper imports.
 const runPython = (script, env, input = "") => new Promise((resolve, reject) => {
-  const child = execFile("python3", ["-c", script], { env: { ...process.env, ...env }, encoding: "utf8", timeout: HELPER_TIMEOUT_MS },
+  const child = execFile("python3", ["-I", "-c", script], { env: { ...process.env, ...env }, encoding: "utf8", timeout: HELPER_TIMEOUT_MS },
     (error, stdout, stderr) => {
       if (error) reject(new Error(stderr.trim() || error.message, { cause: error }));
       else resolve(stdout);
     });
+  // A helper that exits before reading its input fails through its exit status, not EPIPE.
+  child.stdin.on("error", () => {});
   child.stdin.end(input);
 });
 const secureAppend = async (file, payload, { enableSignature, dedupeKey }) => {
@@ -679,7 +684,7 @@ const processRuntimeFile = () => path.join(STATE_DIR, `runtime.${process.pid}.js
 // The runtime marker `status` reads: this process runs the session-log handlers of this VERSION.
 function markRuntime() {
   ensureDirectory(STATE_DIR);
-  const nonce = `${process.pid}.${Date.now()}`;
+  const nonce = `${process.pid}.${Date.now()}.${randomBytes(NONCE_BYTES).toString("hex")}`;
   const temporary = path.join(STATE_DIR, `.runtime.${nonce}.tmp`);
   const processTemporary = path.join(STATE_DIR, `.runtime.${nonce}.process.tmp`);
   const runtime = path.join(STATE_DIR, "runtime.json");
@@ -940,7 +945,8 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
   // Times come from the event's own `created`, so queueing inside OpenCode does not stretch them.
   const onEvent = (event) => {
     try {
-      eventHandlers[event?.type]?.(event.data || {}, numeric(event.created, now()));
+      const created = numeric(event?.created);
+      eventHandlers[event?.type]?.(event.data || {}, created > 0 ? created : now());
     } catch (error) {
       reportError(error);
     }
@@ -948,13 +954,32 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
   return { onPrompt, onEvent, waitUntilIdle };
 }
 
-// Runs this package's CLI with the explicit OpenCode identity, as the skill entrypoint does.
-const runSessionLogCli = (argumentsText) => new Promise((resolve, reject) => {
-  execFile("bash", [path.join(PACKAGE_ROOT, "install.sh"), "--harness", HARNESS, "--arguments", argumentsText],
-    { encoding: "utf8", timeout: CLI_TIMEOUT_MS }, (error, stdout, stderr) => {
-      if (error) reject(new Error(stderr.trim() || stdout.trim() || error.message, { cause: error }));
-      else resolve(stdout.trim());
-    });
+// Runs this package's CLI with the explicit OpenCode identity, as the skill entrypoint does. The CLI
+// runs in its own process group, so its timeout also ends the helpers it started, which would
+// otherwise hold its output open.
+export const runSessionLogCli = (argumentsText, { timeoutMs = CLI_TIMEOUT_MS } = {}) => new Promise((resolve, reject) => {
+  const child = spawn("bash", [path.join(PACKAGE_ROOT, "install.sh"), "--harness", HARNESS, "--arguments", argumentsText],
+    { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const output = { stdout: "", stderr: "" };
+  child.stdout.setEncoding("utf8").on("data", (chunk) => { output.stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", (chunk) => { output.stderr += chunk; });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {}
+  }, timeoutMs);
+  child.on("error", (error) => {
+    clearTimeout(timer);
+    reject(error);
+  });
+  child.on("close", (code, signal) => {
+    clearTimeout(timer);
+    if (timedOut) reject(new Error(`session-log: ${argumentsText} timed out after ${timeoutMs} ms`));
+    else if (code !== 0) reject(new Error(output.stderr.trim() || output.stdout.trim() || `session-log: exited with ${code ?? signal}`));
+    else resolve(output.stdout.trim());
+  });
 });
 // `usage` without a target reports the session the command ran in, not the newest one.
 const commandArguments = (text, sessionID) => {
@@ -964,8 +989,8 @@ const commandArguments = (text, sessionID) => {
 
 // Runs `repair` once per installed package (its location and VERSION), whether or not it succeeds:
 // it removes what older releases left in ~/.config/opencode and is proven session-log's, including a
-// markdown /session-log command that would override this package's. `on` and `repair` run the same
-// cleanup and report what it did or why it failed.
+// markdown /session-log command that would override this package's. Its report or failure goes to
+// OpenCode's log; `on` and `repair` run the same cleanup and show the user what it did or why it failed.
 export async function cleanupLegacyLeftovers() {
   const stamp = path.join(STATE_DIR, "legacy-cleanup.stamp");
   const fingerprint = `${PACKAGE_ROOT}\n${VERSION}\n`;
@@ -973,7 +998,8 @@ export async function cleanupLegacyLeftovers() {
     if (fs.lstatSync(stamp).isFile() && fs.readFileSync(stamp, "utf8") === fingerprint) return;
   } catch {}
   try {
-    await runSessionLogCli("repair");
+    const report = await runSessionLogCli("repair");
+    if (report) reportError(report);
   } catch (error) {
     reportError(error);
   }
@@ -997,6 +1023,10 @@ const pumpEvents = async (ctx, sessionLog, signal) => {
   }
 };
 
+// Instances of this module in this process (one per OpenCode location); the last one to close
+// removes this process's runtime marker.
+let openInstances = 0;
+
 // Registers `/session-log`, then (unless the configuration root is unsupported) the logging
 // handlers. Returns the cleanup that stops them and waits for pending log writes.
 export async function setupSessionLog(ctx) {
@@ -1005,7 +1035,14 @@ export async function setupSessionLog(ctx) {
       name: COMMAND_NAME,
       description: COMMAND_DESCRIPTION,
       execute: async ({ sessionID, prompt }) => {
-        const output = await runSessionLogCli(commandArguments(prompt?.text ?? "", sessionID));
+        let output;
+        try {
+          output = await runSessionLogCli(commandArguments(prompt?.text ?? "", sessionID));
+        } catch (error) {
+          output = error.message;
+        }
+        // After `on`, these handlers log from the next prompt on, so `status` may say so at once.
+        markRuntimeWhileEnabled();
         await ctx.session.synthetic({ sessionID, text: output, description: output, resume: false });
       },
     });
@@ -1022,11 +1059,13 @@ export async function setupSessionLog(ctx) {
   });
   const controller = new AbortController();
   void pumpEvents(ctx, sessionLog, controller.signal);
+  openInstances += 1;
   markRuntimeWhileEnabled();
   return async () => {
     controller.abort();
     await promptHook?.dispose?.();
     await Promise.all([cleanup, sessionLog.waitUntilIdle()]);
-    removeProcessRuntime();
+    openInstances -= 1;
+    if (openInstances === 0) removeProcessRuntime();
   };
 }

@@ -7,6 +7,15 @@ import { spawnSync } from "node:child_process";
 const repoRoot = path.resolve(import.meta.dir, "..");
 const scratchHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencode-goodies-plugin-")));
 let registered;
+// Variables that relocate OpenCode's roots; the child must not inherit the developer's.
+const RELOCATING_VARIABLES = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "OPENCODE_CONFIG_DIR"];
+// A child that hangs fails its test instead of the suite.
+const CHILD_TIMEOUT_MS = 30_000;
+const childEnvironment = (pluginPath) => {
+  const environment = { ...process.env };
+  for (const name of RELOCATING_VARIABLES) delete environment[name];
+  return { ...environment, HOME: scratchHome, OPENCODE_GOODIES_PLUGIN: pluginPath };
+};
 
 // The plugin's session-log setup writes below HOME, and Bun reads HOME once at startup, so the
 // plugin runs in a child Bun process with a scratch HOME. `commandTransform` is the body of the
@@ -36,7 +45,7 @@ const runSetup = (commandTransform = "callback({ add: (definition) => registered
     registered.cleanup = typeof cleanup;
     await cleanup?.();
     process.stdout.write(JSON.stringify(registered));
-  `], { env: { ...process.env, HOME: scratchHome, OPENCODE_GOODIES_PLUGIN: pluginPath }, encoding: "utf8" });
+  `], { env: childEnvironment(pluginPath), encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   if (result.status !== 0) throw new Error(`plugin setup failed: ${result.stderr}`);
   return { registered: JSON.parse(result.stdout), stderr: result.stderr };
 };
