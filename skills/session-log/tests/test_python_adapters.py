@@ -2400,14 +2400,19 @@ class OpenCodePluginOwnershipTests(unittest.TestCase):
         link.symlink_to(self.home / PLUGIN_CACHE_PACKAGE_RELATIVE / LEGACY_OPENCODE_ADAPTERS[0][1])
         status = self.run_opencode("status")
         self.assertEqual((status.returncode, status.stdout, status.stderr), (0, "OpenCode: on — restart required\n", ""))
-        self.run_opencode("usage")
+        usage = self.run_opencode("usage")
+        # No OpenCode database exists here, so the native report fails after the harness label.
+        self.assertEqual((usage.returncode, usage.stdout), (1, "OpenCode: usage\n"))
+        self.assertIn("native OpenCode usage failed", usage.stderr)
         self.assertTrue(link.is_symlink())
         self.assertFalse((self.root / "session-log/adapter.version").exists())
 
     def test_repair_removes_every_legacy_install_and_is_idempotent(self):
-        other_package = harness_package(self.home, OPENCODE_SUBROOT)  # the copy older releases seeded
+        # The package copy older releases seeded into OpenCode's skill root, proven by its manifest.
+        other_package = harness_package(self.home, OPENCODE_SUBROOT)
         write_seeded_manifest(other_package)
-        destinations = (self.home / PLUGIN_CACHE_PACKAGE_RELATIVE, other_package)  # dangling, and live
+        # The plugin link dangles into a removed claude-goodies cache; the usage link is live.
+        destinations = (self.home / PLUGIN_CACHE_PACKAGE_RELATIVE, other_package)
         for (target, source), destination in zip(LEGACY_OPENCODE_ADAPTERS, destinations):
             (self.root / target).parent.mkdir(parents=True)
             (self.root / target).symlink_to(destination / source)
@@ -2434,7 +2439,8 @@ class OpenCodePluginOwnershipTests(unittest.TestCase):
         self.assertEqual((again.returncode, again.stdout, again.stderr), (0, OPENCODE_REPAIR_CLEAN, ""))
 
     def test_repair_removes_links_into_any_session_log_package_and_the_release_store(self):
-        # Any package version's copy, and a release in the store of the releases before the package.
+        # Another installed package version, and a release in ~/.local/share/universal-session-log,
+        # where releases before the harness plugins kept their packages.
         destinations = (self.home / "cache/1.0.0/skills/session-log",
                         self.home / ".local/share/universal-session-log/releases/1.0.0")
         target, source = LEGACY_OPENCODE_ADAPTERS[0]
@@ -2460,13 +2466,14 @@ class OpenCodePluginOwnershipTests(unittest.TestCase):
             self.assertFalse(os.path.lexists(self.root / target))
 
     def test_repair_keeps_foreign_files_and_names_a_foreign_command(self):
-        target, source = LEGACY_OPENCODE_ADAPTERS[0]
-        plugin = self.root / target
+        plugin = self.root / LEGACY_OPENCODE_ADAPTERS[0][0]
         plugin.parent.mkdir(parents=True)
         plugin.write_text("user plugin\n")
-        usage = self.root / LEGACY_OPENCODE_ADAPTERS[1][0]
+        usage_target, usage_source = LEGACY_OPENCODE_ADAPTERS[1]
+        usage = self.root / usage_target
         usage.parent.mkdir(parents=True)
-        foreign = (str(self.home / "elsewhere/session_log_usage.sh"), f"{self.home}/evil/../skills/session-log/{source}")
+        # A foreign file, and a lookalike of the usage adapter whose `..` component leaves the package.
+        foreign = (str(self.home / "elsewhere/session_log_usage.sh"), f"{self.home}/evil/../skills/session-log/{usage_source}")
         command = self.root / LEGACY_OPENCODE_COMMAND
         command.parent.mkdir(parents=True)
         command.write_text("---\ndescription: my own command\n---\nmine\n")

@@ -57,8 +57,8 @@ legacy_cleanup_claude() {
 }
 
 # What releases before the opencode-goodies package registered session-log itself left in OpenCode's
-# config root (adapters/opencode/session-log.js cleanupLegacyLeftovers lists the same paths): the
-# adapter and usage links, or marked standalone copies, `on` installed; the markdown /session-log
+# config root (the plugin runs this through `repair` once per installed package): the adapter and
+# usage links, or marked standalone copies, `on` installed; the markdown /session-log
 # command, which would override the package's; the seeded package copy; the adapter installer's
 # state files; and the session-log-omp entrypoints of pre-universal releases. A foreign file at an
 # adapter path stays; a foreign command stays too, but is named, as it hides the package's.

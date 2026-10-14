@@ -12,9 +12,22 @@ import { fileURLToPath } from "node:url";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const VERSION = fs.readFileSync(path.join(PACKAGE_ROOT, "VERSION"), "utf8").trim();
+const HARNESS = "opencode";
 const COMMAND_NAME = "session-log";
 const COMMAND_DESCRIPTION = "Manage session prompt logging and usage totals (on / off / status / usage / repair)";
 const DEFAULT_COMMAND = "status";
+const USAGE_COMMAND = "usage";
+// The path components of the project directory that name its log folder.
+const PROJECT_SLUG_DEPTH = 2;
+// Earlier releases named a log file after this many leading characters of the session ID.
+const LEGACY_LOG_ID_LENGTH = 12;
+// Bounds on child processes: a Python write helper (whose own lock wait is 5 s) and the CLI.
+const HELPER_TIMEOUT_MS = 30_000;
+const CLI_TIMEOUT_MS = 120_000;
+const MAX_APPEND_ATTEMPTS = 3;
+const APPEND_RETRY_DELAY_MS = 250;
+const RESUBSCRIBE_DELAY_MS = 1_000;
+const UNSAFE_PATH_CODE = "SESSION_LOG_UNSAFE_PATH";
 
 const stableKey = (...parts) => createHash("sha256").update(parts.map((part) => String(part)).join("\0")).digest("hex");
 const canonicalPath = (value) => {
@@ -53,18 +66,18 @@ const CONFIG_DIR = path.join(canonicalPath(defaultConfigHome), "opencode");
 const LOGS_DIR = path.join(CONFIG_DIR, "prompt-logs");
 const ENABLED_FLAG = path.join(LOGS_DIR, ".enabled");
 const STATE_DIR = path.join(CONFIG_DIR, "session-log");
-// What older releases left in CONFIG_DIR; lib/legacy_cleanup.sh (legacy_cleanup_opencode) removes
-// what of it is proven session-log's, so keep the two lists in step.
-const LEGACY_LEFTOVERS = [
-  "commands/session-log.md", "commands/session-log-omp.md", "plugins/session-log.js", "plugins/session-log-omp.js",
-  "scripts/session_log_usage.sh", "skills/session-log", "session-log/adapter.version", "session-log/adapter.manifest",
-  "session-log/desired.version",
-];
 
-const report = (error) => process.stderr.write(`session-log: ${error?.message || error}\n`);
-// Why logging cannot run with this configuration root, or "" when it can.
-const rootProblem = () => {
+const reportError = (error) => process.stderr.write(`session-log: ${error?.message || error}\n`);
+// The roots bin/session-log refuses (guard_relocated_root), so the handlers never log where every
+// command would fail. Returns why the root is unsupported, or "" when it is supported.
+const describeUnsupportedRoot = () => {
   const configHome = process.env.XDG_CONFIG_HOME || defaultConfigHome;
+  const relocated = [
+    [configHome, defaultConfigHome],
+    [process.env.OPENCODE_CONFIG_DIR || CONFIG_DIR, CONFIG_DIR],
+    [process.env.XDG_DATA_HOME || path.join(home, ".local", "share"), path.join(home, ".local", "share")],
+  ].some(([actual, expected]) => canonicalPath(actual) !== canonicalPath(expected));
+  if (relocated) return "OpenCode root is relocated; universal session-log does not support custom roots";
   try {
     if (containsSymlinkComponent(configHome) || containsSymlinkComponent(path.join(configHome, "opencode"))) {
       return "OpenCode root contains an unsafe symlink";
@@ -72,18 +85,7 @@ const rootProblem = () => {
   } catch (error) {
     return `OpenCode root cannot be checked: ${error.message}`;
   }
-  if (canonicalPath(configHome) !== canonicalPath(defaultConfigHome)) {
-    return "OpenCode root is relocated; universal session-log does not support custom roots";
-  }
   return "";
-};
-const exists = (file) => {
-  try {
-    fs.lstatSync(file);
-    return true;
-  } catch {
-    return false;
-  }
 };
 const enabled = () => {
   try { return fs.lstatSync(ENABLED_FLAG).isFile(); } catch { return false; }
@@ -104,7 +106,7 @@ const pathInside = (root, candidate) => {
   const resolved = path.resolve(candidate);
   return resolved === base || resolved.startsWith(`${base}${path.sep}`);
 };
-const unsafePathError = (message) => Object.assign(new Error(message), { code: "SESSION_LOG_UNSAFE_PATH" });
+const unsafePathError = (message) => Object.assign(new Error(message), { code: UNSAFE_PATH_CODE });
 const ensureDirectory = (directory) => {
   const resolved = path.resolve(directory);
   const parsed = path.parse(resolved);
@@ -114,7 +116,12 @@ const ensureDirectory = (directory) => {
     let stat;
     try { stat = fs.lstatSync(current); } catch (error) {
       if (error?.code !== "ENOENT") throw error;
-      fs.mkdirSync(current, { mode: 0o700 });
+      try {
+        fs.mkdirSync(current, { mode: 0o700 });
+      } catch (mkdirError) {
+        // Another OpenCode process or the session-log CLI may create it first.
+        if (mkdirError?.code !== "EEXIST") throw mkdirError;
+      }
       stat = fs.lstatSync(current);
     }
     if (isUnsafeDirectory(stat)) throw unsafePathError(`OpenCode path is not a safe directory: ${current}`);
@@ -191,9 +198,9 @@ const differs = (previous, next) => Boolean(previous && next && previous !== nex
 const trimOldest = (collection, max) => {
   while (collection.size > max) collection.delete(collection.keys().next().value);
 };
-const descendantsOf = (sessionID, childToParent) => {
+const descendantsOf = (sessionID, parentBySession) => {
   const childrenByParent = new Map();
-  for (const [child, parent] of childToParent) {
+  for (const [child, parent] of parentBySession) {
     const children = childrenByParent.get(parent) || [];
     children.push(child);
     childrenByParent.set(parent, children);
@@ -581,25 +588,28 @@ finally:
         os.close(enable_lock_fd)
 print("1")
 `;
-const secureAppend = (file, payload, options = {}) => {
-  const { dedupe = false, enableSignature = "", dedupeKey = "" } = options;
+// Runs a Python helper without blocking OpenCode's event loop; one that outlives
+// HELPER_TIMEOUT_MS is killed and fails.
+const runPython = (script, env, input = "") => new Promise((resolve, reject) => {
+  const child = execFile("python3", ["-c", script], { env: { ...process.env, ...env }, encoding: "utf8", timeout: HELPER_TIMEOUT_MS },
+    (error, stdout, stderr) => {
+      if (error) reject(new Error(stderr.trim() || error.message, { cause: error }));
+      else resolve(stdout);
+    });
+  child.stdin.end(input);
+});
+const secureAppend = async (file, payload, { enableSignature, dedupeKey }) => {
   const expected = fs.lstatSync(file);
-  const result = execFileSync("python3", ["-c", SECURE_APPEND_SCRIPT], {
-    env: {
-      ...process.env,
-      SESSION_LOG_FILE: file,
-      SESSION_LOG_EXPECTED_DEV: String(expected.dev),
-      SESSION_LOG_EXPECTED_INO: String(expected.ino),
-      SESSION_LOG_ENABLE_LOCK: path.join(LOGS_DIR, ".enabled.lock"),
-      SESSION_LOG_ENABLE_FLAG: ENABLED_FLAG,
-      SESSION_LOG_ENABLE_SIGNATURE: enableSignature,
-      SESSION_LOG_DEDUPE: dedupe ? "1" : "0",
-      SESSION_LOG_DEDUPE_KEY: dedupeKey,
-    },
-    input: Buffer.from(payload),
-    encoding: "utf8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const result = await runPython(SECURE_APPEND_SCRIPT, {
+    SESSION_LOG_FILE: file,
+    SESSION_LOG_EXPECTED_DEV: String(expected.dev),
+    SESSION_LOG_EXPECTED_INO: String(expected.ino),
+    SESSION_LOG_ENABLE_LOCK: path.join(LOGS_DIR, ".enabled.lock"),
+    SESSION_LOG_ENABLE_FLAG: ENABLED_FLAG,
+    SESSION_LOG_ENABLE_SIGNATURE: enableSignature,
+    SESSION_LOG_DEDUPE: dedupeKey ? "1" : "0",
+    SESSION_LOG_DEDUPE_KEY: dedupeKey,
+  }, payload);
   return result.trim() === "1";
 };
 const SECURE_FILE_SCRIPT = String.raw`
@@ -634,16 +644,8 @@ finally:
         os.close(descriptor)
     os.close(parent_fd)
 `;
-const secureEnsureFile = (file, content) => {
-  execFileSync("python3", ["-c", SECURE_FILE_SCRIPT], {
-    env: {
-      ...process.env,
-      SESSION_LOG_FILE: file,
-      SESSION_LOG_CONTENT: Buffer.from(content).toString("base64"),
-    },
-    stdio: "pipe",
-  });
-};
+const secureEnsureFile = (file, content) =>
+  runPython(SECURE_FILE_SCRIPT, { SESSION_LOG_FILE: file, SESSION_LOG_CONTENT: Buffer.from(content).toString("base64") });
 const pad = (value) => String(value).padStart(2, "0");
 const clock = () => {
   const now = new Date();
@@ -657,41 +659,41 @@ const fileStamp = () => {
   const now = new Date();
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
 };
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-let processStartTime;
-const processStart = () => {
-  if (processStartTime === undefined) {
-    try {
-      processStartTime = execFileSync("ps", ["-p", String(process.pid), "-o", "lstart="], { encoding: "utf8" }).trim();
-    } catch {
-      processStartTime = "";
+// The `ps` start time `status` compares with the live process; it never changes, so it is read once.
+const readProcessStart = (() => {
+  let start;
+  return () => {
+    if (start === undefined) {
+      try {
+        start = execFileSync("ps", ["-p", String(process.pid), "-o", "lstart="], { encoding: "utf8" }).trim();
+      } catch {
+        start = "";
+      }
     }
-  }
-  return processStartTime;
-};
-const appendFileLocked = (file, root, text, enableSignature, dedupeKey) => {
-  assertLogFile(file, root);
-  const payload = text.endsWith("\n") ? text : `${text}\n`;
-  return secureAppend(file, payload, { dedupe: Boolean(dedupeKey), enableSignature, dedupeKey });
-};
-// The runtime marker `status` reads: this process has the session-log handlers of this VERSION.
+    return start;
+  };
+})();
+const processRuntimeFile = () => path.join(STATE_DIR, `runtime.${process.pid}.json`);
+// The runtime marker `status` reads: this process runs the session-log handlers of this VERSION.
 function markRuntime() {
   ensureDirectory(STATE_DIR);
   const nonce = `${process.pid}.${Date.now()}`;
   const temporary = path.join(STATE_DIR, `.runtime.${nonce}.tmp`);
   const processTemporary = path.join(STATE_DIR, `.runtime.${nonce}.process.tmp`);
   const runtime = path.join(STATE_DIR, "runtime.json");
-  const processRuntime = path.join(STATE_DIR, `runtime.${process.pid}.json`);
+  const processRuntime = processRuntimeFile();
   const backup = path.join(STATE_DIR, `.runtime.${nonce}.backup`);
   ensureFile(temporary);
   ensureFile(processTemporary);
   ensureFile(runtime);
   ensureFile(processRuntime);
   const payload = {
-    harness: "opencode",
+    harness: HARNESS,
     version: VERSION,
     pid: process.pid,
-    process_start: processStart(),
+    process_start: readProcessStart(),
     nonce,
   };
   try {
@@ -713,12 +715,21 @@ function markRuntime() {
     throw error;
   }
 }
-const markRuntimeReported = () => {
+// Marks the runtime only while logging is on, as the marker means "these handlers are logging".
+const markRuntimeWhileEnabled = () => {
+  if (!enabled()) return;
   try {
     markRuntime();
   } catch (error) {
-    report(error);
+    reportError(error);
   }
+};
+// This process's own marker; runtime.json may already name a newer process, so it stays.
+const removeProcessRuntime = () => {
+  try {
+    const file = processRuntimeFile();
+    if (fs.lstatSync(file).isFile()) fs.unlinkSync(file);
+  } catch {}
 };
 
 const numeric = (value, fallback = 0) => {
@@ -743,26 +754,63 @@ const usageLine = (message) => {
     `cache_write: ${cacheWrite}, cache_read: ${cacheRead}, total: ${total}, ` +
     `cost: $${cost.toFixed(4)}, model: ${message.modelID || "-"}`;
 };
+// The step's text parts in their stream order.
+const stepBody = (texts) => [...texts].sort(([left], [right]) => left - right).map(([, text]) => text).filter(Boolean).join("\n");
+
+// The session tree one plugin instance knows: parents from `session.created` or, for a session
+// created before the instance started, from `ctx.session.get`, plus tombstones of deleted trees.
+function createSessionTree(ctx) {
+  const parentBySession = new Map(); // session ID → parent session ID, "" for a root
+  const deletedSessions = new Set();
+  const remember = (sessionID, parentID) => {
+    parentBySession.set(sessionID, validId(parentID) && parentID !== sessionID ? parentID : "");
+    trimOldest(parentBySession, MAX_KNOWN_SESSIONS);
+  };
+  // Tombstones sessionID and every descendant; returns them.
+  const forgetTree = (sessionID) => {
+    const forgotten = descendantsOf(sessionID, parentBySession);
+    for (const id of forgotten) {
+      deletedSessions.add(id);
+      parentBySession.delete(id);
+    }
+    trimOldest(deletedSessions, MAX_DELETED_SESSIONS);
+    return forgotten;
+  };
+  const isWalkable = (id, seen) => validId(id) && !deletedSessions.has(id) && !seen.has(id);
+  // The root of sessionID's tree, or "" when it is invalid, deleted, or part of a cycle.
+  const resolveRoot = async (sessionID) => {
+    let id = sessionID;
+    const seen = new Set();
+    while (isWalkable(id, seen)) {
+      seen.add(id);
+      if (!parentBySession.has(id)) remember(id, (await ctx.session.get({ sessionID: id }))?.parentID);
+      const parent = parentBySession.get(id);
+      if (!parent) return id;
+      id = parent;
+    }
+    return "";
+  };
+  return { remember, forgetTree, resolveRoot, isDeleted: (id) => deletedSessions.has(id) };
+}
 
 // The logging state of one plugin instance. `onPrompt` takes the V2 `prompt` hook input and
 // `onEvent` one event of `ctx.event.subscribe()`; both return at once and log in arrival order on
-// one queue, which `idle` awaits. A session's root comes from `session.created` or, for a session
-// created before this instance started, from `ctx.session.get`. Only the root session's prompts
-// are logged; each step of the root logs a response block, each step of a descendant a
-// sub-agent line, both in the root's log file.
+// one queue, which `waitUntilIdle` awaits. Only the root session's prompts are logged; each step of
+// the root logs a response block, each step of a descendant a sub-agent line, both in the root's
+// log file. A step's working time runs from its `session.step.started` to its end event.
 export function createSessionLog(ctx, { now = Date.now } = {}) {
-  const projectSlug = String(ctx.location?.directory || process.cwd()).split(path.sep).filter(Boolean).slice(-2).join("-") || "root";
-  const parents = new Map(); // session ID → parent session ID, "" for a root
-  const deletedSessions = new Set();
-  const steps = new Map(); // assistant message ID → the step that has started but not ended
+  const projectSlug = String(ctx.location?.directory || process.cwd()).split(path.sep).filter(Boolean)
+    .slice(-PROJECT_SLUG_DEPTH).join("-") || "root";
+  const tree = createSessionTree(ctx);
+  const openStepsByMessage = new Map(); // assistant message ID → the step that has started but not ended
   const logFileByRoot = new Map();
   const lastByRoot = new Map();
   let queue = Promise.resolve();
   const enqueue = (operation) => {
-    queue = queue.then(operation).catch(report);
+    queue = queue.then(operation).catch(reportError);
     return queue;
   };
-  const idle = async () => {
+  const waitUntilIdle = async () => {
     let current;
     do {
       current = queue;
@@ -770,33 +818,7 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
     } while (current !== queue);
   };
 
-  const remember = (sessionID, parentID) => {
-    parents.set(sessionID, validId(parentID) && parentID !== sessionID ? parentID : "");
-    trimOldest(parents, MAX_KNOWN_SESSIONS);
-  };
-  const forget = (sessionID) => {
-    for (const id of descendantsOf(sessionID, parents)) {
-      deletedSessions.add(id);
-      for (const collection of [parents, logFileByRoot, lastByRoot]) collection.delete(id);
-      for (const [messageID, step] of steps) if (step.sessionID === id) steps.delete(messageID);
-    }
-    trimOldest(deletedSessions, MAX_DELETED_SESSIONS);
-  };
-  // The root of sessionID's tree, or "" when it is invalid, deleted, or part of a cycle.
-  const rootOf = async (sessionID) => {
-    let id = sessionID;
-    const seen = new Set();
-    while (validId(id) && !deletedSessions.has(id) && !seen.has(id)) {
-      seen.add(id);
-      if (!parents.has(id)) remember(id, (await ctx.session.get({ sessionID: id }))?.parentID);
-      const parent = parents.get(id);
-      if (!parent) return id;
-      id = parent;
-    }
-    return "";
-  };
-
-  const ensureLogFile = (root) => {
+  const ensureLogFile = async (root) => {
     if (!validId(root)) throw new Error("OpenCode session ID is invalid");
     if (logFileByRoot.has(root)) {
       const existing = logFileByRoot.get(root);
@@ -806,9 +828,9 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
     const dir = path.join(LOGS_DIR, projectSlug);
     if (!pathInside(LOGS_DIR, dir)) throw new Error("OpenCode log directory escapes the configured root");
     ensureDirectory(dir);
-    const prefix = root.slice(0, 12);
-    const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const candidatePattern = new RegExp(`^session_[0-9_-]+_${escapedPrefix}\\.md$`);
+    // Releases before this one named the file after the first characters of the session ID.
+    const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const candidatePattern = new RegExp(`^session_[0-9_-]+_(${escape(root)}|${escape(root.slice(0, LEGACY_LOG_ID_LENGTH))})\\.md$`);
     const candidates = fs.readdirSync(dir)
       .filter((name) => candidatePattern.test(name))
       .sort()
@@ -827,15 +849,28 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
     const file = path.join(dir, `session_${fileStamp()}_${root}.md`);
     if (!pathInside(dir, file)) throw new Error("OpenCode log file escapes the configured root");
     const header = `# Prompts — ${new Date().toISOString()}\n\n**Session ID:** ${root}\n**Resume:** \`opencode --session ${root}\`\n\n---\n\n`;
-    secureEnsureFile(file, header);
+    await secureEnsureFile(file, header);
     assertLogFile(file, root);
     logFileByRoot.set(root, file);
     return file;
   };
-  // Appends only while the enable flag that was current when the content arrived still is.
-  const append = (root, text, signature, dedupeKey) => {
-    if (!enabled() || signature !== enabledSignature() || deletedSessions.has(root)) return;
-    appendFileLocked(ensureLogFile(root), root, text, signature, dedupeKey);
+  const isLoggingSuspended = (root, signature) => !enabled() || signature !== enabledSignature() || tree.isDeleted(root);
+  // Appends only while the enable flag that was current when the content arrived still is. A failed
+  // write is retried; the dedupe key keeps a write that did land from repeating.
+  const append = async ({ root, text, signature, dedupeKey }) => {
+    const payload = text.endsWith("\n") ? text : `${text}\n`;
+    for (let attempt = 1; ; attempt += 1) {
+      if (isLoggingSuspended(root, signature)) return;
+      try {
+        const file = await ensureLogFile(root);
+        assertLogFile(file, root);
+        await secureAppend(file, payload, { enableSignature: signature, dedupeKey });
+        return;
+      } catch (error) {
+        if (error?.code === UNSAFE_PATH_CODE || attempt >= MAX_APPEND_ATTEMPTS) throw error;
+        await delay(APPEND_RETRY_DELAY_MS * attempt);
+      }
+    }
   };
   const switchLine = (root, model, mode) => {
     const previous = lastByRoot.get(root);
@@ -847,115 +882,151 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
     return parts.length ? `switched: ${parts.join(", ")}\n` : "";
   };
 
+  const isLoggablePrompt = (sessionID, text) => enabled() && validId(sessionID) && Boolean(text);
   const onPrompt = ({ sessionID, messageID, prompt } = {}) => {
     const text = typeof prompt?.text === "string" ? prompt.text.trim() : "";
-    if (!enabled() || !validId(sessionID) || !text) return queue;
+    if (!isLoggablePrompt(sessionID, text)) return queue;
     const signature = enabledSignature();
     const dedupeKey = validId(messageID) ? stableKey("prompt-id", sessionID, messageID) : stableKey("prompt", sessionID, text);
     return enqueue(async () => {
       // `off` removes the runtime marker; the next prompt after `on` writes it again.
-      markRuntimeReported();
-      if (await rootOf(sessionID) === sessionID) append(sessionID, promptBlock(text), signature, dedupeKey);
+      markRuntimeWhileEnabled();
+      if (await tree.resolveRoot(sessionID) !== sessionID) return;
+      await append({ root: sessionID, text: promptBlock(text), signature, dedupeKey });
     });
   };
-  const endStep = ({ sessionID, assistantMessageID, cost, tokens }) => {
-    const step = steps.get(assistantMessageID);
+  const endStep = ({ sessionID, assistantMessageID, cost, tokens }, endedAt) => {
+    const step = openStepsByMessage.get(assistantMessageID);
     if (!step || step.sessionID !== sessionID) return;
-    steps.delete(assistantMessageID);
-    const elapsed = (now() - step.started) / 1000;
-    const message = { mode: step.agent, modelID: step.model, tokens, cost };
-    const body = [...step.texts].sort(([left], [right]) => left - right).map(([, text]) => text).filter(Boolean).join("\n");
+    openStepsByMessage.delete(assistantMessageID);
+    const elapsed = (endedAt - step.startedAt) / 1000;
     const dedupeKey = stableKey("assistant", sessionID, assistantMessageID);
     enqueue(async () => {
-      const root = await rootOf(sessionID);
+      const root = await tree.resolveRoot(sessionID);
       if (!root) return;
-      if (sessionID !== root) {
-        append(root, subagentLine(sessionID, message, elapsed), step.signature, dedupeKey);
-        return;
-      }
-      append(root, responseBlock(body, elapsed, message, switchLine(root, step.model, step.agent)), step.signature, dedupeKey);
+      const message = { mode: step.agent, modelID: step.model, tokens, cost };
+      const text = sessionID === root
+        ? responseBlock(stepBody(step.texts), elapsed, message, switchLine(root, step.model, step.agent))
+        : subagentLine(sessionID, message, elapsed);
+      await append({ root, text, signature: step.signature, dedupeKey });
     });
   };
+  const isLoggableStep = (sessionID, assistantMessageID) =>
+    enabled() && validId(sessionID) && validId(assistantMessageID) && !tree.isDeleted(sessionID);
   const eventHandlers = {
     "session.created": ({ sessionID, parentID }) => {
-      if (validId(sessionID) && !deletedSessions.has(sessionID)) remember(sessionID, parentID);
+      if (validId(sessionID) && !tree.isDeleted(sessionID)) tree.remember(sessionID, parentID);
     },
     "session.deleted": ({ sessionID }) => {
-      if (validId(sessionID)) forget(sessionID);
+      if (!validId(sessionID)) return;
+      for (const id of tree.forgetTree(sessionID)) {
+        logFileByRoot.delete(id);
+        lastByRoot.delete(id);
+        for (const [messageID, step] of openStepsByMessage) if (step.sessionID === id) openStepsByMessage.delete(messageID);
+      }
     },
-    "session.step.started": ({ sessionID, assistantMessageID, agent, model }) => {
-      if (!enabled() || !validId(sessionID) || !validId(assistantMessageID) || deletedSessions.has(sessionID)) return;
-      steps.set(assistantMessageID, { sessionID, agent, model: model?.id, started: now(), texts: new Map(), signature: enabledSignature() });
-      trimOldest(steps, MAX_OPEN_STEPS);
+    "session.step.started": ({ sessionID, assistantMessageID, agent, model }, createdAt) => {
+      if (!isLoggableStep(sessionID, assistantMessageID)) return;
+      openStepsByMessage.set(assistantMessageID,
+        { sessionID, agent, model: model?.id, startedAt: createdAt, texts: new Map(), signature: enabledSignature() });
+      trimOldest(openStepsByMessage, MAX_OPEN_STEPS);
     },
     "session.text.ended": ({ assistantMessageID, ordinal, text }) => {
-      if (typeof text === "string") steps.get(assistantMessageID)?.texts.set(numeric(ordinal), text);
+      if (typeof text === "string") openStepsByMessage.get(assistantMessageID)?.texts.set(numeric(ordinal), text);
     },
     "session.step.ended": endStep,
     "session.step.failed": endStep,
   };
+  // Times come from the event's own `created`, so queueing inside OpenCode does not stretch them.
   const onEvent = (event) => {
     try {
-      eventHandlers[event?.type]?.(event.data || {});
+      eventHandlers[event?.type]?.(event.data || {}, numeric(event.created, now()));
     } catch (error) {
-      report(error);
+      reportError(error);
     }
   };
-  return { onPrompt, onEvent, idle };
+  return { onPrompt, onEvent, waitUntilIdle };
 }
 
-const runSessionLogCommand = (text) => new Promise((resolve, reject) => {
-  const argumentsText = text.trim() || DEFAULT_COMMAND;
-  execFile("bash", [path.join(PACKAGE_ROOT, "install.sh"), "--harness", "opencode", "--arguments", argumentsText],
-    { encoding: "utf8" }, (error, stdout, stderr) => {
-      if (error) reject(new Error(stderr.trim() || stdout.trim() || error.message));
+// Runs this package's CLI with the explicit OpenCode identity, as the skill entrypoint does.
+const runSessionLogCli = (argumentsText) => new Promise((resolve, reject) => {
+  execFile("bash", [path.join(PACKAGE_ROOT, "install.sh"), "--harness", HARNESS, "--arguments", argumentsText],
+    { encoding: "utf8", timeout: CLI_TIMEOUT_MS }, (error, stdout, stderr) => {
+      if (error) reject(new Error(stderr.trim() || stdout.trim() || error.message, { cause: error }));
       else resolve(stdout.trim());
     });
 });
+// `usage` without a target reports the session the command ran in, not the newest one.
+const commandArguments = (text, sessionID) => {
+  const argumentsText = text.trim() || DEFAULT_COMMAND;
+  return argumentsText === USAGE_COMMAND && validId(sessionID) ? `${USAGE_COMMAND} ${sessionID}` : argumentsText;
+};
 
-// Runs `repair` when an older release left something behind, which removes what of it is proven
-// session-log's; a leftover markdown /session-log command would otherwise override this
-// package's. Best effort: its output and failure are discarded, as `on` and `repair` report them.
-export function cleanupLegacyLeftovers() {
-  if (!LEGACY_LEFTOVERS.some((relative) => exists(path.join(CONFIG_DIR, relative)))) return Promise.resolve();
-  return new Promise((resolve) => {
-    execFile("bash", [path.join(PACKAGE_ROOT, "bin/session-log"), "--entrypoint", "opencode", "--harness", "opencode", "repair"],
-      () => resolve());
-  });
+// Runs `repair` once per installed package (its location and VERSION), whether or not it succeeds:
+// it removes what older releases left in ~/.config/opencode and is proven session-log's, including a
+// markdown /session-log command that would override this package's. `on` and `repair` run the same
+// cleanup and report what it did or why it failed.
+export async function cleanupLegacyLeftovers() {
+  const stamp = path.join(STATE_DIR, "legacy-cleanup.stamp");
+  const fingerprint = `${PACKAGE_ROOT}\n${VERSION}\n`;
+  try {
+    if (fs.lstatSync(stamp).isFile() && fs.readFileSync(stamp, "utf8") === fingerprint) return;
+  } catch {}
+  try {
+    await runSessionLogCli("repair");
+  } catch (error) {
+    reportError(error);
+  }
+  try {
+    ensureFile(stamp);
+    fs.writeFileSync(stamp, fingerprint, { mode: 0o600 });
+  } catch (error) {
+    reportError(error);
+  }
 }
 
+// Feeds every event to the log until `signal` aborts; a failed stream is reported and reopened.
+const pumpEvents = async (ctx, sessionLog, signal) => {
+  while (!signal.aborted) {
+    try {
+      for await (const event of ctx.event.subscribe({ signal })) sessionLog.onEvent(event);
+    } catch (error) {
+      if (!signal.aborted) reportError(error);
+    }
+    if (!signal.aborted) await delay(RESUBSCRIBE_DELAY_MS);
+  }
+};
+
 // Registers `/session-log`, then (unless the configuration root is unsupported) the logging
-// handlers. Returns the cleanup that stops the event stream and waits for pending log writes.
+// handlers. Returns the cleanup that stops them and waits for pending log writes.
 export async function setupSessionLog(ctx) {
   await ctx.command.transform((editor) => {
     editor.add({
       name: COMMAND_NAME,
       description: COMMAND_DESCRIPTION,
       execute: async ({ sessionID, prompt }) => {
-        const output = await runSessionLogCommand(prompt?.text ?? "");
+        const output = await runSessionLogCli(commandArguments(prompt?.text ?? "", sessionID));
         await ctx.session.synthetic({ sessionID, text: output, description: output, resume: false });
       },
     });
   });
-  const problem = rootProblem();
-  if (problem) {
-    report(problem);
+  const unsupported = describeUnsupportedRoot();
+  if (unsupported) {
+    reportError(unsupported);
     return () => {};
   }
-  void cleanupLegacyLeftovers();
-  markRuntimeReported();
-  const log = createSessionLog(ctx);
-  await ctx.session.hook("prompt", (input) => {
-    log.onPrompt(input);
+  const cleanup = cleanupLegacyLeftovers();
+  const sessionLog = createSessionLog(ctx);
+  const promptHook = await ctx.session.hook("prompt", (input) => {
+    sessionLog.onPrompt(input);
   });
   const controller = new AbortController();
-  (async () => {
-    for await (const event of ctx.event.subscribe({ signal: controller.signal })) log.onEvent(event);
-  })().catch((error) => {
-    if (!controller.signal.aborted) report(error);
-  });
+  void pumpEvents(ctx, sessionLog, controller.signal);
+  markRuntimeWhileEnabled();
   return async () => {
     controller.abort();
-    await log.idle();
+    await promptHook?.dispose?.();
+    await Promise.all([cleanup, sessionLog.waitUntilIdle()]);
+    removeProcessRuntime();
   };
 }

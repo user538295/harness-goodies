@@ -11,7 +11,7 @@ let registered;
 // The plugin's session-log setup writes below HOME, and Bun reads HOME once at startup, so the
 // plugin runs in a child Bun process with a scratch HOME. `commandTransform` is the body of the
 // context's command.transform; it prints what the plugin registered as JSON.
-const runSetup = (commandTransform = "callback({ add: (definition) => registered.commands.push(definition.name) })") => {
+const runSetup = (commandTransform = "callback({ add: (definition) => registered.commands.push(definition.name) })", pluginPath = path.join(import.meta.dir, "index.js")) => {
   const result = spawnSync(process.execPath, ["--eval", `
     const { default: plugin } = await import(process.env.OPENCODE_GOODIES_PLUGIN);
     const registered = { skills: {}, agents: {}, commands: [], hooks: [] };
@@ -33,9 +33,10 @@ const runSetup = (commandTransform = "callback({ add: (definition) => registered
       event: { subscribe: () => (async function* () {})() },
     };
     const cleanup = await plugin.setup(context);
+    registered.cleanup = typeof cleanup;
     await cleanup?.();
     process.stdout.write(JSON.stringify(registered));
-  `], { env: { ...process.env, HOME: scratchHome, OPENCODE_GOODIES_PLUGIN: path.join(import.meta.dir, "index.js") }, encoding: "utf8" });
+  `], { env: { ...process.env, HOME: scratchHome, OPENCODE_GOODIES_PLUGIN: pluginPath }, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`plugin setup failed: ${result.stderr}`);
   return { registered: JSON.parse(result.stdout), stderr: result.stderr };
 };
@@ -78,8 +79,9 @@ test("review workflows register as skills; /session-log is the only command", ()
   expect(registered.commands).toEqual(["session-log"]);
 });
 
-test("session-log registers its prompt hook", () => {
+test("session-log registers its prompt hook and setup returns its cleanup", () => {
   expect(registered.hooks).toEqual(["prompt"]);
+  expect(registered.cleanup).toBe("function");
 });
 
 test("agent registers as a subagent with its description and body as system prompt", () => {
@@ -94,4 +96,19 @@ test("a failing session-log setup leaves the skills and agents registered", () =
   expect(Object.keys(failed.registered.skills)).toContain("session-log");
   expect(failed.registered.agents["devils-advocate"].mode).toBe("subagent");
   expect(failed.stderr).toContain("session-log: command registry unavailable");
+});
+
+test("a session-log module that fails to load leaves the skills and agents registered", () => {
+  // A copy of the package whose session-log VERSION is missing, so the adapter throws on import.
+  const copy = fs.mkdtempSync(path.join(scratchHome, "package-"));
+  for (const entry of [".opencode-plugin", "skills", "agents", "package.json"]) {
+    fs.cpSync(path.join(repoRoot, entry), path.join(copy, entry), { recursive: true });
+  }
+  fs.symlinkSync(path.resolve(Bun.resolveSync("yaml/package.json", import.meta.dir), "../.."), path.join(copy, "node_modules"));
+  fs.unlinkSync(path.join(copy, "skills", "session-log", "VERSION"));
+  const broken = runSetup(undefined, path.join(copy, ".opencode-plugin", "index.js"));
+  expect(Object.keys(broken.registered.skills)).toContain("session-log");
+  expect(broken.registered.agents["devils-advocate"].mode).toBe("subagent");
+  expect(broken.registered.commands).toEqual([]);
+  expect(broken.stderr).toContain("session-log: ENOENT");
 });
