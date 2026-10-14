@@ -4,7 +4,8 @@
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-INSTALL="$REPO/install-universal-session-log.sh"
+REPO_PACKAGE="$(cd "$REPO/skills/session-log" && pwd -P)"
+ENTRYPOINT="$REPO/skills/session-log/install.sh"
 PACKAGE_VERSION="$(tr -d '[:space:]' < "$REPO/skills/session-log/VERSION")"
 FAIL=0
 WORKROOT="$(mktemp -d)"
@@ -38,13 +39,25 @@ assert_link() {
 }
 package_root_for() {
   case "$1" in
-    claude) printf '%s\n' "$TEST_HOME/.claude/skills/session-log" ;;
+    claude) printf '%s\n' "$TEST_HOME/.claude/plugins/cache/user538295/claude-goodies/$PACKAGE_VERSION/skills/session-log" ;;
     codex) printf '%s\n' "$TEST_HOME/.codex/skills/session-log" ;;
     cursor) printf '%s\n' "$TEST_HOME/.cursor/skills/session-log" ;;
     opencode) printf '%s\n' "$TEST_HOME/.config/opencode/skills/session-log" ;;
     omp) printf '%s\n' "$TEST_HOME/.omp/agent/skills/session-log" ;;
     *) fail "unsupported test harness: $1" ;;
   esac
+}
+# The packages the harnesses load: Claude Code's plugin copy and a copy in each other skill root.
+place_test_packages() {
+  local harness root
+  for harness in claude codex cursor opencode omp; do
+    root="$(package_root_for "$harness")"
+    mkdir -p "$(dirname "$root")"
+    cp -R "$REPO/skills/session-log" "$root"
+  done
+  root="$(package_root_for claude)"
+  mkdir -p "${root%/skills/session-log}/hooks"
+  cp "$REPO/hooks/hooks.json" "${root%/skills/session-log}/hooks/hooks.json"
 }
 run_session_log() {
   HOME="$TEST_HOME" "$(package_root_for claude)/bin/session-log" "$@"
@@ -100,68 +113,30 @@ run_skill_entrypoint() {
 TEST_HOME="$WORKROOT/home"
 mkdir -p "$TEST_HOME/.Trash"
 
-printf '=== install copies complete packages without enabling logging ===\n'
-HOME="$TEST_HOME" bash "$INSTALL" >"$WORKROOT/install.out" 2>"$WORKROOT/install.err"
-assert_file "Claude package entrypoint seeded" "$TEST_HOME/.claude/skills/session-log/SKILL.md"
-assert_file "Claude package installer seeded" "$TEST_HOME/.claude/skills/session-log/install.sh"
-assert_file "Claude package CLI seeded" "$TEST_HOME/.claude/skills/session-log/bin/session-log"
-assert_file "Claude package hook seeded" "$TEST_HOME/.claude/skills/session-log/adapters/claude/claude_hook.sh"
-assert_file "Codex package entrypoint seeded" "$TEST_HOME/.codex/skills/session-log/SKILL.md"
-assert_file "Codex package native hook seeded" "$TEST_HOME/.codex/skills/session-log/adapters/native/session_log_hook.py"
-assert_file "Cursor package entrypoint seeded" "$TEST_HOME/.cursor/skills/session-log/SKILL.md"
-assert_file "Cursor package native hook seeded" "$TEST_HOME/.cursor/skills/session-log/adapters/native/session_log_hook.py"
-assert_file "OpenCode package entrypoint seeded" "$TEST_HOME/.config/opencode/skills/session-log/SKILL.md"
-assert_file "OpenCode package adapter seeded" "$TEST_HOME/.config/opencode/skills/session-log/adapters/opencode/session-log.js"
-assert_file "OMP package entrypoint seeded" "$TEST_HOME/.omp/agent/skills/session-log/SKILL.md"
-assert_file "OMP package adapter seeded" "$TEST_HOME/.omp/agent/skills/session-log/adapters/omp/session-log.js"
-assert_file "OpenCode slash command seeded" "$TEST_HOME/.config/opencode/commands/session-log.md"
-assert_not_file "global CLI wrapper is not installed" "$TEST_HOME/.local/bin/session-log"
-assert_not_file "global runtime release is not installed" "$TEST_HOME/.local/share/universal-session-log"
-assert_not_file "Claude logging remains disabled" "$TEST_HOME/.claude/prompt-logs/.enabled"
-assert_not_file "Codex logging remains disabled" "$TEST_HOME/.codex/prompt-logs/.enabled"
-assert_not_file "Cursor logging remains disabled" "$TEST_HOME/.cursor/prompt-logs/.enabled"
-assert_not_file "OpenCode logging remains disabled" "$TEST_HOME/.config/opencode/prompt-logs/.enabled"
-assert_not_file "OMP logging remains disabled" "$TEST_HOME/.omp/agent/prompt-logs/.enabled"
-assert_contains "install reports all harnesses" "Claude Code" "$(cat "$WORKROOT/install.out")"
-assert_contains "install reports all harnesses" "Codex" "$(cat "$WORKROOT/install.out")"
-assert_contains "install reports all harnesses" "Cursor" "$(cat "$WORKROOT/install.out")"
-assert_contains "install reports all harnesses" "OpenCode" "$(cat "$WORKROOT/install.out")"
-assert_contains "install reports all harnesses" "OMP" "$(cat "$WORKROOT/install.out")"
+printf '=== the skill entrypoint runs a command without copying the package anywhere ===\n'
+DISPATCH_HOME="$WORKROOT/dispatch-home"
+mkdir -p "$DISPATCH_HOME/.Trash"
 for harness in claude codex cursor opencode omp; do
-  package_root="$(package_root_for "$harness")"
-  while IFS= read -r relative; do
-    assert_file "$harness package asset installed: $relative" "$package_root/$relative"
-  done <<'EOF'
-SKILL.md
-VERSION
-install.sh
-bin/session-log
-lib/common.sh
-lib/pathsafe.py
-lib/claude_settings.py
-lib/enable_flag.py
-lib/locking.py
-lib/adapter_install.sh
-adapters/claude/claude_hook.sh
-adapters/claude/scripts/prompt_log_lib.sh
-adapters/claude/scripts/prompt_log_new_session.sh
-adapters/claude/scripts/prompt_log_prices.json
-adapters/claude/scripts/prompt_log_save.sh
-adapters/claude/scripts/prompt_log_stop.sh
-adapters/claude/scripts/prompt_log_subagent.sh
-adapters/claude/scripts/prompt_log_usage.jq
-adapters/claude/scripts/prompt_log_usage.sh
-adapters/codex/session_log_usage.py
-adapters/cursor/session_log_usage.py
-adapters/native/session_log_hook.py
-adapters/native/install_hooks.py
-adapters/opencode/session-log.js
-adapters/opencode/session_log_usage.sh
-adapters/omp/session-log.js
-adapters/omp/session_log_usage.ts
-templates/opencode/command.md
-EOF
+  case "$harness" in
+    claude) harness_label="Claude Code" ;;
+    codex) harness_label="Codex" ;;
+    cursor) harness_label="Cursor" ;;
+    opencode) harness_label="OpenCode" ;;
+    omp) harness_label="OMP" ;;
+  esac
+  assert_exact "$harness_label status runs from the source package" "$harness_label: off" \
+    "$(HOME="$DISPATCH_HOME" bash "$ENTRYPOINT" --harness "$harness" --arguments status 2>&1)"
 done
+assert_exact "the entrypoint copies nothing into the home directory" "" \
+  "$(cd "$DISPATCH_HOME" && find . -mindepth 1 ! -path ./.Trash -print)"
+set +e
+install_mode_error="$(HOME="$DISPATCH_HOME" bash "$ENTRYPOINT" --install --harness all 2>&1)"
+install_mode_rc=$?
+set -e
+[[ "$install_mode_rc" -ne 0 ]] && pass "the entrypoint has no install mode" || fail "the entrypoint has no install mode"
+assert_contains "the install mode error names the argument" "unknown argument: --install" "$install_mode_error"
+assert_not_file "the all-harness installer wrapper is gone" "$REPO/install-universal-session-log.sh"
+place_test_packages
 initial_claude_status="$(run_harness claude status 2>&1)"
 assert_exact "initial Claude status is exact" "Claude Code: off" "$initial_claude_status"
 
@@ -246,7 +221,7 @@ for host in cursor opencode; do
   assert_exact "$host_label skill falls back to the most recently installed plugin package" "$host_label: off" "$market_status"
 done
 
-printf '=== source installer repairs a previously enabled OpenCode entrypoint ===\n'
+printf '=== the source package repairs a previously enabled OpenCode adapter ===\n'
 OPENCODE_RECOVERY_HOME="$WORKROOT/opencode-recovery-home"
 OPENCODE_DEAD_PACKAGE="$OPENCODE_RECOVERY_HOME/.claude/plugins/cache/user538295/claude-goodies/1.12.1/skills/session-log"
 mkdir -p "$OPENCODE_RECOVERY_HOME/.Trash" \
@@ -260,14 +235,12 @@ ln -s "$OPENCODE_DEAD_PACKAGE/adapters/opencode/session-log.js" \
 touch "$OPENCODE_RECOVERY_HOME/.config/opencode/prompt-logs/.enabled"
 opencode_recovery_status="$(
   HOME="$OPENCODE_RECOVERY_HOME" \
-    bash "$REPO/skills/session-log/install.sh" --harness opencode --arguments status 2>&1
+    bash "$ENTRYPOINT" --harness opencode --arguments status 2>&1
 )"
 assert_exact "OpenCode source invocation restores an enabled adapter" \
   "OpenCode: on — restart required" "$opencode_recovery_status"
-assert_file "OpenCode source invocation installs its package" \
-  "$OPENCODE_RECOVERY_HOME/.config/opencode/skills/session-log/install.sh"
 assert_link "OpenCode source invocation replaces the dead plugin link" \
-  "$(cd "$OPENCODE_RECOVERY_HOME" && pwd -P)/.config/opencode/skills/session-log/adapters/opencode/session-log.js" \
+  "$REPO_PACKAGE/adapters/opencode/session-log.js" \
   "$OPENCODE_RECOVERY_HOME/.config/opencode/plugins/session-log.js"
 assert_file "OpenCode source invocation restores adapter.version" \
   "$OPENCODE_RECOVERY_HOME/.config/opencode/session-log/adapter.version"
@@ -339,8 +312,8 @@ CODEX_HOME="$WORKROOT/codex-home"
 mkdir -p "$CURSOR_HOME/.Trash" "$CURSOR_HOME/.cursor" "$CODEX_HOME/.Trash" "$CODEX_HOME/.codex"
 printf '%s\n' '{"version":1,"hooks":{"afterFileEdit":[{"command":"echo keep-cursor"}]}}' > "$CURSOR_HOME/.cursor/hooks.json"
 printf '%s\n' '{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"echo keep-codex"}]}]}}' > "$CODEX_HOME/.codex/hooks.json"
-cursor_on="$(HOME="$CURSOR_HOME" bash "$REPO/skills/session-log/install.sh" --harness cursor --arguments on 2>&1)"
-codex_on="$(HOME="$CODEX_HOME" bash "$REPO/skills/session-log/install.sh" --harness codex --arguments on 2>&1)"
+cursor_on="$(HOME="$CURSOR_HOME" bash "$ENTRYPOINT" --harness cursor --arguments on 2>&1)"
+codex_on="$(HOME="$CODEX_HOME" bash "$ENTRYPOINT" --harness codex --arguments on 2>&1)"
 assert_exact "Cursor on status is exact" "Cursor: on — restart required" "$cursor_on"
 assert_exact "Codex on reports trust review honestly" "Codex: on — trust review/restart required" "$codex_on"
 assert_file "Cursor native hooks config installed" "$CURSOR_HOME/.cursor/hooks.json"
@@ -353,8 +326,8 @@ assert_contains "Cursor installs subagent hook" "subagentStop" "$(cat "$CURSOR_H
 assert_contains "Codex installs prompt hook" "UserPromptSubmit" "$(cat "$CODEX_HOME/.codex/hooks.json")"
 assert_contains "Codex installs stop hook" "\"Stop\"" "$(cat "$CODEX_HOME/.codex/hooks.json")"
 assert_contains "Codex installs subagent hook" "SubagentStop" "$(cat "$CODEX_HOME/.codex/hooks.json")"
-CURSOR_HOOK="$CURSOR_HOME/.cursor/skills/session-log/adapters/native/session_log_hook.py"
-CODEX_HOOK="$CODEX_HOME/.codex/skills/session-log/adapters/native/session_log_hook.py"
+CURSOR_HOOK="$REPO_PACKAGE/adapters/native/session_log_hook.py"
+CODEX_HOOK="$REPO_PACKAGE/adapters/native/session_log_hook.py"
 set +e
 unknown_native_event="$(
   printf '%s\n' '{"conversation_id":"cursor-session"}' |
@@ -379,8 +352,8 @@ printf '%s\n' '{"session_id":"codex-session","cwd":"/tmp/codex-project","model":
   HOME="$CODEX_HOME" python3 "$CODEX_HOOK" codex stop >/dev/null
 printf '%s\n' '{"session_id":"codex-session","cwd":"/tmp/codex-project","model":"fixture","agent_type":"explore","last_assistant_message":"codex child"}' |
   HOME="$CODEX_HOME" python3 "$CODEX_HOOK" codex subagent-stop >/dev/null
-cursor_status="$(HOME="$CURSOR_HOME" bash "$CURSOR_HOME/.cursor/skills/session-log/install.sh" --harness cursor --arguments status 2>&1)"
-codex_status="$(HOME="$CODEX_HOME" bash "$CODEX_HOME/.codex/skills/session-log/install.sh" --harness codex --arguments status 2>&1)"
+cursor_status="$(HOME="$CURSOR_HOME" bash "$ENTRYPOINT" --harness cursor --arguments status 2>&1)"
+codex_status="$(HOME="$CODEX_HOME" bash "$ENTRYPOINT" --harness codex --arguments status 2>&1)"
 assert_exact "Cursor status becomes on after native hook smoke" "Cursor: on" "$cursor_status"
 assert_exact "Codex status becomes on after native hook smoke" "Codex: on" "$codex_status"
 cursor_log_path=("$CURSOR_HOME/.cursor/prompt-logs/"*/session_cursor-session.md)
@@ -427,7 +400,7 @@ assert_exact "native hook writes no log under cwd when HOME unset" "" \
   "$(find "$PWD/.codex/prompt-logs" -name 'session_codex-session.md' -print 2>/dev/null)"
 printf '{"conversation_id":"cursor-usage","generation_id":"cursor-usage-generation","workspace_roots":["%s"],"input_tokens":5,"output_tokens":2,"cache_read_tokens":3,"cache_write_tokens":1,"status":"completed"}\n' "$PWD" |
   HOME="$CURSOR_HOME" python3 "$CURSOR_HOOK" cursor stop >/dev/null
-cursor_usage="$(run_skill_entrypoint "$CURSOR_HOME/.cursor/skills/session-log/SKILL.md" "$CURSOR_HOME" cursor 'usage --latest' 2>&1)"
+cursor_usage="$(run_skill_entrypoint "$REPO_PACKAGE/SKILL.md" "$CURSOR_HOME" cursor 'usage --latest' 2>&1)"
 assert_contains "source skill forwards usage --latest" "Cursor: usage" "$cursor_usage"
 assert_not_contains "Cursor usage no longer claims tokens are unavailable" "native token usage unavailable" "$cursor_usage"
 assert_contains "Cursor usage reports stop hook totals" "TOTAL (1 requests, 0 sub-agents)" "$cursor_usage"
@@ -441,7 +414,7 @@ set -e
 assert_contains "Cursor tokenless turn has an empty est. line" \
   'est. used token: input: 0, output: 0, cache_create: 0, cache_read: 0, total_tokens: 0, price: $0.00, model: -, effort: -' "$cursor_tokenless"
 set +e
-codex_check="$(HOME="$CODEX_HOME" bash "$CODEX_HOME/.codex/skills/session-log/install.sh" --harness codex --arguments 'usage --check' 2>&1)"
+codex_check="$(HOME="$CODEX_HOME" bash "$ENTRYPOINT" --harness codex --arguments 'usage --check' 2>&1)"
 codex_check_rc=$?
 set -e
 [[ "$codex_check_rc" -ne 0 ]] && pass "Codex usage rejects Claude-only --check" || fail "Codex usage rejects Claude-only --check"
@@ -457,7 +430,7 @@ assert_not_file "Claude on writes no adapter state" "$TEST_HOME/.claude/session-
 assert_not_file "OpenCode adapter remains absent from Claude activation" "$TEST_HOME/.config/opencode/session-log/adapter.version"
 assert_not_file "OMP adapter remains absent from Claude activation" "$TEST_HOME/.omp/agent/session-log/adapter.version"
 assert_not_file "Claude on registers no settings.json hooks" "$TEST_HOME/.claude/settings.json"
-CLAUDE_HOOK="$TEST_HOME/.claude/skills/session-log/adapters/claude/claude_hook.sh"
+CLAUDE_HOOK="$(package_root_for claude)/adapters/claude/claude_hook.sh"
 printf '%s\n' '{"session_id":"claude-runtime","cwd":"'"$PWD"'"}' | HOME="$TEST_HOME" bash "$CLAUDE_HOOK" session-start >/dev/null
 claude_status="$(run_harness claude status 2>&1)"
 assert_exact "Claude loaded status is exact" "Claude Code: on" "$claude_status"
@@ -482,41 +455,25 @@ assert_not_file "relocated root is not mutated" "$WORKROOT/relocated/prompt-logs
 INSTALL_ROOT_HOME="$WORKROOT/install-root-home"
 mkdir -p "$INSTALL_ROOT_HOME/.Trash"
 set +e
-install_root_error="$(HOME="$INSTALL_ROOT_HOME" XDG_CONFIG_HOME="$WORKROOT/custom-config" bash "$INSTALL" 2>&1)"
+install_root_error="$(HOME="$INSTALL_ROOT_HOME" XDG_CONFIG_HOME="$WORKROOT/custom-config" bash "$ENTRYPOINT" --harness opencode --arguments on 2>&1)"
 install_root_rc=$?
 set -e
-[[ "$install_root_rc" -ne 0 ]] && pass "installer rejects relocated roots" || fail "installer rejects relocated roots"
-assert_contains "installer relocation error is explicit" "custom roots are unsupported" "$install_root_error"
-assert_not_file "installer relocation leaves package absent" "$INSTALL_ROOT_HOME/.config/opencode/skills/session-log/SKILL.md"
+[[ "$install_root_rc" -ne 0 ]] && pass "entrypoint rejects relocated roots" || fail "entrypoint rejects relocated roots"
+assert_contains "entrypoint relocation error is explicit" "OpenCode root is relocated" "$install_root_error"
+assert_not_file "entrypoint relocation leaves logging off" "$INSTALL_ROOT_HOME/.config/opencode/prompt-logs/.enabled"
 
 CODEX_ROOT_HOME="$WORKROOT/codex-root-home"
 mkdir -p "$CODEX_ROOT_HOME/.Trash"
 set +e
 codex_root_error="$(
   HOME="$CODEX_ROOT_HOME" CODEX_HOME="$WORKROOT/custom-codex" \
-    bash "$REPO/skills/session-log/install.sh" --install --harness codex 2>&1
+    bash "$ENTRYPOINT" --harness codex --arguments on 2>&1
 )"
 codex_root_rc=$?
 set -e
-[[ "$codex_root_rc" -ne 0 ]] && pass "installer rejects relocated Codex root" || fail "installer rejects relocated Codex root"
-assert_contains "Codex relocation error is explicit" "custom roots are unsupported" "$codex_root_error"
-assert_not_file "Codex relocation leaves package absent" "$CODEX_ROOT_HOME/.codex/skills/session-log/SKILL.md"
-
-PREFLIGHT_HOME="$WORKROOT/preflight-home"
-PREFLIGHT_DEAD_PACKAGE="$PREFLIGHT_HOME/.claude/plugins/cache/user538295/claude-goodies/1.12.1/skills/session-log"
-mkdir -p "$PREFLIGHT_HOME/.Trash" "$PREFLIGHT_HOME/.claude/skills" \
-  "$PREFLIGHT_HOME/.codex/skills/session-log"
-ln -s "$PREFLIGHT_DEAD_PACKAGE" "$PREFLIGHT_HOME/.claude/skills/session-log"
-printf 'user-owned Codex skill\n' > "$PREFLIGHT_HOME/.codex/skills/session-log/SKILL.md"
-set +e
-preflight_error="$(HOME="$PREFLIGHT_HOME" bash "$INSTALL" 2>&1)"
-preflight_rc=$?
-set -e
-[[ "$preflight_rc" -ne 0 ]] && pass "all-harness preflight rejects an unowned package" || fail "all-harness preflight rejects an unowned package"
-assert_contains "all-harness preflight names the unowned package" "unowned file" "$preflight_error"
-assert_link "failed preflight preserves an earlier managed dangling link" \
-  "$PREFLIGHT_DEAD_PACKAGE" "$PREFLIGHT_HOME/.claude/skills/session-log"
-
+[[ "$codex_root_rc" -ne 0 ]] && pass "entrypoint rejects relocated Codex root" || fail "entrypoint rejects relocated Codex root"
+assert_contains "Codex relocation error is explicit" "Codex root is relocated" "$codex_root_error"
+assert_not_file "Codex relocation leaves logging off" "$CODEX_ROOT_HOME/.codex/prompt-logs/.enabled"
 
 UNOWNED_HOME="$WORKROOT/unowned-home"
 mkdir -p "$UNOWNED_HOME/.Trash" "$UNOWNED_HOME/.config/opencode/plugins"
@@ -546,14 +503,14 @@ mkdir -p "$MIGRATION_SYMLINK_HOME/.Trash" "$MIGRATION_SYMLINK_HOME/.claude"
 printf 'settings sentinel\n' > "$WORKROOT/settings-sentinel"
 ln -s "$WORKROOT/settings-sentinel" "$MIGRATION_SYMLINK_HOME/.claude/settings.json"
 set +e
-migration_symlink_error="$(HOME="$MIGRATION_SYMLINK_HOME" bash "$REPO/skills/session-log/install.sh" --install --harness claude 2>&1)"
+migration_symlink_error="$(HOME="$MIGRATION_SYMLINK_HOME" bash "$ENTRYPOINT" --harness claude --arguments on 2>&1)"
 migration_symlink_rc=$?
 set -e
 [[ "$migration_symlink_rc" -ne 0 ]] && pass "symlinked migration settings fail safely" || fail "symlinked migration settings fail safely"
 assert_contains "symlinked migration error is explicit" "symlinked Claude settings" "$migration_symlink_error"
 assert_link "symlinked migration settings remain unchanged" "$WORKROOT/settings-sentinel" "$MIGRATION_SYMLINK_HOME/.claude/settings.json"
 assert_contains "symlinked migration target remains unchanged" "settings sentinel" "$(cat "$WORKROOT/settings-sentinel")"
-assert_not_file "symlinked migration has no partial package" "$MIGRATION_SYMLINK_HOME/.claude/skills/session-log/SKILL.md"
+assert_not_file "symlinked migration leaves logging off" "$MIGRATION_SYMLINK_HOME/.claude/prompt-logs/.enabled"
 
 
 printf '=== migration removes only known legacy files and preserves settings ===\n'
@@ -576,13 +533,15 @@ mkdir -p "$SELECTIVE_HOME/.Trash" "$SELECTIVE_HOME/.config/opencode/plugins" \
 printf '# universal-session-log: managed\nlegacy OpenCode\n' > "$SELECTIVE_HOME/.config/opencode/plugins/session-log.js"
 printf 'unselected Claude legacy\n' > "$SELECTIVE_HOME/.claude/scripts/prompt_log_save.sh"
 printf 'unselected OMP legacy\n' > "$SELECTIVE_HOME/.omp/agent/extensions/session-log-omp.js"
-HOME="$SELECTIVE_HOME" bash "$REPO/skills/session-log/install.sh" --install --harness opencode >/dev/null 2>&1
+HOME="$SELECTIVE_HOME" bash "$ENTRYPOINT" --harness opencode --arguments repair >/dev/null 2>&1
 assert_not_file "selective migration removes selected OpenCode legacy" "$SELECTIVE_HOME/.config/opencode/plugins/session-log.js"
 assert_file "selective migration preserves unselected Claude legacy" "$SELECTIVE_HOME/.claude/scripts/prompt_log_save.sh"
 assert_file "selective migration preserves unselected OMP legacy" "$SELECTIVE_HOME/.omp/agent/extensions/session-log-omp.js"
 printf '# universal-session-log: managed\nlegacy prompt_log_usage.sh command\n' > "$LEGACY_HOME/.claude/skills/session-log/SKILL.md"
 printf '%s\n' "{\"hooks\":{\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo keep-me\"},{\"type\":\"command\",\"command\":\"bash $LEGACY_HOME/.claude/scripts/prompt_log_save.sh\"}]}]}}" > "$LEGACY_HOME/.claude/settings.json"
-HOME="$LEGACY_HOME" bash "$INSTALL" >/dev/null 2>&1
+for legacy_harness in claude opencode omp; do
+  HOME="$LEGACY_HOME" bash "$ENTRYPOINT" --harness "$legacy_harness" --arguments repair >/dev/null 2>&1
+done
 assert_not_file "legacy OMP skill removed" "$LEGACY_HOME/.omp/agent/skills/session-log-omp/SKILL.md"
 assert_not_file "legacy OMP extension removed" "$LEGACY_HOME/.omp/agent/extensions/session-log-omp.js"
 assert_not_file "legacy OpenCode command removed" "$LEGACY_HOME/.config/opencode/commands/session-log-omp.md"
@@ -591,24 +550,23 @@ assert_not_file "legacy OpenCode standalone plugin removed" "$LEGACY_HOME/.confi
 assert_not_file "legacy OpenCode standalone parser removed" "$LEGACY_HOME/.config/opencode/scripts/session_log_usage.sh"
 assert_not_file "legacy Claude standalone scripts removed" "$LEGACY_HOME/.claude/scripts/prompt_log_save.sh"
 assert_contains "unrelated settings preserved" "keep-me" "$(cat "$LEGACY_HOME/.claude/settings.json")"
-assert_contains "legacy Claude skill replaced by managed entrypoint" "universal-session-log: managed" "$(cat "$LEGACY_HOME/.claude/skills/session-log/SKILL.md")"
+assert_contains "legacy Claude skill without an ownership manifest is kept" "universal-session-log: managed" "$(cat "$LEGACY_HOME/.claude/skills/session-log/SKILL.md")"
 assert_not_contains "known standalone hook removed" "$LEGACY_HOME/.claude/scripts/prompt_log_save.sh" "$(cat "$LEGACY_HOME/.claude/settings.json")"
 UNOWNED_LEGACY_HOME="$WORKROOT/unowned-legacy-home"
 mkdir -p "$UNOWNED_LEGACY_HOME/.Trash" "$UNOWNED_LEGACY_HOME/.config/opencode/plugins"
 printf 'user plugin\n' > "$UNOWNED_LEGACY_HOME/.config/opencode/plugins/session-log.js"
 set +e
-unowned_legacy_error="$(HOME="$UNOWNED_LEGACY_HOME" bash "$INSTALL" 2>&1)"
+unowned_legacy_error="$(HOME="$UNOWNED_LEGACY_HOME" bash "$ENTRYPOINT" --harness opencode --arguments repair 2>&1)"
 unowned_legacy_rc=$?
 set -e
 [[ "$unowned_legacy_rc" -ne 0 ]] && pass "unowned legacy collision is protected" || fail "unowned legacy collision is protected"
 assert_contains "unowned legacy error is explicit" "unowned legacy path" "$unowned_legacy_error"
 assert_contains "unowned legacy file remains unchanged" "user plugin" "$(cat "$UNOWNED_LEGACY_HOME/.config/opencode/plugins/session-log.js")"
-assert_not_file "unowned legacy collision leaves package absent" "$UNOWNED_LEGACY_HOME/.config/opencode/skills/session-log/SKILL.md"
 
 HOOK_COLLISION_HOME="$WORKROOT/hook-collision-home"
 mkdir -p "$HOOK_COLLISION_HOME/.Trash" "$HOOK_COLLISION_HOME/.claude"
 printf '%s\n' '{"hooks":{"SessionEnd":[{"hooks":[{"type":"command","command":"echo prompt_log_save.sh"}]}]}}' > "$HOOK_COLLISION_HOME/.claude/settings.json"
-HOME="$HOOK_COLLISION_HOME" bash "$INSTALL" >/dev/null 2>&1
+HOME="$HOOK_COLLISION_HOME" bash "$ENTRYPOINT" --harness claude --arguments repair >/dev/null 2>&1
 assert_contains "unrelated hook text is preserved" "echo prompt_log_save.sh" "$(cat "$HOOK_COLLISION_HOME/.claude/settings.json")"
 
 
@@ -617,13 +575,12 @@ mkdir -p "$MALFORMED_HOME/.Trash" "$MALFORMED_HOME/.claude/scripts" "$MALFORMED_
 printf 'legacy\n' > "$MALFORMED_HOME/.claude/scripts/prompt_log_save.sh"
 printf '{not-json\n' > "$MALFORMED_HOME/.claude/settings.json"
 set +e
-malformed_error="$(HOME="$MALFORMED_HOME" bash "$INSTALL" 2>&1)"
+malformed_error="$(HOME="$MALFORMED_HOME" bash "$ENTRYPOINT" --harness claude --arguments repair 2>&1)"
 malformed_rc=$?
 set -e
 [[ "$malformed_rc" -ne 0 ]] && pass "malformed settings fail before migration" || fail "malformed settings fail before migration"
 assert_file "malformed settings preserve legacy files" "$MALFORMED_HOME/.claude/scripts/prompt_log_save.sh"
-assert_contains "malformed settings error names JSON" "JSON" "$malformed_error"
-assert_not_file "malformed settings leave package absent" "$MALFORMED_HOME/.claude/skills/session-log/SKILL.md"
+assert_contains "malformed settings error names the settings file" "malformed-home/.claude/settings.json: Expecting property name" "$malformed_error"
 
 printf '=== complete copied packages bootstrap locally ===\n'
 PACKAGE_OPENCODE_HOME="$WORKROOT/package-opencode-home"
@@ -636,26 +593,6 @@ assert_link "copied OpenCode package installs its plugin" \
   "$PACKAGE_OPENCODE_ROOT/adapters/opencode/session-log.js" \
   "$PACKAGE_OPENCODE_HOME/.config/opencode/plugins/session-log.js"
 assert_not_file "copied OpenCode package does not need global wrapper" "$PACKAGE_OPENCODE_HOME/.local/bin/session-log"
-package_opencode_seed="$(HOME="$PACKAGE_OPENCODE_HOME" bash "$PACKAGE_OPENCODE_ROOT/install.sh" --install --harness opencode 2>&1)"
-assert_contains "copied v1 package seeds its v2 ownership manifest" \
-  "Universal session-log installed for opencode" "$package_opencode_seed"
-assert_file "copied v2 package writes its ownership manifest" \
-  "$PACKAGE_OPENCODE_ROOT/.universal-session-log.manifest"
-mv "$PACKAGE_OPENCODE_ROOT/.universal-session-log.manifest" "$WORKROOT/v1-package.manifest"
-package_opencode_reinstall="$(HOME="$PACKAGE_OPENCODE_HOME" bash "$PACKAGE_OPENCODE_ROOT/install.sh" --install --harness opencode 2>&1)"
-assert_contains "v1 copied package can reinstall into the v2 manifest format" \
-  "Universal session-log installed for opencode" "$package_opencode_reinstall"
-assert_file "v1-to-v2 reinstall recreates the ownership manifest" \
-  "$PACKAGE_OPENCODE_ROOT/.universal-session-log.manifest"
-printf 'tampered package asset\n' > "$PACKAGE_OPENCODE_ROOT/VERSION"
-set +e
-tampered_package="$(HOME="$PACKAGE_OPENCODE_HOME" bash "$PACKAGE_OPENCODE_ROOT/install.sh" --install --harness opencode 2>&1)"
-tampered_package_rc=$?
-set -e
-[[ "$tampered_package_rc" -ne 0 ]] && pass "tampered copied package asset is rejected" || fail "tampered copied package asset is rejected"
-assert_contains "tampered package rejection names the asset" "VERSION" "$tampered_package"
-
-
 PACKAGE_OMP_HOME="$WORKROOT/package-omp-home"
 mkdir -p "$PACKAGE_OMP_HOME/.Trash" "$PACKAGE_OMP_HOME/.omp/agent/skills"
 cp -R "$REPO/skills/session-log" "$PACKAGE_OMP_HOME/.omp/agent/skills/session-log"
@@ -666,35 +603,27 @@ assert_link "copied OMP package installs its extension" \
   "$PACKAGE_OMP_ROOT/adapters/omp/session-log.js" \
   "$PACKAGE_OMP_HOME/.omp/agent/extensions/session-log.js"
 
-OMP_HANDOFF_HOME="$WORKROOT/omp-handoff-home"
-mkdir -p "$OMP_HANDOFF_HOME/.Trash" "$OMP_HANDOFF_HOME/.omp/agent/skills"
-cp -R "$REPO/skills/session-log" "$OMP_HANDOFF_HOME/.omp/agent/skills/session-log"
-OMP_HANDOFF_ROOT="$OMP_HANDOFF_HOME/.omp/agent/skills/session-log"
-HOME="$OMP_HANDOFF_HOME" bash "$OMP_HANDOFF_ROOT/install.sh" --install --harness all >/dev/null
-claude_handoff_status="$(
-  run_skill_entrypoint "$OMP_HANDOFF_HOME/.claude/skills/session-log/SKILL.md" "$OMP_HANDOFF_HOME" claude status 2>&1
-)"
-assert_exact "OMP package all-install keeps Claude entrypoint on Claude" \
-  "Claude Code: off" "$claude_handoff_status"
 PACKAGE_CLAUDE_HOME="$WORKROOT/package-claude-home"
 mkdir -p "$PACKAGE_CLAUDE_HOME/.Trash" "$PACKAGE_CLAUDE_HOME/.claude/skills"
 cp -R "$REPO/skills/session-log" "$PACKAGE_CLAUDE_HOME/.claude/skills/session-log"
 package_claude_on="$(HOME="$PACKAGE_CLAUDE_HOME" bash "$PACKAGE_CLAUDE_HOME/.claude/skills/session-log/install.sh" --harness claude --arguments on 2>&1)"
-assert_contains "copied Claude package enables logging" "Claude Code: on" "$package_claude_on"
-assert_not_file "copied Claude package registers no settings.json hooks" "$PACKAGE_CLAUDE_HOME/.claude/settings.json"
+assert_contains "a manual copy under the Claude skill root is reported" \
+  "Claude Code: kept legacy package copy $(cd "$PACKAGE_CLAUDE_HOME" && pwd -P)/.claude/skills/session-log: it has no ownership manifest; move it aside" "$package_claude_on"
+assert_file "a manual copy under the Claude skill root is never removed" "$PACKAGE_CLAUDE_HOME/.claude/skills/session-log/install.sh"
+assert_not_file "a manual Claude copy registers no settings.json hooks" "$PACKAGE_CLAUDE_HOME/.claude/settings.json"
 
 PACKAGE_PLUGIN_HOME="$WORKROOT/package-plugin-home"
 mkdir -p "$PACKAGE_PLUGIN_HOME/.Trash" "$PACKAGE_PLUGIN_HOME/plugin/skills"
 cp -R "$REPO/skills/session-log" "$PACKAGE_PLUGIN_HOME/plugin/skills/session-log"
 package_plugin_on="$(HOME="$PACKAGE_PLUGIN_HOME" CLAUDE_PLUGIN_ROOT="$PACKAGE_PLUGIN_HOME/plugin" bash "$PACKAGE_PLUGIN_HOME/plugin/skills/session-log/install.sh" --harness claude --arguments on 2>&1)"
-assert_contains "marketplace source bootstraps stable Claude package" "Claude Code: on" "$package_plugin_on"
-assert_file "marketplace source installs the stable package" "$PACKAGE_PLUGIN_HOME/.claude/skills/session-log/install.sh"
+assert_contains "marketplace source enables logging" "Claude Code: on" "$package_plugin_on"
+assert_not_file "marketplace source copies no package" "$PACKAGE_PLUGIN_HOME/.claude/skills/session-log"
 assert_not_file "marketplace source registers no settings.json hooks" "$PACKAGE_PLUGIN_HOME/.claude/settings.json"
 printf '%s\n' '{"session_id":"plugin-package-session","cwd":"'"$PWD"'"}' |
   HOME="$PACKAGE_PLUGIN_HOME" \
-  bash "$PACKAGE_PLUGIN_HOME/.claude/skills/session-log/adapters/claude/claude_hook.sh" session-start >/dev/null
-package_plugin_status="$(HOME="$PACKAGE_PLUGIN_HOME" bash "$PACKAGE_PLUGIN_HOME/.claude/skills/session-log/install.sh" --harness claude --arguments status 2>&1)"
-assert_contains "stable package becomes loaded through stable hook" "Claude Code: on" "$package_plugin_status"
+  bash "$PACKAGE_PLUGIN_HOME/plugin/skills/session-log/adapters/claude/claude_hook.sh" session-start >/dev/null
+package_plugin_status="$(HOME="$PACKAGE_PLUGIN_HOME" bash "$PACKAGE_PLUGIN_HOME/plugin/skills/session-log/install.sh" --harness claude --arguments status 2>&1)"
+assert_exact "marketplace package becomes loaded through its own hook" "Claude Code: on" "$package_plugin_status"
 
 printf '=== Claude on removes legacy settings.json hooks; status and off leave settings.json alone ===\n'
 write_stale_claude_settings() {
@@ -826,7 +755,7 @@ cmp -s "$WORKROOT/plugin-hook-invalid.first" "$PLUGIN_UPGRADE_SETTINGS" &&
   pass "plugin SessionStart leaves invalid settings untouched" ||
   fail "plugin SessionStart leaves invalid settings untouched"
 
-printf '=== plugin on replaces a stale owned skill symlink and still cleans settings.json ===\n'
+printf '=== plugin on removes a skill-root symlink older releases pointed into the plugin cache ===\n'
 STALE_LINK_HOME="$WORKROOT/stale-link-home"
 mkdir -p "$STALE_LINK_HOME/.Trash" "$STALE_LINK_HOME/.claude/skills"
 STALE_LINK_ROOT="$(make_claude_plugin_cache "$STALE_LINK_HOME" 1.18.1)"
@@ -838,28 +767,14 @@ write_stale_claude_settings "$STALE_LINK_SETTINGS" "$PLUGIN_STALE_HOOK"
 set +e
 stale_link_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$STALE_LINK_ROOT/skills/session-log/SKILL.md" "$STALE_LINK_HOME" claude on 2>&1)"
 set -e
+assert_contains "plugin on reports the removed skill symlink" \
+  "Claude Code: removed legacy package link $(cd "$STALE_LINK_HOME" && pwd -P)/.claude/skills/session-log" "$stale_link_on"
 assert_contains "stale owned skill symlink does not block plugin on" "Claude Code: on" "$stale_link_on"
-[[ -d "$STALE_LINK_SKILL" && ! -L "$STALE_LINK_SKILL" ]] &&
-  pass "stale owned skill symlink becomes a real package directory" ||
-  fail "stale owned skill symlink becomes a real package directory"
-assert_file "replaced skill directory holds the current package" "$STALE_LINK_SKILL/install.sh"
-assert_exact "replaced skill directory holds the current version" "$PACKAGE_VERSION" "$(tr -d '[:space:]' < "$STALE_LINK_SKILL/VERSION" 2>/dev/null)"
+assert_not_file "stale owned skill symlink is removed" "$STALE_LINK_SKILL"
 assert_file "old plugin cache version is left untouched" "$STALE_LINK_OLD/install.sh"
-assert_not_file "old plugin cache version gains no manifest" "$STALE_LINK_OLD/.universal-session-log.manifest"
 stale_link_summary="$(claude_settings_summary "$STALE_LINK_SETTINGS")"
 assert_not_contains "stale owned skill symlink still lets plugin on remove owned hooks" "owned:" "$stale_link_summary"
 assert_non_owned_hooks_preserved "stale owned skill symlink" "$stale_link_summary"
-cp "$STALE_LINK_SETTINGS" "$WORKROOT/stale-link-settings.first"
-set +e
-stale_link_again="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$STALE_LINK_ROOT/skills/session-log/SKILL.md" "$STALE_LINK_HOME" claude on 2>&1)"
-set -e
-assert_contains "repeated plugin on after symlink replacement reports on" "Claude Code: on" "$stale_link_again"
-[[ -d "$STALE_LINK_SKILL" && ! -L "$STALE_LINK_SKILL" ]] &&
-  pass "repeated plugin on keeps the real package directory" ||
-  fail "repeated plugin on keeps the real package directory"
-cmp -s "$WORKROOT/stale-link-settings.first" "$STALE_LINK_SETTINGS" &&
-  pass "repeated plugin on after symlink replacement leaves settings byte-identical" ||
-  fail "repeated plugin on after symlink replacement leaves settings byte-identical"
 
 DANGLING_LINK_HOME="$WORKROOT/dangling-link-home"
 mkdir -p "$DANGLING_LINK_HOME/.Trash" "$DANGLING_LINK_HOME/.claude/skills"
@@ -871,13 +786,11 @@ set +e
 dangling_link_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$DANGLING_LINK_ROOT/skills/session-log/SKILL.md" "$DANGLING_LINK_HOME" claude on 2>&1)"
 set -e
 assert_contains "dangling owned skill symlink does not block plugin on" "Claude Code: on" "$dangling_link_on"
-[[ -d "$DANGLING_LINK_HOME/.claude/skills/session-log" && ! -L "$DANGLING_LINK_HOME/.claude/skills/session-log" ]] &&
-  pass "dangling owned skill symlink becomes a real package directory" ||
-  fail "dangling owned skill symlink becomes a real package directory"
+assert_not_file "dangling owned skill symlink is removed" "$DANGLING_LINK_HOME/.claude/skills/session-log"
 assert_not_contains "dangling owned skill symlink still lets plugin on remove owned hooks" "owned:" \
   "$(claude_settings_summary "$DANGLING_LINK_HOME/.claude/settings.json")"
 
-printf '=== a foreign skill symlink is refused with an actionable error ===\n'
+printf '=== a foreign skill symlink is left alone ===\n'
 FOREIGN_LINK_HOME="$WORKROOT/foreign-link-home"
 mkdir -p "$FOREIGN_LINK_HOME/.Trash" "$FOREIGN_LINK_HOME/.claude/skills" "$FOREIGN_LINK_HOME/elsewhere"
 FOREIGN_LINK_ROOT="$(make_claude_plugin_cache "$FOREIGN_LINK_HOME" 1.18.1)"
@@ -889,17 +802,17 @@ for foreign_destination in \
   ln -sfn "$foreign_destination" "$FOREIGN_LINK_SKILL"
   write_stale_claude_settings "$FOREIGN_LINK_HOME/.claude/settings.json" "$PLUGIN_STALE_HOOK"
   set +e
-  foreign_link_error="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$FOREIGN_LINK_ROOT/skills/session-log/SKILL.md" "$FOREIGN_LINK_HOME" claude on 2>&1)"
+  foreign_link_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$FOREIGN_LINK_ROOT/skills/session-log/SKILL.md" "$FOREIGN_LINK_HOME" claude on 2>&1)"
   foreign_link_rc=$?
   set -e
-  [[ "$foreign_link_rc" -ne 0 ]] && pass "foreign skill symlink is refused ($foreign_destination)" ||
-    fail "foreign skill symlink is refused ($foreign_destination)"
-  assert_contains "foreign skill symlink error names the link and its target" \
-    "refusing to replace unowned package link: $(cd "$FOREIGN_LINK_HOME" && pwd -P)/.claude/skills/session-log -> $foreign_destination" "$foreign_link_error"
-  assert_contains "foreign skill symlink error says how to recover" "move it aside" "$foreign_link_error"
+  assert_exact "plugin on succeeds beside a foreign skill symlink ($foreign_destination)" "0" "$foreign_link_rc"
+  assert_not_contains "plugin on does not report a foreign skill symlink" "legacy package" "$foreign_link_on"
   assert_link "foreign skill symlink is preserved" "$foreign_destination" "$FOREIGN_LINK_SKILL"
+  assert_not_contains "plugin on removes owned hooks beside a foreign skill symlink" "owned:" \
+    "$(claude_settings_summary "$FOREIGN_LINK_HOME/.claude/settings.json")"
 done
-assert_not_file "foreign skill symlink target gains no manifest" "$FOREIGN_LINK_HOME/elsewhere/session-log/.universal-session-log.manifest"
+assert_file "foreign skill symlink target is left untouched" "$FOREIGN_LINK_HOME/elsewhere/session-log/install.sh"
+write_stale_claude_settings "$FOREIGN_LINK_HOME/.claude/settings.json" "$PLUGIN_STALE_HOOK"
 set +e
 printf '%s\n' '{"session_id":"foreign-link-session","cwd":"'"$PWD"'"}' |
   (unset CLAUDE_PLUGIN_ROOT; HOME="$FOREIGN_LINK_HOME" bash "$FOREIGN_LINK_ROOT/skills/session-log/adapters/claude/claude_hook.sh" session-start) >/dev/null 2>&1
@@ -1061,7 +974,7 @@ printf '%s\n' \
   '{"type":"token_usage_record","data":{"input_tokens":3,"cached_input_tokens":2,"output_tokens":7,"reasoning_output_tokens":4,"total_tokens":10}}' \
   '{"type":"token_usage_record","payload":{"usage":{"input_tokens":2,"cached_input_tokens":1,"output_tokens":3,"reasoning_output_tokens":1}}}' \
   > "$CODEX_ROLLOUT"
-codex_usage="$(run_skill_entrypoint "$CODEX_HOME/.codex/skills/session-log/SKILL.md" "$CODEX_HOME" codex "usage \"$CODEX_ROLLOUT\"" 2>&1)"
+codex_usage="$(run_skill_entrypoint "$REPO_PACKAGE/SKILL.md" "$CODEX_HOME" codex "usage \"$CODEX_ROLLOUT\"" 2>&1)"
 assert_contains "source skill preserves quoted usage target" "session: $CODEX_ROLLOUT" "$codex_usage"
 assert_contains "Codex total excludes cached and reasoning subsets" "total_tokens: 15" "$codex_usage"
 codex_id_usage="$(run_harness_at_home_and_dir "$CODEX_HOME" "$PWD" codex usage codex-session 2>&1)"
@@ -1070,7 +983,7 @@ CODEX_BACKSLASH_ROLLOUT="$CODEX_HOME/.codex/sessions/2026/09/rollout\\fixture.js
 cp "$CODEX_ROLLOUT" "$CODEX_BACKSLASH_ROLLOUT"
 touch -t 202001010101 "$CODEX_BACKSLASH_ROLLOUT"
 codex_backslash_usage="$(
-  run_skill_entrypoint "$CODEX_HOME/.codex/skills/session-log/SKILL.md" \
+  run_skill_entrypoint "$REPO_PACKAGE/SKILL.md" \
     "$CODEX_HOME" codex "usage \"$CODEX_BACKSLASH_ROLLOUT\"" 2>&1
 )"
 assert_contains "quoted usage preserves a literal backslash" \
@@ -1416,131 +1329,6 @@ ln -s "$PSROOT/realfile" "$PSROOT/slink"
 wf_out="$(SESSION_LOG_FILE="$PSROOT/slink" SESSION_LOG_CONTENT=x python3 "$PSLIB/pathsafe.py" write-file 2>&1)"
 assert_contains "pathsafe write-file refuses symlinked target" "refusing to overwrite unsafe private file" "$wf_out"
 
-printf 'src\n' > "$PSROOT/src.txt"
-# copy_file refuses a symlink target
-: > "$PSROOT/copyreal"
-ln -s "$PSROOT/copyreal" "$PSROOT/copylink"
-cs_out="$(SESSION_LOG_SOURCE="$PSROOT/src.txt" SESSION_LOG_TARGET="$PSROOT/copylink" SESSION_LOG_PRESERVE_MODE=0 SESSION_LOG_MANIFEST_OWNED=1 python3 "$PSLIB/pathsafe.py" copy-file 2>&1)"
-assert_contains "pathsafe copy-file refuses symlink target" "refusing to overwrite symlink" "$cs_out"
-
-# copy_file refuses a non-file (directory) target
-mkdir -p "$PSROOT/dirtarget"
-cn_out="$(SESSION_LOG_SOURCE="$PSROOT/src.txt" SESSION_LOG_TARGET="$PSROOT/dirtarget" SESSION_LOG_PRESERVE_MODE=0 SESSION_LOG_MANIFEST_OWNED=1 python3 "$PSLIB/pathsafe.py" copy-file 2>&1)"
-assert_contains "pathsafe copy-file refuses non-file target" "refusing to overwrite non-file" "$cn_out"
-
-# copy_file refuses an unowned file (manifest_owned=0, differing content)
-printf 'different\n' > "$PSROOT/unowned.txt"
-cu_out="$(SESSION_LOG_SOURCE="$PSROOT/src.txt" SESSION_LOG_TARGET="$PSROOT/unowned.txt" SESSION_LOG_PRESERVE_MODE=0 SESSION_LOG_MANIFEST_OWNED=0 python3 "$PSLIB/pathsafe.py" copy-file 2>&1)"
-assert_contains "pathsafe copy-file refuses unowned file" "refusing to overwrite unowned file" "$cu_out"
-
-# copy_file restores the original when a target appears during replacement
-RACE_DIR="$PSROOT/copy-race"
-mkdir -p "$RACE_DIR"
-printf 'package source\n' > "$RACE_DIR/source"
-printf 'original target\n' > "$RACE_DIR/target"
-SESSION_LOG_SOURCE="$RACE_DIR/source" \
-  SESSION_LOG_TARGET="$RACE_DIR/target" \
-  SESSION_LOG_PRESERVE_MODE=0 \
-  SESSION_LOG_MANIFEST_OWNED=1 \
-  python3 - "$PSLIB" >/dev/null 2>&1 <<'PYRACE'
-import os
-import sys
-
-sys.path.insert(0, sys.argv[1])
-import pathsafe
-target = os.environ["SESSION_LOG_TARGET"]
-original_link = os.link
-pathsafe.random.randrange = lambda *_args: 0
-backup_zero = os.path.join(
-    os.path.dirname(target),
-    f".session-log-backup.{os.getpid()}.00000000.0",
-)
-conflict_zero = f"{backup_zero[:-2]}.1.conflict.0"
-with open(backup_zero, "x", encoding="utf-8") as handle:
-    handle.write("occupied backup target\n")
-with open(conflict_zero, "x", encoding="utf-8") as handle:
-    handle.write("occupied conflict target\n")
-
-def create_racing_target(source_name, target_name, **options):
-    if target_name == os.path.basename(target) and source_name.startswith(".session-log."):
-        with open(target, "x", encoding="utf-8") as handle:
-            handle.write("concurrent target\n")
-    return original_link(source_name, target_name, **options)
-
-os.link = create_racing_target
-try:
-    pathsafe.main(["copy-file"])
-except SystemExit as error:
-    if str(error) != f"package target changed during copy: {target}":
-        raise
-else:
-    raise SystemExit("copy-file accepted concurrent target")
-PYRACE
-race_rc=$?
-assert_exact "copy-file rejects a target created during replacement" "0" "$race_rc"
-assert_exact "copy-file restores the original target after a race" "original target" "$(cat "$RACE_DIR/target")"
-assert_exact "copy-file preserves the occupied conflict path" "occupied conflict target" "$(cat "$RACE_DIR"/.session-log-backup.*.conflict.0)"
-assert_exact "copy-file preserves the occupied backup path" "occupied backup target" "$(cat "$RACE_DIR"/.session-log-backup.*.00000000.0)"
-assert_exact "copy-file preserves the racing target as a conflict" "concurrent target" "$(find "$RACE_DIR" -type f -name '*.conflict.1' -exec cat {} \;)"
-
-# copy_file does not overwrite a target created during backup restoration
-RESTORE_RACE_DIR="$PSROOT/copy-restore-race"
-mkdir -p "$RESTORE_RACE_DIR"
-printf 'package source\n' > "$RESTORE_RACE_DIR/source"
-printf 'original target\n' > "$RESTORE_RACE_DIR/target"
-SESSION_LOG_SOURCE="$RESTORE_RACE_DIR/source" \
-  SESSION_LOG_TARGET="$RESTORE_RACE_DIR/target" \
-  SESSION_LOG_PRESERVE_MODE=0 \
-  SESSION_LOG_MANIFEST_OWNED=1 \
-  python3 - "$PSLIB" >/dev/null 2>&1 <<'PYRESTORERACE'
-import os
-import sys
-
-sys.path.insert(0, sys.argv[1])
-import pathsafe
-
-target = os.environ["SESSION_LOG_TARGET"]
-original_link = os.link
-original_stat = os.stat
-replacement_collision_created = [False]
-
-def create_replacement_collision(source_name, target_name, **options):
-    if (
-        target_name == os.path.basename(target)
-        and source_name.startswith(".session-log.")
-        and not replacement_collision_created[0]
-    ):
-        replacement_collision_created[0] = True
-        with open(target, "x", encoding="utf-8") as handle:
-            handle.write("concurrent target\n")
-    return original_link(source_name, target_name, **options)
-
-def create_restore_collision(path, *args, **options):
-    if path == os.path.basename(target):
-        try:
-            return original_stat(path, *args, **options)
-        except FileNotFoundError:
-            with open(target, "x", encoding="utf-8") as handle:
-                handle.write("restore collision target\n")
-            raise
-    return original_stat(path, *args, **options)
-
-os.link = create_replacement_collision
-os.stat = create_restore_collision
-try:
-    pathsafe.main(["copy-file"])
-except SystemExit as error:
-    if str(error) != f"package target changed during copy: {target}":
-        raise
-else:
-    raise SystemExit("copy-file accepted concurrent target")
-PYRESTORERACE
-restore_race_rc=$?
-assert_exact "copy-file rejects a collision during restore" "0" "$restore_race_rc"
-assert_exact "copy-file preserves the restore-race target" "restore collision target" "$(cat "$RESTORE_RACE_DIR/target")"
-assert_exact "copy-file preserves the original target backup" "original target" "$(find "$RESTORE_RACE_DIR" -type f -name '.session-log-backup.*' ! -name '*.conflict.*' -exec cat {} \;)"
-assert_exact "copy-file preserves the earlier racing target" "concurrent target" "$(find "$RESTORE_RACE_DIR" -type f -name '*.conflict.0' -exec cat {} \;)"
-
 # Claude settings restoration preserves a target created during rollback
 CLAUDE_RESTORE_RACE_DIR="$PSROOT/claude-restore-race"
 mkdir -p "$CLAUDE_RESTORE_RACE_DIR"
@@ -1836,7 +1624,7 @@ chmod 644 "$HARDLINK_SENTINEL"
 ln "$HARDLINK_SENTINEL" "$HARDLINK_HOME/.claude/prompt-logs/.enabled.lock"
 set +e
 hardlink_lock_error="$(
-  HOME="$HARDLINK_HOME" "$TEST_HOME/.claude/skills/session-log/bin/session-log" \
+  HOME="$HARDLINK_HOME" "$(package_root_for claude)/bin/session-log" \
     --entrypoint claude --harness claude on 2>&1
 )"
 hardlink_lock_rc=$?
@@ -1857,7 +1645,7 @@ chmod 644 "$FLAG_HARDLINK_SENTINEL"
 ln "$FLAG_HARDLINK_SENTINEL" "$FLAG_HARDLINK_HOME/.claude/prompt-logs/.enabled"
 set +e
 hardlink_flag_error="$(
-  HOME="$FLAG_HARDLINK_HOME" "$TEST_HOME/.claude/skills/session-log/bin/session-log" \
+  HOME="$FLAG_HARDLINK_HOME" "$(package_root_for claude)/bin/session-log" \
     --entrypoint claude --harness claude off 2>&1
 )"
 hardlink_flag_rc=$?
@@ -1880,7 +1668,7 @@ chmod 640 "$CLAUDE_SETTINGS_SENTINEL"
 ln "$CLAUDE_SETTINGS_SENTINEL" "$CLAUDE_ATOMIC_HOME/.claude/settings.json"
 set +e
 claude_atomic_output="$(
-  HOME="$CLAUDE_ATOMIC_HOME" bash "$REPO/skills/session-log/install.sh" \
+  HOME="$CLAUDE_ATOMIC_HOME" bash "$ENTRYPOINT" \
     --harness claude --arguments on 2>&1
 )"
 claude_atomic_rc=$?
@@ -1894,23 +1682,6 @@ assert_mode "updated Claude settings preserve mode" "640" "$CLAUDE_ATOMIC_HOME/.
   fail "Claude settings update replaces rather than mutates hard links"
 assert_contains "updated Claude settings preserve existing values" "external settings" "$(cat "$CLAUDE_ATOMIC_HOME/.claude/settings.json")"
 assert_not_contains "updated Claude settings drop the legacy hook" "SESSION_LOG_OWNER" "$(cat "$CLAUDE_ATOMIC_HOME/.claude/settings.json")"
-
-PACKAGE_LOCK_HOME="$WORKROOT/package-lock-home"
-PACKAGE_LOCK="$PACKAGE_LOCK_HOME/.local/share/universal-session-log/.install.lock"
-mkdir -p "$PACKAGE_LOCK_HOME/.Trash" "$PACKAGE_LOCK"
-PACKAGE_LOCK_START="$(ps -p "$$" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
-printf '%s\n%s\n' "$$" "$PACKAGE_LOCK_START" > "$PACKAGE_LOCK/owner"
-PACKAGE_LOCK_OWNER="$(cat "$PACKAGE_LOCK/owner")"
-set +e
-package_lock_error="$(
-  HOME="$PACKAGE_LOCK_HOME" bash "$REPO/skills/session-log/install.sh" --install --harness omp 2>&1
-)"
-package_lock_rc=$?
-set -e
-[[ "$package_lock_rc" -ne 0 ]] && pass "package installer waits for a live installation lock" || fail "package installer waits for a live installation lock"
-assert_contains "package lock failure is explicit" "installation is already in progress" "$package_lock_error"
-assert_not_file "package lock prevents partial package installation" "$PACKAGE_LOCK_HOME/.omp/agent/skills/session-log/SKILL.md"
-assert_exact "package lock owner remains unchanged" "$PACKAGE_LOCK_OWNER" "$(cat "$PACKAGE_LOCK/owner")"
 
 printf '\nResults: %s\n' "$([[ "$FAIL" -eq 0 ]] && echo passed || echo FAILED)"
 exit "$FAIL"

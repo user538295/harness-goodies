@@ -68,17 +68,23 @@ write_state_file() {
   mv -f "$temp" "$target" 2>/dev/null || unlink "$temp" 2>/dev/null || true
 }
 
-# Whether older releases may have left session-log registrations in settings.json.
+readonly SEEDED_COPY="$CLAUDE_ROOT/skills/session-log"
+
+# Whether older releases may have left something behind: session-log registrations in
+# settings.json, the package copy they seeded under ~/.claude/skills, or their ~/.claude/scripts.
 legacy_leftovers_present() {
   local settings="$CLAUDE_ROOT/settings.json"
-  [[ -f "$settings" && ! -L "$settings" ]] && grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=' "$settings"
+  [[ -e "$SEEDED_COPY/.universal-session-log.manifest" || -L "$SEEDED_COPY" ]] && return 0
+  compgen -G "$CLAUDE_ROOT/scripts/prompt_log_*" >/dev/null && return 0
+  [[ -f "$settings" && ! -L "$settings" ]] && grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=|prompt_log_' "$settings"
 }
 
-# What the cleanup depends on: settings.json and this package.
+# What the cleanup depends on: settings.json, this package, and whether a seeded copy remains.
 cleanup_fingerprint() {
   local settings="$CLAUDE_ROOT/settings.json"
   if [[ -f "$settings" && ! -L "$settings" ]]; then cksum < "$settings" || return 1; fi
   printf '%s\n%s\n' "$PACKAGE_ROOT" "$VERSION"
+  if [[ -e "$SEEDED_COPY" || -L "$SEEDED_COPY" ]]; then printf 'seeded copy\n'; fi
 }
 
 # Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never

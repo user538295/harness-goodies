@@ -1,5 +1,6 @@
 import importlib.util
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -586,31 +587,6 @@ class AtomicSwapRaceTests(unittest.TestCase):
 
 
 class DirectoryLifecycleTests(unittest.TestCase):
-    def test_copy_closes_source_directory_when_target_cannot_open(self):
-        installer = load_module(INSTALL_PATH, "install_hooks_directory_test")
-        pathsafe = installer.pathsafe
-        native_open = pathsafe.open_directory
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source"
-            source.write_bytes(b"source\n")
-            source_descriptor = None
-
-            def open_then_fail(path, *, create):
-                nonlocal source_descriptor
-                if source_descriptor is None:
-                    source_descriptor = native_open(path, create=create)
-                    return source_descriptor
-                raise PermissionError("target directory unavailable")
-
-            with patch.object(pathsafe, "open_directory", side_effect=open_then_fail):
-                with self.assertRaises(PermissionError):
-                    pathsafe.copy_file(pathsafe.CopyFileOptions(
-                        str(source), str(Path(directory) / "target"),
-                        preserve_mode=False, manifest_owned=False,
-                    ))
-            with self.assertRaises(OSError):
-                os.fstat(source_descriptor)
-
     def test_settings_closes_directory_when_lock_open_fails(self):
         with patch.object(sys, "path", [str(CLAUDE_SETTINGS_PATH.parent), *sys.path]):
             settings = load_module(CLAUDE_SETTINGS_PATH, "claude_settings_directory_test")
@@ -1646,6 +1622,127 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 unmanaged = run_session_log(package, home, harness, "repair")
                 self.assertEqual((unmanaged.returncode, unmanaged.stdout, unmanaged.stderr), (0, clean, ""))
                 self.assertEqual(config.read_bytes(), original)
+
+
+LEGACY_PACKAGE_PATH = REPO / "skills/session-log/lib/legacy_package.py"
+SEEDED_MANIFEST = ".universal-session-log.manifest"
+PLUGIN_CACHE_LINK_RELATIVE = f".claude/plugins/cache/harness-goodies/claude-goodies/{OLD_PLUGIN_VERSION}/skills/session-log"
+RELEASE_STORE_LINK_RELATIVE = ".local/share/universal-session-log/releases/1.0.0/skills/session-log"
+
+
+def write_seeded_manifest(copy):
+    """The ownership manifest older install.sh releases wrote: the SHA-256 of every file in ``copy``."""
+    lines = ["format=1", "owner=universal-session-log", "version=2.0.0"]
+    for path in sorted(item for item in copy.rglob("*") if item.is_file()):
+        lines += [f"asset={path.relative_to(copy)}", f"sha256={hashlib.sha256(path.read_bytes()).hexdigest()}"]
+    (copy / SEEDED_MANIFEST).write_text("\n".join(lines) + "\n")
+
+
+class LegacyPackageCopyTests(unittest.TestCase):
+    """A seeded package copy goes only when its manifest proves every file in it; symlinks are never followed."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+        self.copy = self.home / SEEDED_RELATIVE
+
+    def seeded(self):
+        self.copy.parent.mkdir(parents=True)
+        shutil.copytree(REPO / "skills/session-log", self.copy)
+        write_seeded_manifest(self.copy)
+        return self.copy
+
+    def remove(self, path=None):
+        result = subprocess.run(
+            [sys.executable, str(LEGACY_PACKAGE_PATH), "remove", str(path or self.copy)],
+            capture_output=True, text=True, env=harness_environment(self.home),
+        )
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        return result.stdout
+
+    def assert_kept(self, reason):
+        files = sorted(path for path in self.copy.rglob("*"))
+        self.assertEqual(self.remove(), f"kept: {reason}\n")
+        self.assertEqual(sorted(path for path in self.copy.rglob("*")), files)
+
+    def test_removes_a_copy_its_manifest_proves(self):
+        self.seeded()
+        self.assertEqual(self.remove(), "removed\n")
+        self.assertFalse(os.path.lexists(self.copy))
+        self.assertTrue(self.copy.parent.is_dir())
+
+    def test_removes_the_bytecode_python_wrote_beside_its_modules(self):
+        copy = self.seeded()
+        (copy / "lib/__pycache__").mkdir(exist_ok=True)
+        (copy / "lib/__pycache__/pathsafe.cpython-314.pyc").write_bytes(b"bytecode")
+        self.assertEqual(self.remove(), "removed\n")
+        self.assertFalse(os.path.lexists(copy))
+
+    def test_keeps_a_copy_with_a_changed_file(self):
+        copy = self.seeded()
+        with (copy / "SKILL.md").open("a") as handle:
+            handle.write("changed\n")
+        self.assert_kept("SKILL.md was changed")
+
+    def test_keeps_a_copy_with_a_file_it_did_not_install(self):
+        copy = self.seeded()
+        (copy / "notes.md").write_text("mine\n")
+        self.assert_kept("notes.md is not a file session-log installed")
+
+    def test_keeps_a_copy_holding_a_symlink(self):
+        copy = self.seeded()
+        (copy / "scripts").mkdir()
+        (copy / "scripts/session_log_usage.ts").symlink_to(copy / "adapters/omp/session_log_usage.ts")
+        self.assert_kept("scripts/session_log_usage.ts is not a file session-log installed")
+
+    def test_keeps_a_marked_copy_without_a_manifest(self):
+        self.copy.parent.mkdir(parents=True)
+        shutil.copytree(REPO / "skills/session-log", self.copy)
+        self.assert_kept("it has no ownership manifest")
+
+    def test_keeps_a_copy_with_an_invalid_manifest(self):
+        copy = self.seeded()
+        (copy / SEEDED_MANIFEST).write_text("format=1\nowner=someone-else\n")
+        self.assert_kept("its ownership manifest is invalid")
+
+    def test_leaves_a_directory_that_is_not_session_logs_alone_and_silent(self):
+        self.copy.mkdir(parents=True)
+        (self.copy / "SKILL.md").write_text("---\nname: session-log\n---\nmine\n")
+        self.assertEqual(self.remove(), "")
+        self.assertTrue((self.copy / "SKILL.md").is_file())
+        self.assertEqual(self.remove(self.home / "absent/session-log"), "")
+
+    def test_removes_only_links_into_a_plugin_cache_or_release_store(self):
+        self.copy.parent.mkdir(parents=True)
+        live_target = self.home / PLUGIN_CACHE_LINK_RELATIVE
+        live_target.mkdir(parents=True)
+        (live_target / "SKILL.md").write_text("kept\n")
+        for target in (live_target, self.home / RELEASE_STORE_LINK_RELATIVE):
+            with self.subTest(target=target):
+                self.copy.symlink_to(target)
+                self.assertEqual(self.remove(), "removed link\n")
+                self.assertFalse(os.path.lexists(self.copy))
+        self.assertEqual((live_target / "SKILL.md").read_text(), "kept\n")
+        foreign = (self.home / "elsewhere/session-log",
+                   self.home / ".claude/plugins/cache/x/../../../elsewhere/claude-goodies/1.0.0/skills/session-log")
+        for target in foreign:
+            with self.subTest(target=target):
+                self.copy.symlink_to(target)
+                self.assertEqual(self.remove(), "")
+                self.assertEqual(os.readlink(self.copy), str(target))
+                self.copy.unlink()
+
+    def test_never_follows_a_symlinked_skill_root(self):
+        real_root = self.home / "dotfiles/skills"
+        real_copy = real_root / "session-log"
+        real_root.mkdir(parents=True)
+        shutil.copytree(REPO / "skills/session-log", real_copy)
+        write_seeded_manifest(real_copy)
+        (self.home / ".claude").mkdir()
+        (self.home / ".claude/skills").symlink_to(real_root)
+        self.assertEqual(self.remove(), "")
+        self.assertTrue((real_copy / SEEDED_MANIFEST).is_file())
 
 
 ADAPTER_LINKS = {

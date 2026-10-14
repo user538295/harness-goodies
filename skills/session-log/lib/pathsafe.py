@@ -5,7 +5,7 @@
 Every directory walk goes through :func:`open_directory`, which opens each path
 component with ``O_NOFOLLOW`` so a symlink can never be traversed, and creates
 missing components privately (mode 0o700) in a race-safe way. This module owns
-the generic copy/link/write/remove primitives. The specialized locked writers
+the generic link/write/remove primitives. The specialized locked writers
 (``claude_settings.py``, ``enable_flag.py``, ``locking.py``) keep their own
 minimal O_NOFOLLOW walkers because their traversals raise domain-specific errors
 and hold flock/mkdir locks; each is small and audited in its own module.
@@ -36,14 +36,6 @@ class AdapterLinkOptions:
     source: str
     target: str
     store: str
-
-
-@dataclass(frozen=True)
-class CopyFileOptions:
-    source: str
-    target: str
-    preserve_mode: bool
-    manifest_owned: bool
 
 
 @dataclass(frozen=True)
@@ -535,246 +527,6 @@ def rename_to_conflict(dir_fd, options):
     raise SystemExit(options.exhaust_message)
 
 
-@dataclass
-class CopyContext:
-    options: CopyFileOptions
-    source_dir_fd: object
-    target_dir_fd: object
-    directory: str
-    source_fd: object = None
-    source_stat: object = None
-    source_data: bytes = None
-    target_fd: object = None
-    target_stat: object = None
-    target_data: bytes = None
-    state: ReplacementResources = field(default_factory=ReplacementResources)
-
-
-def _open_copy_source(context):
-    source_name = os.path.basename(context.options.source)
-    context.source_fd = os.open(
-        source_name, FILE_FLAGS, dir_fd=context.source_dir_fd
-    )
-    context.source_stat = os.fstat(context.source_fd)
-    if not _is_safe_regular_file(context.source_stat):
-        raise SystemExit(
-            f"package source is not a safe regular file: {context.options.source}"
-        )
-    context.source_data = _read_all(context.source_fd)
-
-
-def _open_copy_target(context):
-    name = os.path.basename(context.options.target)
-    try:
-        context.target_stat = os.stat(
-            name, dir_fd=context.target_dir_fd, follow_symlinks=False
-        )
-    except FileNotFoundError:
-        return
-    if stat.S_ISLNK(context.target_stat.st_mode):
-        raise SystemExit(
-            f"refusing to overwrite symlink: {context.options.target}"
-        )
-    if not stat.S_ISREG(context.target_stat.st_mode):
-        raise SystemExit(
-            f"refusing to overwrite non-file: {context.options.target}"
-        )
-    context.target_fd = os.open(name, FILE_FLAGS, dir_fd=context.target_dir_fd)
-    context.target_data = _read_all(context.target_fd)
-    if (
-        not context.options.manifest_owned
-        and context.target_data != context.source_data
-    ):
-        raise SystemExit(
-            f"refusing to overwrite unowned file: {context.options.target}"
-        )
-
-
-def _create_copy_temp(context):
-    for _ in range(MAX_TEMP_FILE_ATTEMPTS):
-        candidate = f".session-log.{os.getpid()}.{random.randrange(1 << 30):08x}"
-        try:
-            descriptor = os.open(
-                candidate,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
-                PRIVATE_FILE_MODE,
-                dir_fd=context.target_dir_fd,
-            )
-            context.state.temporary = TemporaryEntry(candidate)
-            break
-        except FileExistsError:
-            continue
-    else:
-        raise SystemExit(f"cannot create temporary copy in: {context.directory}")
-    try:
-        offset = 0
-        while offset < len(context.source_data):
-            offset += os.write(descriptor, context.source_data[offset:])
-        mode = (
-            stat.S_IMODE(context.source_stat.st_mode)
-            if context.options.preserve_mode
-            else PRIVATE_FILE_MODE
-        )
-        os.fchmod(descriptor, mode)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _matches_original_copy_target(current, original):
-    return (
-        not stat.S_ISLNK(current.st_mode)
-        and stat.S_ISREG(current.st_mode)
-        and current.st_dev == original.st_dev
-        and current.st_ino == original.st_ino
-    )
-
-
-def _target_contents_match(context):
-    os.lseek(context.target_fd, 0, os.SEEK_SET)
-    return _read_all(context.target_fd) == context.target_data
-
-
-def _restore_copy_target(context):
-    if move_no_replace(
-        context.target_dir_fd,
-        context.state.backup.name,
-        os.path.basename(context.options.target),
-    ):
-        context.state.backup = None
-
-
-def _stage_copy_target(context):
-    name = os.path.basename(context.options.target)
-    for attempt in range(MAX_TEMP_FILE_ATTEMPTS):
-        candidate = (
-            f".session-log-backup.{os.getpid()}.{random.randrange(1 << 30):08x}.{attempt}"
-        )
-        if move_no_replace(context.target_dir_fd, name, candidate):
-            context.state.backup = BackupEntry(candidate)
-            break
-    if context.state.backup is None:
-        raise SystemExit(f"cannot stage package target: {context.options.target}")
-    backup_stat = os.stat(
-        context.state.backup.name,
-        dir_fd=context.target_dir_fd,
-        follow_symlinks=False,
-    )
-    if not _matches_original_copy_target(backup_stat, context.target_stat):
-        _restore_copy_target(context)
-        raise SystemExit(
-            f"package target changed during copy: {context.options.target}"
-        )
-    if not _target_contents_match(context):
-        _restore_copy_target(context)
-        raise SystemExit(
-            f"package target changed during copy: {context.options.target}"
-        )
-
-
-def _replace_copy_target(context):
-    name = os.path.basename(context.options.target)
-    if context.target_stat is None:
-        try:
-            os.link(
-                context.state.temporary.name,
-                name,
-                src_dir_fd=context.target_dir_fd,
-                dst_dir_fd=context.target_dir_fd,
-                follow_symlinks=False,
-            )
-        except FileExistsError:
-            raise SystemExit(
-                f"package target appeared during copy: {context.options.target}"
-            )
-        os.unlink(context.state.temporary.name, dir_fd=context.target_dir_fd)
-        context.state.temporary = None
-        return
-    _stage_copy_target(context)
-    try:
-        os.link(
-            context.state.temporary.name,
-            name,
-            src_dir_fd=context.target_dir_fd,
-            dst_dir_fd=context.target_dir_fd,
-            follow_symlinks=False,
-        )
-    except FileExistsError:
-        message = f"package target changed during copy: {context.options.target}"
-        rename_to_conflict(
-            context.target_dir_fd,
-            ConflictRenameOptions(
-                source_name=name,
-                prefix=context.state.backup.name,
-                exhaust_message=message,
-            ),
-        )
-        raise SystemExit(message)
-    os.unlink(context.state.temporary.name, dir_fd=context.target_dir_fd)
-    context.state.temporary = None
-    if not _target_contents_match(context):
-        message = f"package target changed during copy: {context.options.target}"
-        rename_to_conflict(
-            context.target_dir_fd,
-            ConflictRenameOptions(
-                source_name=context.state.backup.name,
-                prefix=context.state.backup.name,
-                exhaust_message=message,
-            ),
-        )
-        context.state.backup = None
-        raise SystemExit(message)
-    os.unlink(context.state.backup.name, dir_fd=context.target_dir_fd)
-    context.state.backup = None
-
-
-def _cleanup_copy_file(context):
-    if context.target_fd is not None:
-        os.close(context.target_fd)
-    if context.source_fd is not None:
-        os.close(context.source_fd)
-    if context.state.temporary is not None:
-        try:
-            os.unlink(context.state.temporary.name, dir_fd=context.target_dir_fd)
-        except OSError:
-            pass
-    if context.state.backup is not None:
-        try:
-            os.stat(
-                os.path.basename(context.options.target),
-                dir_fd=context.target_dir_fd,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            try:
-                _restore_copy_target(context)
-            except OSError:
-                pass
-    os.close(context.source_dir_fd)
-    os.close(context.target_dir_fd)
-
-
-def copy_file(options):
-    """Atomically copy a package file and restore it if its target changes."""
-    directory, _ = os.path.split(options.target)
-    source_directory = os.path.realpath(os.path.dirname(options.source))
-    source_dir_fd = open_directory(source_directory, create=True)
-    try:
-        target_dir_fd = open_directory(directory, create=True)
-    except BaseException:
-        os.close(source_dir_fd)
-        raise
-    context = CopyContext(options, source_dir_fd, target_dir_fd, directory)
-    try:
-        _open_copy_source(context)
-        _open_copy_target(context)
-        _create_copy_temp(context)
-        _replace_copy_target(context)
-        os.fsync(target_dir_fd)
-    finally:
-        _cleanup_copy_file(context)
-
-
 def main(argv):
     if not argv:
         raise SystemExit("pathsafe: missing operation")
@@ -791,15 +543,6 @@ def main(argv):
                 source=os.environ["SESSION_LOG_SOURCE"],
                 target=os.environ["SESSION_LOG_TARGET"],
                 store=os.environ["SESSION_LOG_STORE"],
-            )
-        )
-    elif operation == "copy-file":
-        copy_file(
-            CopyFileOptions(
-                source=os.environ["SESSION_LOG_SOURCE"],
-                target=os.environ["SESSION_LOG_TARGET"],
-                preserve_mode=os.environ["SESSION_LOG_PRESERVE_MODE"] == "1",
-                manifest_owned=os.environ["SESSION_LOG_MANIFEST_OWNED"] == "1",
             )
         )
     else:

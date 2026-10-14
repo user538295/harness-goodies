@@ -21,8 +21,9 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$TEST_HOME/.Trash"
 
-env -u PI_CODING_AGENT_DIR -u OMP_PROMPT_LOG_DIR HOME="$TEST_HOME" bash "$REPO/install-universal-session-log.sh" >"$WORKROOT/install.out"
 OMP_SKILL="$TEST_HOME/.omp/agent/skills/session-log"
+mkdir -p "$(dirname "$OMP_SKILL")"
+cp -R "$REPO/skills/session-log" "$OMP_SKILL"
 activated="$(env -u PI_CODING_AGENT_DIR -u OMP_PROMPT_LOG_DIR HOME="$TEST_HOME" bash "$OMP_SKILL/install.sh" --harness omp --arguments on)"
 if [[ "$activated" != 'OMP: on — restart required' ]]; then
   printf 'FAIL: OMP activation (expected: OMP: on — restart required; actual: %s)\n' "$activated" >&2

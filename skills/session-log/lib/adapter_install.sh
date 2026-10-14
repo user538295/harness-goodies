@@ -311,7 +311,7 @@ repair_native_hooks() {
 
 # Collapse duplicate and stale session-log registrations to the one set the harness
 # needs: hooks.json entries (Codex, Cursor), dangling plugin-cache adapter links (OpenCode,
-# OMP; install.sh removes their legacy session-log-omp adapters before every command).
+# OMP; legacy_cleanup removes their legacy session-log-omp adapters first).
 # Callers hold the install lock.
 repair_registrations() {
   case "$HARNESS" in

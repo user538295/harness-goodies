@@ -23,6 +23,8 @@ readonly EXPECTED_FIRST_ON_STATUS="Claude Code: on — logging starts with the n
 # Older releases registered one settings.json hook per event: SessionStart, UserPromptSubmit, Stop, SubagentStop.
 readonly LEGACY_REGISTRATIONS=4
 readonly LEGACY_HOOK_RELATIVE=".claude/skills/session-log/adapters/claude/claude_hook.sh"
+readonly SEEDED_COPY_RELATIVE=".claude/skills/session-log"
+readonly SEEDED_MANIFEST=".universal-session-log.manifest"
 # State files the adapter installer of older releases wrote; plugin-owned hooks need none of them.
 readonly ADAPTER_STATE_FILES="adapter.version adapter.manifest desired.version"
 # A live session's stand-in process outlives the test; cleanup stops it.
@@ -169,6 +171,32 @@ write_legacy_registrations() {
   mv "$settings.new" "$settings"
 }
 
+seeded_copy() { printf '%s\n' "$TEST_HOME/$SEEDED_COPY_RELATIVE"; }
+
+# What older install.sh releases left under ~/.claude/skills: a copy of the package whose ownership
+# manifest lists the SHA-256 of every file in it.
+seed_legacy_copy() {
+  local copy
+  copy="$(seeded_copy)"
+  mkdir -p "${copy%/session-log}"
+  cp -R "$REPO/skills/session-log" "$copy"
+  python3 - "$copy" "$SEEDED_MANIFEST" <<'PY'
+import hashlib
+import os
+import sys
+
+root, manifest = sys.argv[1:]
+lines = ["format=1", "owner=universal-session-log", "version=2.0.0"]
+for directory, _, names in sorted(os.walk(root)):
+    for name in sorted(names):
+        path = os.path.join(directory, name)
+        with open(path, "rb") as handle:
+            lines += [f"asset={os.path.relpath(path, root)}", f"sha256={hashlib.sha256(handle.read()).hexdigest()}"]
+with open(os.path.join(root, manifest), "w", encoding="utf-8") as handle:
+    handle.write("\n".join(lines) + "\n")
+PY
+}
+
 assert_legacy_registrations_removed() {
   ! grep -q "SESSION_LOG_OWNER=" "$(settings_file)" || fail "$1: a legacy settings.json registration was kept"
   grep -q "cc-status stop" "$(settings_file)" || fail "$1: a hook that is not session-log's was removed"
@@ -273,6 +301,49 @@ assert_legacy_registrations_removed "$label"
 [[ -f "$(state_file "runtime.$LIVE_SESSION_PID.json")" ]] || fail "$label: the older live session's runtime marker was cleared"
 assert_last_session "$RESTARTED_SESSION_ID"
 assert_status "$label" "$plugin" "$EXPECTED_ON_STATUS"
+printf 'PASS: %s\n' "$label"
+
+# Bug: older releases seeded a copy under ~/.claude/skills that went stale after a plugin update; its
+# own on/status re-registered settings.json hooks that the plugin's session start removed again.
+label="plugin session start removes the stale seeded copy and its registrations"
+new_sandbox seeded-copy-session-start
+make_plugin_cache "$CURRENT_PLUGIN_VERSION"
+plugin="$(plugin_skill_for "$CURRENT_PLUGIN_VERSION")"
+run_skill "$plugin" on >/dev/null
+seed_legacy_copy
+write_legacy_registrations
+start_session "$plugin" "$RESTARTED_SESSION_ID"
+[[ ! -e "$(seeded_copy)" ]] || fail "$label: the seeded copy was kept"
+assert_legacy_registrations_removed "$label"
+assert_status "$label" "$plugin" "$EXPECTED_ON_STATUS"
+printf 'PASS: %s\n' "$label"
+
+label="plugin session start removes a stale seeded copy that left no registration"
+new_sandbox seeded-copy-without-registrations
+make_plugin_cache "$CURRENT_PLUGIN_VERSION"
+seed_legacy_copy
+start_session "$(plugin_skill_for "$CURRENT_PLUGIN_VERSION")" "$RESTARTED_SESSION_ID"
+[[ ! -e "$(seeded_copy)" ]] || fail "$label: the seeded copy was kept"
+printf 'PASS: %s\n' "$label"
+
+label="on removes the stale seeded copy and reports it"
+new_sandbox seeded-copy-on
+make_plugin_cache "$CURRENT_PLUGIN_VERSION"
+seed_legacy_copy
+actual="$(run_skill "$(plugin_skill_for "$CURRENT_PLUGIN_VERSION")" on)"
+[[ "$actual" == "Claude Code: removed legacy package copy $(seeded_copy)"$'\n'"$EXPECTED_FIRST_ON_STATUS" ]] ||
+  fail "$label (actual: $actual)"
+[[ ! -e "$(seeded_copy)" ]] || fail "$label: the seeded copy was kept"
+printf 'PASS: %s\n' "$label"
+
+label="repair keeps a seeded copy holding a changed file and says so"
+new_sandbox seeded-copy-changed
+make_plugin_cache "$CURRENT_PLUGIN_VERSION"
+seed_legacy_copy
+printf '# changed by the user\n' >> "$(seeded_copy)/SKILL.md"
+assert_skill_output "$label" "$(plugin_skill_for "$CURRENT_PLUGIN_VERSION")" repair \
+  "Claude Code: kept legacy package copy $(seeded_copy): SKILL.md was changed; move it aside"
+[[ -f "$(seeded_copy)/SKILL.md" ]] || fail "$label: the changed copy was removed"
 printf 'PASS: %s\n' "$label"
 
 # The previous release ships a claude_hook.sh whose bytes differ from the current one under the
