@@ -10,8 +10,8 @@
 # legacy path fails them, as the old installer did before every command. It removes only what is
 # proven to be session-log's and never clears runtime markers: a harness plugin's own hooks keep
 # logging whatever duplicate registration goes. Claude Code and Cursor removals of registrations,
-# scripts, and package copies are reported through print_repair_report; obsolete state files and the
-# OpenCode/OMP leftovers of pre-universal releases go silently.
+# scripts, and package copies, and Codex package copies, are reported through print_repair_report;
+# obsolete state files and the OpenCode/OMP leftovers of pre-universal releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
@@ -23,15 +23,16 @@ readonly CLAUDE_LEGACY_SCRIPTS=(prompt_log_save.sh prompt_log_new_session.sh pro
 # plugin-root, pointed at the running plugin package, while a seeded copy the cleanup had to keep
 # still reads it.
 readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version plugin-root)
-# The adapter installer's version stamps and manifest older Cursor installs wrote; nothing reads them now.
-readonly CURSOR_OBSOLETE_STATE_FILES=(desired.version adapter.version adapter.manifest)
+# The adapter installer's version stamps and manifest that older Cursor and Codex installs wrote;
+# nothing reads them now (Cursor's plugin owns its hooks, Codex's hooks.json command names no package).
+readonly ADAPTER_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version)
 
 # The cleanup of the current harness: any harness whose older releases left something behind has
 # its own legacy_cleanup_<harness> here, whether or not its plugin owns its hooks yet.
 legacy_cleanup() {
   case "$HARNESS" in
     claude) legacy_cleanup_claude ;;
-    codex) ;;
+    codex) legacy_cleanup_codex ;;
     cursor) legacy_cleanup_cursor ;;
     opencode) legacy_cleanup_opencode ;;
     omp) legacy_cleanup_omp ;;
@@ -53,11 +54,8 @@ legacy_cleanup_cursor() {
   fi
   remove_seeded_package "$HARNESS_ROOT/skills/session-log"
   validate_state_dir
-  for candidate in "${CURSOR_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"; do
-    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
-    # A concurrent cleanup may have removed it already.
-    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
-      fail "cannot remove obsolete state file: $candidate"
+  for candidate in "${ADAPTER_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"; do
+    remove_obsolete_state_file "$candidate"
   done
 }
 
@@ -79,6 +77,77 @@ legacy_cleanup_claude() {
   remove_seeded_package "$HARNESS_ROOT/skills/session-log"
   remove_claude_obsolete_state
   [[ -z "$unrecognized" ]] || fail "refusing to remove unrecognized legacy Claude script: $unrecognized"
+}
+
+# The package copy (or link) older install.sh releases seeded into ~/.codex/skills, and their
+# adapter stamps. Their hooks.json entries, which name a package's hook by path, are replaced by
+# repair_registrations or the adapter install that follows. Codex sessions keep running the hooks
+# they loaded at start, and a hook whose script is gone blocks every prompt, so while hooks.json
+# may still name the seeded copy's hook the copy stays; a run after the restart removes it. Without
+# a codex-goodies plugin package repair_registrations leaves those entries, so only `on` (which
+# needs the plugin) replaces them.
+legacy_cleanup_codex() {
+  local candidate seeded="$HARNESS_ROOT/skills/session-log"
+  require_command python3
+  if [[ -e "$seeded" || -L "$seeded" ]] && codex_hooks_may_name_seeded_copy; then
+    if codex_plugin_package_present; then
+      print_repair_report "kept legacy package copy $seeded: Codex sessions started before session-log replaced its hooks.json entries may still run it; restart Codex, then run repair"
+    else
+      print_repair_report "kept legacy package copy $seeded: ~/.codex/hooks.json may still run it; install the codex-goodies plugin, then run on"
+    fi
+  else
+    remove_seeded_package "$seeded"
+  fi
+  validate_state_dir
+  for candidate in "${ADAPTER_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"; do
+    remove_obsolete_state_file "$candidate"
+  done
+}
+
+# False only when ~/.codex/hooks.json is absent, or is a JSON file none of whose strings names a
+# .codex/skills/session-log package. It reads the file as Codex does, through a symlink, and
+# compares decoded strings, so JSON escapes and a $HOME that is a symlink (entries name the copy by
+# $HOME, HARNESS_ROOT is physical) still match. A file it cannot read or parse counts as naming
+# it: removing a copy a running session's hook needs blocks every prompt.
+codex_hooks_may_name_seeded_copy() {
+  # The script's NOT_NAMED exit status; any other status keeps the copy.
+  local config="$HARNESS_ROOT/hooks.json" status=0 not_named=1
+  [[ -e "$config" || -L "$config" ]] || return 1
+  CODEX_HOOKS_PATH="$config" python3 - <<'PY' || status=$?
+import json
+import os
+import stat
+import sys
+
+SEEDED_PACKAGE = "/.codex/skills/session-log/"
+NAMED, NOT_NAMED, UNKNOWN = 0, 1, 2
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, (dict, list)):
+        for item in value.values() if isinstance(value, dict) else value:
+            yield from strings(item)
+
+
+def verdict():
+    # O_NONBLOCK keeps a FIFO at the path from blocking the open.
+    descriptor = os.open(os.environ["CODEX_HOOKS_PATH"], os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return UNKNOWN
+        document = json.loads(handle.read().decode("utf-8"))
+    return NAMED if any(SEEDED_PACKAGE in text for text in strings(document)) else NOT_NAMED
+
+
+try:
+    result = verdict()
+except Exception:
+    result = UNKNOWN
+sys.exit(result)
+PY
+  ((status != not_named))
 }
 
 # The standalone adapter copies (regular files) and the session-log-omp entrypoints of earlier
@@ -174,14 +243,20 @@ remove_claude_obsolete_state() {
     record_running_plugin_root
   fi
   for candidate in "${CLAUDE_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}" "$STATE_DIR"/settings-repair.*.stamp; do
-    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
     if [[ "$candidate" == "$STATE_DIR/plugin-root" ]] && [[ -e "$seeded" || -L "$seeded" ]]; then
       continue
     fi
-    # A concurrent cleanup may have removed it already.
-    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
-      fail "cannot remove obsolete state file: $candidate"
+    remove_obsolete_state_file "$candidate"
   done
+}
+
+# Removes state file $1 when it is a regular file; a symlink or anything else stays.
+remove_obsolete_state_file() {
+  local file="$1"
+  [[ -f "$file" && ! -L "$file" ]] || return 0
+  # A concurrent cleanup may have removed it already.
+  unlink "$file" 2>/dev/null || [[ ! -e "$file" ]] ||
+    fail "cannot remove obsolete state file: $file"
 }
 
 # Points plugin-root at this package when it is a claude-goodies plugin-cache package; any other

@@ -46,15 +46,48 @@ manifest_current() {
   done
 }
 
+# True when a package version stamp and asset manifest decide whether the adapter is current.
+# Codex's hooks.json command picks the newest plugin package itself, so no version stamp or asset
+# hash decides whether its adapter is current, and it has neither.
+adapter_is_versioned() {
+  [[ "$HARNESS" != codex ]]
+}
+
+# The marketplace Codex installs codex-goodies from: the "name" of .agents/plugins/marketplace.json,
+# which CODEX_MARKETPLACE in adapters/native/install_hooks.py names too (tests check they agree).
+readonly CODEX_MARKETPLACE="user538295"
+# Where Codex caches the codex-goodies plugin, relative to ~/.codex; the CODEX_COMMAND of
+# adapters/native/install_hooks.py runs the newest package found here.
+readonly CODEX_PLUGIN_CACHE="plugins/cache/$CODEX_MARKETPLACE/codex-goodies"
+
+# True when a codex-goodies plugin package, the only package Codex's hooks.json command runs, is installed.
+codex_plugin_package_present() {
+  local hook
+  for hook in "$HARNESS_ROOT/$CODEX_PLUGIN_CACHE"/*/skills/session-log/adapters/native/session_log_hook.py; do
+    [[ -f "$hook" ]] && return 0
+  done
+  return 1
+}
+
+# `on` without a codex-goodies plugin package would register hooks that never log. The marketplace
+# comes from the GitHub repository user538295/harness-goodies (README.md, Codex plugin).
+require_codex_plugin_package() {
+  codex_plugin_package_present ||
+    fail "Codex hooks run the codex-goodies plugin package; install it with 'codex plugin marketplace add user538295/harness-goodies' and 'codex plugin add codex-goodies@$CODEX_MARKETPLACE', then rerun on"
+}
+
 adapter_current() {
   validate_state_dir
+  if ! adapter_is_versioned; then
+    native_hooks_current
+    return
+  fi
   [[ -f "$STATE_DIR/desired.version" && ! -L "$STATE_DIR/desired.version" ]] || return 1
   [[ "$(cat "$STATE_DIR/desired.version")" == "$VERSION" ]] || return 1
   [[ -f "$STATE_DIR/adapter.version" && ! -L "$STATE_DIR/adapter.version" ]] || return 1
   [[ "$(cat "$STATE_DIR/adapter.version")" == "$VERSION" ]] || return 1
   manifest_current || return 1
   case "$HARNESS" in
-    codex) native_hooks_current ;;
     opencode) adapter_asset_current plugin && adapter_asset_current usage ;;
     omp) adapter_asset_current extension && adapter_asset_current usage ;;
   esac
@@ -189,9 +222,11 @@ preflight_native_hooks() {
 
 preflight_state_files() {
   validate_state_dir
-  preflight_state_file "$STATE_DIR/desired.version"
-  preflight_state_file "$STATE_DIR/adapter.version"
-  preflight_state_file "$STATE_DIR/adapter.manifest"
+  if adapter_is_versioned; then
+    preflight_state_file "$STATE_DIR/desired.version"
+    preflight_state_file "$STATE_DIR/adapter.version"
+    preflight_state_file "$STATE_DIR/adapter.manifest"
+  fi
   preflight_state_file "$RUNTIME_FILE"
   preflight_install_lock
 }
@@ -324,11 +359,15 @@ repair_native_hooks() {
 
 # Collapse duplicate and stale session-log registrations to the one set the harness
 # needs: hooks.json entries (Codex), dangling plugin-cache adapter links (OpenCode,
-# OMP; legacy_cleanup removes their legacy session-log-omp adapters first).
+# OMP; legacy_cleanup removes their legacy session-log-omp adapters first). Without a
+# codex-goodies plugin package the Codex entries stay: the command that replaces them would run
+# nothing, while an older release's entry may still run its package.
 # Callers hold the install lock.
 repair_registrations() {
   case "$HARNESS" in
-    codex) repair_native_hooks ;;
+    codex)
+      if codex_plugin_package_present; then repair_native_hooks; fi
+      ;;
     opencode)
       repair_dangling_adapter_link plugin
       repair_dangling_adapter_link usage
@@ -359,16 +398,20 @@ install_adapter() {
       atomic_link "$(source_for usage)" "$(target_for usage)"
       ;;
   esac
-  write_private_file "$STATE_DIR/desired.version" "$VERSION"
-  write_private_file "$STATE_DIR/adapter.version" "$VERSION"
-  write_manifest
+  if adapter_is_versioned; then
+    write_private_file "$STATE_DIR/desired.version" "$VERSION"
+    write_private_file "$STATE_DIR/adapter.version" "$VERSION"
+    write_manifest
+  fi
   clear_runtime_markers
 }
 
 # Like `on`, the legacy cleanup comes before the adapter preflight: it removes the standalone
-# adapter copies of earlier releases that sit where the adapter goes.
+# adapter copies of earlier releases that sit where the adapter goes. Without a codex-goodies plugin
+# package nothing is installed for Codex, as in repair_registrations.
 repair_enabled_adapter() {
   [[ -f "$FLAG_FILE" && ! -L "$FLAG_FILE" ]] || return 0
+  [[ "$HARNESS" != codex ]] || codex_plugin_package_present || return 0
   adapter_current && return 0
   preflight_enable_flag
   preflight_state_files

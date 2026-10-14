@@ -3,6 +3,10 @@ set -euo pipefail
 
 readonly SUPPORTED_HARNESSES="claude, codex, cursor, opencode, omp"
 readonly OWNER_MARKER_VALUE="universal-session-log"
+# What makes Codex run hooks.json commands it has not run yet: trusting them in /hooks reloads the
+# running session's hooks, and a restart shows the "Hooks need review" screen while any hook is new
+# or changed. RESTORE_FOLLOW_UP in adapters/native/install_hooks.py says the same (tests check it).
+readonly CODEX_TRUST_INSTRUCTION="approve the session-log hooks in /hooks, or restart Codex and choose 'Trust all and continue' if it shows the 'Hooks need review' screen"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 readonly VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
@@ -66,7 +70,6 @@ declare -rA ADAPTER_TARGETS=(
   [omp:usage]="skills/session-log/scripts/session_log_usage.ts"
 )
 declare -rA HARNESS_KINDS=(
-  [codex]="hook configurator usage"
   [opencode]="plugin usage"
   [omp]="extension usage"
 )
@@ -342,13 +345,17 @@ print_status() {
     printf '%s: off\n' "$HARNESS_LABEL"
     return
   fi
+  if [[ "$HARNESS" == codex ]] && ! codex_plugin_package_present; then
+    printf '%s: on — codex-goodies plugin not installed\n' "$HARNESS_LABEL"
+    return
+  fi
   if ! plugin_owns_hooks && ! adapter_current; then
     printf '%s: on — adapter missing\n' "$HARNESS_LABEL"
     return
   fi
   if ! runtime_current; then
     if [[ "$HARNESS" == codex ]]; then
-      printf '%s: on — trust review/restart required\n' "$HARNESS_LABEL"
+      printf '%s: on — %s\n' "$HARNESS_LABEL" "$CODEX_TRUST_INSTRUCTION"
     elif [[ "$HARNESS" == cursor ]]; then
       printf '%s: %s\n' "$HARNESS_LABEL" "$CURSOR_HOOKS_NOT_LOADED"
     else
@@ -501,6 +508,7 @@ main() {
         enable_plugin_hooks
         return
       fi
+      [[ "$HARNESS" != codex ]] || require_codex_plugin_package
       # Legacy cleanup comes before the adapter preflight: it removes standalone adapter
       # copies of earlier releases that sit where the adapter goes.
       preflight_enable_flag
@@ -515,7 +523,7 @@ main() {
       if runtime_current; then
         printf '%s: on\n' "$HARNESS_LABEL"
       elif [[ "$HARNESS" == codex ]]; then
-        printf '%s: on — trust review/restart required\n' "$HARNESS_LABEL"
+        printf '%s: on — %s\n' "$HARNESS_LABEL" "$CODEX_TRUST_INSTRUCTION"
       else
         printf '%s: on — restart required\n' "$HARNESS_LABEL"
       fi
