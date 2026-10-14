@@ -11,6 +11,15 @@ CODEX_PLUGIN_JSON="$REPO_ROOT/.codex-plugin/plugin.json"
 OPENCODE_PACKAGE_JSON="$REPO_ROOT/package.json"
 # Every file carrying the release version; a release bumps them together.
 VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON" "$CURSOR_PLUGIN_JSON" "$CODEX_PLUGIN_JSON" "$OPENCODE_PACKAGE_JSON")
+# Seconds to wait after the push so the marketplaces see the new tag before updating.
+UPDATE_DELAY_SECONDS=15
+# Per-harness update commands run after the release (Cursor has no CLI: refresh it in the dashboard).
+UPDATE_COMMANDS=(
+  "claude plugin update claude-goodies@user538295"
+  "omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user538295"
+  "codex plugin marketplace upgrade user538295"
+  "opencode plugin update"
+)
 
 # ── Pure functions (all testable without git or filesystem) ───────────────────
 
@@ -64,6 +73,18 @@ write_version() {
   for file in "${VERSION_FILES[@]}"; do
     sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"$1\"/" "$file"
   done
+}
+
+# run_update_commands <delay-seconds> → waits, then runs every UPDATE_COMMANDS entry; 1 if any failed
+run_update_commands() {
+  local cmd failed=0
+  printf "Waiting %s s before updating the harnesses...\n" "$1"
+  sleep "$1"
+  for cmd in "${UPDATE_COMMANDS[@]}"; do
+    printf "\n$ %s\n" "$cmd"
+    bash -c "$cmd" || { printf "FAILED: %s\n" "$cmd" >&2; failed=1; }
+  done
+  return "$failed"
 }
 
 # ── Git wrappers ──────────────────────────────────────────────────────────────
@@ -151,6 +172,8 @@ main() {
     printf "  4. git tag -a %s -m \"Release %s\"\n" "$tag" "$tag"
     printf "  5. git push origin main\n"
     printf "  6. git push origin %s\n" "$tag"
+    printf "  7. wait %s s, then run the update commands:\n" "$UPDATE_DELAY_SECONDS"
+    printf "       %s\n" "${UPDATE_COMMANDS[@]}"
     exit 0
   fi
 
@@ -177,16 +200,12 @@ main() {
   echo "Pushed."
 
   printf "\nRelease %s complete.\n\n" "$tag"
-  echo "Post-release verification:"
-  echo "  claude plugin update claude-goodies@user538295"
-  echo "  omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user538295"
-  echo "    (first time on this machine: omp plugin marketplace add user538295/harness-goodies && omp plugin install omp-goodies@user538295)"
-  echo "  codex plugin marketplace upgrade user538295"
-  echo "    (first time on this machine: codex plugin marketplace add user538295/harness-goodies && codex plugin add codex-goodies@user538295)"
-  echo "  opencode plugin update"
-  echo "    (first time on this machine: opencode plugin add github:user538295/harness-goodies)"
+  echo "Manual steps:"
+  echo "  First time on a machine: see release-guide.md → Post-release verification"
   echo "  Cursor: Dashboard -> Plugins & MCPs -> Refresh the team marketplace (skip when Auto Refresh is on);"
   echo "    Cursor Marketplace updates appear after Cursor reviews them"
+  echo ""
+  run_update_commands "$UPDATE_DELAY_SECONDS"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

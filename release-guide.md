@@ -124,6 +124,8 @@ git push origin vX.Y.Z
 
 ## Post-release verification
 
+`release.sh` waits 15 seconds after the push, then runs the Claude Code, omp, Codex, and OpenCode update commands below for you (`UPDATE_COMMANDS` in the script); a failing command is reported and the rest still run. Cursor has no CLI, so refresh it by hand.
+
 ### Claude Code plugin marketplace
 ```bash
 claude plugin update claude-goodies@user538295

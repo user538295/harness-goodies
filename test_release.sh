@@ -93,6 +93,25 @@ assert_eq "bumps the catalog entry"    "3.1.4" "$(version_in "$_tmp_b")"
 VERSION_FILES=("${_orig_files[@]}")
 mv "$_tmp_a" "$_tmp_b" ~/.Trash/
 
+# ── run_update_commands ───────────────────────────────────────────────────────
+echo "=== run_update_commands ==="
+_orig_cmds=("${UPDATE_COMMANDS[@]}")
+_log="$(mktemp)"
+UPDATE_COMMANDS=("echo one >> $_log" "echo two >> $_log")
+assert_exits_0 "all succeed → exit 0" run_update_commands 0 >/dev/null
+assert_eq "runs commands in order" "one two" "$(paste -sd' ' "$_log")"
+: > "$_log"
+UPDATE_COMMANDS=("false" "echo after >> $_log")
+assert_exits_1 "a failing command → exit 1" run_update_commands 0 >/dev/null
+assert_eq "continues after a failure" "after" "$(cat "$_log")"
+_start=$SECONDS
+UPDATE_COMMANDS=("true")
+run_update_commands 2 >/dev/null
+assert_eq "waits the given delay first" "true" "$([[ $((SECONDS - _start)) -ge 2 ]] && echo true || echo false)"
+UPDATE_COMMANDS=("${_orig_cmds[@]}")
+mv "$_log" ~/.Trash/
+assert_eq "covers claude, omp, codex, opencode" "4" "$(printf '%s\n' "${UPDATE_COMMANDS[@]}" | grep -cE '^(claude|omp|codex|opencode) ')"
+
 # ── shipped versions agree ────────────────────────────────────────────────────
 echo "=== shipped versions agree ==="
 for _file in "${VERSION_FILES[@]}"; do
