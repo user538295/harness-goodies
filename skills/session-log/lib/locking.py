@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # universal-session-log: managed
-"""mkdir-based package installation lock with owner-liveness reclaim.
+"""mkdir-based per-harness install lock with owner-liveness reclaim.
 
-Extracted verbatim from install.sh so the O_NOFOLLOW walk and owner
-bookkeeping live in one auditable, testable place. Invoked as
+The O_NOFOLLOW walk and owner bookkeeping of bin/session-log's install lock
+live here in one auditable, testable place. Invoked as
 ``python3 locking.py acquire|release`` with the SESSION_LOG_LOCK_* env vars.
 """
 import errno

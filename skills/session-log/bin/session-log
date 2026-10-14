@@ -428,17 +428,24 @@ run_repair() {
     printf '%s: repair found no duplicate or stale registrations\n' "$HARNESS_LABEL"
 }
 
-# `on` for a plugin-owned harness: legacy cleanup, then the enable flag. Without a current runtime
-# marker, a flag this command created takes effect at the next prompt; a flag that was already on
-# means the hooks of the running session never saw it, so they are not loaded.
+# `on` for a plugin-owned harness: legacy cleanup, then the enable flag. A failed cleanup is
+# reported but never blocks the flag; `repair` repeats it and fails with the details. Without a
+# current runtime marker, a flag this command created takes effect at the next prompt; a flag that
+# was already on means the hooks of the running session never saw it, so they are not loaded.
 enable_plugin_hooks() {
-  local was_enabled=0
+  local was_enabled=0 error
   preflight_enable_flag
   validate_state_dir
   preflight_install_lock
+  require_command jq
   acquire_install_lock
   trap release_install_lock EXIT
-  legacy_cleanup
+  # The cleanup runs in a subshell, so its `fail` ends only the cleanup; its stdout report passes
+  # through while its stderr is captured.
+  { error="$(set -e; legacy_cleanup 2>&1 1>&3 3>&-)"; } 3>&1 || {
+    error="${error%%$'\n'*}"
+    printf '%s: legacy cleanup failed: %s; run repair for details\n' "$HARNESS_LABEL" "${error#"$SESSION_LOG_LOG_PREFIX: "}"
+  }
   [[ ! -e "$FLAG_FILE" ]] || was_enabled=1
   set_enabled
   if runtime_current; then
@@ -461,10 +468,14 @@ main() {
         enable_plugin_hooks
         return
       fi
-      preflight_on
+      # Legacy cleanup comes before the adapter preflight: it removes standalone adapter
+      # copies of earlier releases that sit where the adapter goes.
+      preflight_enable_flag
+      preflight_state_files
       acquire_install_lock
       trap release_install_lock EXIT
       legacy_cleanup
+      preflight_adapter
       repair_registrations
       if ! adapter_current; then install_adapter; fi
       set_enabled

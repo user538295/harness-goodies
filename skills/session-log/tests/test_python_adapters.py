@@ -1035,6 +1035,7 @@ CLAUDE_MANAGED_MATCHERS = {"SessionStart": "startup|resume"}
 FOREIGN_HOOK = {"type": "command", "command": "cc-status notify"}
 REPEATED_REGISTRATIONS = 3
 INSTALL_LOCK_RELATIVE = ".claude/session-log/.install.lock"
+PRIVATE_DIRECTORY_MODE = 0o700
 LEGACY_CLEANUP_STAMP_RELATIVE = ".claude/session-log/legacy-cleanup.stamp"
 EXECUTABLE_MODE = 0o755
 NATIVE_HARNESSES = (("codex", ".codex"), ("cursor", ".cursor"))
@@ -1044,6 +1045,9 @@ DEAD_REGISTRATIONS = 2
 # State files older releases wrote that nothing reads any more.
 OBSOLETE_CLAUDE_STATE = ("adapter.version", "adapter.manifest", "desired.version", "plugin-root",
                          "settings-repair.1322337178.stamp")
+# The scripts the pre-plugin Claude Code install copied into ~/.claude/scripts, in cleanup order.
+LEGACY_SCRIPT_NAMES = ("prompt_log_save.sh", "prompt_log_new_session.sh", "prompt_log_stop.sh", "prompt_log_subagent.sh",
+                       "prompt_log_lib.sh", "prompt_log_usage.sh", "prompt_log_usage.jq", "prompt_log_prices.json")
 CLAUDE_REPAIR_CLEAN = "Claude Code: repair found no duplicate or stale registrations\n"
 
 
@@ -1150,16 +1154,70 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CLAUDE_REPAIR_CLEAN, ""))
             self.assertEqual(sorted(path.name for path in state.iterdir()), ["runtime.1.json", "runtime.json"])
 
+    def test_claude_repair_reports_the_legacy_scripts_and_hooks_it_removes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            scripts = home / ".claude/scripts"
+            scripts.mkdir(parents=True)
+            for name in LEGACY_SCRIPT_NAMES:
+                (scripts / name).write_text("# universal-session-log: managed\nlegacy\n")
+            settings = home / ".claude/settings.json"
+            settings.write_text(json.dumps({"hooks": {
+                "Stop": [{"hooks": [command_hook(f"bash {scripts}/prompt_log_stop.sh"), FOREIGN_HOOK]}],
+                "UserPromptSubmit": [{"hooks": [command_hook(f"bash {scripts}/prompt_log_save.sh")]}],
+            }}))
+            result = run_session_log(package, home, "claude", "repair")
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertEqual(result.stdout, "".join([
+                f"Claude Code: removed 2 legacy prompt_log hook registration(s) from {settings}\n",
+                *(f"Claude Code: removed legacy script {scripts / name}\n" for name in LEGACY_SCRIPT_NAMES),
+            ]))
+            self.assertEqual(json.loads(settings.read_text()), {"hooks": {"Stop": [{"hooks": [FOREIGN_HOOK]}]}})
+            self.assertEqual(list(scripts.iterdir()), [])
+
     def test_claude_commands_never_register_hooks(self):
-        for command in ("on", "status", "usage", "off", "repair"):
+        # `usage` fails here only because the sandbox holds no Claude Code transcript.
+        for command, status in (("on", 0), ("status", 0), ("usage", 1), ("off", 0), ("repair", 0)):
             with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
                 package = claude_package(home)
                 settings = home / ".claude/settings.json"
                 settings.write_text(json.dumps({"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}}, indent=2))
                 original = settings.read_bytes()
-                run_session_log(package, home, "claude", command)
+                result = run_session_log(package, home, "claude", command)
+                self.assertEqual(result.returncode, status, result.stderr)
                 self.assertEqual(settings.read_bytes(), original)
+
+    def test_claude_on_enables_logging_when_the_legacy_cleanup_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            script = home / ".claude/scripts/prompt_log_save.sh"
+            script.parent.mkdir(parents=True)
+            script.write_text("edited by the user\n")
+            result = run_session_log(package, home, "claude", "on")
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertEqual(result.stdout, (
+                f"Claude Code: legacy cleanup failed: refusing to remove unrecognized legacy Claude script: {script}; "
+                "run repair for details\nClaude Code: on — logging starts with the next prompt\n"))
+            self.assertTrue((home / ".claude/prompt-logs/.enabled").is_file())
+            self.assertEqual(script.read_text(), "edited by the user\n")
+            repaired = run_session_log(package, home, "claude", "repair")
+            self.assertEqual(repaired.returncode, 1)
+            self.assertIn("refusing to remove unrecognized legacy Claude script", repaired.stderr)
+
+    def test_claude_on_without_jq_fails_before_enabling_logging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home = root / "home"
+            package = claude_package(home)
+            tools = link_tools(root / "bin-without-jq", GIT_BASH_TOOLS_WITHOUT_JQ)
+            result = subprocess.run(
+                ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "on"],
+                capture_output=True, text=True, env={"HOME": str(home), "PATH": str(tools)})
+            self.assertEqual((result.returncode, result.stderr), (1, "session-log: missing dependency: jq\n"))
+            self.assertFalse((home / ".claude/prompt-logs/.enabled").exists())
 
     def test_claude_on_removes_repeated_registrations(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1326,6 +1384,45 @@ class SessionStartCleanupStampTests(unittest.TestCase):
                 self.assertEqual(record.read_text() if record.exists() else None,
                                  "--entrypoint claude --harness claude repair\n")
 
+    def test_session_start_removes_legacy_scripts_without_any_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            script = home / ".claude/scripts/prompt_log_save.sh"
+            script.parent.mkdir(parents=True)
+            script.write_text("# universal-session-log: managed\nlegacy\n")
+            result = run_claude_hook(package, home, "session-start")
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+            self.assertFalse(script.exists())
+            self.assertFalse((home / ".claude/settings.json").exists())
+
+    def test_session_start_removes_a_skill_root_link_into_the_plugin_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            old = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE.replace(PLUGIN_VERSION, OLD_PLUGIN_VERSION))
+            link = home / SEEDED_RELATIVE
+            link.parent.mkdir(parents=True)
+            link.symlink_to(old / "skills/session-log")
+            result = run_claude_hook(package, home, "session-start")
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+            self.assertFalse(os.path.lexists(link))
+            self.assertTrue((old / "skills/session-log/install.sh").is_file())
+
+    def test_session_start_cleans_again_when_legacy_scripts_reappear(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            (home / ".claude/settings.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [LOOKALIKE_HOOK]}]}}))
+            first = run_claude_hook(package, home, "session-start")
+            self.assertEqual((first.returncode, first.stdout, first.stderr), (0, "", ""))
+            script = home / ".claude/scripts/prompt_log_save.sh"
+            script.parent.mkdir(parents=True)
+            script.write_text("# universal-session-log: managed\nlegacy\n")
+            again = run_claude_hook(package, home, "session-start")
+            self.assertEqual((again.returncode, again.stdout, again.stderr), (0, "", ""))
+            self.assertFalse(script.exists())
+
     def test_unsafe_stamp_path_never_skips_the_cleanup(self):
         for kind in ("symlink", "directory"):
             with self.subTest(kind), tempfile.TemporaryDirectory() as directory:
@@ -1344,7 +1441,7 @@ class SessionStartCleanupStampTests(unittest.TestCase):
                 if kind == "symlink":
                     self.assertEqual(target.read_text(), "unrelated")
 
-    def test_failed_cleanup_leaves_no_stamp_and_the_next_session_cleans(self):
+    def test_failed_cleanup_is_stamped_and_retried_once_settings_change(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             package, settings = self.dirty_settings(home)
@@ -1353,11 +1450,15 @@ class SessionStartCleanupStampTests(unittest.TestCase):
             result = run_claude_hook(package, home, "session-start")
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
             self.assertEqual(settings.read_bytes(), original)
-            self.assertFalse((home / LEGACY_CLEANUP_STAMP_RELATIVE).exists())
+            self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
 
             shutil.rmtree(home / INSTALL_LOCK_RELATIVE)
+            unchanged = run_claude_hook(package, home, "session-start")
+            self.assertEqual((unchanged.returncode, unchanged.stdout, unchanged.stderr), (0, "", ""))
+            self.assertEqual(settings.read_bytes(), original, "an unchanged settings.json was cleaned again")
+
+            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
             self.assert_cleaned(package, home, settings)
-            self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
 
     def test_failed_stamp_write_leaves_no_temporary_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1706,6 +1807,76 @@ class LegacyPackageCopyTests(unittest.TestCase):
         (copy / SEEDED_MANIFEST).write_text("format=1\nowner=someone-else\n")
         self.assert_kept("its ownership manifest is invalid")
 
+    def test_keeps_a_copy_with_an_invalid_manifest_of_any_kind(self):
+        valid_head = "format=1\nowner=universal-session-log\nversion=2.0.0\n"
+        cases = {
+            "missing version": "format=1\nowner=universal-session-log\n",
+            "odd asset lines": valid_head + "asset=SKILL.md\n",
+            "bad asset prefix": valid_head + "path=SKILL.md\nsha256=00\n",
+            "bad digest prefix": valid_head + "asset=SKILL.md\nmd5=00\n",
+            "not UTF-8": b"format=1\xff\n",
+        }
+        for name, contents in cases.items():
+            with self.subTest(name):
+                copy = self.seeded()
+                manifest = copy / SEEDED_MANIFEST
+                manifest.write_bytes(contents if isinstance(contents, bytes) else contents.encode())
+                self.assert_kept("its ownership manifest is invalid")
+                shutil.rmtree(self.copy.parent)
+        for kind in ("symlink", "fifo"):
+            with self.subTest(kind):
+                copy = self.seeded()
+                manifest = copy / SEEDED_MANIFEST
+                manifest.unlink()
+                if kind == "symlink":
+                    manifest.symlink_to(copy / "SKILL.md")
+                else:
+                    os.mkfifo(manifest)
+                self.assert_kept("its ownership manifest is invalid")
+                shutil.rmtree(self.copy.parent)
+
+    def test_tolerates_the_finder_metadata_macos_writes(self):
+        copy = self.seeded()
+        (copy / ".DS_Store").write_bytes(b"finder")
+        (copy / "lib/.DS_Store").write_bytes(b"finder")
+        self.assertEqual(self.remove(), "removed\n")
+        self.assertFalse(os.path.lexists(copy))
+
+    def test_keeps_a_copy_it_cannot_read_without_a_traceback(self):
+        copy = self.seeded()
+        (copy / "lib").chmod(0)
+        self.addCleanup((copy / "lib").chmod, PRIVATE_DIRECTORY_MODE)
+        self.assertEqual(self.remove(), "kept: cannot read lib: Permission denied\n")
+        self.assertTrue((copy / SEEDED_MANIFEST).is_file())
+
+    def in_process(self):
+        with patch.object(sys, "path", [str(LEGACY_PACKAGE_PATH.parent), *sys.path]):
+            return load_module(LEGACY_PACKAGE_PATH, "legacy_package_race_test")
+
+    def test_keeps_a_copy_that_changes_between_its_check_and_removal(self):
+        changes = {
+            "a file appears": lambda copy: (copy / "lib/notes.md").write_text("mine\n"),
+            "a checked file is rewritten": lambda copy: (copy / "VERSION").write_text("9.9.9 rewritten by the user\n"),
+        }
+        for name, change in changes.items():
+            with self.subTest(name):
+                copy = self.seeded()
+                module = self.in_process()
+                checked = module._inventory
+
+                def check_then_change(*arguments):
+                    result = checked(*arguments)
+                    if not arguments[1]:
+                        change(copy)
+                    return result
+
+                with patch.object(module, "_inventory", side_effect=check_then_change):
+                    result = module.remove(str(copy), str(self.home))
+                self.assertTrue(result.startswith("kept: ") and result.endswith(" changed during removal"), result)
+                # The manifest goes last, so a later run still knows the copy is session-log's.
+                self.assertTrue((copy / SEEDED_MANIFEST).is_file())
+                shutil.rmtree(self.copy.parent)
+
     def test_leaves_a_directory_that_is_not_session_logs_alone_and_silent(self):
         self.copy.mkdir(parents=True)
         (self.copy / "SKILL.md").write_text("---\nname: session-log\n---\nmine\n")
@@ -1789,6 +1960,48 @@ class AdapterLinkRepairTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"removed dangling adapter link {link}", result.stdout)
                 self.assertEqual(os.readlink(link), str(package / source))
+
+    def test_on_relinks_an_adapter_link_into_another_session_log_package(self):
+        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = harness_package(home, "cache/2.0.0")
+                # The copy older releases seeded into the skill root, and another package version.
+                for previous in (harness_package(home, subroot), harness_package(home, "cache/1.0.0")):
+                    link = home / subroot / target
+                    link.parent.mkdir(parents=True, exist_ok=True)
+                    if os.path.lexists(link):
+                        link.unlink()
+                    link.symlink_to(previous / source)
+                    result = run_session_log(package, home, harness, "on")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(os.readlink(link), str(package / source))
+
+    def test_on_refuses_an_adapter_link_to_a_foreign_file(self):
+        for harness, (subroot, target, _) in ADAPTER_LINKS.items():
+            for destination in ("elsewhere/session-log.js", "x/skills/session-log/../../elsewhere/session-log.js"):
+                with self.subTest(harness=harness, destination=destination), tempfile.TemporaryDirectory() as directory:
+                    home = Path(directory).resolve()
+                    package = harness_package(home, "cache/2.0.0")
+                    link = home / subroot / target
+                    link.parent.mkdir(parents=True)
+                    link.symlink_to(home / destination)
+                    result = run_session_log(package, home, harness, "on")
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn("refusing to overwrite unowned adapter link", result.stderr)
+                    self.assertEqual(os.readlink(link), str(home / destination))
+
+    def test_on_migrates_a_marked_standalone_adapter_copy(self):
+        for harness, (subroot, target, source) in ADAPTER_LINKS.items():
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = harness_package(home, "cache/2.0.0")
+                standalone = home / subroot / target
+                standalone.parent.mkdir(parents=True)
+                standalone.write_text("// universal-session-log: managed\nlegacy standalone copy\n")
+                result = run_session_log(package, home, harness, "on")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(os.readlink(standalone), str(package / source))
 
     def test_on_collapses_repeated_native_hook_registrations(self):
         for harness, subroot in NATIVE_HARNESSES:

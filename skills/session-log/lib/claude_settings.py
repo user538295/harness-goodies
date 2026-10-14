@@ -8,7 +8,7 @@ one auditable, testable module instead of large shell here-documents.
 
 Usage:
     python3 claude_settings.py remove     # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER; prints a line only if it removed any
-    python3 claude_settings.py migrate    # SETTINGS_PATH, CLAUDE_SCRIPTS_DIR
+    python3 claude_settings.py migrate    # SETTINGS_PATH, CLAUDE_SCRIPTS_DIR; prints a line only if it removed any
 
 A hook is owned when its command starts with the ``SESSION_LOG_OWNER=<owner> ``
 marker, whatever hook path follows it, so entries written by any older release
@@ -500,10 +500,10 @@ def _write_install_settings(parent_fd, settings_name, update):
         _cleanup_install_write(parent_fd, settings_name, state)
 
 
-def _update_settings(edit, create):
+def _update_settings(edit):
     """Apply ``edit(document) -> change`` under the settings lock; write only when ``change`` is truthy, and return it."""
     directory, settings_name = os.path.split(os.environ["SETTINGS_PATH"])
-    parent_fd = pathsafe.open_directory(directory, create=create)
+    parent_fd = pathsafe.open_directory(directory, create=False)
     try:
         lock_fd = os.open(settings_name + ".session-log.lock", os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600, dir_fd=parent_fd)
         try:
@@ -536,7 +536,7 @@ def remove():
         _remove_managed_hooks(document, owned)
         return removed
 
-    removed = _update_settings(strip, create=False)
+    removed = _update_settings(strip)
     if removed:
         print(f"removed {removed} legacy session-log hook registration(s) from {settings_path}")
 
@@ -598,54 +598,57 @@ def _is_managed_legacy_hook(item, legacy_scripts_dir, legacy_paths):
 
 
 def _filter_legacy_entry(entry, legacy_scripts_dir, legacy_paths):
+    """``(entry without legacy hooks or None when none remain, number of legacy hooks removed)``."""
     if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
-        return entry, False
+        return entry, 0
     filtered = [
         item
         for item in entry["hooks"]
         if not _is_managed_legacy_hook(item, legacy_scripts_dir, legacy_paths)
     ]
-    if len(filtered) == len(entry["hooks"]):
-        return entry, False
+    removed = len(entry["hooks"]) - len(filtered)
+    if not removed:
+        return entry, 0
     if not filtered:
-        return None, True
+        return None, removed
     replacement = dict(entry)
     replacement["hooks"] = filtered
-    return replacement, True
+    return replacement, removed
 
 
 def _filter_legacy_event(entries, legacy_scripts_dir, legacy_paths):
     kept = []
-    changed = False
+    removed = 0
     for entry in entries:
-        filtered, entry_changed = _filter_legacy_entry(
+        filtered, entry_removed = _filter_legacy_entry(
             entry, legacy_scripts_dir, legacy_paths
         )
-        changed = changed or entry_changed
+        removed += entry_removed
         if filtered is not None:
             kept.append(filtered)
-    return kept, changed
+    return kept, removed
 
 
 def _strip_legacy_hooks(document, legacy_scripts_dir):
+    """Drop the legacy prompt_log hooks and return how many went."""
     legacy_paths = {os.path.join(legacy_scripts_dir, name) for name in LEGACY_NAMES}
     hooks = document.get("hooks")
     if not isinstance(hooks, dict):
-        return False
-    changed = False
+        return 0
+    removed = 0
     for event, entries in list(hooks.items()):
-        kept, event_changed = _filter_legacy_event(
+        kept, event_removed = _filter_legacy_event(
             entries, legacy_scripts_dir, legacy_paths
         )
-        if event_changed:
-            changed = True
+        if event_removed:
+            removed += event_removed
             if kept:
                 hooks[event] = kept
             else:
                 del hooks[event]
-    if changed and not hooks:
+    if removed and not hooks:
         document.pop("hooks", None)
-    return changed
+    return removed
 
 
 def _content_version_matches(current, snapshot):
@@ -822,7 +825,8 @@ def migrate():
                     document = json.loads(contents.decode("utf-8"))
                 except json.JSONDecodeError as error:
                     raise SystemExit(f"cannot update Claude settings: {error}")
-                if not _strip_legacy_hooks(document, legacy_scripts_dir):
+                removed = _strip_legacy_hooks(document, legacy_scripts_dir)
+                if not removed:
                     raise SystemExit(0)
                 _reverify_unchanged_early(parent_fd, settings_name, snapshot)
                 _write_migrate_settings(
@@ -830,6 +834,7 @@ def migrate():
                     settings_name,
                     SettingsUpdate(document=document, snapshot=snapshot),
                 )
+                print(f"removed {removed} legacy prompt_log hook registration(s) from {settings_path}")
             finally:
                 os.close(settings_fd)
         finally:

@@ -25,6 +25,10 @@ assert_exact() {
   local label="$1" expected="$2" actual="$3"
   [[ "$actual" == "$expected" ]] && pass "$label" || fail "$label (expected: $expected; actual: $actual)"
 }
+# `on` prints any cleanup report before its status line, so only that last line is compared.
+assert_last_line() {
+  assert_exact "$1" "$2" "${3##*$'\n'}"
+}
 assert_file() { local label="$1" file="$2"; [[ -f "$file" ]] && pass "$label" || fail "$label (missing $file)"; }
 assert_not_file() { local label="$1" file="$2"; [[ ! -e "$file" && ! -L "$file" ]] && pass "$label" || fail "$label (present $file)"; }
 assert_mode() {
@@ -47,17 +51,23 @@ package_root_for() {
     *) fail "unsupported test harness: $1" ;;
   esac
 }
+make_claude_plugin_cache() {
+  local home="$1" version="$2" plugin_root
+  plugin_root="$home/.claude/plugins/cache/user538295/claude-goodies/$version"
+  mkdir -p "$plugin_root/skills" "$plugin_root/hooks"
+  cp -R "$REPO/skills/session-log" "$plugin_root/skills/session-log"
+  cp "$REPO/hooks/hooks.json" "$plugin_root/hooks/hooks.json"
+  printf '%s\n' "$plugin_root"
+}
 # The packages the harnesses load: Claude Code's plugin copy and a copy in each other skill root.
 place_test_packages() {
   local harness root
-  for harness in claude codex cursor opencode omp; do
+  make_claude_plugin_cache "$TEST_HOME" "$PACKAGE_VERSION" >/dev/null
+  for harness in codex cursor opencode omp; do
     root="$(package_root_for "$harness")"
     mkdir -p "$(dirname "$root")"
     cp -R "$REPO/skills/session-log" "$root"
   done
-  root="$(package_root_for claude)"
-  mkdir -p "${root%/skills/session-log}/hooks"
-  cp "$REPO/hooks/hooks.json" "${root%/skills/session-log}/hooks/hooks.json"
 }
 run_session_log() {
   HOME="$TEST_HOME" "$(package_root_for claude)/bin/session-log" "$@"
@@ -273,6 +283,39 @@ assert_contains "unknown CLI argument error names the argument" "unknown argumen
 
 
 
+printf '=== the entrypoint rejects malformed invocations ===\n'
+ENTRY_ARGS_HOME="$WORKROOT/entry-args-home"
+mkdir -p "$ENTRY_ARGS_HOME/.Trash"
+while IFS='|' read -r entry_label entry_expected entry_arguments; do
+  set +e
+  # shellcheck disable=SC2086 # the fixture's words are the entrypoint's arguments
+  entry_output="$(HOME="$ENTRY_ARGS_HOME" bash "$ENTRYPOINT" $entry_arguments 2>&1)"
+  entry_rc=$?
+  set -e
+  [[ "$entry_rc" -ne 0 ]] && pass "entrypoint fails on $entry_label" || fail "entrypoint fails on $entry_label"
+  assert_exact "entrypoint names the problem with $entry_label" "session-log: $entry_expected" "$entry_output"
+done <<'EOF'
+a missing harness|--harness is required|
+a duplicate harness|only one --harness value is allowed|--harness claude --harness codex
+arguments without a value|--arguments requires a value|--harness claude --arguments
+EOF
+entry_help="$(bash "$ENTRYPOINT" --help)"
+assert_contains "entrypoint help names its usage" "Usage: install.sh --harness <claude|codex|cursor|opencode|omp>" "$entry_help"
+
+printf '=== Claude Code refuses a relocated root and accepts its default spelled out ===\n'
+CLAUDE_RELOCATED_HOME="$WORKROOT/claude-relocated-home"
+mkdir -p "$CLAUDE_RELOCATED_HOME/.Trash" "$CLAUDE_RELOCATED_HOME/.claude" "$WORKROOT/relocated-claude"
+set +e
+claude_reloc="$(HOME="$CLAUDE_RELOCATED_HOME" CLAUDE_CONFIG_DIR="$WORKROOT/relocated-claude" bash "$ENTRYPOINT" --harness claude --arguments on 2>&1)"
+claude_reloc_rc=$?
+set -e
+[[ "$claude_reloc_rc" -ne 0 ]] && pass "relocated Claude root is refused" || fail "relocated Claude root is refused"
+assert_contains "relocated Claude root error is explicit" "Claude Code root is relocated" "$claude_reloc"
+assert_not_file "relocated Claude root leaves logging off" "$CLAUDE_RELOCATED_HOME/.claude/prompt-logs/.enabled"
+assert_not_file "relocated Claude root is not written" "$WORKROOT/relocated-claude/prompt-logs/.enabled"
+assert_exact "default Claude root spelled out is accepted" "Claude Code: off" \
+  "$(HOME="$CLAUDE_RELOCATED_HOME" CLAUDE_CONFIG_DIR="$CLAUDE_RELOCATED_HOME/.claude" bash "$ENTRYPOINT" --harness claude --arguments status 2>&1)"
+
 printf '=== each native adapter installs lazily ===\n'
 OPENCODE_HOME="$WORKROOT/opencode-home"
 OMP_HOME="$WORKROOT/omp-home"
@@ -483,7 +526,7 @@ unowned_error="$(HOME="$UNOWNED_HOME" "$TEST_HOME/.config/opencode/skills/sessio
 unowned_rc=$?
 set -e
 [[ "$unowned_rc" -ne 0 ]] && pass "unowned adapter file is protected" || fail "unowned adapter file is protected"
-assert_contains "unowned adapter error is explicit" "unowned adapter file" "$unowned_error"
+assert_contains "unowned adapter error is explicit" "refusing to remove unowned legacy path: " "$unowned_error"
 assert_contains "unowned adapter remains unchanged" "user plugin" "$(cat "$UNOWNED_HOME/.config/opencode/plugins/session-log.js")"
 
 SYMLINK_HOME="$WORKROOT/symlink-home"
@@ -503,14 +546,20 @@ mkdir -p "$MIGRATION_SYMLINK_HOME/.Trash" "$MIGRATION_SYMLINK_HOME/.claude"
 printf 'settings sentinel\n' > "$WORKROOT/settings-sentinel"
 ln -s "$WORKROOT/settings-sentinel" "$MIGRATION_SYMLINK_HOME/.claude/settings.json"
 set +e
-migration_symlink_error="$(HOME="$MIGRATION_SYMLINK_HOME" bash "$ENTRYPOINT" --harness claude --arguments on 2>&1)"
+migration_symlink_error="$(HOME="$MIGRATION_SYMLINK_HOME" bash "$ENTRYPOINT" --harness claude --arguments repair 2>&1)"
 migration_symlink_rc=$?
+migration_symlink_on="$(HOME="$MIGRATION_SYMLINK_HOME" bash "$ENTRYPOINT" --harness claude --arguments on 2>&1)"
+migration_symlink_on_rc=$?
 set -e
-[[ "$migration_symlink_rc" -ne 0 ]] && pass "symlinked migration settings fail safely" || fail "symlinked migration settings fail safely"
+[[ "$migration_symlink_rc" -ne 0 ]] && pass "symlinked migration settings fail repair safely" || fail "symlinked migration settings fail repair safely"
 assert_contains "symlinked migration error is explicit" "symlinked Claude settings" "$migration_symlink_error"
+assert_exact "symlinked settings do not block on" "0" "$migration_symlink_on_rc"
+assert_exact "on reports the failed legacy cleanup before its status" \
+  "Claude Code: legacy cleanup failed: refusing to update symlinked Claude settings: $(cd "$MIGRATION_SYMLINK_HOME" && pwd -P)/.claude/settings.json; run repair for details"$'\n'"Claude Code: on — logging starts with the next prompt" \
+  "$migration_symlink_on"
 assert_link "symlinked migration settings remain unchanged" "$WORKROOT/settings-sentinel" "$MIGRATION_SYMLINK_HOME/.claude/settings.json"
 assert_contains "symlinked migration target remains unchanged" "settings sentinel" "$(cat "$WORKROOT/settings-sentinel")"
-assert_not_file "symlinked migration leaves logging off" "$MIGRATION_SYMLINK_HOME/.claude/prompt-logs/.enabled"
+assert_file "on enables logging despite the failed cleanup" "$MIGRATION_SYMLINK_HOME/.claude/prompt-logs/.enabled"
 
 
 printf '=== migration removes only known legacy files and preserves settings ===\n'
@@ -533,14 +582,18 @@ mkdir -p "$SELECTIVE_HOME/.Trash" "$SELECTIVE_HOME/.config/opencode/plugins" \
 printf '# universal-session-log: managed\nlegacy OpenCode\n' > "$SELECTIVE_HOME/.config/opencode/plugins/session-log.js"
 printf 'unselected Claude legacy\n' > "$SELECTIVE_HOME/.claude/scripts/prompt_log_save.sh"
 printf 'unselected OMP legacy\n' > "$SELECTIVE_HOME/.omp/agent/extensions/session-log-omp.js"
-HOME="$SELECTIVE_HOME" bash "$ENTRYPOINT" --harness opencode --arguments repair >/dev/null 2>&1
+repair_rc=0
+HOME="$SELECTIVE_HOME" bash "$ENTRYPOINT" --harness opencode --arguments repair >/dev/null 2>&1 || repair_rc=$?
+assert_exact "selective migration repair succeeds" "0" "$repair_rc"
 assert_not_file "selective migration removes selected OpenCode legacy" "$SELECTIVE_HOME/.config/opencode/plugins/session-log.js"
 assert_file "selective migration preserves unselected Claude legacy" "$SELECTIVE_HOME/.claude/scripts/prompt_log_save.sh"
 assert_file "selective migration preserves unselected OMP legacy" "$SELECTIVE_HOME/.omp/agent/extensions/session-log-omp.js"
 printf '# universal-session-log: managed\nlegacy prompt_log_usage.sh command\n' > "$LEGACY_HOME/.claude/skills/session-log/SKILL.md"
 printf '%s\n' "{\"hooks\":{\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo keep-me\"},{\"type\":\"command\",\"command\":\"bash $LEGACY_HOME/.claude/scripts/prompt_log_save.sh\"}]}]}}" > "$LEGACY_HOME/.claude/settings.json"
 for legacy_harness in claude opencode omp; do
-  HOME="$LEGACY_HOME" bash "$ENTRYPOINT" --harness "$legacy_harness" --arguments repair >/dev/null 2>&1
+  repair_rc=0
+  HOME="$LEGACY_HOME" bash "$ENTRYPOINT" --harness "$legacy_harness" --arguments repair >/dev/null 2>&1 || repair_rc=$?
+  assert_exact "$legacy_harness legacy migration repair succeeds" "0" "$repair_rc"
 done
 assert_not_file "legacy OMP skill removed" "$LEGACY_HOME/.omp/agent/skills/session-log-omp/SKILL.md"
 assert_not_file "legacy OMP extension removed" "$LEGACY_HOME/.omp/agent/extensions/session-log-omp.js"
@@ -548,7 +601,9 @@ assert_not_file "legacy OpenCode command removed" "$LEGACY_HOME/.config/opencode
 assert_not_file "legacy OpenCode plugin removed" "$LEGACY_HOME/.config/opencode/plugins/session-log-omp.js"
 assert_not_file "legacy OpenCode standalone plugin removed" "$LEGACY_HOME/.config/opencode/plugins/session-log.js"
 assert_not_file "legacy OpenCode standalone parser removed" "$LEGACY_HOME/.config/opencode/scripts/session_log_usage.sh"
-assert_not_file "legacy Claude standalone scripts removed" "$LEGACY_HOME/.claude/scripts/prompt_log_save.sh"
+for legacy_script in prompt_log_save.sh prompt_log_new_session.sh prompt_log_stop.sh prompt_log_subagent.sh prompt_log_lib.sh prompt_log_usage.sh prompt_log_usage.jq prompt_log_prices.json; do
+  assert_not_file "legacy Claude standalone script removed: $legacy_script" "$LEGACY_HOME/.claude/scripts/$legacy_script"
+done
 assert_contains "unrelated settings preserved" "keep-me" "$(cat "$LEGACY_HOME/.claude/settings.json")"
 assert_contains "legacy Claude skill without an ownership manifest is kept" "universal-session-log: managed" "$(cat "$LEGACY_HOME/.claude/skills/session-log/SKILL.md")"
 assert_not_contains "known standalone hook removed" "$LEGACY_HOME/.claude/scripts/prompt_log_save.sh" "$(cat "$LEGACY_HOME/.claude/settings.json")"
@@ -566,7 +621,9 @@ assert_contains "unowned legacy file remains unchanged" "user plugin" "$(cat "$U
 HOOK_COLLISION_HOME="$WORKROOT/hook-collision-home"
 mkdir -p "$HOOK_COLLISION_HOME/.Trash" "$HOOK_COLLISION_HOME/.claude"
 printf '%s\n' '{"hooks":{"SessionEnd":[{"hooks":[{"type":"command","command":"echo prompt_log_save.sh"}]}]}}' > "$HOOK_COLLISION_HOME/.claude/settings.json"
-HOME="$HOOK_COLLISION_HOME" bash "$ENTRYPOINT" --harness claude --arguments repair >/dev/null 2>&1
+repair_rc=0
+HOME="$HOOK_COLLISION_HOME" bash "$ENTRYPOINT" --harness claude --arguments repair >/dev/null 2>&1 || repair_rc=$?
+assert_exact "hook collision repair succeeds" "0" "$repair_rc"
 assert_contains "unrelated hook text is preserved" "echo prompt_log_save.sh" "$(cat "$HOOK_COLLISION_HOME/.claude/settings.json")"
 
 
@@ -616,7 +673,7 @@ PACKAGE_PLUGIN_HOME="$WORKROOT/package-plugin-home"
 mkdir -p "$PACKAGE_PLUGIN_HOME/.Trash" "$PACKAGE_PLUGIN_HOME/plugin/skills"
 cp -R "$REPO/skills/session-log" "$PACKAGE_PLUGIN_HOME/plugin/skills/session-log"
 package_plugin_on="$(HOME="$PACKAGE_PLUGIN_HOME" CLAUDE_PLUGIN_ROOT="$PACKAGE_PLUGIN_HOME/plugin" bash "$PACKAGE_PLUGIN_HOME/plugin/skills/session-log/install.sh" --harness claude --arguments on 2>&1)"
-assert_contains "marketplace source enables logging" "Claude Code: on" "$package_plugin_on"
+assert_last_line "marketplace source enables logging" "Claude Code: on — logging starts with the next prompt" "$package_plugin_on"
 assert_not_file "marketplace source copies no package" "$PACKAGE_PLUGIN_HOME/.claude/skills/session-log"
 assert_not_file "marketplace source registers no settings.json hooks" "$PACKAGE_PLUGIN_HOME/.claude/settings.json"
 printf '%s\n' '{"session_id":"plugin-package-session","cwd":"'"$PWD"'"}' |
@@ -672,14 +729,6 @@ assert_non_owned_hooks_preserved() {
   assert_contains "$label keeps a non-owned hook sharing an owned entry" "other:Stop:bash ~/.claude/cc-status.sh stop" "$summary"
   assert_contains "$label keeps a non-owned hook on an unmanaged event" "other:Notification:cc-status notify" "$summary"
 }
-make_claude_plugin_cache() {
-  local home="$1" version="$2" plugin_root
-  plugin_root="$home/.claude/plugins/cache/user538295/claude-goodies/$version"
-  mkdir -p "$plugin_root/skills" "$plugin_root/hooks"
-  cp -R "$REPO/skills/session-log" "$plugin_root/skills/session-log"
-  cp "$REPO/hooks/hooks.json" "$plugin_root/hooks/hooks.json"
-  printf '%s\n' "$plugin_root"
-}
 
 PLUGIN_UPGRADE_HOME="$WORKROOT/plugin-upgrade-home"
 mkdir -p "$PLUGIN_UPGRADE_HOME/.Trash"
@@ -690,7 +739,7 @@ write_stale_claude_settings "$PLUGIN_UPGRADE_SETTINGS" "$PLUGIN_STALE_HOOK"
 set +e
 plugin_upgrade_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude on 2>&1)"
 set -e
-assert_contains "plugin on without CLAUDE_PLUGIN_ROOT enables logging" "Claude Code: on" "$plugin_upgrade_on"
+assert_last_line "plugin on without CLAUDE_PLUGIN_ROOT enables logging" "Claude Code: on — logging starts with the next prompt" "$plugin_upgrade_on"
 plugin_upgrade_summary="$(claude_settings_summary "$PLUGIN_UPGRADE_SETTINGS")"
 assert_not_contains "plugin on removes stale versioned owned hooks" "owned:" "$plugin_upgrade_summary"
 assert_not_contains "plugin on writes no versioned cache path" "plugins/cache" "$plugin_upgrade_summary"
@@ -699,7 +748,7 @@ cp "$PLUGIN_UPGRADE_SETTINGS" "$WORKROOT/plugin-upgrade-settings.first"
 set +e
 plugin_upgrade_again="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$PLUGIN_UPGRADE_ROOT/skills/session-log/SKILL.md" "$PLUGIN_UPGRADE_HOME" claude on 2>&1)"
 set -e
-assert_contains "repeated plugin on still reports on" "Claude Code: on" "$plugin_upgrade_again"
+assert_last_line "repeated plugin on without a live session reports restart required" "Claude Code: on — restart required" "$plugin_upgrade_again"
 cmp -s "$WORKROOT/plugin-upgrade-settings.first" "$PLUGIN_UPGRADE_SETTINGS" &&
   pass "repeated plugin on leaves settings byte-identical" ||
   fail "repeated plugin on leaves settings byte-identical"
@@ -769,7 +818,7 @@ stale_link_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$STALE_LINK_ROO
 set -e
 assert_contains "plugin on reports the removed skill symlink" \
   "Claude Code: removed legacy package link $(cd "$STALE_LINK_HOME" && pwd -P)/.claude/skills/session-log" "$stale_link_on"
-assert_contains "stale owned skill symlink does not block plugin on" "Claude Code: on" "$stale_link_on"
+assert_last_line "stale owned skill symlink does not block plugin on" "Claude Code: on — logging starts with the next prompt" "$stale_link_on"
 assert_not_file "stale owned skill symlink is removed" "$STALE_LINK_SKILL"
 assert_file "old plugin cache version is left untouched" "$STALE_LINK_OLD/install.sh"
 stale_link_summary="$(claude_settings_summary "$STALE_LINK_SETTINGS")"
@@ -785,7 +834,7 @@ write_stale_claude_settings "$DANGLING_LINK_HOME/.claude/settings.json" "$PLUGIN
 set +e
 dangling_link_on="$(unset CLAUDE_PLUGIN_ROOT; run_skill_entrypoint "$DANGLING_LINK_ROOT/skills/session-log/SKILL.md" "$DANGLING_LINK_HOME" claude on 2>&1)"
 set -e
-assert_contains "dangling owned skill symlink does not block plugin on" "Claude Code: on" "$dangling_link_on"
+assert_last_line "dangling owned skill symlink does not block plugin on" "Claude Code: on — logging starts with the next prompt" "$dangling_link_on"
 assert_not_file "dangling owned skill symlink is removed" "$DANGLING_LINK_HOME/.claude/skills/session-log"
 assert_not_contains "dangling owned skill symlink still lets plugin on remove owned hooks" "owned:" \
   "$(claude_settings_summary "$DANGLING_LINK_HOME/.claude/settings.json")"
@@ -1467,6 +1516,7 @@ ln -s "$ADAPTER_RESTORE_RACE_DIR/store/releases/v1/adapter.js" "$ADAPTER_RESTORE
 SESSION_LOG_SOURCE="$ADAPTER_RESTORE_RACE_DIR/store/releases/v2/adapter.js" \
   SESSION_LOG_TARGET="$ADAPTER_RESTORE_RACE_DIR/harness/adapter.js" \
   SESSION_LOG_STORE="$ADAPTER_RESTORE_RACE_DIR/store" \
+  SESSION_LOG_ADAPTER_RELATIVE=adapter.js \
   python3 - "$PSLIB" >/dev/null 2>&1 <<'PYADAPTERRACE'
 import os
 import sys
@@ -1520,12 +1570,12 @@ mkdir -p "$PSROOT/store/releases/v1"
 printf 'asset\n' > "$PSROOT/asset.js"
 printf 'x\n' > "$PSROOT/elsewhere"
 ln -sfn "$PSROOT/elsewhere" "$PSROOT/otherlink"
-lu_out="$(SESSION_LOG_SOURCE="$PSROOT/asset.js" SESSION_LOG_TARGET="$PSROOT/otherlink" SESSION_LOG_STORE="$PSROOT/store" python3 "$PSLIB/pathsafe.py" link-adapter 2>&1)"
+lu_out="$(SESSION_LOG_SOURCE="$PSROOT/asset.js" SESSION_LOG_TARGET="$PSROOT/otherlink" SESSION_LOG_STORE="$PSROOT/store" SESSION_LOG_ADAPTER_RELATIVE=asset.js python3 "$PSLIB/pathsafe.py" link-adapter 2>&1)"
 assert_contains "pathsafe link-adapter refuses unowned link" "refusing to overwrite unowned adapter link" "$lu_out"
 
 # link_adapter is idempotent when the link already points at the source
 ln -sfn "$PSROOT/asset.js" "$PSROOT/ownedlink"
-SESSION_LOG_SOURCE="$PSROOT/asset.js" SESSION_LOG_TARGET="$PSROOT/ownedlink" SESSION_LOG_STORE="$PSROOT/store" python3 "$PSLIB/pathsafe.py" link-adapter
+SESSION_LOG_SOURCE="$PSROOT/asset.js" SESSION_LOG_TARGET="$PSROOT/ownedlink" SESSION_LOG_STORE="$PSROOT/store" SESSION_LOG_ADAPTER_RELATIVE=asset.js python3 "$PSLIB/pathsafe.py" link-adapter
 li_rc=$?
 assert_exact "pathsafe link-adapter idempotent exit 0" "0" "$li_rc"
 assert_link "pathsafe link unchanged after idempotent relink" "$PSROOT/asset.js" "$PSROOT/ownedlink"

@@ -257,13 +257,18 @@ label="on reports on while a hook of a running session has written its marker"
 assert_on_status "$label" "$plugin" "$EXPECTED_ON_STATUS"
 printf 'PASS: %s\n' "$label"
 
-label="off flips only the enable flag"
+label="off turns logging off and clears runtime markers"
 before="$(cat "$(settings_file)" 2>/dev/null || printf 'no settings.json\n')"
 assert_skill_output "$label" "$plugin" off "$EXPECTED_OFF_STATUS"
 [[ ! -e "$(flag_file)" ]] || fail "$label: off kept the enable flag"
 [[ "$(cat "$(settings_file)" 2>/dev/null || printf 'no settings.json\n')" == "$before" ]] ||
   fail "$label: off changed settings.json"
+for marker in "$TEST_HOME/.claude/session-log"/runtime*.json; do
+  [[ ! -e "$marker" ]] || fail "$label: off kept runtime marker $marker"
+done
 assert_status "$label: status after off" "$plugin" "$EXPECTED_OFF_STATUS"
+# Within the same live session the hooks rewrite their marker at the next prompt.
+assert_skill_output "$label: on again in the live session" "$plugin" on "$EXPECTED_FIRST_ON_STATUS"
 printf 'PASS: %s\n' "$label"
 
 # Bug: removing a duplicate settings.json registration cleared the runtime markers although the

@@ -31,13 +31,14 @@ legacy_cleanup() {
 # Validates before it removes anything: unsafe settings.json or an unrecognized legacy script fails
 # the command with nothing changed.
 legacy_cleanup_claude() {
-  local settings="$HARNESS_ROOT/settings.json"
+  local settings="$HARNESS_ROOT/settings.json" report
   require_command python3
   preflight_claude_settings
   validate_claude_legacy_scripts
   if [[ -f "$settings" ]]; then
-    SETTINGS_PATH="$settings" CLAUDE_SCRIPTS_DIR="$HARNESS_ROOT/scripts" \
-      python3 "$SESSION_LOG_LIB/claude_settings.py" migrate
+    report="$(SETTINGS_PATH="$settings" CLAUDE_SCRIPTS_DIR="$HARNESS_ROOT/scripts" \
+      python3 "$SESSION_LOG_LIB/claude_settings.py" migrate)"
+    print_repair_report "$report"
   fi
   remove_claude_settings_registrations
   remove_claude_legacy_scripts
@@ -45,8 +46,9 @@ legacy_cleanup_claude() {
   remove_claude_obsolete_state
 }
 
-# The standalone adapter copies and the session-log-omp entrypoints of earlier releases. An adapter
-# link at a standalone copy's path is the adapter install's: repair_registrations owns it.
+# The standalone adapter copies (regular files) and the session-log-omp entrypoints of earlier
+# releases. A symlink at a standalone copy's path is the current adapter link, which the adapter
+# install and repair_registrations manage, so this cleanup leaves it alone.
 legacy_cleanup_opencode() {
   local plugin="$HARNESS_ROOT/plugins/session-log.js" usage="$HARNESS_ROOT/scripts/session_log_usage.sh"
   [[ -L "$plugin" ]] || validate_managed_path "$plugin"
@@ -132,7 +134,9 @@ remove_claude_obsolete_state() {
   validate_state_dir
   for candidate in "${CLAUDE_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}" "$STATE_DIR"/settings-repair.*.stamp; do
     [[ -f "$candidate" && ! -L "$candidate" ]] || continue
-    unlink "$candidate"
+    # A concurrent cleanup may have removed it already.
+    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
+      fail "cannot remove obsolete state file: $candidate"
   done
 }
 
@@ -321,5 +325,6 @@ remove_claude_legacy_scripts() {
     path="$HOME_ROOT/.claude/scripts/$name"
     [[ -e "$path" || -L "$path" ]] || continue
     remove_known_path "$path"
+    print_repair_report "removed legacy script $path"
   done
 }

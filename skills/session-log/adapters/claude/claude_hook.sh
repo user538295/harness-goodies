@@ -69,39 +69,46 @@ write_state_file() {
 }
 
 readonly SEEDED_COPY="$CLAUDE_ROOT/skills/session-log"
+readonly LEGACY_SCRIPTS_GLOB="$CLAUDE_ROOT/scripts/prompt_log_*"
+readonly LEGACY_CLEANUP_STAMP="$STATE_DIR/legacy-cleanup.stamp"
 
 # Whether older releases may have left something behind: session-log registrations in
 # settings.json, the package copy they seeded under ~/.claude/skills, or their ~/.claude/scripts.
+# Their obsolete state files do not count: they are harmless, and on/repair remove them.
 legacy_leftovers_present() {
   local settings="$CLAUDE_ROOT/settings.json"
   [[ -e "$SEEDED_COPY/.universal-session-log.manifest" || -L "$SEEDED_COPY" ]] && return 0
-  compgen -G "$CLAUDE_ROOT/scripts/prompt_log_*" >/dev/null && return 0
+  compgen -G "$LEGACY_SCRIPTS_GLOB" >/dev/null && return 0
   [[ -f "$settings" && ! -L "$settings" ]] && grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=|prompt_log_' "$settings"
 }
 
-# What the cleanup depends on: settings.json, this package, and whether a seeded copy remains.
+# What the cleanup depends on: settings.json, this package, and whether a seeded copy or legacy
+# scripts remain.
 cleanup_fingerprint() {
   local settings="$CLAUDE_ROOT/settings.json"
   if [[ -f "$settings" && ! -L "$settings" ]]; then cksum < "$settings" || return 1; fi
   printf '%s\n%s\n' "$PACKAGE_ROOT" "$VERSION"
   if [[ -e "$SEEDED_COPY" || -L "$SEEDED_COPY" ]]; then printf 'seeded copy\n'; fi
+  if compgen -G "$LEGACY_SCRIPTS_GLOB" >/dev/null; then printf 'legacy scripts\n'; fi
 }
 
 # Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never
-# fails the hook and all output is discarded. A stamp of the last successful cleanup's
-# fingerprint skips it until that fingerprint changes; with no leftover it costs one grep.
+# fails the hook and all output is discarded. A stamp of the fingerprint after each attempt,
+# successful or not, skips it until that fingerprint changes, so a cleanup that cannot succeed
+# (say, an edited legacy script) costs one attempt per change, not one per session; `on` and
+# `repair` report why it failed. With no leftover it costs one grep.
 cleanup_legacy_leftovers() {
-  local stamp="$STATE_DIR/legacy-cleanup.stamp" fingerprint
+  local fingerprint
   legacy_leftovers_present || return 0
   fingerprint="$(cleanup_fingerprint)" || return 0
-  if [[ -f "$stamp" && ! -L "$stamp" && "$(< "$stamp")" == "$fingerprint" ]]; then
+  if [[ -f "$LEGACY_CLEANUP_STAMP" && ! -L "$LEGACY_CLEANUP_STAMP" && "$(< "$LEGACY_CLEANUP_STAMP")" == "$fingerprint" ]]; then
     return 0
   fi
-  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || return 0
-  # Benign race: a write landing between the cleanup and this fingerprint is stamped uncleaned;
-  # the next change to the fingerprint triggers the cleanup again.
+  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || true
+  # The fingerprint is taken again after the cleanup. If something else changes settings.json
+  # in between, that change is stamped without a cleanup; the next change triggers one.
   fingerprint="$(cleanup_fingerprint)" || return 0
-  write_state_file "$stamp" "$fingerprint"
+  write_state_file "$LEGACY_CLEANUP_STAMP" "$fingerprint"
 }
 if [[ "${1:-}" == session-start ]]; then
   cleanup_legacy_leftovers </dev/null >/dev/null 2>&1 || true

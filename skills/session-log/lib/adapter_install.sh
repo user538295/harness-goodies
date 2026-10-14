@@ -1,6 +1,7 @@
 # universal-session-log: managed
 # Adapter-install machinery for bin/session-log, for the harnesses whose plugin does not
-# register the session-log hooks itself (see plugin_owns_hooks in bin/session-log).
+# register the session-log hooks itself (see plugin_owns_hooks in bin/session-log). Its install
+# lock, state-directory checks, runtime-marker and repair-report helpers serve every harness.
 #
 # Sourced by bin/session-log right after lib/common.sh. Runs in the same shell,
 # so it shares bin's globals (HARNESS, HARNESS_ROOT, STATE_DIR, INSTALL_LOCK,
@@ -128,6 +129,14 @@ is_plugin_cache_adapter_link() {
   esac
 }
 
+# True when link destination $2 is adapter kind $1 inside any session-log package: the copy older
+# releases seeded into the skill root, or another package version a harness plugin ships.
+is_package_adapter_link() {
+  local relative="${ADAPTER_SOURCES[$HARNESS:$1]}" destination="$2"
+  case "$destination/" in */../*|*/./*) return 1 ;; esac
+  [[ "$destination" == */skills/session-log/"$relative" ]]
+}
+
 preflight_adapter_target() {
   local kind="$1" source target existing
   source="$(source_for "$kind")"
@@ -138,6 +147,8 @@ preflight_adapter_target() {
   if [[ -L "$target" ]]; then
     existing="$(readlink "$target")"
     if [[ ! -e "$target" ]] && is_plugin_cache_adapter_link "$HARNESS:$kind:$existing"; then
+      :
+    elif is_package_adapter_link "$kind" "$existing"; then
       :
     else
       case "$HARNESS:$kind:$existing" in
@@ -187,13 +198,17 @@ preflight_state_files() {
   preflight_install_lock
 }
 
-preflight_on() {
-  preflight_enable_flag
-  preflight_state_files
+preflight_adapter() {
   case "$HARNESS" in
     codex|cursor) preflight_native_hooks ;;
     opencode|omp) preflight_adapter_targets ;;
   esac
+}
+
+preflight_on() {
+  preflight_enable_flag
+  preflight_state_files
+  preflight_adapter
 }
 
 preflight_off() {
@@ -222,7 +237,7 @@ write_manifest() {
   write_private_file "$STATE_DIR/adapter.manifest" "$content"
 }
 
-# Per-harness install lock, unified with install.sh on lib/locking.py: the same
+# Per-harness install lock on lib/locking.py: the
 # mkdir-owner-reclaim protocol (owner pid + `ps -o lstart=` liveness, stale
 # reclaim after 5s) applied to the per-harness lock path "$INSTALL_LOCK".
 _install_lock_operation() {
@@ -256,6 +271,7 @@ atomic_link() {
   [[ -f "$source" && ! -L "$source" ]] || fail "adapter asset is missing: $source"
   ensure_safe_parent "$target"
   SESSION_LOG_SOURCE="$source" SESSION_LOG_TARGET="$target" SESSION_LOG_STORE="$STORE" \
+    SESSION_LOG_ADAPTER_RELATIVE="${source#"$PACKAGE_ROOT/"}" \
     python3 "$SESSION_LOG_LIB/pathsafe.py" link-adapter ||
     fail "cannot safely install adapter link: $target"
 }

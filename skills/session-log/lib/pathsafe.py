@@ -36,6 +36,8 @@ class AdapterLinkOptions:
     source: str
     target: str
     store: str
+    # The adapter's path inside its session-log package, e.g. adapters/omp/session-log.js.
+    package_relative: str
 
 
 @dataclass(frozen=True)
@@ -223,6 +225,13 @@ def _is_managed_release_link(existing, store):
     return existing.startswith(f"{store}/releases/")
 
 
+def _is_package_adapter_link(existing, package_relative):
+    """True when ``existing`` is the same adapter inside another session-log package (an older
+    release's seeded copy or another plugin version); ``..`` and ``.`` components never match."""
+    parts = existing.split("/")
+    return ".." not in parts and "." not in parts and existing.endswith(f"/skills/session-log/{package_relative}")
+
+
 def _create_temporary_link(target_dir_fd, directory, source):
     for _ in range(MAX_TEMP_FILE_ATTEMPTS):
         candidate = f".session-log.{os.getpid()}.{random.randrange(1 << 30):08x}"
@@ -314,6 +323,7 @@ def _cleanup_adapter_link(context):
 def link_adapter(options):
     """Atomically point the target at the source without clobbering unowned files."""
     source, target, store = options.source, options.target, options.store
+    package_relative = options.package_relative
     directory, name = os.path.split(target)
     source_directory, source_name = os.path.split(source)
     source_dir_fd = open_directory(source_directory, create=True)
@@ -335,7 +345,8 @@ def link_adapter(options):
                 existing = initial[1]
                 if existing == source:
                     raise SystemExit(0)
-                if not _is_managed_release_link(existing, store):
+                if not (_is_managed_release_link(existing, store)
+                        or _is_package_adapter_link(existing, package_relative)):
                     raise SystemExit(f"refusing to overwrite unowned adapter link: {target}")
             elif initial is not None and initial[1] != source_data:
                 raise SystemExit(f"refusing to overwrite unowned adapter file: {target}")
@@ -543,6 +554,7 @@ def main(argv):
                 source=os.environ["SESSION_LOG_SOURCE"],
                 target=os.environ["SESSION_LOG_TARGET"],
                 store=os.environ["SESSION_LOG_STORE"],
+                package_relative=os.environ["SESSION_LOG_ADAPTER_RELATIVE"],
             )
         )
     else:
