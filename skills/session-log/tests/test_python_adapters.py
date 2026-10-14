@@ -1927,6 +1927,83 @@ class ClaudeHookInsideCursorTests(unittest.TestCase):
                 self.assertIn(prompt, transcripts[0].read_text())
 
 
+# Standard-library modules the inline Python of session-log's shell code imports after start-up. Python puts
+# the working directory first on sys.path for `python3 -c` and `python3 -`, and hooks run with the user's
+# project as the working directory, so a project file named like one of these would run instead.
+HIJACKABLE_MODULES = ("json", "subprocess", "tempfile", "time", "hashlib", "base64")
+
+
+def booby_trapped_project(root):
+    """A project directory whose every HIJACKABLE_MODULES file records that it was imported, then fails."""
+    project = root / "project"
+    project.mkdir()
+    for module in HIJACKABLE_MODULES:
+        (project / f"{module}.py").write_text(
+            f"open(__file__ + '.imported', 'w').close()\nraise SystemExit('project {module}.py ran')\n")
+    return project
+
+
+class InlinePythonIsolationTests(unittest.TestCase):
+    """Inline Python never imports a module from the working directory (python3 -I)."""
+
+    def assert_nothing_imported(self, project):
+        self.assertEqual(sorted(path.name for path in project.glob("*.imported")), [])
+
+    def run_in(self, project, command, payload="", environment=None):
+        return subprocess.run(command, input=payload, capture_output=True, text=True, cwd=project,
+                              env=environment, timeout=SUBPROCESS_TIMEOUT_SECONDS)
+
+    def test_claude_hook_logging_ignores_project_modules(self):
+        if shutil.which("jq") is None:
+            self.skipTest("jq is not installed")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home, package = enabled_claude_home(root / "home")
+            project = booby_trapped_project(root)
+            transcript = home / ".claude/projects/project/isolated.jsonl"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text("{}\n")
+            transcript.chmod(PRIVATE_FILE_MODE)
+            payload = json.dumps({"session_id": "isolated", "cwd": str(project), "prompt": "isolated prompt",
+                                  "transcript_path": str(transcript), "last_assistant_message": "isolated reply"})
+            for lifecycle in ("session-start", "user-prompt", "stop"):
+                result = self.run_in(project, ["bash", str(package / "adapters/claude/claude_hook.sh"), lifecycle],
+                                     payload, harness_environment(home))
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assert_nothing_imported(project)
+            transcripts = prompt_log_transcripts(home)
+            self.assertEqual(len(transcripts), 1, transcripts)
+            self.assertIn("isolated prompt", transcripts[0].read_text())
+
+    def test_claude_repair_preflight_ignores_project_modules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home = root / "home"
+            package = claude_package(home)
+            (home / ".claude/settings.json").write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
+            project = booby_trapped_project(root)
+            result = self.run_in(project, ["bash", str(package / "bin/session-log"), "--entrypoint", "claude",
+                                           "--harness", "claude", "repair"], environment=harness_environment(home))
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assert_nothing_imported(project)
+
+    def test_codex_cleanup_ignores_project_modules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home = root / "home"
+            package = harness_package(home, NATIVE_PACKAGE_ROOTS["codex"])
+            seeded = home / ".codex/skills/session-log"
+            seeded.parent.mkdir(parents=True)
+            shutil.copytree(REPO / "skills/session-log", seeded)
+            write_seeded_manifest(seeded)
+            (home / ".codex/hooks.json").write_text(json.dumps({"hooks": {}}))
+            project = booby_trapped_project(root)
+            result = self.run_in(project, ["bash", str(package / "bin/session-log"), "--entrypoint", "codex",
+                                           "--harness", "codex", "repair"], environment=harness_environment(home))
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assert_nothing_imported(project)
+
+
 class ClaudeHookSilentFailureTests(unittest.TestCase):
     """A Claude hook never reports an error: every failure exits 0 with no output and no side effect."""
 

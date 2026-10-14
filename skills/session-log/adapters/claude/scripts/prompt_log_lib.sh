@@ -187,7 +187,7 @@ _claude_secure_append() {
     printf '%s\n' "$record"
   else
     printf '%s\n\n' "$record"
-  fi | SESSION_LOG_ENABLE_LOCK="$_CLAUDE_HOME/.claude/prompt-logs/.enabled.lock" SESSION_LOG_ENABLE_FLAG="$_CLAUDE_HOME/.claude/prompt-logs/.enabled" SESSION_LOG_ENABLE_SIGNATURE="$expected_signature" SESSION_LOG_EXPECTED_DEV="$expected_dev" SESSION_LOG_EXPECTED_INO="$expected_ino" python3 -c '
+  fi | SESSION_LOG_ENABLE_LOCK="$_CLAUDE_HOME/.claude/prompt-logs/.enabled.lock" SESSION_LOG_ENABLE_FLAG="$_CLAUDE_HOME/.claude/prompt-logs/.enabled" SESSION_LOG_ENABLE_SIGNATURE="$expected_signature" SESSION_LOG_EXPECTED_DEV="$expected_dev" SESSION_LOG_EXPECTED_INO="$expected_ino" python3 -I -c '
 import fcntl
 import json
 import os
@@ -445,7 +445,7 @@ _claude_append_state_record() {
   _claude_secure_append "$file" "$record" state
 }
 _claude_safe_snapshot() {
-  python3 -c '
+  python3 -I -c '
 import os
 import stat
 import sys

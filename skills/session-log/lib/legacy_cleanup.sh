@@ -114,7 +114,7 @@ codex_hooks_may_name_seeded_copy() {
   # The script's NOT_NAMED exit status; any other status keeps the copy.
   local config="$HARNESS_ROOT/hooks.json" status=0 not_named=1
   [[ -e "$config" || -L "$config" ]] || return 1
-  CODEX_HOOKS_PATH="$config" python3 - <<'PY' || status=$?
+  CODEX_HOOKS_PATH="$config" python3 -I - <<'PY' || status=$?
 import json
 import os
 import stat
@@ -260,7 +260,7 @@ preflight_claude_settings() {
   [[ -f "$settings" ]] ||
     fail "refusing to update non-file Claude settings: $settings"
   local error
-  error="$(SETTINGS_PATH="$settings" python3 - 2>&1 <<'PY'
+  error="$(SETTINGS_PATH="$settings" python3 -I - 2>&1 <<'PY'
 import json
 import os
 

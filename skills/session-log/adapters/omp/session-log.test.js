@@ -105,6 +105,40 @@ const runEnsureLogRace = (extraEnv = {}) => {
 	return Bun.spawnSync(["bun", "--eval", ENSURE_LOG_SWAP_RUNNER], { env }).stdout.toString();
 };
 
+// Python puts the working directory first on sys.path for "python3 -c", and omp runs the extension in the
+// user's project, so a project file named like a standard-library module the inline Python imports would run.
+const HIJACKABLE_MODULES = ["json", "subprocess", "hashlib", "base64"];
+// Logs one prompt through the extension's before_agent_start handler: creating the log, then appending to it.
+const LOG_PROMPT_RUNNER = String.raw`
+const { default: sessionLogOmp } = await import(process.env.ADAPTER_PATH);
+const handlers = {};
+sessionLogOmp({ on: (event, handler) => { handlers[event] = handler; }, registerCommand: () => {} });
+const sessionManager = { getSessionId: () => "isolated", getSessionFile: () => "isolated.jsonl", getHeader: () => ({ cwd: process.cwd() }), getEntries: () => [] };
+await handlers.before_agent_start({ prompt: "isolated prompt" }, { sessionManager, cwd: process.cwd() });
+`;
+
+describe("inline Python", () => {
+	test("never imports a module from the project directory", () => {
+		const home = temporaryDirectory();
+		const project = fs.mkdtempSync(path.join(os.tmpdir(), "session-log-omp-project-"));
+		for (const module of HIJACKABLE_MODULES) {
+			fs.writeFileSync(path.join(project, `${module}.py`),
+				`open(__file__ + '.imported', 'w').close()\nraise SystemExit('project ${module}.py ran')\n`);
+		}
+		const logDirectory = path.join(home, ".omp/agent/prompt-logs");
+		fs.mkdirSync(logDirectory, { recursive: true });
+		fs.writeFileSync(path.join(logDirectory, ".enabled"), "");
+		const env = { ...process.env, HOME: home, ADAPTER_PATH };
+		delete env.PI_CODING_AGENT_DIR;
+		delete env.OMP_PROMPT_LOG_DIR;
+		Bun.spawnSync(["bun", "--eval", LOG_PROMPT_RUNNER], { env, cwd: project });
+		expect(fs.readdirSync(project).filter((name) => name.endsWith(".imported"))).toEqual([]);
+		const logs = fs.readdirSync(logDirectory, { recursive: true }).filter((name) => name.endsWith("session_isolated.md"));
+		expect(logs).toHaveLength(1);
+		expect(fs.readFileSync(path.join(logDirectory, logs[0]), "utf8")).toContain("isolated prompt");
+	});
+});
+
 describe("ensureLog", () => {
 	test("rejects a log swapped for a symlink after the lstat check", () => {
 		expect(runEnsureLogRace()).toContain("REJECTED OMP path is not a safe file");

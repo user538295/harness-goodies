@@ -362,7 +362,7 @@ print("1")
 `;
 const secureAppend = (file, payload, { dedupe = false, enableSignature = "", dedupeKey = "" } = {}) => {
 	const expected = fs.lstatSync(file);
-	const result = execFileSync("python3", ["-c", SECURE_APPEND_SCRIPT], {
+	const result = execFileSync("python3", ["-I", "-c", SECURE_APPEND_SCRIPT], {
 		env: {
 			...process.env,
 			SESSION_LOG_FILE: file,
@@ -427,7 +427,7 @@ finally:
 	os.close(parent_fd)
 `;
 const secureEnsureFile = (file, content) => {
-	execFileSync("python3", ["-c", SECURE_FILE_SCRIPT], {
+	execFileSync("python3", ["-I", "-c", SECURE_FILE_SCRIPT], {
 		env: {
 			...process.env,
 			SESSION_LOG_FILE: file,
