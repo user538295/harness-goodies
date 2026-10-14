@@ -2180,6 +2180,49 @@ def write_seeded_manifest(copy):
     (copy / SEEDED_MANIFEST).write_text("\n".join(lines) + "\n")
 
 
+# The package VERSION of the releases that seeded copies and registered package-path hooks; their hooks'
+# runtime markers must never count as current for this package.
+SEEDING_RELEASE_VERSION = "2.0.0"
+HARNESS_SUBROOTS = {"claude": ".claude", "codex": ".codex", "cursor": ".cursor", "opencode": ".config/opencode",
+                    "omp": ".omp/agent"}
+HARNESS_LABELS = {"claude": "Claude Code", "codex": "Codex", "cursor": "Cursor", "opencode": "OpenCode", "omp": "OMP"}
+
+
+class PackageVersionMarkerTests(unittest.TestCase):
+    """`status` counts a live runtime marker only when its package VERSION is this package's."""
+
+    def status_with_live_marker(self, harness, version):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            subroot = HARNESS_SUBROOTS[harness]
+            package = harness_package(home, NATIVE_PACKAGE_ROOTS.get(harness, f"packages/{harness}"))
+            if harness == "codex":
+                self.assertEqual(run_session_log(package, home, harness, "on").returncode, 0)
+            else:
+                (home / subroot / "prompt-logs").mkdir(parents=True)
+                (home / subroot / "prompt-logs/.enabled").write_text("")
+            state = home / subroot / "session-log"
+            state.mkdir(parents=True, exist_ok=True)
+            (state / "runtime.json").write_text(json.dumps({
+                "harness": harness, "version": version, "session_id": "live-session", "nonce": "live-nonce",
+                "loaded_at": str(int(time.time())), "pid": os.getpid(), "process_start": process_start(os.getpid()),
+            }))
+            result = run_session_log(package, home, harness, "status")
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            return result.stdout
+
+    def test_a_marker_of_this_package_version_counts(self):
+        version = (REPO / "skills/session-log/VERSION").read_text().strip()
+        for harness, label in HARNESS_LABELS.items():
+            with self.subTest(harness=harness):
+                self.assertEqual(self.status_with_live_marker(harness, version), f"{label}: on\n")
+
+    def test_a_marker_of_the_seeding_releases_never_counts(self):
+        for harness, label in HARNESS_LABELS.items():
+            with self.subTest(harness=harness):
+                self.assertNotEqual(self.status_with_live_marker(harness, SEEDING_RELEASE_VERSION), f"{label}: on\n")
+
+
 class LegacyPackageCopyTests(unittest.TestCase):
     """A seeded package copy goes only when its manifest proves every file in it; symlinks are never followed."""
 

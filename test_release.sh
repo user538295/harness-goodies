@@ -14,7 +14,7 @@ nok()  { printf "  FAIL: %s\n    expected: %s\n    actual:   %s\n" "$1" "$2" "$3
 
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
-  [[ "$expected" == "$actual" ]] && ok "$desc" || nok "$desc" "$expected" "$actual"
+  if [[ "$expected" == "$actual" ]]; then ok "$desc"; else nok "$desc" "$expected" "$actual"; fi
 }
 
 assert_exits_0() {
@@ -111,6 +111,39 @@ assert_eq "waits the given delay first" "true" "$([[ $((SECONDS - _start)) -ge 2
 UPDATE_COMMANDS=("${_orig_cmds[@]}")
 mv "$_log" ~/.Trash/
 assert_eq "covers claude, omp, codex, opencode" "4" "$(printf '%s\n' "${UPDATE_COMMANDS[@]}" | grep -cE '^(claude|omp|codex|opencode) ')"
+
+# ── session_log_version_stale ─────────────────────────────────────────────────
+echo "=== session_log_version_stale ==="
+assert_exits_0 "package changed, VERSION not" session_log_version_stale $'skills/session-log/bin/session-log'
+assert_exits_1 "package and VERSION changed"  session_log_version_stale $'skills/session-log/bin/session-log\nskills/session-log/VERSION'
+assert_exits_1 "only VERSION changed"         session_log_version_stale $'skills/session-log/VERSION'
+assert_exits_1 "nothing changed"              session_log_version_stale ""
+assert_exits_1 "another skill changed"        session_log_version_stale $'skills/commit/SKILL.md'
+assert_exits_1 "a lookalike directory"        session_log_version_stale $'skills/session-logger/SKILL.md'
+
+# ── assert_session_log_version_bumped ─────────────────────────────────────────
+echo "=== assert_session_log_version_bumped ==="
+_orig_root="$REPO_ROOT"
+REPO_ROOT="$(mktemp -d)"
+git -C "$REPO_ROOT" init -q
+git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m base
+mkdir -p "$REPO_ROOT/skills/session-log"
+printf '1.0.0\n' > "$REPO_ROOT/skills/session-log/VERSION"
+printf 'one\n' > "$REPO_ROOT/skills/session-log/SKILL.md"
+git -C "$REPO_ROOT" add -A
+git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com commit -q -m release
+git -C "$REPO_ROOT" tag v1.0.0
+assert_exits_0 "nothing changed since the tag" assert_session_log_version_bumped v1.0.0
+printf 'two\n' > "$REPO_ROOT/skills/session-log/SKILL.md"
+git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com commit -q -am change
+assert_exits_1 "package changed without a VERSION bump" assert_session_log_version_bumped v1.0.0
+assert_eq "names VERSION in the refusal" "1" \
+  "$(assert_session_log_version_bumped v1.0.0 2>&1 >/dev/null | grep -c 'skills/session-log/VERSION')"
+printf '1.0.1\n' > "$REPO_ROOT/skills/session-log/VERSION"
+git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com commit -q -am bump
+assert_exits_0 "package changed with a VERSION bump" assert_session_log_version_bumped v1.0.0
+mv "$REPO_ROOT" ~/.Trash/release-guard-test-$$
+REPO_ROOT="$_orig_root"
 
 # ── shipped versions agree ────────────────────────────────────────────────────
 echo "=== shipped versions agree ==="

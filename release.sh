@@ -47,6 +47,15 @@ filter_valid_tags() {
   echo "$1" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true
 }
 
+# session_log_version_stale <git-diff-name-only output> → 0 when a file under skills/session-log/
+# changed but skills/session-log/VERSION did not; 1 otherwise. Runtime markers carry that VERSION,
+# so a package change without a bump would let markers of the old code count as current.
+session_log_version_stale() {
+  local changed="$1"
+  grep -q '^skills/session-log/' <<< "$changed" || return 1
+  ! grep -qx 'skills/session-log/VERSION' <<< "$changed"
+}
+
 # check_on_main <branch-name> → 0 if "main", 1 otherwise
 check_on_main() {
   [[ "$1" == "main" ]]
@@ -113,6 +122,15 @@ assert_clean_tree() {
   fi
 }
 
+assert_session_log_version_bumped() {
+  local last_tag="$1" changed
+  changed=$(git -C "$REPO_ROOT" diff --name-only "${last_tag}..HEAD" -- skills/session-log)
+  if session_log_version_stale "$changed"; then
+    echo "Error: skills/session-log changed since $last_tag but skills/session-log/VERSION did not — bump it first" >&2
+    return 1
+  fi
+}
+
 has_new_items() {
   local last_tag="$1"
   local diff_output
@@ -144,6 +162,7 @@ main() {
     echo "Error: no valid vX.Y.Z tags found — tag the initial release manually" >&2
     exit 1
   fi
+  assert_session_log_version_bumped "$last_tag"
 
   local current
   current=$(current_version)
