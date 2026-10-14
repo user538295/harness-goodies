@@ -1,15 +1,22 @@
 // universal-session-log: managed
-// Universal session-log OpenCode adapter.
-// The command entrypoint supplies explicit harness identity; this module only
-// uses OpenCode's native plugin hooks and SQLite storage APIs.
+// Universal session-log adapter for the OpenCode V2 plugin API. The opencode-goodies package
+// plugin (.opencode-plugin/index.js) runs setupSessionLog from its own setup, so logging needs no
+// installed file: it stays idle until the enable flag exists, and `/session-log` runs this
+// package's CLI with the explicit `opencode` identity.
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
+
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const VERSION = fs.readFileSync(path.join(PACKAGE_ROOT, "VERSION"), "utf8").trim();
+const COMMAND_NAME = "session-log";
+const COMMAND_DESCRIPTION = "Manage session prompt logging and usage totals (on / off / status / usage / repair)";
+const DEFAULT_COMMAND = "status";
 
 const stableKey = (...parts) => createHash("sha256").update(parts.map((part) => String(part)).join("\0")).digest("hex");
-const rawHome = os.homedir();
 const canonicalPath = (value) => {
   const resolved = path.resolve(value);
   let current = resolved;
@@ -27,7 +34,7 @@ const canonicalPath = (value) => {
     }
   }
 };
-const home = canonicalPath(rawHome);
+const home = canonicalPath(os.homedir());
 const containsSymlinkComponent = (value) => {
   let current = path.resolve(value);
   while (true) {
@@ -41,85 +48,43 @@ const containsSymlinkComponent = (value) => {
     current = parent;
   }
 };
-const rawDefaultConfigHome = path.join(home, ".config");
-const rawDefaultDataHome = path.join(home, ".local", "share");
-const rawConfigHome = process.env.XDG_CONFIG_HOME || rawDefaultConfigHome;
-const rawDataHome = process.env.XDG_DATA_HOME || rawDefaultDataHome;
-if (
-  containsSymlinkComponent(rawConfigHome) ||
-  containsSymlinkComponent(path.join(rawConfigHome, "opencode")) ||
-  containsSymlinkComponent(rawDataHome) ||
-  containsSymlinkComponent(path.join(rawDataHome, "opencode"))
-) {
-  throw new Error("OpenCode root contains an unsafe symlink");
-}
-const defaultConfigHome = canonicalPath(path.join(home, ".config"));
-const defaultDataHome = canonicalPath(path.join(home, ".local", "share"));
-const configHome = canonicalPath(process.env.XDG_CONFIG_HOME || defaultConfigHome);
-const dataHome = canonicalPath(process.env.XDG_DATA_HOME || defaultDataHome);
-if (configHome !== defaultConfigHome || dataHome !== defaultDataHome) {
-  throw new Error("OpenCode root is relocated; universal session-log does not support custom roots");
-}
-const CONFIG_DIR = path.join(configHome, "opencode");
-const assertNoFollowContained = (root, candidate) => {
-  const base = path.resolve(root);
-  const target = path.resolve(candidate);
-  if (!pathInside(base, target)) throw new Error("OpenCode database escapes the configured data root");
-  const parsed = path.parse(target);
-  let current = parsed.root;
-  const components = target.slice(parsed.root.length).split(path.sep).filter(Boolean);
-  for (let index = 0; index < components.length; index += 1) {
-    current = path.join(current, components[index]);
-    const stat = fs.lstatSync(current);
-    if (isUnsafeDatabaseComponent(stat, index === components.length - 1)) {
-      throw new Error(`OpenCode database path is not safe: ${current}`);
-    }
-  }
-  const stat = fs.lstatSync(target);
-  if (!stat.isFile()) throw new Error(`OpenCode database path is not a file: ${target}`);
-};
-const DATA_DIR = path.join(dataHome, "opencode");
-const discoverDatabasePath = () => {
-  try {
-    const candidates = fs.readdirSync(DATA_DIR, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && /^opencode-.+\.db$/.test(entry.name))
-      .map((entry) => {
-        const candidate = path.join(DATA_DIR, entry.name);
-        return { candidate, mtime: fs.statSync(candidate).mtimeMs };
-      })
-      .sort((left, right) => right.mtime - left.mtime);
-    return candidates[0]?.candidate;
-  } catch {
-    return undefined;
-  }
-};
-const resolveDatabasePath = () => {
-  const configured = process.env.OPENCODE_DB;
-  if (configured) {
-    if (configured === ":memory:") throw new Error("OpenCode in-memory databases are unsupported");
-    return path.isAbsolute(configured) ? configured : path.join(DATA_DIR, configured);
-  }
-  const channel = process.env.OPENCODE_CHANNEL;
-  if (channel) {
-    const channelDatabase = ["latest", "beta", "prod"].includes(channel) ||
-      process.env.OPENCODE_DISABLE_CHANNEL_DB === "1" ||
-      process.env.OPENCODE_DISABLE_CHANNEL_DB === "true"
-      ? "opencode.db"
-      : `opencode-${channel.replace(/[^a-z A-Z 0-9._-]/g, "-")}.db`;
-    return path.join(DATA_DIR, channelDatabase);
-  }
-  const defaultDatabase = path.join(DATA_DIR, "opencode.db");
-  return fs.existsSync(defaultDatabase)
-    ? defaultDatabase
-    : discoverDatabasePath() || path.join(DATA_DIR, "opencode-local.db");
-};
-
+const defaultConfigHome = path.join(home, ".config");
+const CONFIG_DIR = path.join(canonicalPath(defaultConfigHome), "opencode");
 const LOGS_DIR = path.join(CONFIG_DIR, "prompt-logs");
 const ENABLED_FLAG = path.join(LOGS_DIR, ".enabled");
 const STATE_DIR = path.join(CONFIG_DIR, "session-log");
-const PACKAGE_ROOT = path.resolve(import.meta.dir, "../..");
-const VERSION = fs.readFileSync(path.join(PACKAGE_ROOT, "VERSION"), "utf8").trim();
+// What older releases left in CONFIG_DIR; lib/legacy_cleanup.sh (legacy_cleanup_opencode) removes
+// what of it is proven session-log's, so keep the two lists in step.
+const LEGACY_LEFTOVERS = [
+  "commands/session-log.md", "commands/session-log-omp.md", "plugins/session-log.js", "plugins/session-log-omp.js",
+  "scripts/session_log_usage.sh", "skills/session-log", "session-log/adapter.version", "session-log/adapter.manifest",
+  "session-log/desired.version",
+];
 
+const report = (error) => process.stderr.write(`session-log: ${error?.message || error}\n`);
+// Why logging cannot run with this configuration root, or "" when it can.
+const rootProblem = () => {
+  const configHome = process.env.XDG_CONFIG_HOME || defaultConfigHome;
+  try {
+    if (containsSymlinkComponent(configHome) || containsSymlinkComponent(path.join(configHome, "opencode"))) {
+      return "OpenCode root contains an unsafe symlink";
+    }
+  } catch (error) {
+    return `OpenCode root cannot be checked: ${error.message}`;
+  }
+  if (canonicalPath(configHome) !== canonicalPath(defaultConfigHome)) {
+    return "OpenCode root is relocated; universal session-log does not support custom roots";
+  }
+  return "";
+};
+const exists = (file) => {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const enabled = () => {
   try { return fs.lstatSync(ENABLED_FLAG).isFile(); } catch { return false; }
 };
@@ -190,13 +155,13 @@ const assertLogFile = (file, root) => {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
 };
+// Bounds on what one plugin instance remembers: sessions it resolved, deleted-session tombstones,
+// and steps that started but never ended (an interrupted step publishes no end event).
+const MAX_KNOWN_SESSIONS = 4096;
 const MAX_DELETED_SESSIONS = 4096;
-const MAX_SNAPSHOTS_PER_SESSION = 512;
-const MAX_PROMPT_IDS_PER_SESSION = 512;
+const MAX_OPEN_STEPS = 512;
 // Shared directory walk (create-on-missing, symlink-refusing) reused by the
-// append and ensure-file Python helpers below. A cross-file module cannot be
-// shared because each adapter installs as one standalone plugin file, so the
-// duplication is factored here, within this file, as an interpolated snippet.
+// append and ensure-file Python helpers below, as an interpolated snippet.
 const OPEN_DIRECTORY_PY = String.raw`def open_directory(path):
     fd = os.open(os.sep, flags)
     try:
@@ -219,69 +184,12 @@ const OPEN_DIRECTORY_PY = String.raw`def open_directory(path):
     except BaseException:
         os.close(fd)
         raise`;
-const isUnsafeDatabaseComponent = (stat, isFinalComponent) =>
-  stat.isSymbolicLink() || (!isFinalComponent && !stat.isDirectory());
 const isUnsafeDirectory = (stat) => stat.isSymbolicLink() || !stat.isDirectory();
 const isNotPrivateOrOwned = (stat, uid) =>
   (stat.mode & 0o077) !== 0 || (uid !== null && stat.uid !== uid);
-const isVisibleTextPart = (part) =>
-  part?.type === "text" && !part.synthetic && !part.ignored && Boolean(part.text);
-const hasExplicitPromptId = (promptID) =>
-  (typeof promptID === "string" && promptID.length > 0) || typeof promptID === "number";
 const differs = (previous, next) => Boolean(previous && next && previous !== next);
-const isLoggableAssistantMessage = (message) =>
-  Boolean(message) && message.role === "assistant" &&
-  Number.isFinite(Number(message.time?.completed)) && validId(message.id);
-const elapsedSeconds = (start, end) => {
-  const started = Number(start);
-  const finished = Number(end);
-  if (!Number.isFinite(started) || !Number.isFinite(finished)) return 0;
-  return Math.max(0, (finished - started) / 1000);
-};
-const snapshotFingerprint = (message) => {
-  try { return JSON.stringify(message); } catch { return ""; }
-};
-const trimOldest = (collection, max, onEvict) => {
-  while (collection.size > max) {
-    const key = collection.keys().next().value;
-    const value = collection instanceof Map ? collection.get(key) : key;
-    collection.delete(key);
-    onEvict?.(value);
-  }
-};
-const MAX_RETRY_ATTEMPTS = 5;
-const RETRY_DELAY_MS = 250;
-const clearRetryTimer = (record) => {
-  if (!record?.retryTimer) return;
-  clearTimeout(record.retryTimer);
-  record.retryTimer = undefined;
-};
-const clearRetryTimers = (records) => {
-  if (records) for (const record of records) clearRetryTimer(record);
-};
-const scheduleRetry = (record, operation) => {
-  if (!record || record.retryTimer) return;
-  if ((record.retryAttempts || 0) >= MAX_RETRY_ATTEMPTS) {
-    record.retryable = false;
-    record.pending = false;
-    record.exhausted = true;
-    return;
-  }
-  record.retryAttempts = (record.retryAttempts || 0) + 1;
-  record.retryable = true;
-  const delay = RETRY_DELAY_MS * (2 ** (record.retryAttempts - 1));
-  const timer = setTimeout(async () => {
-    if (record.retryTimer !== timer) return;
-    record.retryTimer = undefined;
-    try {
-      await operation();
-    } catch (error) {
-      record.retryError = error;
-      scheduleRetry(record, operation);
-    }
-  }, delay);
-  timer.unref?.();
-  record.retryTimer = timer;
+const trimOldest = (collection, max) => {
+  while (collection.size > max) collection.delete(collection.keys().next().value);
 };
 const descendantsOf = (sessionID, childToParent) => {
   const childrenByParent = new Map();
@@ -301,61 +209,6 @@ const descendantsOf = (sessionID, childToParent) => {
   }
   return descendants;
 };
-const isUnsafePathError = (error) => error?.code === "SESSION_LOG_UNSAFE_PATH";
-const hasPendingPrompts = (pendingPromptsBySession, sessionID) =>
-  Boolean(pendingPromptsBySession.get(sessionID)?.length);
-const isDifferentSignature = (record, currentSignature) => record.enableSignature !== currentSignature;
-const finishSnapshot = (snapshot) => {
-  clearRetryTimer(snapshot);
-  snapshot.logged = true;
-  snapshot.pending = false;
-  snapshot.retryable = false;
-};
-const prepareAssistantSnapshot = (snapshots, message, sessionID, root, signature) => {
-  const fingerprint = snapshotFingerprint(message);
-  const dedupeKey = stableKey("assistant", sessionID, message.id, fingerprint);
-  const previous = snapshots.get(message.id);
-  let snapshot = previous?.terminal ? previous : null;
-  const unchanged = snapshot?.fingerprint === fingerprint;
-  if (snapshot && isDifferentSignature(snapshot, signature)) {
-    clearRetryTimer(snapshot);
-    if (unchanged) return null;
-    snapshots.delete(message.id);
-    snapshot = null;
-  }
-  if (snapshot?.logged || (snapshot?.exhausted && unchanged)) return null;
-  if (snapshot && !unchanged) {
-    snapshot.retryAttempts = 0;
-    snapshot.retryable = false;
-    snapshot.pending = true;
-    snapshot.exhausted = false;
-    snapshot.retryError = undefined;
-  }
-  if (snapshot) {
-    snapshot.fingerprint = fingerprint;
-    snapshot.dedupeKey = dedupeKey;
-    clearRetryTimer(snapshot);
-    if ((snapshot.pending && !snapshot.retryable && unchanged) || (sessionID !== root && !snapshot.pending)) return null;
-    return snapshot;
-  }
-  clearRetryTimer(previous);
-  snapshot = {
-    terminal: message.finish !== "tool-calls",
-    fingerprint,
-    enableSignature: signature,
-    pending: true,
-    retryable: false,
-    retryAttempts: 0,
-    logged: false,
-    dedupeKey,
-  };
-  snapshots.set(message.id, snapshot);
-  trimOldest(snapshots, MAX_SNAPSHOTS_PER_SESSION, clearRetryTimer);
-  return snapshot;
-};
-const promptIdentifier = (input, output) =>
-  input.messageID ?? input.messageId ?? input.id ?? input.requestId ??
-  output?.messageID ?? output?.messageId ?? output?.id ?? output?.requestId;
 // The second rename can fail after runtime.json changes; restore its previous
 // bytes before exposing the failure. Per-process state is replaced last.
 export function commitPairedRuntime({ temporary, processTemporary, runtime, processRuntime, backup }) {
@@ -749,117 +602,6 @@ const secureAppend = (file, payload, options = {}) => {
   });
   return result.trim() === "1";
 };
-const SECURE_SNAPSHOT_SCRIPT = String.raw`
-import os
-import sqlite3
-import stat
-import tempfile
-
-source = os.environ["SESSION_LOG_SOURCE"]
-directory, name = os.path.split(source)
-flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-parent_fd = os.open(os.sep, flags)
-descriptor = None
-source_db = None
-destination_db = None
-temporary = None
-temporary_fd = None
-source_link = None
-wal_link = None
-shm_link = None
-try:
-    for part in directory.split(os.sep)[1:]:
-        if not part or part == ".":
-            continue
-        if part == "..":
-            raise RuntimeError("parent traversal")
-        next_fd = os.open(part, flags, dir_fd=parent_fd)
-        os.close(parent_fd)
-        parent_fd = next_fd
-    descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
-    current = os.fstat(descriptor)
-    if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 or current.st_uid != os.getuid():
-        raise RuntimeError("unsafe OpenCode database")
-    path_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    if (path_stat.st_dev, path_stat.st_ino) != (current.st_dev, current.st_ino):
-        raise RuntimeError("OpenCode database changed during snapshot")
-    for attempt in range(100):
-        candidate = f".session-log-source.{os.getpid()}.{attempt}"
-        try:
-            os.link(name, candidate, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
-            source_link = candidate
-            break
-        except FileExistsError:
-            continue
-    if source_link is None:
-        raise RuntimeError("cannot stage OpenCode database")
-    for suffix, attribute in (("-wal", "wal_link"), ("-shm", "shm_link")):
-        try:
-            sidecar_stat = os.stat(name + suffix, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            continue
-        if not stat.S_ISREG(sidecar_stat.st_mode) or sidecar_stat.st_uid != os.getuid():
-            raise RuntimeError("unsafe OpenCode database sidecar")
-        candidate = f"{source_link}{suffix}"
-        try:
-            os.link(name + suffix, candidate, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
-        except FileExistsError:
-            raise RuntimeError("cannot stage OpenCode database sidecar")
-        if attribute == "wal_link":
-            wal_link = candidate
-        else:
-            shm_link = candidate
-    temporary_fd, temporary = tempfile.mkstemp(prefix="session-log-opencode-db-")
-    os.close(temporary_fd)
-    temporary_fd = None
-    source_db = sqlite3.connect(os.path.join(directory, source_link), uri=False)
-    destination_db = sqlite3.connect(temporary, uri=False)
-    source_db.backup(destination_db)
-    destination_db.commit()
-    destination_db.close()
-    destination_db = None
-    source_db.close()
-    source_db = None
-    path_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    after = os.fstat(descriptor)
-    if (
-        (path_stat.st_dev, path_stat.st_ino, path_stat.st_size, path_stat.st_mtime_ns)
-        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-    ):
-        raise RuntimeError("OpenCode database changed during snapshot")
-    os.chmod(temporary, 0o600)
-    with open(temporary, "rb") as handle:
-        os.fsync(handle.fileno())
-    print(temporary)
-except BaseException:
-    if source_db is not None:
-        source_db.close()
-    if destination_db is not None:
-        destination_db.close()
-    if temporary is not None:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-    raise
-finally:
-    if temporary_fd is not None:
-        os.close(temporary_fd)
-    if descriptor is not None:
-        os.close(descriptor)
-    for staged in (shm_link, wal_link, source_link):
-        if staged is not None:
-            try:
-                os.unlink(staged, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
-    os.close(parent_fd)
-`;
-const secureDatabaseSnapshot = (file) => execFileSync("python3", ["-c", SECURE_SNAPSHOT_SCRIPT], {
-  env: { ...process.env, SESSION_LOG_SOURCE: file },
-  encoding: "utf8",
-  stdio: ["ignore", "pipe", "pipe"],
-}).trim();
 const SECURE_FILE_SCRIPT = String.raw`
 import base64
 import os
@@ -916,20 +658,24 @@ const fileStamp = () => {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
 };
 
-function processStart(pid) {
-  try {
-    return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" }).trim();
-  } catch {
-    return "";
+let processStartTime;
+const processStart = () => {
+  if (processStartTime === undefined) {
+    try {
+      processStartTime = execFileSync("ps", ["-p", String(process.pid), "-o", "lstart="], { encoding: "utf8" }).trim();
+    } catch {
+      processStartTime = "";
+    }
   }
-}
-const appendFileLocked = (file, root, text, options = {}) => {
-  const { dedupeSuffix = false, enableSignature = "", dedupeKey = "" } = options;
+  return processStartTime;
+};
+const appendFileLocked = (file, root, text, enableSignature, dedupeKey) => {
   assertLogFile(file, root);
   const payload = text.endsWith("\n") ? text : `${text}\n`;
-  return secureAppend(file, payload, { dedupe: Boolean(dedupeKey) || dedupeSuffix, enableSignature, dedupeKey });
+  return secureAppend(file, payload, { dedupe: Boolean(dedupeKey), enableSignature, dedupeKey });
 };
-function markLoaded() {
+// The runtime marker `status` reads: this process has the session-log handlers of this VERSION.
+function markRuntime() {
   ensureDirectory(STATE_DIR);
   const nonce = `${process.pid}.${Date.now()}`;
   const temporary = path.join(STATE_DIR, `.runtime.${nonce}.tmp`);
@@ -945,7 +691,7 @@ function markLoaded() {
     harness: "opencode",
     version: VERSION,
     pid: process.pid,
-    process_start: processStart(process.pid),
+    process_start: processStart(),
     nonce,
   };
   try {
@@ -967,53 +713,13 @@ function markLoaded() {
     throw error;
   }
 }
-const parseJsonOrNull = (value) => {
-  try { return JSON.parse(value); } catch { return null; }
-};
-const visibleText = (parts) => parts.filter(isVisibleTextPart).map((part) => part.text).join("\n");
-const tableExists = (database, name) => Boolean(database
-  .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
-const responseFromDatabase = (database, messageID) => {
-  if (tableExists(database, "part")) {
-    const rows = database.query("SELECT data FROM part WHERE message_id = ? ORDER BY time_created").all(messageID);
-    if (rows.length) return { ok: true, text: visibleText(rows.map((row) => parseJsonOrNull(row.data))) };
-  }
-  if (tableExists(database, "session_message")) {
-    const row = database.query("SELECT data FROM session_message WHERE id = ? LIMIT 1").get(messageID);
-    if (row) {
-      const data = parseJsonOrNull(row.data);
-      const parts = Array.isArray(data?.content) ? data.content : Array.isArray(data?.parts) ? data.parts : [];
-      return { ok: true, text: visibleText(parts) };
-    }
-  }
-  if (tableExists(database, "message") &&
-      database.query("SELECT id FROM message WHERE id = ? LIMIT 1").get(messageID)) {
-    return { ok: true, text: "" };
-  }
-  return { ok: false, text: "" };
-};
-async function responseText(messageID) {
-  let snapshot = "";
+const markRuntimeReported = () => {
   try {
-    const databasePath = resolveDatabasePath();
-    assertNoFollowContained(DATA_DIR, databasePath);
-    snapshot = secureDatabaseSnapshot(databasePath);
-    const { Database } = await import("bun:sqlite");
-    const database = new Database(snapshot, { readonly: true });
-    try {
-      return responseFromDatabase(database, messageID);
-    } finally {
-      database.close();
-    }
+    markRuntime();
   } catch (error) {
-    if (enabled()) process.stderr.write(`session-log: OpenCode response text unavailable: ${error?.message || error}\n`);
-    return { ok: false, text: "" };
-  } finally {
-    if (snapshot) {
-      try { fs.unlinkSync(snapshot); } catch {}
-    }
+    report(error);
   }
-}
+};
 
 const numeric = (value, fallback = 0) => {
   const number = typeof value === "number" ? value : Number(value);
@@ -1037,95 +743,59 @@ const usageLine = (message) => {
     `cache_write: ${cacheWrite}, cache_read: ${cacheRead}, total: ${total}, ` +
     `cost: $${cost.toFixed(4)}, model: ${message.modelID || "-"}`;
 };
-const textParts = (parts) => (Array.isArray(parts) ? parts : [])
-  .map((part) => (typeof part?.text === "string" ? part.text : ""))
-  .filter(Boolean)
-  .join("\n");
 
-export const SessionLogPlugin = async ({ directory }) => {
-  markLoaded();
-  const logFileByRoot = new Map();
-  const appendLocks = new Map();
-  const lastByRoot = new Map();
-  const childToParent = new Map();
-  const knownSessions = new Set();
-  // A deleted session is a tombstone for this plugin lifetime: late native events
-  // must not recreate its root or log file.
+// The logging state of one plugin instance. `onPrompt` takes the V2 `prompt` hook input and
+// `onEvent` one event of `ctx.event.subscribe()`; both return at once and log in arrival order on
+// one queue, which `idle` awaits. A session's root comes from `session.created` or, for a session
+// created before this instance started, from `ctx.session.get`. Only the root session's prompts
+// are logged; each step of the root logs a response block, each step of a descendant a
+// sub-agent line, both in the root's log file.
+export function createSessionLog(ctx, { now = Date.now } = {}) {
+  const projectSlug = String(ctx.location?.directory || process.cwd()).split(path.sep).filter(Boolean).slice(-2).join("-") || "root";
+  const parents = new Map(); // session ID → parent session ID, "" for a root
   const deletedSessions = new Set();
-  // Per-session snapshots retain bounded terminal-message and retry state.
-  const seenAssistantBySession = new Map();
-  const pendingMessagesBySession = new Map();
-  const pendingPromptsBySession = new Map();
-  const rootRetryMessagesBySession = new Map();
-  const seenPromptIdsBySession = new Map();
-  const seenPromptOutputs = new WeakSet();
-  const promptDrainsBySession = new Map();
-  let sessionEventQueue = Promise.resolve();
-  const enqueueSession = (_sessionID, operation) => {
-    const current = sessionEventQueue.then(operation, operation);
-    const settled = current.finally(() => {
-      if (sessionEventQueue === settled) sessionEventQueue = Promise.resolve();
-    });
-    sessionEventQueue = settled;
-    return settled;
+  const steps = new Map(); // assistant message ID → the step that has started but not ended
+  const logFileByRoot = new Map();
+  const lastByRoot = new Map();
+  let queue = Promise.resolve();
+  const enqueue = (operation) => {
+    queue = queue.then(operation).catch(report);
+    return queue;
   };
-  const projectSlug = String(directory || process.cwd()).split(path.sep).filter(Boolean).slice(-2).join("-") || "root";
+  const idle = async () => {
+    let current;
+    do {
+      current = queue;
+      await current;
+    } while (current !== queue);
+  };
 
-  const rootOf = (sessionID) => {
-    if (!validId(sessionID)) return "";
+  const remember = (sessionID, parentID) => {
+    parents.set(sessionID, validId(parentID) && parentID !== sessionID ? parentID : "");
+    trimOldest(parents, MAX_KNOWN_SESSIONS);
+  };
+  const forget = (sessionID) => {
+    for (const id of descendantsOf(sessionID, parents)) {
+      deletedSessions.add(id);
+      for (const collection of [parents, logFileByRoot, lastByRoot]) collection.delete(id);
+      for (const [messageID, step] of steps) if (step.sessionID === id) steps.delete(messageID);
+    }
+    trimOldest(deletedSessions, MAX_DELETED_SESSIONS);
+  };
+  // The root of sessionID's tree, or "" when it is invalid, deleted, or part of a cycle.
+  const rootOf = async (sessionID) => {
     let id = sessionID;
-    const guard = new Set();
-    while (childToParent.has(id) && !guard.has(id)) {
-      guard.add(id);
-      const parent = childToParent.get(id);
-      if (!validId(parent)) return "";
+    const seen = new Set();
+    while (validId(id) && !deletedSessions.has(id) && !seen.has(id)) {
+      seen.add(id);
+      if (!parents.has(id)) remember(id, (await ctx.session.get({ sessionID: id }))?.parentID);
+      const parent = parents.get(id);
+      if (!parent) return id;
       id = parent;
     }
-    return id;
+    return "";
   };
-  const rememberSession = (info) => {
-    const id = info?.id;
-    if (!validId(id) || deletedSessions.has(id)) return;
-    if (validId(info.parentID) && info.parentID !== id) {
-      childToParent.set(id, info.parentID);
-      knownSessions.add(id);
-    } else if (info.parentID === null) {
-      // An explicit null means that this session is a root. An omitted
-      // parentID is intentionally left untouched so updates cannot lose it
-      // or prevent native resolution of an unseen child.
-      childToParent.delete(id);
-      knownSessions.add(id);
-    } else if (childToParent.has(id)) {
-      knownSessions.add(id);
-    }
-  };
-  const isLoggingSuspended = (id, expectedSignature) =>
-    !enabled() || expectedSignature !== enabledSignature() || deletedSessions.has(id);
-  const rootReadyForSession = (root, sessionID) =>
-    validId(root) && root === sessionID && !deletedSessions.has(root);
-  const rootActive = (root) => validId(root) && !deletedSessions.has(root);
-  const shouldLinkParent = (sessionID, parentID) =>
-    !childToParent.has(sessionID) && validId(parentID) && parentID !== sessionID;
-  const clearSessionState = (child) => {
-    deletedSessions.add(child);
-    knownSessions.delete(child);
-    clearRetryTimers(seenAssistantBySession.get(child)?.values());
-    clearRetryTimers(pendingPromptsBySession.get(child));
-    clearRetryTimers(rootRetryMessagesBySession.get(child)?.values());
-    for (const collection of [
-      rootRetryMessagesBySession, pendingMessagesBySession, seenAssistantBySession,
-      seenPromptIdsBySession, pendingPromptsBySession, promptDrainsBySession, childToParent,
-    ]) collection.delete(child);
-  };
-  const forgetSession = (sessionID, parentID) => {
-    if (!validId(sessionID)) return;
-    if (shouldLinkParent(sessionID, parentID)) childToParent.set(sessionID, parentID);
-    const root = rootOf(sessionID);
-    for (const child of descendantsOf(sessionID, childToParent)) clearSessionState(child);
-    trimOldest(deletedSessions, MAX_DELETED_SESSIONS);
-    if (root !== sessionID || !validId(root)) return;
-    for (const collection of [logFileByRoot, appendLocks, lastByRoot]) collection.delete(root);
-  };
+
   const ensureLogFile = (root) => {
     if (!validId(root)) throw new Error("OpenCode session ID is invalid");
     if (logFileByRoot.has(root)) {
@@ -1162,29 +832,11 @@ export const SessionLogPlugin = async ({ directory }) => {
     logFileByRoot.set(root, file);
     return file;
   };
-
-  const append = (root, text, dedupeSuffix = false, expectedSignature = enabledSignature(), dedupeKey = "") => {
-    const previous = appendLocks.get(root) || Promise.resolve();
-    const operation = previous.then(() => {
-      if (isLoggingSuspended(root, expectedSignature)) return false;
-      const file = logFileByRoot.get(root);
-      if (!file) return false;
-      return appendFileLocked(file, root, text, { dedupeSuffix, enableSignature: expectedSignature, dedupeKey });
-    });
-    const settled = operation.then(
-      (result) => {
-        if (appendLocks.get(root) === settled) appendLocks.delete(root);
-        return result;
-      },
-      (error) => {
-        if (appendLocks.get(root) === settled) appendLocks.delete(root);
-        throw error;
-      },
-    );
-    appendLocks.set(root, settled);
-    return settled;
+  // Appends only while the enable flag that was current when the content arrived still is.
+  const append = (root, text, signature, dedupeKey) => {
+    if (!enabled() || signature !== enabledSignature() || deletedSessions.has(root)) return;
+    appendFileLocked(ensureLogFile(root), root, text, signature, dedupeKey);
   };
-
   const switchLine = (root, model, mode) => {
     const previous = lastByRoot.get(root);
     lastByRoot.set(root, { model, mode });
@@ -1194,391 +846,116 @@ export const SessionLogPlugin = async ({ directory }) => {
     if (differs(previous.mode, mode)) parts.push(`agent ${previous.mode} → ${mode}`);
     return parts.length ? `switched: ${parts.join(", ")}\n` : "";
   };
-  const nativeSessionParent = async (sessionID) => {
-    let snapshot = "";
-    try {
-      const databasePath = resolveDatabasePath();
-      assertNoFollowContained(DATA_DIR, databasePath);
-      snapshot = secureDatabaseSnapshot(databasePath);
-      const { Database } = await import("bun:sqlite");
-      const database = new Database(snapshot, { readonly: true });
-      try {
-        const tables = new Set(database.query(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('session', 'session_v2')",
-        ).all().map((row) => row.name));
-        let schemaAvailable = false;
-        for (const table of ["session", "session_v2"]) {
-          if (!tables.has(table)) continue;
-          schemaAvailable = true;
-          try {
-            const rows = database.query(`SELECT parent_id FROM ${table} WHERE id = ?`).all(sessionID);
-            const row = rows[0];
-            if (row) {
-              return {
-                available: true,
-                found: true,
-                parentID: validId(row.parent_id) ? row.parent_id : "",
-              };
-            }
-          } catch {
-            // Try the other supported schema variant if this table is stale.
-          }
-        }
-        return { available: schemaAvailable, found: false, parentID: "" };
-      } finally {
-        database.close();
-      }
-    } catch {
-      return { available: false, found: false, parentID: "" };
-    } finally {
-      if (snapshot) {
-        try { fs.unlinkSync(snapshot); } catch {}
-      }
-    }
-  };
-  const resolveRoot = async (sessionID) => {
-    if (deletedSessions.has(sessionID)) return "";
-    let id = sessionID;
-    const guard = new Set();
-    while (validId(id)) {
-      if (guard.has(id)) return null;
-      guard.add(id);
-      if (childToParent.has(id)) {
-        id = childToParent.get(id);
-        continue;
-      }
-      if (knownSessions.has(id)) break;
-      const native = await nativeSessionParent(id);
-      if (!native.available || !native.found) return undefined;
-      if (!validId(native.parentID) || native.parentID === id) {
-        knownSessions.add(id);
-        break;
-      }
-      childToParent.set(id, native.parentID);
-      id = native.parentID;
-    }
-    if (!validId(id)) return null;
-    return rootOf(sessionID);
-  };
-  const queueMessage = (sessionID, message) => {
-    const pending = pendingMessagesBySession.get(sessionID) || new Map();
-    pending.set(message.id, message);
-    pendingMessagesBySession.set(sessionID, pending);
-  };
-  const queuePrompt = (sessionID, prompt, enableSignature = enabledSignature(), dedupeKey = "") => {
-    const pending = pendingPromptsBySession.get(sessionID) || [];
-    pending.push({
-      text: prompt,
-      retryAttempts: 0,
-      retryable: false,
-      enableSignature,
-      dedupeKey: dedupeKey || stableKey("prompt", sessionID, prompt),
-    });
-    pendingPromptsBySession.set(sessionID, pending);
-  };
-  const discardPending = (sessionID) => {
-    clearRetryTimers(pendingPromptsBySession.get(sessionID));
-    clearRetryTimers(seenAssistantBySession.get(sessionID)?.values());
-    clearRetryTimers(rootRetryMessagesBySession.get(sessionID)?.values());
-    for (const collection of [rootRetryMessagesBySession, seenAssistantBySession, seenPromptIdsBySession]) {
-      collection.delete(sessionID);
-    }
-  };
-  const removeQueuedMessage = (sessionID, messageID) => {
-    const queued = pendingMessagesBySession.get(sessionID);
-    queued?.delete(messageID);
-    if (queued && !queued.size) pendingMessagesBySession.delete(sessionID);
-  };
-  const removeFirstPrompt = (sessionID, item, reason) => {
-    const pending = pendingPromptsBySession.get(sessionID);
-    if (pending?.[0] === item) pending.shift();
-    if (!pending?.length) pendingPromptsBySession.delete(sessionID);
-    process.stderr.write(`session-log: OpenCode ${reason} for ${sessionID}\n`);
-  };
-  const retryPrompt = (sessionID, item) => {
-    scheduleRetry(item, () => drainPrompts(sessionID));
-    if (item.exhausted) removeFirstPrompt(sessionID, item, "prompt retry limit reached");
-  };
-  const drainUnresolvedPrompt = (sessionID) => {
-    const item = pendingPromptsBySession.get(sessionID)?.[0];
-    if (!item) return;
-    if (isDifferentSignature(item, enabledSignature())) {
-      clearRetryTimer(item);
-      removeFirstPrompt(sessionID, item, "discarded prompt across logging restart");
-    } else retryPrompt(sessionID, item);
-  };
-  const appendQueuedPrompt = async (sessionID, root, item) => {
-    if (isDifferentSignature(item, enabledSignature())) {
-      removeFirstPrompt(sessionID, item, "discarded prompt across logging restart");
-      return true;
-    }
-    try {
-      ensureLogFile(root);
-      const appended = await append(root, promptBlock(item.text), item.retryAttempts > 0, item.enableSignature, item.dedupeKey);
-      if (!appended) {
-        if (isDifferentSignature(item, enabledSignature())) {
-          removeFirstPrompt(sessionID, item, "discarded prompt across logging restart");
-          return true;
-        }
-        discardPending(sessionID);
-        return false;
-      }
-    } catch (error) {
-      if (isUnsafePathError(error)) throw error;
-      item.retryError = error;
-      retryPrompt(sessionID, item);
-      return Boolean(item.exhausted);
-    }
-    clearRetryTimer(item);
-    item.retryable = false;
-    pendingPromptsBySession.get(sessionID)?.shift();
-    return true;
-  };
-  const processPendingPrompts = async (sessionID, root) => {
-    const pending = pendingPromptsBySession.get(sessionID);
-    if (!pending) return;
-    while (pending.length && !deletedSessions.has(sessionID)) {
-      if (pending[0].retryTimer) return;
-      if (!await appendQueuedPrompt(sessionID, root, pending[0])) return;
-    }
-    if (!pending.length) pendingPromptsBySession.delete(sessionID);
-    const queued = pendingMessagesBySession.get(sessionID);
-    if (queued && !pending.length) {
-      for (const message of [...queued.values()]) await processMessage(message, sessionID, root);
-    }
-  };
-  const drainPrompts = async (sessionID, resolvedRoot = undefined) => {
-    const previous = promptDrainsBySession.get(sessionID) || Promise.resolve();
-    const operation = previous.then(async () => {
-      if (!enabled()) return discardPending(sessionID);
-      const root = resolvedRoot === undefined ? await resolveRoot(sessionID) : resolvedRoot;
-      if (root === undefined) return drainUnresolvedPrompt(sessionID);
-      if (rootReadyForSession(root, sessionID)) await processPendingPrompts(sessionID, root);
-    });
-    const settled = operation.finally(() => {
-      if (promptDrainsBySession.get(sessionID) === settled) promptDrainsBySession.delete(sessionID);
-    });
-    promptDrainsBySession.set(sessionID, settled);
-    return settled;
-  };
-  const processPrompt = async (
-    sessionID,
-    prompt,
-    resolvedRoot = undefined,
-    expectedSignature = enabledSignature(),
-    dedupeKey = "",
-  ) => {
-    if (isLoggingSuspended(sessionID, expectedSignature)) {
-      if (!enabled()) discardPending(sessionID);
-      return;
-    }
-    const root = resolvedRoot === undefined ? await resolveRoot(sessionID) : resolvedRoot;
-    queuePrompt(sessionID, prompt, expectedSignature, dedupeKey);
-    if (root === null) return;
-    if (root === undefined) {
-      await drainPrompts(sessionID);
-      return;
-    }
-    if (!rootReadyForSession(root, sessionID)) return;
-    await drainPrompts(sessionID, root);
-  };
 
-  const removeRootRetry = (sessionID, messageID) => {
-    const retries = rootRetryMessagesBySession.get(sessionID);
-    const retry = retries?.get(messageID);
-    clearRetryTimer(retry);
-    retries?.delete(messageID);
-    if (retries && !retries.size) rootRetryMessagesBySession.delete(sessionID);
-  };
-  const reportExhaustedRoot = (sessionID, message, retry) => {
-    if (!retry.exhausted) return;
-    removeQueuedMessage(sessionID, message.id);
-    if (retry.reported) return;
-    retry.reported = true;
-    process.stderr.write(`session-log: OpenCode root retry limit reached for ${sessionID}/${message.id}\n`);
-  };
-  const retryUnresolvedRoot = (sessionID, message, signature) => {
-    const retries = rootRetryMessagesBySession.get(sessionID) || new Map();
-    const retry = retries.get(message.id) || { retryAttempts: 0, retryable: false, enableSignature: signature };
-    if (isDifferentSignature(retry, signature)) {
-      removeQueuedMessage(sessionID, message.id);
-      removeRootRetry(sessionID, message.id);
-      return;
-    }
-    if (retry.exhausted) return reportExhaustedRoot(sessionID, message, retry);
-    queueMessage(sessionID, message);
-    retries.set(message.id, retry);
-    rootRetryMessagesBySession.set(sessionID, retries);
-    scheduleRetry(retry, () => processMessage(message, sessionID));
-    reportExhaustedRoot(sessionID, message, retry);
-  };
-  const readAssistantBody = async (message, sessionID, root, snapshot) => {
-    const response = await responseText(message.id);
-    if (response.ok) return response;
-    snapshot.retryError = new Error(`response text unavailable for ${message.id}`);
-    if ((snapshot.retryAttempts || 0) < MAX_RETRY_ATTEMPTS) {
-      snapshot.retryable = true;
-      scheduleRetry(snapshot, () => processMessage(message, sessionID, root));
-    } else {
-      snapshot.pending = false;
-      snapshot.retryable = false;
-      snapshot.exhausted = true;
-      process.stderr.write(`session-log: OpenCode response text unavailable for ${message.id}\n`);
-    }
-    return response;
-  };
-  const appendAssistant = async (root, sessionID, message, snapshot, text) => {
-    const snapshots = seenAssistantBySession.get(sessionID);
-    try {
-      const appended = await append(root, text, snapshot.retryAttempts > 0, snapshot.enableSignature, snapshot.dedupeKey);
-      if (!appended) {
-        if (!enabled()) discardPending(sessionID);
-        else if (isDifferentSignature(snapshot, enabledSignature())) {
-          clearRetryTimer(snapshot);
-          snapshots.delete(message.id);
-        } else discardPending(sessionID);
-        return;
-      }
-    } catch (error) {
-      snapshot.retryError = error;
-      if (isUnsafePathError(error)) throw error;
-      scheduleRetry(snapshot, () => processMessage(message, sessionID, root));
-      return;
-    }
-    finishSnapshot(snapshot);
-  };
-  const processMessage = async (message, sessionID, resolvedRoot = undefined) => {
-    if (!enabled() || deletedSessions.has(sessionID)) {
-      if (!enabled()) discardPending(sessionID);
-      return;
-    }
+  const onPrompt = ({ sessionID, messageID, prompt } = {}) => {
+    const text = typeof prompt?.text === "string" ? prompt.text.trim() : "";
+    if (!enabled() || !validId(sessionID) || !text) return queue;
     const signature = enabledSignature();
-    const root = resolvedRoot === undefined ? await resolveRoot(sessionID) : resolvedRoot;
-    if (root === undefined) return retryUnresolvedRoot(sessionID, message, signature);
-    if (root === null) return queueMessage(sessionID, message);
-    const retry = rootRetryMessagesBySession.get(sessionID)?.get(message.id);
-    if (retry) {
-      const stale = isDifferentSignature(retry, signature);
-      removeRootRetry(sessionID, message.id);
-      if (stale) {
-        removeQueuedMessage(sessionID, message.id);
-        return;
-      }
-    }
-    if (!rootActive(root)) return;
-    if (hasPendingPrompts(pendingPromptsBySession, sessionID)) {
-      queueMessage(sessionID, message);
-      await drainPrompts(sessionID, root);
-      if (hasPendingPrompts(pendingPromptsBySession, sessionID)) return;
-    }
-    const snapshots = seenAssistantBySession.get(sessionID) || new Map();
-    const snapshot = prepareAssistantSnapshot(snapshots, message, sessionID, root, signature);
-    if (!snapshot) return;
-    seenAssistantBySession.set(sessionID, snapshots);
-    if (!rootActive(root)) return;
-    try {
-      ensureLogFile(root);
-    } catch (error) {
-      snapshot.retryError = error;
-      if (isUnsafePathError(error)) throw error;
-      scheduleRetry(snapshot, () => processMessage(message, sessionID, root));
-      return;
-    }
-    const elapsed = elapsedSeconds(message.time?.created, message.time?.completed);
-    if (sessionID !== root) {
-      await appendAssistant(root, sessionID, message, snapshot, subagentLine(sessionID, message, elapsed));
-      return;
-    }
-    const response = await readAssistantBody(message, sessionID, root, snapshot);
-    if (!response.ok || !rootActive(root)) return;
-    if (snapshot.switched === undefined) snapshot.switched = switchLine(root, message.modelID, message.mode);
-    await appendAssistant(root, sessionID, message, snapshot, responseBlock(response.text, elapsed, message, snapshot.switched));
-  };
-  const reconcilePending = async () => {
-    if (!enabled()) return;
-    const sessions = new Set([...pendingMessagesBySession.keys(), ...pendingPromptsBySession.keys()]);
-    for (const sessionID of sessions) {
-      if (deletedSessions.has(sessionID)) continue;
-      const root = await resolveRoot(sessionID);
-      if (root === null) continue;
-      await drainPrompts(sessionID, root);
-      if (pendingPromptsBySession.get(sessionID)?.length) continue;
-      const pendingMessages = pendingMessagesBySession.get(sessionID);
-      if (pendingMessages) {
-        for (const message of [...pendingMessages.values()]) await processMessage(message, sessionID, root);
-      }
-    }
-  };
-  const handleSessionDeleted = (properties) => {
-    const info = properties.info;
-    const id = info?.id || properties.sessionID;
-    if (!validId(id)) return undefined;
-    return enqueueSession(id, () => forgetSession(id, info?.parentID));
-  };
-  const handleSessionUpserted = (properties) => {
-    const info = properties.info;
-    if (!validId(info?.id) || deletedSessions.has(info.id)) return undefined;
-    return enqueueSession(info.id, async () => {
-      rememberSession(info);
-      await reconcilePending(info.id);
+    const dedupeKey = validId(messageID) ? stableKey("prompt-id", sessionID, messageID) : stableKey("prompt", sessionID, text);
+    return enqueue(async () => {
+      // `off` removes the runtime marker; the next prompt after `on` writes it again.
+      markRuntimeReported();
+      if (await rootOf(sessionID) === sessionID) append(sessionID, promptBlock(text), signature, dedupeKey);
     });
   };
-  const handleMessageUpdated = (properties) => {
-    if (!enabled()) return undefined;
-    const message = properties.info;
-    if (!isLoggableAssistantMessage(message)) return undefined;
-    const sessionID = message.sessionID || properties.sessionID;
-    if (!validId(sessionID)) return undefined;
-    return enqueueSession(sessionID, () => processMessage(message, sessionID));
+  const endStep = ({ sessionID, assistantMessageID, cost, tokens }) => {
+    const step = steps.get(assistantMessageID);
+    if (!step || step.sessionID !== sessionID) return;
+    steps.delete(assistantMessageID);
+    const elapsed = (now() - step.started) / 1000;
+    const message = { mode: step.agent, modelID: step.model, tokens, cost };
+    const body = [...step.texts].sort(([left], [right]) => left - right).map(([, text]) => text).filter(Boolean).join("\n");
+    const dedupeKey = stableKey("assistant", sessionID, assistantMessageID);
+    enqueue(async () => {
+      const root = await rootOf(sessionID);
+      if (!root) return;
+      if (sessionID !== root) {
+        append(root, subagentLine(sessionID, message, elapsed), step.signature, dedupeKey);
+        return;
+      }
+      append(root, responseBlock(body, elapsed, message, switchLine(root, step.model, step.agent)), step.signature, dedupeKey);
+    });
   };
   const eventHandlers = {
-    "session.deleted": handleSessionDeleted,
-    "session.created": handleSessionUpserted,
-    "session.updated": handleSessionUpserted,
-    "message.updated": handleMessageUpdated,
+    "session.created": ({ sessionID, parentID }) => {
+      if (validId(sessionID) && !deletedSessions.has(sessionID)) remember(sessionID, parentID);
+    },
+    "session.deleted": ({ sessionID }) => {
+      if (validId(sessionID)) forget(sessionID);
+    },
+    "session.step.started": ({ sessionID, assistantMessageID, agent, model }) => {
+      if (!enabled() || !validId(sessionID) || !validId(assistantMessageID) || deletedSessions.has(sessionID)) return;
+      steps.set(assistantMessageID, { sessionID, agent, model: model?.id, started: now(), texts: new Map(), signature: enabledSignature() });
+      trimOldest(steps, MAX_OPEN_STEPS);
+    },
+    "session.text.ended": ({ assistantMessageID, ordinal, text }) => {
+      if (typeof text === "string") steps.get(assistantMessageID)?.texts.set(numeric(ordinal), text);
+    },
+    "session.step.ended": endStep,
+    "session.step.failed": endStep,
   };
   const onEvent = (event) => {
-    const handler = eventHandlers[event?.type];
-    return handler ? handler(event?.properties || {}) : undefined;
-  };
-
-  const repeatedPrompt = (sessionID, promptID, output) => {
-    if (hasExplicitPromptId(promptID)) {
-      const seen = seenPromptIdsBySession.get(sessionID) || new Set();
-      const key = String(promptID);
-      if (seen.has(key)) return true;
-      seen.add(key);
-      seenPromptIdsBySession.set(sessionID, seen);
-      trimOldest(seen, MAX_PROMPT_IDS_PER_SESSION);
-    } else if (output && typeof output === "object") {
-      if (seenPromptOutputs.has(output)) return true;
-      seenPromptOutputs.add(output);
+    try {
+      eventHandlers[event?.type]?.(event.data || {});
+    } catch (error) {
+      report(error);
     }
-    return false;
   };
-  const onChatMessage = (input, output) => {
-    const { sessionID } = input;
-    if (!enabled() || !validId(sessionID)) return;
-    const expectedSignature = enabledSignature();
-    return enqueueSession(sessionID, async () => {
-      if (deletedSessions.has(sessionID)) return;
-      const prompt = textParts(output?.parts).trim();
-      if (!prompt) return;
-      const promptID = promptIdentifier(input, output);
-      if (repeatedPrompt(sessionID, promptID, output)) return;
-      const promptKey = hasExplicitPromptId(promptID)
-        ? stableKey("prompt-id", sessionID, promptID)
-        : stableKey("prompt", sessionID, prompt);
-      const root = await resolveRoot(sessionID);
-      // chat.message is emitted for the active user-facing session even when
-      // native storage has not yet materialized its root row.
-      if (root === undefined) knownSessions.add(sessionID);
-      await processPrompt(sessionID, prompt, root === undefined ? sessionID : root === null ? undefined : root,
-        expectedSignature, promptKey);
+  return { onPrompt, onEvent, idle };
+}
+
+const runSessionLogCommand = (text) => new Promise((resolve, reject) => {
+  const argumentsText = text.trim() || DEFAULT_COMMAND;
+  execFile("bash", [path.join(PACKAGE_ROOT, "install.sh"), "--harness", "opencode", "--arguments", argumentsText],
+    { encoding: "utf8" }, (error, stdout, stderr) => {
+      if (error) reject(new Error(stderr.trim() || stdout.trim() || error.message));
+      else resolve(stdout.trim());
     });
+});
+
+// Runs `repair` when an older release left something behind, which removes what of it is proven
+// session-log's; a leftover markdown /session-log command would otherwise override this
+// package's. Best effort: its output and failure are discarded, as `on` and `repair` report them.
+export function cleanupLegacyLeftovers() {
+  if (!LEGACY_LEFTOVERS.some((relative) => exists(path.join(CONFIG_DIR, relative)))) return Promise.resolve();
+  return new Promise((resolve) => {
+    execFile("bash", [path.join(PACKAGE_ROOT, "bin/session-log"), "--entrypoint", "opencode", "--harness", "opencode", "repair"],
+      () => resolve());
+  });
+}
+
+// Registers `/session-log`, then (unless the configuration root is unsupported) the logging
+// handlers. Returns the cleanup that stops the event stream and waits for pending log writes.
+export async function setupSessionLog(ctx) {
+  await ctx.command.transform((editor) => {
+    editor.add({
+      name: COMMAND_NAME,
+      description: COMMAND_DESCRIPTION,
+      execute: async ({ sessionID, prompt }) => {
+        const output = await runSessionLogCommand(prompt?.text ?? "");
+        await ctx.session.synthetic({ sessionID, text: output, description: output, resume: false });
+      },
+    });
+  });
+  const problem = rootProblem();
+  if (problem) {
+    report(problem);
+    return () => {};
+  }
+  void cleanupLegacyLeftovers();
+  markRuntimeReported();
+  const log = createSessionLog(ctx);
+  await ctx.session.hook("prompt", (input) => {
+    log.onPrompt(input);
+  });
+  const controller = new AbortController();
+  (async () => {
+    for await (const event of ctx.event.subscribe({ signal: controller.signal })) log.onEvent(event);
+  })().catch((error) => {
+    if (!controller.signal.aborted) report(error);
+  });
+  return async () => {
+    controller.abort();
+    await log.idle();
   };
-  return {
-    "chat.message": onChatMessage,
-    event: async ({ event }) => onEvent(event),
-  };
-};
+}

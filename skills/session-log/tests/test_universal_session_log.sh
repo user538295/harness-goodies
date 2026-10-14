@@ -46,7 +46,7 @@ package_root_for() {
     claude) printf '%s\n' "$TEST_HOME/.claude/plugins/cache/user538295/claude-goodies/$PACKAGE_VERSION/skills/session-log" ;;
     codex) printf '%s\n' "$TEST_HOME/.codex/skills/session-log" ;;
     cursor) printf '%s\n' "$TEST_HOME/.cursor/skills/session-log" ;;
-    opencode) printf '%s\n' "$TEST_HOME/.config/opencode/skills/session-log" ;;
+    opencode) printf '%s\n' "$TEST_HOME/.cache/opencode/npm/git-harness-goodies-test/1791000000000/node_modules/opencode-goodies/skills/session-log" ;;
     omp) printf '%s\n' "$TEST_HOME/.omp/agent/skills/session-log" ;;
     *) fail "unsupported test harness: $1" ;;
   esac
@@ -231,7 +231,7 @@ for host in cursor opencode; do
   assert_exact "$host_label skill falls back to the most recently installed plugin package" "$host_label: off" "$market_status"
 done
 
-printf '=== the source package repairs a previously enabled OpenCode adapter ===\n'
+printf '=== OpenCode status only reads; repair removes the links of earlier releases ===\n'
 OPENCODE_RECOVERY_HOME="$WORKROOT/opencode-recovery-home"
 OPENCODE_DEAD_PACKAGE="$OPENCODE_RECOVERY_HOME/.claude/plugins/cache/user538295/claude-goodies/1.12.1/skills/session-log"
 mkdir -p "$OPENCODE_RECOVERY_HOME/.Trash" \
@@ -247,15 +247,20 @@ opencode_recovery_status="$(
   HOME="$OPENCODE_RECOVERY_HOME" \
     bash "$ENTRYPOINT" --harness opencode --arguments status 2>&1
 )"
-assert_exact "OpenCode source invocation restores an enabled adapter" \
+assert_exact "OpenCode status reports the plugin has not loaded yet" \
   "OpenCode: on — restart required" "$opencode_recovery_status"
-assert_link "OpenCode source invocation replaces the dead plugin link" \
-  "$REPO_PACKAGE/adapters/opencode/session-log.js" \
+assert_link "OpenCode status leaves the dead plugin link to repair" \
+  "$OPENCODE_DEAD_PACKAGE/adapters/opencode/session-log.js" \
   "$OPENCODE_RECOVERY_HOME/.config/opencode/plugins/session-log.js"
-assert_file "OpenCode source invocation restores adapter.version" \
+assert_not_file "OpenCode status installs no adapter" \
   "$OPENCODE_RECOVERY_HOME/.config/opencode/session-log/adapter.version"
-assert_file "OpenCode source invocation restores adapter.manifest" \
-  "$OPENCODE_RECOVERY_HOME/.config/opencode/session-log/adapter.manifest"
+OPENCODE_RECOVERY_ROOT="$(cd "$OPENCODE_RECOVERY_HOME" && pwd -P)/.config/opencode"
+opencode_recovery_repair="$(HOME="$OPENCODE_RECOVERY_HOME" bash "$ENTRYPOINT" --harness opencode --arguments repair 2>&1)"
+assert_exact "OpenCode repair reports the links of earlier releases it removes" \
+  "OpenCode: removed legacy adapter link $OPENCODE_RECOVERY_ROOT/plugins/session-log.js"$'\n'"OpenCode: removed legacy package link $OPENCODE_RECOVERY_ROOT/skills/session-log" \
+  "$opencode_recovery_repair"
+assert_not_file "OpenCode repair removes the dead plugin link" "$OPENCODE_RECOVERY_HOME/.config/opencode/plugins/session-log.js"
+assert_not_file "OpenCode repair removes the skill-root link" "$OPENCODE_RECOVERY_HOME/.config/opencode/skills/session-log"
 
 printf '=== identity is explicit and strict ===\n'
 set +e
@@ -322,20 +327,15 @@ OMP_HOME="$WORKROOT/omp-home"
 mkdir -p "$OPENCODE_HOME/.Trash" "$OMP_HOME/.Trash"
 opencode_on="$(run_harness_at_home "$OPENCODE_HOME" opencode on 2>&1)"
 omp_on="$(run_harness_at_home "$OMP_HOME" omp on 2>&1)"
-assert_exact "OpenCode on status is exact" "OpenCode: on — restart required" "$opencode_on"
+assert_exact "OpenCode on only creates the enable flag the plugin waits for" "OpenCode: on — logging starts with the next prompt" "$opencode_on"
 assert_exact "OMP on status is exact" "OMP: on — restart required" "$omp_on"
 assert_file "OpenCode flag created" "$OPENCODE_HOME/.config/opencode/prompt-logs/.enabled"
-assert_file "OpenCode plugin installed" "$OPENCODE_HOME/.config/opencode/plugins/session-log.js"
+assert_not_file "OpenCode on installs no plugin file" "$OPENCODE_HOME/.config/opencode/plugins/session-log.js"
+assert_not_file "OpenCode on writes no adapter state" "$OPENCODE_HOME/.config/opencode/session-log/adapter.version"
 assert_file "OMP flag created" "$OMP_HOME/.omp/agent/prompt-logs/.enabled"
 assert_file "OMP extension installed" "$OMP_HOME/.omp/agent/extensions/session-log.js"
 assert_file "OMP usage parser installed" "$OMP_HOME/.omp/agent/skills/session-log/scripts/session_log_usage.ts"
 set +e
-opencode_plugin_smoke="$(
-  HOME="$OPENCODE_HOME" SESSION_LOG_PLUGIN="$OPENCODE_HOME/.config/opencode/plugins/session-log.js" \
-    bun --eval 'const loaded = await import(process.env.SESSION_LOG_PLUGIN); const hooks = await loaded.SessionLogPlugin({ directory: "fixture" }); process.stdout.write(Object.keys(hooks).sort().join(","));' \
-    2>&1
-)"
-opencode_plugin_smoke_rc=$?
 omp_plugin_smoke="$(
   HOME="$OMP_HOME" OMP_SESSION_LOG_PLUGIN="$OMP_HOME/.omp/agent/extensions/session-log.js" \
     bun --eval 'const events = []; const pi = { registerCommand: (name) => events.push(`command:${name}`), on: (name) => events.push(name) }; const loaded = await import(process.env.OMP_SESSION_LOG_PLUGIN); loaded.default(pi); process.stdout.write(events.join(","));' \
@@ -343,9 +343,6 @@ omp_plugin_smoke="$(
 )"
 omp_plugin_smoke_rc=$?
 set -e
-[[ "$opencode_plugin_smoke_rc" -eq 0 ]] && pass "OpenCode plugin lifecycle API loads" || fail "OpenCode plugin lifecycle API loads (actual: $opencode_plugin_smoke)"
-assert_exact "OpenCode plugin registers native handlers" "chat.message,event" "$opencode_plugin_smoke"
-assert_file "OpenCode plugin lifecycle writes runtime state" "$OPENCODE_HOME/.config/opencode/session-log/runtime.json"
 [[ "$omp_plugin_smoke_rc" -eq 0 ]] && pass "OMP extension lifecycle API loads" || fail "OMP extension lifecycle API loads (actual: $omp_plugin_smoke)"
 assert_exact "OMP extension registers native handlers" "command:session-log,session_start,session_shutdown,before_agent_start,agent_end,session_stop" "$omp_plugin_smoke"
 assert_file "OMP extension lifecycle writes runtime state" "$OMP_HOME/.omp/agent/session-log/runtime.json"
@@ -482,7 +479,7 @@ assert_contains "Claude runtime records package version" "\"version\": \"$PACKAG
 printf '=== off is idempotent and does not install an absent adapter ===\n'
 OFF_HOME="$WORKROOT/off-home"
 mkdir -p "$OFF_HOME/.Trash"
-off_output="$(HOME="$OFF_HOME" "$TEST_HOME/.config/opencode/skills/session-log/bin/session-log" --entrypoint opencode --harness opencode off 2>&1)"
+off_output="$(run_harness_at_home "$OFF_HOME" opencode off 2>&1)"
 assert_exact "off status is exact" "OpenCode: off" "$off_output"
 assert_not_file "off does not install adapter" "$OFF_HOME/.config/opencode/session-log/adapter.version"
 
@@ -522,11 +519,12 @@ UNOWNED_HOME="$WORKROOT/unowned-home"
 mkdir -p "$UNOWNED_HOME/.Trash" "$UNOWNED_HOME/.config/opencode/plugins"
 printf 'user plugin\n' > "$UNOWNED_HOME/.config/opencode/plugins/session-log.js"
 set +e
-unowned_error="$(HOME="$UNOWNED_HOME" "$TEST_HOME/.config/opencode/skills/session-log/bin/session-log" --entrypoint opencode --harness opencode on 2>&1)"
+unowned_on="$(run_harness_at_home "$UNOWNED_HOME" opencode on 2>&1)"
 unowned_rc=$?
 set -e
-[[ "$unowned_rc" -ne 0 ]] && pass "unowned adapter file is protected" || fail "unowned adapter file is protected"
-assert_contains "unowned adapter error is explicit" "refusing to remove unowned legacy path: " "$unowned_error"
+assert_exact "a user plugin at the old adapter path does not block OpenCode on" "0" "$unowned_rc"
+assert_exact "OpenCode on leaves a user plugin at the old adapter path unreported" \
+  "OpenCode: on — logging starts with the next prompt" "$unowned_on"
 assert_contains "unowned adapter remains unchanged" "user plugin" "$(cat "$UNOWNED_HOME/.config/opencode/plugins/session-log.js")"
 
 SYMLINK_HOME="$WORKROOT/symlink-home"
@@ -611,11 +609,12 @@ UNOWNED_LEGACY_HOME="$WORKROOT/unowned-legacy-home"
 mkdir -p "$UNOWNED_LEGACY_HOME/.Trash" "$UNOWNED_LEGACY_HOME/.config/opencode/plugins"
 printf 'user plugin\n' > "$UNOWNED_LEGACY_HOME/.config/opencode/plugins/session-log.js"
 set +e
-unowned_legacy_error="$(HOME="$UNOWNED_LEGACY_HOME" bash "$ENTRYPOINT" --harness opencode --arguments repair 2>&1)"
+unowned_legacy_repair="$(HOME="$UNOWNED_LEGACY_HOME" bash "$ENTRYPOINT" --harness opencode --arguments repair 2>&1)"
 unowned_legacy_rc=$?
 set -e
-[[ "$unowned_legacy_rc" -ne 0 ]] && pass "unowned legacy collision is protected" || fail "unowned legacy collision is protected"
-assert_contains "unowned legacy error is explicit" "unowned legacy path" "$unowned_legacy_error"
+assert_exact "OpenCode repair succeeds beside a user plugin at the old adapter path" "0" "$unowned_legacy_rc"
+assert_exact "OpenCode repair leaves a user plugin at the old adapter path alone" \
+  "OpenCode: repair found no duplicate or stale registrations" "$unowned_legacy_repair"
 assert_contains "unowned legacy file remains unchanged" "user plugin" "$(cat "$UNOWNED_LEGACY_HOME/.config/opencode/plugins/session-log.js")"
 
 HOOK_COLLISION_HOME="$WORKROOT/hook-collision-home"
@@ -645,10 +644,11 @@ mkdir -p "$PACKAGE_OPENCODE_HOME/.Trash" "$PACKAGE_OPENCODE_HOME/.config/opencod
 cp -R "$REPO/skills/session-log" "$PACKAGE_OPENCODE_HOME/.config/opencode/skills/session-log"
 PACKAGE_OPENCODE_ROOT="$(cd "$PACKAGE_OPENCODE_HOME/.config/opencode/skills/session-log" && pwd -P)"
 package_opencode_on="$(HOME="$PACKAGE_OPENCODE_HOME" bash "$PACKAGE_OPENCODE_HOME/.config/opencode/skills/session-log/install.sh" --harness opencode --arguments on 2>&1)"
-assert_contains "copied OpenCode package enables logging" "OpenCode: on — restart required" "$package_opencode_on"
-assert_link "copied OpenCode package installs its plugin" \
-  "$PACKAGE_OPENCODE_ROOT/adapters/opencode/session-log.js" \
-  "$PACKAGE_OPENCODE_HOME/.config/opencode/plugins/session-log.js"
+assert_exact "a manual copy under the OpenCode skill root is reported and still enables logging" \
+  "OpenCode: kept legacy package copy $PACKAGE_OPENCODE_ROOT: it has no ownership manifest; move it aside"$'\n'"OpenCode: on — logging starts with the next prompt" \
+  "$package_opencode_on"
+assert_file "a manual copy under the OpenCode skill root is never removed" "$PACKAGE_OPENCODE_ROOT/install.sh"
+assert_not_file "copied OpenCode package installs no plugin file" "$PACKAGE_OPENCODE_HOME/.config/opencode/plugins/session-log.js"
 assert_not_file "copied OpenCode package does not need global wrapper" "$PACKAGE_OPENCODE_HOME/.local/bin/session-log"
 PACKAGE_OMP_HOME="$WORKROOT/package-omp-home"
 mkdir -p "$PACKAGE_OMP_HOME/.Trash" "$PACKAGE_OMP_HOME/.omp/agent/skills"
@@ -925,95 +925,6 @@ set -e
 [[ "$opencode_failure_rc" -ne 0 ]] && pass "OpenCode SQLite failure returns nonzero" || fail "OpenCode SQLite failure returns nonzero"
 assert_contains "OpenCode SQLite failure is explicit" "native OpenCode usage failed" "$opencode_failure"
 assert_not_contains "OpenCode SQLite failure does not report totals" "TOTAL" "$opencode_failure"
-sqlite3 "$OPENCODE_HOME/.local/share/opencode/opencode.db" <<'SQL'
-INSERT OR REPLACE INTO part VALUES ('event-main-1', 'event-main-1', 'event-root', 1, 1, '{"type":"text","text":"main response"}');
-INSERT OR REPLACE INTO part VALUES ('event-main-2', 'event-main-2', 'event-root', 2, 2, '{"type":"text","text":"main response after child deletion"}');
-SQL
-opencode_event_output="$(
-  HOME="$OPENCODE_HOME" SESSION_LOG_PLUGIN="$OPENCODE_HOME/.config/opencode/plugins/session-log.js" \
-    bun --eval '
-      const loaded = await import(process.env.SESSION_LOG_PLUGIN);
-      const hooks = await loaded.SessionLogPlugin({ directory: "event-fixture" });
-      const event = hooks.event;
-      await hooks["chat.message"]({ sessionID: "event-root" }, { parts: [{ type: "text", text: "main prompt" }] });
-      await event({ event: { type: "session.created", properties: { info: { id: "event-child", parentID: "event-root" } } } });
-      const child = { id: "event-child-message", sessionID: "event-child", role: "assistant", mode: "Explore", time: { created: 1000, completed: 3000 }, tokens: { input: 1, output: 2 } };
-      await event({ event: { type: "message.updated", properties: { info: child } } });
-      await event({ event: { type: "message.updated", properties: { info: child } } });
-      const first = { id: "event-main-1", sessionID: "event-root", role: "assistant", modelID: "fixture-model", mode: "standard", time: { created: 1000, completed: 4000 }, tokens: { input: 2, output: 3 } };
-      await event({ event: { type: "message.updated", properties: { info: first } } });
-      await event({ event: { type: "message.updated", properties: { info: first } } });
-      await event({ event: { type: "session.deleted", properties: { info: { id: "event-child" } } } });
-      const second = { id: "event-main-2", sessionID: "event-root", role: "assistant", modelID: "fixture-model", mode: "standard", time: { created: 5000, completed: 7000 }, tokens: { input: 2, output: 3 } };
-      await event({ event: { type: "message.updated", properties: { info: second } } });
-      await event({ event: { type: "message.updated", properties: { info: second } } });
-      const fs = await import("node:fs");
-      const files = fs.readdirSync(process.env.HOME + "/.config/opencode/prompt-logs/event-fixture").filter(name => name.endsWith(".md"));
-      process.stdout.write(fs.readFileSync(process.env.HOME + "/.config/opencode/prompt-logs/event-fixture/" + files[0], "utf8"));
-    ' 2>"$WORKROOT/opencode-event.err"
-)"
-assert_contains "OpenCode logs the main prompt event" "main prompt" "$opencode_event_output"
-assert_contains "OpenCode logs the main response event" "main response" "$opencode_event_output"
-assert_contains "OpenCode logs the child response event" "sub-agent finished: Explore (event-child)" "$opencode_event_output"
-assert_contains "OpenCode keeps main logging after child deletion" "main response after child deletion" "$opencode_event_output"
-assert_exact "OpenCode suppresses duplicate main events" "2" \
-  "$(printf '%s\n' "$opencode_event_output" | grep -c '^### .* response$')"
-assert_exact "OpenCode suppresses duplicate child events" "1" \
-  "$(printf '%s\n' "$opencode_event_output" | grep -c 'sub-agent finished: Explore (event-child)')"
-
-set +e
-opencode_invalid_id="$(
-  HOME="$OPENCODE_HOME" SESSION_LOG_PLUGIN="$OPENCODE_HOME/.config/opencode/plugins/session-log.js" \
-    bun --eval '
-      const loaded = await import(process.env.SESSION_LOG_PLUGIN);
-      const hooks = await loaded.SessionLogPlugin({ directory: "event-fixture" });
-      await hooks.event({ event: { type: "message.updated", properties: { info: { id: "escape", sessionID: "../outside", role: "assistant", time: { created: 1, completed: 2 } } } } });
-    ' 2>&1
-)"
-opencode_invalid_id_rc=$?
-set -e
-[[ "$opencode_invalid_id_rc" -eq 0 ]] && pass "OpenCode ignores invalid session IDs safely" || fail "OpenCode ignores invalid session IDs safely"
-assert_not_file "OpenCode invalid session ID creates no escaped log" "$OPENCODE_HOME/.config/opencode/prompt-logs/outside/session_escape.md"
-
-OPENCODE_SAFE_HOME="$WORKROOT/opencode-safe-home"
-mkdir -p "$OPENCODE_SAFE_HOME/.Trash" "$OPENCODE_SAFE_HOME/.config/opencode/skills"
-cp -R "$REPO/skills/session-log" "$OPENCODE_SAFE_HOME/.config/opencode/skills/session-log"
-mkdir -p "$OPENCODE_SAFE_HOME/.config/opencode/prompt-logs"
-touch "$OPENCODE_SAFE_HOME/.config/opencode/prompt-logs/.enabled"
-mkdir -p "$WORKROOT/opencode-outside"
-printf 'opencode sentinel\n' > "$WORKROOT/opencode-outside/sentinel"
-ln -s "$WORKROOT/opencode-outside" "$OPENCODE_SAFE_HOME/.config/opencode/prompt-logs/safe-fixture"
-set +e
-opencode_symlink_log="$(
-  HOME="$OPENCODE_SAFE_HOME" SESSION_LOG_PLUGIN="$OPENCODE_SAFE_HOME/.config/opencode/skills/session-log/adapters/opencode/session-log.js" \
-    bun --eval '
-      const loaded = await import(process.env.SESSION_LOG_PLUGIN);
-      const hooks = await loaded.SessionLogPlugin({ directory: "safe-fixture" });
-      await hooks["chat.message"]({ sessionID: "safe-root" }, { parts: [{ type: "text", text: "must not escape" }] });
-    ' 2>&1
-)"
-opencode_symlink_log_rc=$?
-set -e
-[[ "$opencode_symlink_log_rc" -ne 0 ]] && pass "OpenCode rejects symlinked log paths" || fail "OpenCode rejects symlinked log paths"
-assert_exact "OpenCode symlinked log target remains unchanged" "opencode sentinel" "$(cat "$WORKROOT/opencode-outside/sentinel")"
-
-mkdir -p "$OPENCODE_SAFE_HOME/.config/opencode/session-log"
-if [[ -e "$OPENCODE_SAFE_HOME/.config/opencode/session-log/runtime.json" ||
-      -L "$OPENCODE_SAFE_HOME/.config/opencode/session-log/runtime.json" ]]; then
-  mv "$OPENCODE_SAFE_HOME/.config/opencode/session-log/runtime.json" "$WORKROOT/opencode-runtime-existing"
-fi
-
-printf 'runtime sentinel\n' > "$WORKROOT/opencode-runtime-sentinel"
-ln -s "$WORKROOT/opencode-runtime-sentinel" "$OPENCODE_SAFE_HOME/.config/opencode/session-log/runtime.json"
-set +e
-opencode_symlink_runtime="$(
-  HOME="$OPENCODE_SAFE_HOME" SESSION_LOG_PLUGIN="$OPENCODE_SAFE_HOME/.config/opencode/skills/session-log/adapters/opencode/session-log.js" \
-    bun --eval 'const loaded = await import(process.env.SESSION_LOG_PLUGIN); await loaded.SessionLogPlugin({ directory: "runtime-fixture" });' 2>&1
-)"
-opencode_symlink_runtime_rc=$?
-set -e
-[[ "$opencode_symlink_runtime_rc" -ne 0 ]] && pass "OpenCode rejects symlinked runtime state" || fail "OpenCode rejects symlinked runtime state"
-assert_exact "OpenCode symlinked runtime target remains unchanged" "runtime sentinel" "$(cat "$WORKROOT/opencode-runtime-sentinel")"
 
 
 mkdir -p "$CODEX_HOME/.codex/sessions/2026/09"
