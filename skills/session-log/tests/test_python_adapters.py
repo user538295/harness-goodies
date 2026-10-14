@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -262,9 +263,8 @@ class InstallerHooksTests(unittest.TestCase):
             updated = json.loads(config.read_text())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(updated["hooks"]["SessionStart"][0], {"command": "user-hook"})
-        installer = load_module(INSTALL_PATH, "install_hooks_cli_test")
         self.assertEqual(updated["hooks"]["SessionStart"][1:],
-                         [{"hooks": [{"type": "command", "command": installer.build_command("codex", hook, "session-start")}]}])
+                         [{"hooks": [{"type": "command", "command": codex_stable_command("session-start")}]}])
 
     def test_installer_replaces_hooks_registered_from_a_native_windows_path(self):
         installer = load_module(INSTALL_PATH, "install_hooks_windows_path_test")
@@ -281,8 +281,34 @@ class InstallerHooksTests(unittest.TestCase):
                     installer.update(document, harness, Path(windows_hook))
                 installer.update(document, harness, hook)
                 self.assertTrue(installer.is_current(document, harness, hook))
+                if harness == "codex":
+                    self.assertEqual(codex_hook_commands_of(document), codex_stable_commands())
                 for entries in document["hooks"].values():
                     self.assertEqual(len(entries), 1, entries)
+
+    def test_replace_managed_entries_keeps_the_slot_of_a_current_entry(self):
+        """Codex keys trust by index: an already current entry keeps its slot, so the hooks after it keep theirs."""
+        installer = load_module(INSTALL_PATH, "install_hooks_slot_test")
+        legacy = legacy_codex_hook_entry("/old/skills/session-log/adapters/native/session_log_hook.py", "stop")
+        current = {"hooks": [{"type": "command", "command": codex_stable_command("stop")}]}
+        foreign, foreign_after = {"hooks": [FOREIGN_HOOK]}, {"hooks": [FOREIGN_HOOK_AFTER]}
+        self.assertEqual(installer.replace_managed_entries([legacy, foreign, current, foreign_after], current, "codex", "stop"),
+                         [foreign, current, foreign_after])
+        self.assertEqual(installer.replace_managed_entries([foreign, legacy, foreign_after, legacy], current, "codex", "stop"),
+                         [foreign, current, foreign_after])
+        self.assertEqual(installer.replace_managed_entries([foreign], current, "codex", "stop"), [foreign, current])
+
+    def test_bash_and_python_agree_on_the_codex_marketplace_and_owner_marker(self):
+        installer = load_module(INSTALL_PATH, "install_hooks_marketplace_test")
+        sourced = subprocess.run(["bash", "-c", 'source "$1"; printf "%s\\n" "$CODEX_MARKETPLACE"', "marketplace",
+                                  str(REPO / "skills/session-log/lib/adapter_install.sh")],
+                                 capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SECONDS)
+        self.assertEqual((sourced.returncode, sourced.stdout, sourced.stderr), (0, f"{installer.CODEX_MARKETPLACE}\n", ""))
+        marketplace = json.loads((REPO / ".agents/plugins/marketplace.json").read_text())
+        self.assertEqual(marketplace["name"], installer.CODEX_MARKETPLACE)
+        owner = re.search(r'^readonly OWNER_MARKER_VALUE="([^"]+)"$',
+                          (REPO / "skills/session-log/bin/session-log").read_text(), re.MULTILINE).group(1)
+        self.assertEqual(installer.CODEX_OWNER_PREFIX, f"SESSION_LOG_OWNER={owner} ")
 
     def test_installer_completes_partial_writes_before_replacing_hooks_file(self):
         installer = load_module(INSTALL_PATH, "install_hooks_partial_write_test")
@@ -1043,6 +1069,7 @@ REPEATED_REGISTRATIONS = 3
 ORPHANED_PLUGIN_MARKER = ".orphaned_at"
 INSTALL_LOCK_RELATIVE = ".claude/session-log/.install.lock"
 PRIVATE_DIRECTORY_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 LEGACY_CLEANUP_STAMP_RELATIVE = ".claude/session-log/legacy-cleanup.stamp"
 EXECUTABLE_MODE = 0o755
 READ_ONLY_DIRECTORY_MODE = 0o555
@@ -1800,7 +1827,7 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 result = run_session_log(package, home, harness, "repair")
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
                 label = NATIVE_LABELS[harness]
-                follow_up = "; review and trust them in Codex, then restart" if harness == "codex" else ""
+                follow_up = CODEX_RESTORE_FOLLOW_UP if harness == "codex" else ""
                 self.assertEqual(result.stdout, (
                     f"{label}: removed {REPEATED_REGISTRATIONS - 1} duplicate or stale hook registration(s) from {config}\n"
                     f"{label}: restored 1 missing hook registration(s) in {config}{follow_up}\n"
@@ -1846,7 +1873,7 @@ class RepairCommandEdgeTests(unittest.TestCase):
                                        *((harness, subroot, "hooks.json") for harness, subroot in NATIVE_HARNESSES)):
             with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
-                package = harness_package(home, subroot)
+                package = harness_package(home, NATIVE_PACKAGE_ROOTS.get(harness, subroot))
                 target = home / "real.json"
                 target.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
                 (home / subroot / name).symlink_to(target)
@@ -1857,7 +1884,9 @@ class RepairCommandEdgeTests(unittest.TestCase):
     def test_native_repair_refuses_a_missing_hook_asset(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
-            package = harness_package(home, NATIVE_PACKAGE_ROOTS["codex"])
+            # A plugin package is installed, so repair rewrites Codex entries, but the running package lacks its hook.
+            harness_package(home, NATIVE_PACKAGE_ROOTS["codex"])
+            package = harness_package(home, "checkout")
             config = home / ".codex/hooks.json"
             config.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
             original = config.read_bytes()
@@ -2189,22 +2218,49 @@ STALE_PLUGIN_VERSION = "1.9.0"
 LEGACY_PLUGIN_VERSION = "1.18.0"
 # The release a simulated plugin update installs: newer than PLUGIN_VERSION.
 UPDATED_PLUGIN_VERSION = "1.19.0"
-CODEX_TRUST_STATUS = "Codex: on — trust review/restart required"
-CODEX_PLUGIN_MISSING = ("session-log: Codex hooks run the codex-goodies plugin package; install the plugin "
-                        "(codex plugin add codex-goodies@user538295), then rerun on\n")
-# The exact UserPromptSubmit command Codex trusts: any change to its text makes every user review the hooks again.
-CODEX_USER_PROMPT_COMMAND = (
-    r"""sh -c 'package=$(ls -d "$HOME"/.codex/plugins/cache/user538295/codex-goodies/*/skills/session-log"""
+# What `on` and `status` tell the user while no Codex session has run the registered hooks (tui startup_hooks_review.rs).
+CODEX_TRUST_STATUS = ("Codex: on — restart Codex, then choose 'Trust all and continue' on the 'Hooks need review' "
+                      "screen (or approve the session-log hooks in /hooks)")
+CODEX_RESTORE_FOLLOW_UP = ("; restart Codex, then choose 'Trust all and continue' on the 'Hooks need review' screen "
+                           "(or approve them in /hooks)")
+CODEX_PLUGIN_NOT_INSTALLED_STATUS = "Codex: on — codex-goodies plugin not installed\n"
+CODEX_PLUGIN_MISSING = ("session-log: Codex hooks run the codex-goodies plugin package; install it with "
+                        "'codex plugin marketplace add user538295/harness-goodies' and "
+                        "'codex plugin add codex-goodies@user538295', then rerun on\n")
+# The exact hooks.json command Codex trusts, with LIFECYCLE for the lifecycle: any change to its text makes every user
+# review the hooks again.
+CODEX_COMMAND_TEMPLATE = (
+    r"""SESSION_LOG_OWNER=universal-session-log sh -c 'package=$(ls -d"""
+    r""" "$HOME"/.codex/plugins/cache/user538295/codex-goodies/*/skills/session-log"""
     r""" 2>/dev/null | sort -V | tail -1); [ -f "$package/adapters/native/session_log_hook.py" ] || exit 0;"""
-    r""" exec python3 "$package/adapters/native/session_log_hook.py" codex user-prompt'""")
+    r""" exec python3 "$package/adapters/native/session_log_hook.py" codex LIFECYCLE'""")
+# A codex-goodies plugin installed from a marketplace other than user538295.
+OTHER_CODEX_MARKETPLACE_CACHE_RELATIVE = ".codex/plugins/cache/other-marketplace/codex-goodies"
 FOREIGN_HOOK_AFTER = {"type": "command", "command": "cc-status done"}
+# The session-log package VERSION a simulated plugin update ships: newer than this repository's.
+UPDATED_PACKAGE_VERSION = "9.0.0"
+
+
+def codex_stable_command(lifecycle):
+    """The hooks.json command `on` registers for ``lifecycle``."""
+    return CODEX_COMMAND_TEMPLATE.replace("LIFECYCLE", lifecycle)
+
+
+def codex_stable_commands():
+    """{event: [command]} of the commands `on` registers, one per Codex lifecycle event."""
+    return {event: [codex_stable_command(lifecycle)] for event, lifecycle in CODEX_LIFECYCLES.items()}
+
+
+def codex_hook_commands_of(document):
+    """{event: [command, ...]} of every command a hooks.json ``document`` registers for the Codex lifecycle events."""
+    hooks = document["hooks"]
+    return {event: [item["command"] for entry in hooks.get(event, []) for item in entry.get("hooks", [])]
+            for event in CODEX_LIFECYCLES}
 
 
 def codex_hook_commands(config):
-    """{event: [command, ...]} of every command hooks.json registers for the Codex lifecycle events."""
-    hooks = json.loads(config.read_text())["hooks"]
-    return {event: [item["command"] for entry in hooks.get(event, []) for item in entry.get("hooks", [])]
-            for event in CODEX_LIFECYCLES}
+    """codex_hook_commands_of the hooks.json at ``config``."""
+    return codex_hook_commands_of(json.loads(config.read_text()))
 
 
 def legacy_codex_hook_entry(hook, lifecycle):
@@ -2218,8 +2274,8 @@ def legacy_codex_entry(package, lifecycle):
 
 
 def kept_seeded_copy_report(seeded):
-    return (f"Codex: kept legacy package copy {seeded}: Codex sessions started before this change still run "
-            "its hooks; restart Codex, then run repair")
+    return (f"Codex: kept legacy package copy {seeded}: ~/.codex/hooks.json still names its hook; once no entry "
+            "there names it, restart Codex, then run repair")
 
 
 class CodexHomeTestCase(unittest.TestCase):
@@ -2256,8 +2312,15 @@ class CodexHomeTestCase(unittest.TestCase):
             self.assertFalse(os.path.lexists(self.state / name), name)
 
     def stable_commands(self):
-        installer = load_module(INSTALL_PATH, "install_hooks_codex_home")
-        return {event: [installer.build_command("codex", None, lifecycle)] for event, lifecycle in CODEX_LIFECYCLES.items()}
+        return codex_stable_commands()
+
+    def remove_plugin(self):
+        shutil.rmtree(self.home / ".codex/plugins")
+
+    def enable_flag(self):
+        flag = self.home / CODEX_FLAG_RELATIVE
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text("")
 
 
 class CodexLegacyCleanupTests(CodexHomeTestCase):
@@ -2333,6 +2396,83 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
         self.assertEqual(codex_hook_commands(self.config), self.stable_commands())
         self.assertTrue(self.seeded.is_dir())
 
+    def test_on_keeps_the_seeded_copy_its_legacy_entries_name_and_replaces_them(self):
+        self.seed_copy()
+        self.write_legacy_hooks(self.seeded)
+        result = self.run_codex("on")
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], kept_seeded_copy_report(self.seeded))
+        self.assertIn(f"Codex: removed {len(CODEX_LIFECYCLES)} duplicate or stale hook registration(s)", result.stdout)
+        self.assertEqual(lines[-1], CODEX_TRUST_STATUS)
+        self.assertTrue(self.seeded.is_dir())
+        self.assertEqual(codex_hook_commands(self.config), self.stable_commands())
+
+    def test_repair_keeps_the_seeded_copy_a_symlinked_hooks_json_names(self):
+        """Codex follows a symlinked hooks.json, so its entries still run the copy's hook."""
+        self.seed_copy()
+        self.write_legacy_hooks(self.seeded)
+        real = self.home / "dotfiles/hooks.json"
+        real.parent.mkdir()
+        self.config.rename(real)
+        self.config.symlink_to(real)
+        self.run_codex_allowing_failure("repair")
+        self.assertTrue(self.seeded.is_dir())
+
+    def test_repair_keeps_the_seeded_copy_a_user_edited_entry_names(self):
+        """An entry the user extended with a handler of their own is not session-log's, so repair leaves it."""
+        self.seed_copy()
+        hook = self.seeded / "adapters/native/session_log_hook.py"
+        edited = legacy_codex_hook_entry(hook, "stop")
+        edited["hooks"].append(FOREIGN_HOOK)
+        self.write_hooks({"Stop": [edited]})
+        result = self.run_codex("repair")
+        self.assertEqual(result.stdout, f"{kept_seeded_copy_report(self.seeded)}\n")
+        self.assertTrue(self.seeded.is_dir())
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads files without read permission")
+    def test_repair_keeps_the_seeded_copy_while_hooks_json_is_unreadable(self):
+        self.seed_copy()
+        self.write_legacy_hooks(self.seeded)
+        self.config.chmod(0)
+        try:
+            self.run_codex_allowing_failure("repair")
+        finally:
+            self.config.chmod(PRIVATE_FILE_MODE)
+        self.assertTrue(self.seeded.is_dir())
+
+    def test_repair_keeps_the_seeded_copy_hooks_json_names_through_json_escapes(self):
+        """A non-ASCII home path is \\u-escaped in hooks.json, so only the decoded text names the copy."""
+        home = self.home / "Jürgen"
+        package = harness_package(home, CODEX_PLUGIN_ROOT_RELATIVE)
+        seeded = home / CODEX_SEEDED_RELATIVE
+        shutil.copytree(REPO / "skills/session-log", seeded)
+        write_seeded_manifest(seeded)
+        config = home / ".codex/hooks.json"
+        config.write_text(json.dumps({"hooks": {"Stop": [legacy_codex_entry(seeded, "stop")]}}, ensure_ascii=True))
+        self.assertNotIn("Jürgen", config.read_text())
+        result = run_session_log(package, home, "codex", "repair")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(result.stdout.splitlines()[0], kept_seeded_copy_report(seeded))
+        self.assertTrue(seeded.is_dir())
+
+    def test_repair_keeps_the_seeded_copy_hooks_json_names_through_a_symlinked_home(self):
+        """Entries name the copy by $HOME, which may be a symlink to the physical home the cleanup resolves."""
+        self.seed_copy()
+        linked_home = self.home.parent / f"{self.home.name}-link"
+        linked_home.symlink_to(self.home)
+        self.addCleanup(linked_home.unlink)
+        self.write_legacy_hooks(linked_home / CODEX_SEEDED_RELATIVE)
+        result = run_session_log(self.package, linked_home, "codex", "repair")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(result.stdout.splitlines()[0], kept_seeded_copy_report(self.seeded))
+        self.assertTrue(self.seeded.is_dir())
+
+    def run_codex_allowing_failure(self, command):
+        """Run ``command``, which may fail on a hooks.json repair cannot rewrite, but never on a traceback."""
+        result = run_session_log(self.package, self.home, "codex", command)
+        self.assertNotIn("Traceback", result.stderr)
+        return result
+
     @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
     def test_an_obsolete_state_file_that_cannot_be_removed_fails_the_cleanup(self):
         """remove_obsolete_state_file, shared by the Codex and Claude Code cleanups, names the file it cannot remove.
@@ -2371,7 +2511,6 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
             self.assertEqual(ours, expected)
             self.assertNotIn(str(self.home), ours[0])
             self.assertNotIn(PLUGIN_VERSION, ours[0])
-        self.assertEqual(commands["UserPromptSubmit"], [CODEX_USER_PROMPT_COMMAND])
 
     def test_the_command_runs_the_newest_installed_plugin_package_under_every_login_shell(self):
         """Under `bash -lc` and `zsh -lc`, the command runs the newest package's hook, as a child of the shell's caller."""
@@ -2380,9 +2519,10 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
         shutil.copytree(REPO / "skills/session-log", stale)
         (stale / "adapters/native/session_log_hook.py").write_text("raise SystemExit('stale package ran')\n")
         command = codex_hook_commands(self.config)["UserPromptSubmit"][0]
-        shells = ["bash"] + (["zsh"] if shutil.which("zsh") else [])
-        for shell in shells:
+        for shell in ("bash", "zsh"):
             with self.subTest(shell=shell):
+                if not shutil.which(shell):
+                    self.skipTest(f"{shell} is not installed")
                 session = f"stable-{shell}"
                 payload = json.dumps({"session_id": session, "cwd": str(self.home), "prompt": f"{shell} prompt"})
                 result = self.run_hook_command(command, payload, shell)
@@ -2403,6 +2543,61 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
                 result = self.run_hook_command(commands[event][0], json.dumps({"session_id": "gone", "prompt": "x"}))
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
         self.assertEqual(list((self.home / ".codex/prompt-logs").glob("*/session_gone.md")), [])
+
+    def install_other_marketplace_plugin(self):
+        """A codex-goodies package of another marketplace whose hook fails loudly if it ever runs."""
+        other = self.home / OTHER_CODEX_MARKETPLACE_CACHE_RELATIVE / UPDATED_PLUGIN_VERSION / "skills/session-log"
+        shutil.copytree(REPO / "skills/session-log", other)
+        (other / "adapters/native/session_log_hook.py").write_text("raise SystemExit('other marketplace ran')\n")
+        return other
+
+    def test_the_command_ignores_another_marketplaces_codex_goodies(self):
+        self.run_codex("on")
+        commands = codex_hook_commands(self.config)
+        shutil.rmtree(self.home / CODEX_PLUGIN_CACHE_RELATIVE)
+        self.install_other_marketplace_plugin()
+        result = self.run_hook_command(commands["UserPromptSubmit"][0], json.dumps({"session_id": "other", "prompt": "x"}))
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        self.assertEqual(list((self.home / ".codex/prompt-logs").glob("*/session_other.md")), [])
+
+    def test_on_fails_when_only_another_marketplaces_codex_goodies_is_installed(self):
+        shutil.rmtree(self.home / CODEX_PLUGIN_CACHE_RELATIVE)
+        other = self.install_other_marketplace_plugin()
+        result = run_session_log(other, self.home, "codex", "on")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", CODEX_PLUGIN_MISSING))
+        self.assertFalse(os.path.lexists(self.config))
+        self.assertFalse(os.path.lexists(self.home / CODEX_FLAG_RELATIVE))
+
+    def test_without_the_plugin_repair_leaves_working_legacy_entries_alone(self):
+        """Swapping them for the current command would stop logging: it runs only a plugin package."""
+        checkout = harness_package(self.home, "checkout")
+        versioned = self.home / CODEX_PLUGIN_CACHE_RELATIVE / LEGACY_PLUGIN_VERSION / "skills/session-log"
+        self.write_legacy_hooks(versioned)
+        registered = self.config.read_bytes()
+        self.remove_plugin()
+        result = run_session_log(checkout, self.home, "codex", "repair")
+        self.assertEqual((result.returncode, result.stderr), (0, ""))
+        self.assertEqual(self.config.read_bytes(), registered)
+
+    def test_without_the_plugin_status_names_it_and_leaves_legacy_entries_alone(self):
+        checkout = harness_package(self.home, "checkout")
+        versioned = self.home / CODEX_PLUGIN_CACHE_RELATIVE / LEGACY_PLUGIN_VERSION / "skills/session-log"
+        self.write_legacy_hooks(versioned)
+        registered = self.config.read_bytes()
+        self.enable_flag()
+        self.remove_plugin()
+        result = run_session_log(checkout, self.home, "codex", "status")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CODEX_PLUGIN_NOT_INSTALLED_STATUS, ""))
+        self.assertEqual(self.config.read_bytes(), registered)
+
+    def test_on_replaces_an_owner_marked_command_of_another_release(self):
+        """A command carrying the owner marker and the lifecycle is session-log's, whatever text runs in between."""
+        older = {event: [{"hooks": [{"type": "command", "command":
+                                     f"SESSION_LOG_OWNER=universal-session-log sh -c 'old text codex {lifecycle}'"}]}]
+                 for event, lifecycle in CODEX_LIFECYCLES.items()}
+        self.write_hooks(older)
+        self.run_codex("on")
+        self.assertEqual(codex_hook_commands(self.config), self.stable_commands())
 
     def test_on_replaces_entries_older_releases_registered_by_package_path(self):
         versioned = self.home / CODEX_PLUGIN_CACHE_RELATIVE / LEGACY_PLUGIN_VERSION / "skills/session-log"
@@ -2438,10 +2633,13 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
         self.state.mkdir(parents=True)
         elsewhere = self.home / "elsewhere"
         elsewhere.write_text("2.0.0\n")
-        (self.state / "adapter.version").symlink_to(elsewhere)
+        stamp = self.state / "adapter.version"
+        stamp.symlink_to(elsewhere)
         result = self.run_codex("on")
         self.assertEqual(result.stdout.splitlines()[-1], CODEX_TRUST_STATUS)
         self.assertEqual(codex_hook_commands(self.config), self.stable_commands())
+        self.assertEqual(os.readlink(stamp), str(elsewhere))
+        self.assertEqual(elsewhere.read_text(), "2.0.0\n")
 
     def test_off_keeps_the_registered_hooks(self):
         self.run_codex("on")
@@ -2470,6 +2668,7 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
         shutil.copytree(self.package, updated)
         with (updated / "adapters/native/session_log_hook.py").open("a") as handle:
             handle.write("# changed by the plugin update\n")
+        (updated / "VERSION").write_text(f"{UPDATED_PACKAGE_VERSION}\n")
         # Codex keeps only the installed version's directory of a plugin.
         shutil.rmtree(self.home / CODEX_PLUGIN_ROOT_RELATIVE)
         result = run_session_log(updated, self.home, "codex", "status")

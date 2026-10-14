@@ -3,6 +3,9 @@ set -euo pipefail
 
 readonly SUPPORTED_HARNESSES="claude, codex, cursor, opencode, omp"
 readonly OWNER_MARKER_VALUE="universal-session-log"
+# What makes Codex run hooks.json commands it has not run yet: it asks to trust new or changed hooks
+# at startup on its "Hooks need review" screen, and /hooks manages them.
+readonly CODEX_TRUST_INSTRUCTION="restart Codex, then choose 'Trust all and continue' on the 'Hooks need review' screen (or approve the session-log hooks in /hooks)"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 readonly VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
@@ -335,13 +338,17 @@ print_status() {
     printf '%s: off\n' "$HARNESS_LABEL"
     return
   fi
+  if [[ "$HARNESS" == codex ]] && ! codex_plugin_package_present; then
+    printf '%s: on — codex-goodies plugin not installed\n' "$HARNESS_LABEL"
+    return
+  fi
   if ! plugin_owns_hooks && ! adapter_current; then
     printf '%s: on — adapter missing\n' "$HARNESS_LABEL"
     return
   fi
   if ! runtime_current; then
     if [[ "$HARNESS" == codex ]]; then
-      printf '%s: on — trust review/restart required\n' "$HARNESS_LABEL"
+      printf '%s: on — %s\n' "$HARNESS_LABEL" "$CODEX_TRUST_INSTRUCTION"
     else
       printf '%s: on — restart required\n' "$HARNESS_LABEL"
     fi
@@ -502,7 +509,7 @@ main() {
       if runtime_current; then
         printf '%s: on\n' "$HARNESS_LABEL"
       elif [[ "$HARNESS" == codex ]]; then
-        printf '%s: on — trust review/restart required\n' "$HARNESS_LABEL"
+        printf '%s: on — %s\n' "$HARNESS_LABEL" "$CODEX_TRUST_INSTRUCTION"
       else
         printf '%s: on — restart required\n' "$HARNESS_LABEL"
       fi

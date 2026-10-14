@@ -362,7 +362,7 @@ else
   fail "Codex on fails without the codex-goodies plugin"
 fi
 assert_exact "Codex on names the missing plugin" \
-  "session-log: Codex hooks run the codex-goodies plugin package; install the plugin (codex plugin add codex-goodies@user538295), then rerun on" \
+  "session-log: Codex hooks run the codex-goodies plugin package; install it with 'codex plugin marketplace add user538295/harness-goodies' and 'codex plugin add codex-goodies@user538295', then rerun on" \
   "$codex_no_plugin"
 assert_not_file "Codex on without the plugin leaves logging off" "$CODEX_NO_PLUGIN_HOME/.codex/prompt-logs/.enabled"
 assert_not_file "Codex on without the plugin registers no hooks" "$CODEX_NO_PLUGIN_HOME/.codex/hooks.json"
@@ -378,7 +378,9 @@ printf '%s\n' '{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"e
 cursor_on="$(HOME="$CURSOR_HOME" bash "$ENTRYPOINT" --harness cursor --arguments on 2>&1)"
 codex_on="$(HOME="$CODEX_HOME" bash "$ENTRYPOINT" --harness codex --arguments on 2>&1)"
 assert_exact "Cursor on status is exact" "Cursor: on — restart required" "$cursor_on"
-assert_exact "Codex on reports trust review honestly" "Codex: on — trust review/restart required" "$codex_on"
+assert_exact "Codex on tells how to trust its hooks" \
+  "Codex: on — restart Codex, then choose 'Trust all and continue' on the 'Hooks need review' screen (or approve the session-log hooks in /hooks)" \
+  "$codex_on"
 assert_file "Cursor native hooks config installed" "$CURSOR_HOME/.cursor/hooks.json"
 assert_file "Codex native hooks config installed" "$CODEX_HOME/.codex/hooks.json"
 assert_contains "Cursor preserves user hooks" "keep-cursor" "$(cat "$CURSOR_HOME/.cursor/hooks.json")"

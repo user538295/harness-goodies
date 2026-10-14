@@ -53,18 +53,27 @@ adapter_is_versioned() {
   [[ "$HARNESS" != codex ]]
 }
 
-# Where Codex caches the codex-goodies plugin, relative to ~/.codex: the marketplace CODEX_MARKETPLACE
-# in adapters/native/install_hooks.py names, whose CODEX_COMMAND runs the newest package found here.
-readonly CODEX_PLUGIN_CACHE="plugins/cache/user538295/codex-goodies"
+# The marketplace Codex installs codex-goodies from: the "name" of .agents/plugins/marketplace.json,
+# which CODEX_MARKETPLACE in adapters/native/install_hooks.py names too (tests check they agree).
+readonly CODEX_MARKETPLACE="user538295"
+# Where Codex caches the codex-goodies plugin, relative to ~/.codex; the CODEX_COMMAND of
+# adapters/native/install_hooks.py runs the newest package found here.
+readonly CODEX_PLUGIN_CACHE="plugins/cache/$CODEX_MARKETPLACE/codex-goodies"
 
-# Codex's hooks.json command runs only a codex-goodies plugin package, so `on` without one would
-# register hooks that never log.
-require_codex_plugin_package() {
+# True when a codex-goodies plugin package, the only package Codex's hooks.json command runs, is installed.
+codex_plugin_package_present() {
   local hook
   for hook in "$HARNESS_ROOT/$CODEX_PLUGIN_CACHE"/*/skills/session-log/adapters/native/session_log_hook.py; do
     [[ -f "$hook" ]] && return 0
   done
-  fail "Codex hooks run the codex-goodies plugin package; install the plugin (codex plugin add codex-goodies@user538295), then rerun on"
+  return 1
+}
+
+# `on` without a codex-goodies plugin package would register hooks that never log. The marketplace
+# comes from the GitHub repository user538295/harness-goodies (README.md, Codex plugin).
+require_codex_plugin_package() {
+  codex_plugin_package_present ||
+    fail "Codex hooks run the codex-goodies plugin package; install it with 'codex plugin marketplace add user538295/harness-goodies' and 'codex plugin add codex-goodies@$CODEX_MARKETPLACE', then rerun on"
 }
 
 adapter_current() {
@@ -351,11 +360,16 @@ repair_native_hooks() {
 
 # Collapse duplicate and stale session-log registrations to the one set the harness
 # needs: hooks.json entries (Codex, Cursor), dangling plugin-cache adapter links (OpenCode,
-# OMP; legacy_cleanup removes their legacy session-log-omp adapters first).
+# OMP; legacy_cleanup removes their legacy session-log-omp adapters first). Without a
+# codex-goodies plugin package the Codex entries stay: the command that replaces them would run
+# nothing, while an older release's entry may still run its package.
 # Callers hold the install lock.
 repair_registrations() {
   case "$HARNESS" in
-    codex|cursor) repair_native_hooks ;;
+    codex)
+      if codex_plugin_package_present; then repair_native_hooks; fi
+      ;;
+    cursor) repair_native_hooks ;;
     opencode)
       repair_dangling_adapter_link plugin
       repair_dangling_adapter_link usage
@@ -395,9 +409,11 @@ install_adapter() {
 }
 
 # Like `on`, the legacy cleanup comes before the adapter preflight: it removes the standalone
-# adapter copies of earlier releases that sit where the adapter goes.
+# adapter copies of earlier releases that sit where the adapter goes. Without a codex-goodies plugin
+# package nothing is installed for Codex, as in repair_registrations.
 repair_enabled_adapter() {
   [[ -f "$FLAG_FILE" && ! -L "$FLAG_FILE" ]] || return 0
+  [[ "$HARNESS" != codex ]] || codex_plugin_package_present || return 0
   adapter_current && return 0
   preflight_enable_flag
   preflight_state_files
