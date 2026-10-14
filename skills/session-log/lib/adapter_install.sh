@@ -48,6 +48,12 @@ manifest_current() {
 
 adapter_current() {
   validate_state_dir
+  # Codex's hooks.json command picks the newest plugin package itself, so no package version or
+  # asset hash decides whether it is current.
+  if [[ "$HARNESS" == codex ]]; then
+    native_hooks_current
+    return
+  fi
   [[ -f "$STATE_DIR/desired.version" && ! -L "$STATE_DIR/desired.version" ]] || return 1
   [[ "$(cat "$STATE_DIR/desired.version")" == "$VERSION" ]] || return 1
   [[ -f "$STATE_DIR/adapter.version" && ! -L "$STATE_DIR/adapter.version" ]] || return 1
@@ -359,9 +365,11 @@ install_adapter() {
       atomic_link "$(source_for usage)" "$(target_for usage)"
       ;;
   esac
-  write_private_file "$STATE_DIR/desired.version" "$VERSION"
-  write_private_file "$STATE_DIR/adapter.version" "$VERSION"
-  write_manifest
+  if [[ "$HARNESS" != codex ]]; then
+    write_private_file "$STATE_DIR/desired.version" "$VERSION"
+    write_private_file "$STATE_DIR/adapter.version" "$VERSION"
+    write_manifest
+  fi
   clear_runtime_markers
 }
 

@@ -44,7 +44,7 @@ assert_link() {
 package_root_for() {
   case "$1" in
     claude) printf '%s\n' "$TEST_HOME/.claude/plugins/cache/user538295/claude-goodies/$PACKAGE_VERSION/skills/session-log" ;;
-    codex) printf '%s\n' "$TEST_HOME/.codex/skills/session-log" ;;
+    codex) printf '%s\n' "$TEST_HOME/.codex/plugins/cache/user538295/codex-goodies/$PACKAGE_VERSION/skills/session-log" ;;
     cursor) printf '%s\n' "$TEST_HOME/.cursor/skills/session-log" ;;
     opencode) printf '%s\n' "$TEST_HOME/.config/opencode/skills/session-log" ;;
     omp) printf '%s\n' "$TEST_HOME/.omp/agent/skills/session-log" ;;

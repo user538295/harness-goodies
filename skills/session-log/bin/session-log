@@ -60,7 +60,6 @@ declare -rA ADAPTER_TARGETS=(
 )
 declare -rA HARNESS_KINDS=(
   [cursor]="hook configurator usage"
-  [codex]="hook configurator usage"
   [opencode]="plugin usage"
   [omp]="extension usage"
 )

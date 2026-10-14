@@ -19,6 +19,16 @@ MAX_TEMP_FILE_ATTEMPTS = 20
 READ_FLAGS = pathsafe.FILE_FLAGS | os.O_NONBLOCK
 # Codex runs a new or changed hooks.json command only after the user reviews and trusts it.
 RESTORE_FOLLOW_UP = {"codex": "; review and trust them in Codex, then restart"}
+# The command Codex runs from ~/.codex/hooks.json. It names no package: when the hook runs it picks
+# the newest installed codex-goodies package (the order the session-log skill's locator uses) and
+# does nothing once none is installed. Codex trusts a hook by a hash of this text, so plugin updates
+# never ask for a new review. `sh -c` keeps it POSIX whatever the user's $SHELL, which Codex runs it
+# with; `exec` makes the Codex process the hook's parent, which its runtime marker records.
+CODEX_COMMAND = (
+    "sh -c 'd=$(ls -d \"$HOME\"/.codex/plugins/cache/*/codex-goodies/*/skills/session-log 2>/dev/null"
+    " | sort -V | tail -1); [ -f \"$d/adapters/native/session_log_hook.py\" ] || exit 0;"
+    " exec python3 \"$d/adapters/native/session_log_hook.py\" codex {lifecycle}'"
+)
 
 
 def _events(harness):
@@ -44,12 +54,17 @@ def fail(message):
 
 
 def build_command(harness, hook, lifecycle):
+    if harness == "codex":
+        return CODEX_COMMAND.format(lifecycle=lifecycle)
     return f"python3 {shlex.quote(str(hook))} {harness} {lifecycle}"
 
 
 def managed_command(value, harness, lifecycle):
+    """Whether ``value`` is a session-log command: Codex's current one, or one naming a package's hook by path."""
     if not isinstance(value, str):
         return False
+    if harness == "codex" and value == CODEX_COMMAND.format(lifecycle=lifecycle):
+        return True
     try:
         words = shlex.split(value)
     except ValueError:

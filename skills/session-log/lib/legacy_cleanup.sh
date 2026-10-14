@@ -21,13 +21,16 @@ readonly CLAUDE_LEGACY_SCRIPTS=(prompt_log_save.sh prompt_log_new_session.sh pro
 # plugin-root, pointed at the running plugin package, while a seeded copy the cleanup had to keep
 # still reads it.
 readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version plugin-root)
+# The Codex adapter installer's version stamps and manifest: its hooks.json command names no package.
+readonly CODEX_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version)
 
 # The cleanup of the current harness: any harness whose older releases left something behind has
 # its own legacy_cleanup_<harness> here, whether or not its plugin owns its hooks yet.
 legacy_cleanup() {
   case "$HARNESS" in
     claude) legacy_cleanup_claude ;;
-    codex|cursor) ;;
+    codex) legacy_cleanup_codex ;;
+    cursor) ;;
     opencode) legacy_cleanup_opencode ;;
     omp) legacy_cleanup_omp ;;
   esac
@@ -51,6 +54,22 @@ legacy_cleanup_claude() {
   remove_seeded_package "$HARNESS_ROOT/skills/session-log"
   remove_claude_obsolete_state
   [[ -z "$unrecognized" ]] || fail "refusing to remove unrecognized legacy Claude script: $unrecognized"
+}
+
+# The package copy (or link) older install.sh releases seeded into ~/.codex/skills, and their
+# adapter stamps. Their hooks.json entries, which name a package's hook by path, are replaced by
+# repair_registrations or the adapter install that follows.
+legacy_cleanup_codex() {
+  local candidate
+  require_command python3
+  remove_seeded_package "$HARNESS_ROOT/skills/session-log"
+  validate_state_dir
+  for candidate in "${CODEX_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"; do
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    # A concurrent cleanup may have removed it already.
+    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
+      fail "cannot remove obsolete state file: $candidate"
+  done
 }
 
 # The standalone adapter copies (regular files) and the session-log-omp entrypoints of earlier
