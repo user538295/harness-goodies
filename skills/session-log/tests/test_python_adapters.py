@@ -785,6 +785,35 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
                     self.assertEqual(self.run_cli(environment, "has-removable", "plugin"), plugin_status)
                     self.assertEqual(self.run_cli(environment, "has-removable", "plugin-dead-only"), dead_only_status)
 
+    def test_remove_cli_reports_only_what_it_removed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            settings_path = home / "settings.json"
+            environment = {**os.environ, "HOME": str(home), "SETTINGS_PATH": str(settings_path),
+                           "SESSION_LOG_OWNER_MARKER": self.OWNER}
+            removed_one = f"removed 1 session-log hook registration(s) from {settings_path}\n"
+            for name, (command, *statuses) in self.removable_cases(home).items():
+                for mode, status in zip(("plugin", "plugin-dead-only"), statuses):
+                    with self.subTest(name, mode=mode):
+                        document = {"hooks": {"Stop": [{"hooks": [command_hook(command)]}]}}
+                        settings_path.write_text(json.dumps(document))
+                        result = self.cli(environment, "remove", mode)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, removed_one if status == 0 else "")
+                        self.assertEqual(json.loads(settings_path.read_text()), {} if status == 0 else document)
+
+    def test_remove_cli_counts_every_removed_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory).resolve() / "settings.json"
+            environment = {**os.environ, "SETTINGS_PATH": str(settings_path), "SESSION_LOG_OWNER_MARKER": self.OWNER}
+            settings_path.write_text(json.dumps({"hooks": {
+                "SessionStart": [{"hooks": [self.owned("/x/claude_hook.sh", "session-start")]}],
+                "Stop": [{"hooks": [self.owned("/x/claude_hook.sh", "stop"), self.owned("/y/claude_hook.sh", "stop")]}],
+            }}))
+            result = self.cli(environment, "remove", "plugin")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, f"removed 3 session-log hook registration(s) from {settings_path}\n")
+
     def test_operations_refuse_a_missing_or_unknown_mode(self):
         environment = {**os.environ, "SETTINGS_PATH": "/nonexistent/settings.json", "SESSION_LOG_OWNER_MARKER": self.OWNER}
         for arguments in (("repair",), ("repair", "bogus"), ("remove", "standalone"), ("has-removable",)):

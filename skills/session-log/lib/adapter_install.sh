@@ -436,15 +436,19 @@ install_claude_settings() {
 }
 
 # Plugin modes: drop the settings.json hooks CLAUDE_SETTINGS_MODE makes removable; the
-# plugin registers its own.
+# plugin registers its own. Removing any of them clears the runtime markers, as
+# repair_claude_settings does: Claude Code's file watcher normally applies settings.json hook
+# edits to running sessions, so a session logging through a removed registration stops logging.
+# Dead registrations clear them too (conservatively). The removal report is not printed.
 remove_claude_settings_hooks() {
   require_command python3
-  local settings="$HARNESS_ROOT/settings.json"
+  local settings="$HARNESS_ROOT/settings.json" removed
   ensure_safe_parent "$settings"
   [[ ! -L "$settings" ]] || fail "refusing to update symlinked Claude settings: $settings"
   [[ ! -d "$settings" ]] || fail "refusing to update directory as Claude settings: $settings"
-  SETTINGS_PATH="$settings" SESSION_LOG_OWNER_MARKER="$OWNER_MARKER_VALUE" \
-    python3 "$SESSION_LOG_LIB/claude_settings.py" remove "$CLAUDE_SETTINGS_MODE"
+  removed="$(SETTINGS_PATH="$settings" SESSION_LOG_OWNER_MARKER="$OWNER_MARKER_VALUE" \
+    python3 "$SESSION_LOG_LIB/claude_settings.py" remove "$CLAUDE_SETTINGS_MODE")"
+  if [[ -n "$removed" ]]; then clear_runtime_markers; fi
 }
 
 clear_runtime_markers() {
@@ -506,6 +510,9 @@ repair_claude_settings() {
   report="$(SETTINGS_PATH="$settings" HOOK_PATH="$hook" SESSION_LOG_OWNER_MARKER="$OWNER_MARKER_VALUE" \
     python3 "$SESSION_LOG_LIB/claude_settings.py" repair "$CLAUDE_SETTINGS_MODE")"
   print_repair_report "$report"
+  # Plugin modes only remove, so any report means a registration was removed; see
+  # remove_claude_settings_hooks for why that clears the runtime markers.
+  if claude_registers_no_settings_hooks && [[ -n "$report" ]]; then clear_runtime_markers; fi
 }
 
 repair_native_hooks() {
@@ -522,6 +529,7 @@ repair_native_hooks() {
 # ones removed from a plugin copy not enabled at user scope),
 # hooks.json entries (Codex, Cursor), dangling plugin-cache adapter links (OpenCode,
 # OMP; install.sh removes their legacy session-log-omp adapters before every command).
+# Removing a Claude settings.json registration in a plugin mode clears the runtime markers.
 # Callers hold the install lock.
 repair_registrations() {
   case "$HARNESS" in
@@ -538,10 +546,14 @@ repair_registrations() {
   esac
 }
 
+# Clears the runtime markers, except in Claude plugin modes, where remove_claude_settings_hooks
+# clears them only when it removes a registration.
 install_adapter() {
+  local markers_stale=1
   case "$HARNESS" in
     claude)
       if claude_registers_no_settings_hooks; then
+        markers_stale=0
         remove_claude_settings_hooks
       else
         install_claude_settings
@@ -567,7 +579,7 @@ install_adapter() {
   write_private_file "$STATE_DIR/desired.version" "$VERSION"
   write_private_file "$STATE_DIR/adapter.version" "$VERSION"
   write_manifest
-  clear_runtime_markers
+  if ((markers_stale)); then clear_runtime_markers; fi
 }
 
 repair_enabled_adapter() {

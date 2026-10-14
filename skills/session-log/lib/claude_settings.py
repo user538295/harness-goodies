@@ -8,8 +8,8 @@ auditable, testable module instead of two large shell here-documents.
 
 Usage:
     python3 claude_settings.py install    # SETTINGS_PATH, HOOK_PATH, SESSION_LOG_OWNER_MARKER
-    python3 claude_settings.py remove <plugin-mode>         # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER
-    python3 claude_settings.py repair <mode>                # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER, HOOK_PATH (standalone)
+    python3 claude_settings.py remove <plugin-mode>         # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER; prints a line only if it removed any
+    python3 claude_settings.py repair <mode>                # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER, HOOK_PATH (standalone); prints what it changed
     python3 claude_settings.py has-removable <plugin-mode>  # SETTINGS_PATH, SESSION_LOG_OWNER_MARKER; exit 0 if any
     python3 claude_settings.py plugin-hooks-current  # PLUGIN_ROOT; exit 0 if hooks.json registers
     python3 claude_settings.py plugin-enabled  # SETTINGS_PATH, PLUGIN_KEY; exit 0 if enabledPlugins sets it to true
@@ -640,12 +640,21 @@ def install():
 
 
 def remove(mode):
-    """Drop the registrations plugin ``mode`` makes removable; never registers any."""
+    """Drop the registrations plugin ``mode`` makes removable, and print how many when any were;
+    never registers any."""
     settings_path = os.environ["SETTINGS_PATH"]
     removable = _removable_hook(mode, os.environ["SESSION_LOG_OWNER_MARKER"])
     if not os.path.lexists(settings_path):
         return
-    _update_settings(lambda document: _remove_managed_hooks(document, removable), create=False)
+
+    def strip(document):
+        removed = len(_registrations(document, removable))
+        _remove_managed_hooks(document, removable)
+        return removed
+
+    removed = _update_settings(strip, create=False)
+    if removed:
+        print(f"removed {removed} session-log hook registration(s) from {settings_path}")
 
 
 def _registrations(document, selected):

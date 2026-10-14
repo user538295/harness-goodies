@@ -97,9 +97,11 @@ repair_fingerprint() {
 # Session start runs the shared repair, logging on or off: a plugin copy drops every
 # settings.json registration while enabled at user scope (its hooks/hooks.json owns the
 # hooks), otherwise only dead ones; a standalone copy collapses repeated or stale ones.
-# Best effort: it never fails the hook and all output is discarded. A per-copy stamp of the
-# last successful repair's fingerprint skips it until that fingerprint changes; a file
-# without session-log hooks costs one grep.
+# A plugin copy's removal clears the runtime markers before this hook writes its own (other
+# running sessions rewrite theirs on their next hook event). Best effort: it never fails the
+# hook and all output is discarded. A per-copy stamp of the last successful repair's
+# fingerprint skips it until that fingerprint changes; a file without session-log hooks costs
+# one grep.
 repair_settings_registrations() {
   local settings="$CLAUDE_ROOT/settings.json" marker fingerprint stamp checksum
   # shellcheck source=../../lib/common.sh
