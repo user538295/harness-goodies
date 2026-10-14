@@ -55,14 +55,11 @@ declare -rA ADAPTER_SOURCES=(
 declare -rA ADAPTER_TARGETS=(
   [opencode:plugin]="plugins/session-log.js"
   [opencode:usage]="scripts/session_log_usage.sh"
-  [omp:extension]="extensions/session-log.js"
-  [omp:usage]="skills/session-log/scripts/session_log_usage.ts"
 )
 declare -rA HARNESS_KINDS=(
   [cursor]="hook configurator usage"
   [codex]="hook configurator usage"
   [opencode]="plugin usage"
-  [omp]="extension usage"
 )
 
 split_command_string() {
@@ -316,7 +313,8 @@ set_disabled() {
     ensure_private_directory "$(dirname "$FLAG_FILE")"
     set_enable_state_locked off
   fi
-  clear_runtime_markers
+  # A loaded extension stays loaded after `off`, so its marker stays too.
+  runtime_marks_load || clear_runtime_markers
 }
 
 # True when the harness plugin registers the session-log hooks from its own package. Its hooks
@@ -325,7 +323,13 @@ set_disabled() {
 # here; the leftovers of its older releases go in its legacy_cleanup_<harness>
 # (lib/legacy_cleanup.sh).
 plugin_owns_hooks() {
-  [[ "$HARNESS" == claude ]]
+  [[ "$HARNESS" == claude || "$HARNESS" == omp ]]
+}
+
+# True when the runtime marker means "the extension is loaded" rather than "the hooks saw the flag":
+# omp's extension writes it when it loads, logging on or off, and reads the flag at every prompt.
+runtime_marks_load() {
+  [[ "$HARNESS" == omp ]]
 }
 
 print_status() {
@@ -461,7 +465,8 @@ run_best_effort_cleanup() {
 
 # `on` for a plugin-owned harness: best-effort legacy cleanup, then the enable flag. Without a
 # current runtime marker, a flag this command created takes effect at the next prompt; a flag that
-# was already on means the hooks of the running session never saw it, so they are not loaded.
+# was already on means the hooks of the running session never saw it, so they are not loaded. A
+# missing load marker (runtime_marks_load) always means the extension is not loaded.
 enable_plugin_hooks() {
   local was_enabled=0
   preflight_enable_flag
@@ -472,7 +477,7 @@ enable_plugin_hooks() {
   set_enabled
   if runtime_current; then
     printf '%s: on\n' "$HARNESS_LABEL"
-  elif ((was_enabled)); then
+  elif ((was_enabled)) || runtime_marks_load; then
     printf '%s: on — restart required\n' "$HARNESS_LABEL"
   else
     printf '%s: on — logging starts with the next prompt\n' "$HARNESS_LABEL"

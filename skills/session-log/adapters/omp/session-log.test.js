@@ -114,6 +114,112 @@ describe("ensureLog", () => {
 	});
 });
 
+// The extension as omp loads it from a marketplace install: <plugins>/cache/plugins/<marketplace>___<plugin>___<version>
+// holds the repository root, and <plugins>/node_modules/<package name> links the version installed now.
+const PACKAGE_DIR = path.resolve(import.meta.dir, "../..");
+const PLUGIN_PACKAGE_NAME = "opencode-goodies";
+const EXECUTABLE_MODE = 0o755;
+const BACKGROUND_WAIT_MS = 5000;
+// Long enough for a background repair the extension should not have started to show up.
+const NO_CLEANUP_WAIT_MS = 1000;
+const BACKGROUND_TEST_TIMEOUT_MS = 2 * BACKGROUND_WAIT_MS;
+const POLL_INTERVAL_MS = 50;
+const recordingCli = (label) => `#!/usr/bin/env bash\nprintf '%s %s\\n' "${label}" "$*" >> "$HOME/cli-calls"\n`;
+const pluginsDirectory = (home) => path.join(home, ".omp", "plugins");
+const installPlugin = (home, version) => {
+	const root = path.join(pluginsDirectory(home), "cache", "plugins", `user538295___omp-goodies___${version}`);
+	fs.mkdirSync(path.join(root, "skills"), { recursive: true });
+	fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: PLUGIN_PACKAGE_NAME, version }));
+	fs.cpSync(PACKAGE_DIR, path.join(root, "skills", "session-log"), { recursive: true, filter: (source) => !source.includes(`${path.sep}tests`) });
+	fs.writeFileSync(path.join(root, "skills", "session-log", "bin", "session-log"), recordingCli(version), { mode: EXECUTABLE_MODE });
+	return root;
+};
+const linkInstalledPlugin = (home, root) => {
+	const link = path.join(pluginsDirectory(home), "node_modules", PLUGIN_PACKAGE_NAME);
+	fs.mkdirSync(path.dirname(link), { recursive: true });
+	fs.rmSync(link, { force: true });
+	fs.symlinkSync(root, link);
+};
+const extensionOf = (root) => path.join(root, "skills", "session-log", "adapters", "omp", "session-log.js");
+// Loads the extension, optionally deletes a directory the way an upgrade deletes the old cache, then runs a command.
+const LOAD_AND_RUN = String.raw`
+import fs from "node:fs";
+const loaded = await import(process.env.EXTENSION);
+let handler;
+loaded.default({ registerCommand: (_name, options) => { handler = options.handler; }, on() {} });
+if (process.env.DELETE_BEFORE_COMMAND) fs.rmSync(process.env.DELETE_BEFORE_COMMAND, { recursive: true, force: true });
+if (process.env.COMMAND) await handler(process.env.COMMAND, { ui: { notify() {} } });
+`;
+const loadExtension = (home, extension, env = {}) => {
+	const environment = { ...process.env, HOME: home, EXTENSION: extension, ...env };
+	delete environment.PI_CODING_AGENT_DIR;
+	delete environment.OMP_PROMPT_LOG_DIR;
+	const result = Bun.spawnSync(["bun", "--eval", LOAD_AND_RUN], { env: environment });
+	expect(result.stderr.toString()).toBe("");
+	expect(result.exitCode).toBe(0);
+};
+const cliCalls = (home) => {
+	try { return fs.readFileSync(path.join(home, "cli-calls"), "utf8"); } catch { return ""; }
+};
+const waitForCliCalls = async (home, waitMs = BACKGROUND_WAIT_MS) => {
+	const deadline = Date.now() + waitMs;
+	while (!cliCalls(home) && Date.now() < deadline) await Bun.sleep(POLL_INTERVAL_MS);
+	return cliCalls(home);
+};
+
+describe("plugin command", () => {
+	test("runs the CLI of the package the extension loaded from", () => {
+		const home = temporaryDirectory();
+		const current = installPlugin(home, "1.0.0");
+		linkInstalledPlugin(home, current);
+		loadExtension(home, extensionOf(current), { COMMAND: "status" });
+		expect(cliCalls(home)).toBe("1.0.0 --entrypoint omp --harness omp --arguments status\n");
+	});
+	test("runs the installed version's CLI once an upgrade deleted the loaded package", () => {
+		const home = temporaryDirectory();
+		const loaded = installPlugin(home, "1.0.0");
+		linkInstalledPlugin(home, installPlugin(home, "2.0.0"));
+		loadExtension(home, extensionOf(loaded), { COMMAND: "off", DELETE_BEFORE_COMMAND: loaded });
+		expect(cliCalls(home)).toBe("2.0.0 --entrypoint omp --harness omp --arguments off\n");
+	});
+});
+
+describe("legacy cleanup at load", () => {
+	const legacyLeftovers = {
+		"extension link": (agent) => {
+			fs.mkdirSync(path.join(agent, "extensions"), { recursive: true });
+			fs.symlinkSync(path.join(agent, "skills", "session-log", "adapters", "omp", "session-log.js"), path.join(agent, "extensions", "session-log.js"));
+		},
+		"session-log-omp extension": (agent) => {
+			fs.mkdirSync(path.join(agent, "extensions"), { recursive: true });
+			fs.writeFileSync(path.join(agent, "extensions", "session-log-omp.js"), "// universal-session-log: managed\n");
+		},
+		"seeded package copy": (agent) => {
+			fs.mkdirSync(path.join(agent, "skills", "session-log"), { recursive: true });
+			fs.writeFileSync(path.join(agent, "skills", "session-log", ".universal-session-log.manifest"), "format=1\n");
+		},
+		"skill-root link": (agent) => {
+			fs.mkdirSync(path.join(agent, "skills"), { recursive: true });
+			fs.symlinkSync(path.join(agent, "elsewhere"), path.join(agent, "skills", "session-log"));
+		},
+	};
+	for (const [name, leave] of Object.entries(legacyLeftovers)) {
+		test(`runs repair in the background for a leftover ${name}`, async () => {
+			const home = temporaryDirectory();
+			const plugin = installPlugin(home, "1.0.0");
+			leave(path.join(home, ".omp", "agent"));
+			loadExtension(home, extensionOf(plugin));
+			expect(await waitForCliCalls(home)).toBe("1.0.0 --entrypoint omp --harness omp repair\n");
+		}, BACKGROUND_TEST_TIMEOUT_MS);
+	}
+	test("runs nothing without leftovers", async () => {
+		const home = temporaryDirectory();
+		const plugin = installPlugin(home, "1.0.0");
+		loadExtension(home, extensionOf(plugin));
+		expect(await waitForCliCalls(home, NO_CLEANUP_WAIT_MS)).toBe("");
+	}, BACKGROUND_TEST_TIMEOUT_MS);
+});
+
 describe("stableKey", () => {
 	test("is deterministic and 64-hex", () => {
 		const key = stableKey("a", "b", 1);

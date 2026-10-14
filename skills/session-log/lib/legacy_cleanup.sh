@@ -4,12 +4,14 @@
 # Sourced by bin/session-log after lib/adapter_install.sh, in the same shell, so it shares bin's
 # globals (HARNESS, HARNESS_ROOT, STATE_DIR, HARNESS_LABEL, OWNER_MARKER_VALUE, ...). `on` and
 # `repair` run it under the install lock; Claude Code's SessionStart hook runs it silently through
-# `repair`; outside Claude Code, `status` and `usage` run it too when they repair an enabled adapter,
-# so an unowned file at a legacy path fails them, as the old installer did before every command.
+# `repair`, and the OMP extension starts `repair` in the background when it loads; in Codex, Cursor,
+# and OpenCode, `status` and `usage` run it too when they repair an enabled adapter, so an unowned
+# file at a legacy path fails them, as the old installer did before every command.
 # It removes only what is proven to be session-log's and never clears runtime markers: a harness
 # plugin's own hooks keep logging whatever duplicate registration goes. Claude Code removals of
-# registrations, scripts, and package copies are reported through print_repair_report; obsolete
-# state files and the OpenCode/OMP leftovers of pre-universal releases go silently.
+# registrations, scripts, and package copies, and OMP removals of adapter links and package copies,
+# are reported through print_repair_report; obsolete state files and the OpenCode/OMP leftovers of
+# pre-universal releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
@@ -21,6 +23,8 @@ readonly CLAUDE_LEGACY_SCRIPTS=(prompt_log_save.sh prompt_log_new_session.sh pro
 # plugin-root, pointed at the running plugin package, while a seeded copy the cleanup had to keep
 # still reads it.
 readonly CLAUDE_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version plugin-root)
+# The OMP adapter installer's version stamps and manifest, which nothing reads any more.
+readonly OMP_OBSOLETE_STATE_FILES=(adapter.version adapter.manifest desired.version)
 
 # The cleanup of the current harness: any harness whose older releases left something behind has
 # its own legacy_cleanup_<harness> here, whether or not its plugin owns its hooks yet.
@@ -68,15 +72,44 @@ legacy_cleanup_opencode() {
   remove_managed_path "$HARNESS_ROOT/plugins/session-log-omp.js"
 }
 
-# The standalone extension copy and the session-log-omp skill and extension of earlier releases.
+# What older releases left in the OMP root: the extension link (or standalone copy) `on` made, the
+# package copy seeded into the skill root with its usage link inside, the adapter state files, and
+# the session-log-omp skill and extension. omp loads a leftover extension beside the plugin's own.
+# Every path is checked before the first removal. Only a seeded copy that is a real directory is
+# entered for its usage link; the package-copy removal handles a symlinked one.
 legacy_cleanup_omp() {
-  local extension="$HARNESS_ROOT/extensions/session-log.js"
-  [[ -L "$extension" ]] || validate_managed_path "$extension"
+  local extension="$HARNESS_ROOT/extensions/session-log.js" seeded="$HARNESS_ROOT/skills/session-log"
+  local usage="$HARNESS_ROOT/skills/session-log/scripts/session_log_usage.ts"
+  if [[ -L "$extension" ]]; then validate_legacy_omp_link extension "$extension"; else validate_managed_path "$extension"; fi
+  if [[ ! -L "$seeded" && -L "$usage" ]]; then validate_legacy_omp_link usage "$usage"; fi
   validate_managed_path "$HARNESS_ROOT/skills/session-log-omp" "$HARNESS_ROOT/skills/session-log-omp/SKILL.md"
   validate_managed_path "$HARNESS_ROOT/extensions/session-log-omp.js"
-  [[ -L "$extension" ]] || remove_managed_path "$extension"
+  if [[ -L "$extension" ]]; then remove_legacy_omp_link "$extension"; else remove_managed_path "$extension"; fi
+  if [[ ! -L "$seeded" && -L "$usage" ]]; then remove_legacy_omp_link "$usage"; fi
   remove_managed_path "$HARNESS_ROOT/skills/session-log-omp" "$HARNESS_ROOT/skills/session-log-omp/SKILL.md"
   remove_managed_path "$HARNESS_ROOT/extensions/session-log-omp.js"
+  remove_seeded_package "$seeded"
+  remove_obsolete_state_files "${OMP_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}"
+}
+
+# Fails unless symlink $2 points at OMP adapter kind $1 where older releases linked it: inside a
+# session-log package (the seeded copy, a plugin cache, this package) or the release store.
+validate_legacy_omp_link() {
+  local kind="$1" link="$2" destination
+  ensure_safe_parent "$link"
+  destination="$(readlink "$link")"
+  is_package_adapter_link "$kind" "$destination" && return 0
+  case "/$destination/" in
+    */../*|*/./*) ;;
+    *) [[ "$destination" != "$STORE/releases/"*/"${ADAPTER_SOURCES[omp:$kind]}" ]] || return 0 ;;
+  esac
+  fail "refusing to remove unowned legacy path: $link"
+}
+
+# Callers run validate_legacy_omp_link on it first.
+remove_legacy_omp_link() {
+  remove_checked_path "$1"
+  print_repair_report "removed legacy adapter link $1"
 }
 
 preflight_claude_settings() {
@@ -146,10 +179,19 @@ remove_claude_obsolete_state() {
     record_running_plugin_root
   fi
   for candidate in "${CLAUDE_OBSOLETE_STATE_FILES[@]/#/$STATE_DIR/}" "$STATE_DIR"/settings-repair.*.stamp; do
-    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
     if [[ "$candidate" == "$STATE_DIR/plugin-root" ]] && [[ -e "$seeded" || -L "$seeded" ]]; then
       continue
     fi
+    remove_obsolete_state_files "$candidate"
+  done
+}
+
+# Removes each state file named; a path that is not a regular file stays.
+remove_obsolete_state_files() {
+  local candidate
+  validate_state_dir
+  for candidate in "$@"; do
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
     # A concurrent cleanup may have removed it already.
     unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" ]] ||
       fail "cannot remove obsolete state file: $candidate"

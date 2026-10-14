@@ -489,6 +489,26 @@ const enabledFile = path.join(logDir, ".enabled");
 const stateDir = path.join(agentDir, "session-log");
 const packageRoot = path.resolve(import.meta.dir, "../..");
 const version = fs.readFileSync(path.join(packageRoot, "VERSION"), "utf8").trim();
+// omp runs a marketplace plugin from <plugins>/cache/plugins/<marketplace>___<plugin>___<version>,
+// linked as <plugins>/node_modules/<package name>, and an upgrade deletes the version a running
+// session loaded this module from. The package that link names then runs the session's commands.
+// It is found at load, while the loaded version's package.json still exists.
+const pluginRoot = path.resolve(packageRoot, "../..");
+const pluginsDir = path.resolve(pluginRoot, "../../..");
+function installedPackageRoot() {
+	if (path.relative(pluginsDir, path.dirname(pluginRoot)) !== path.join("cache", "plugins")) return "";
+	try {
+		const { name } = JSON.parse(fs.readFileSync(path.join(pluginRoot, "package.json"), "utf8"));
+		return typeof name === "string" && name ? path.join(pluginsDir, "node_modules", name, "skills", "session-log") : "";
+	} catch {
+		return "";
+	}
+}
+const linkedPackageRoot = installedPackageRoot();
+function sessionLogCli() {
+	const own = path.join(packageRoot, "bin", "session-log");
+	return fs.existsSync(own) || !linkedPackageRoot ? own : path.join(linkedPackageRoot, "bin", "session-log");
+}
 const MAX_APPEND_ATTEMPTS = 5;
 const APPEND_RETRY_DELAY_MS = 250;
 const MAX_CLOSED_SESSIONS = 1024;
@@ -917,10 +937,35 @@ function currentSessionFile(ctx) {
 	try { return file && fs.statSync(file).isFile() ? file : ""; } catch { return ""; }
 }
 
+// Older releases linked an extension into the OMP root and seeded a package copy into its skill
+// root; omp loads such an extension beside this one. `repair` removes them in the background, once
+// per process, logging on or off; a failed attempt runs again at the next start.
+const seededPackage = path.join(agentDir, "skills", "session-log");
+const LEGACY_LEFTOVERS = [
+	path.join(agentDir, "extensions", "session-log.js"),
+	path.join(agentDir, "extensions", "session-log-omp.js"),
+	path.join(agentDir, "skills", "session-log-omp"),
+	path.join(seededPackage, ".universal-session-log.manifest"),
+];
+let legacyCleanupStarted = false;
+const pathPresent = (candidate) => {
+	try { return Boolean(fs.lstatSync(candidate)); } catch { return false; }
+};
+function legacyLeftoversPresent() {
+	if (LEGACY_LEFTOVERS.some(pathPresent)) return true;
+	try { return fs.lstatSync(seededPackage).isSymbolicLink(); } catch { return false; }
+}
+function cleanupLegacyLeftovers() {
+	if (legacyCleanupStarted || !legacyLeftoversPresent()) return;
+	legacyCleanupStarted = true;
+	try {
+		Bun.spawn([sessionLogCli(), "--entrypoint", "omp", "--harness", "omp", "repair"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" }).unref();
+	} catch {}
+}
+
 function runUniversalCommand(argumentString, ctx) {
-	const cli = path.join(packageRoot, "bin", "session-log");
 	const rawArguments = usageCommandArguments(String(argumentString || "status"), currentSessionFile(ctx));
-	const child = Bun.spawnSync([cli, "--entrypoint", "omp", "--harness", "omp", "--arguments", rawArguments], { stdout: "pipe", stderr: "pipe" });
+	const child = Bun.spawnSync([sessionLogCli(), "--entrypoint", "omp", "--harness", "omp", "--arguments", rawArguments], { stdout: "pipe", stderr: "pipe" });
 	const stdout = new TextDecoder().decode(child.stdout).trimEnd();
 	const stderr = new TextDecoder().decode(child.stderr).trim();
 	if (child.exitCode !== 0) throw new Error(stderr || stdout || `session-log exited with ${child.exitCode}`);
@@ -960,6 +1005,7 @@ function composeFinalizeRecord({ state, root, messages, ctx, start, end, previou
 export default function sessionLogOmp(pi, options = {}) {
 	const now = options.now ?? Date.now;
 	markLoaded();
+	cleanupLegacyLeftovers();
 	pi.registerCommand("session-log", {
 		description: "Manage session prompt logging and usage totals",
 		handler: async (args, ctx) => {
