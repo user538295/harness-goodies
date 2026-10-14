@@ -3,10 +3,18 @@
 set -euo pipefail
 # A hook never reports an error: every failure below exits 0 without output.
 
-readonly PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-readonly VERSION="$(tr -d '[:space:]' 2>/dev/null < "$PACKAGE_ROOT/VERSION")"
+# Cursor imports Claude Code plugins and ~/.claude/settings.json hooks and runs them itself, always
+# exporting CURSOR_VERSION to the hook (its hook environment builder); Claude Code never sets it.
+# Cursor's sessions are logged by Cursor's own adapter, so this one stays out of them.
+[[ -z "${CURSOR_VERSION:-}" ]] || exit 0
+
+PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+readonly PACKAGE_ROOT
+VERSION="$(tr -d '[:space:]' 2>/dev/null < "$PACKAGE_ROOT/VERSION")" || VERSION=""
+readonly VERSION
 [[ -n "$VERSION" ]] || exit 0  # incomplete package
-readonly HOME_ROOT="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+HOME_ROOT="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+readonly HOME_ROOT
 readonly CLAUDE_ROOT="$HOME_ROOT/.claude"
 readonly STATE_DIR="$CLAUDE_ROOT/session-log"
 readonly SCRIPT_DIR="$PACKAGE_ROOT/adapters/claude/scripts"

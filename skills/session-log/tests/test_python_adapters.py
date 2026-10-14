@@ -1655,6 +1655,58 @@ LIFECYCLE_SCRIPT_STDOUT = "hook output"
 FAILING_LIFECYCLE_SCRIPT = f'#!/usr/bin/env bash\nprintf "{LIFECYCLE_SCRIPT_STDOUT}"\necho "session-log: failed" >&2\nexit 1\n'
 
 
+# Cursor (3.23.12) imports enabled Claude Code plugins and ~/.claude/settings.json hooks and runs them with
+# its own hook environment (`_buildHookEnvironment` in the workbench, `buildHookEnvironment` in the agent-host
+# daemon), which always sets CURSOR_VERSION, and with a Cursor payload carrying `cursor_version`.
+CURSOR_VERSION_UNDER_TEST = "3.23.12"
+CURSOR_HOOK_EVENTS = {"session-start": "sessionStart", "user-prompt": "beforeSubmitPrompt",
+                      "stop": "stop", "subagent-stop": "subagentStop"}
+
+
+class ClaudeHookInsideCursorTests(unittest.TestCase):
+    """Run by Cursor instead of Claude Code, the Claude hook exits 0 silently and touches nothing."""
+
+    def cursor_environment(self, home, plugin):
+        return {**harness_environment(home), "CURSOR_VERSION": CURSOR_VERSION_UNDER_TEST,
+                "CURSOR_PROJECT_DIR": str(home), "CLAUDE_PROJECT_DIR": str(home),
+                "CURSOR_PLUGIN_ROOT": str(plugin.parents[1]), "CLAUDE_PLUGIN_ROOT": str(plugin.parents[1])}
+
+    def cursor_payload(self, home, lifecycle):
+        return json.dumps({"session_id": "cursor-conversation", "conversation_id": "cursor-conversation",
+                           "hook_event_name": CURSOR_HOOK_EVENTS[lifecycle], "cursor_version": CURSOR_VERSION_UNDER_TEST,
+                           "workspace_roots": [str(home)], "prompt": "cursor prompt", "cwd": str(home)})
+
+    def test_every_lifecycle_exits_silently_without_logging_or_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            plugin = claude_package(home)
+            (home / ".claude/prompt-logs").mkdir(parents=True)
+            (home / ".claude/prompt-logs/.enabled").write_text("")
+            settings = home / ".claude/settings.json"
+            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
+            original = settings.read_bytes()
+            for lifecycle in CURSOR_HOOK_EVENTS:
+                with self.subTest(lifecycle=lifecycle):
+                    result = run_claude_hook(plugin, home, lifecycle, payload=self.cursor_payload(home, lifecycle),
+                                             environment=self.cursor_environment(home, plugin))
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+            self.assertEqual(settings.read_bytes(), original, "Cursor's session start ran the legacy cleanup")
+            self.assertFalse((home / ".claude/session-log").exists(), "Cursor's hook wrote Claude runtime state")
+            self.assertEqual(sorted(path.name for path in (home / ".claude/prompt-logs").iterdir()), [".enabled"])
+
+    def test_claude_code_still_logs_the_same_payload(self):
+        if shutil.which("jq") is None:
+            self.skipTest("jq is not installed")
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            plugin = claude_package(home)
+            (home / ".claude/prompt-logs").mkdir(parents=True)
+            (home / ".claude/prompt-logs/.enabled").write_text("")
+            result = run_claude_hook(plugin, home, "user-prompt", payload=self.cursor_payload(home, "user-prompt"))
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertTrue((home / ".claude/session-log/runtime.json").is_file())
+
+
 class ClaudeHookSilentFailureTests(unittest.TestCase):
     """A Claude hook never reports an error: every failure exits 0 with no output and no side effect."""
 
