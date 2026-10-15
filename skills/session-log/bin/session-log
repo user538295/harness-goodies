@@ -450,10 +450,9 @@ release_install_lock_labelled() {
 
 # The legacy cleanup `on` runs for a plugin-owned harness, best effort: a transient stop
 # (TRANSIENT_FAILURE_EXIT_CODE: another session-log command holds the install lock and runs the same cleanup, or
-# settings.json changed during the cleanup with no version of it left beside it; the step that hit it left
-# everything as it found it, so a retry is safe, and reports printed by earlier steps stand) is reported as
-# skipped, and a failure, taking the lock included, is reported once; neither fails `on`. `repair` repeats
-# the cleanup and fails with the error.
+# settings.json changed before the cleanup replaced it, lib/claude_settings.py's CHANGED; a retry is safe, and
+# reports printed by earlier steps stand) is reported as skipped, and a failure, taking the lock included, is
+# reported once; neither fails `on`. `repair` repeats the cleanup and fails with the error.
 run_best_effort_cleanup() {
   local error_file error status
   error_file="$(mktemp "${TMPDIR:-/tmp}/session-log-cleanup.XXXXXX")"
@@ -564,9 +563,10 @@ main() {
       trap - EXIT
       ;;
     status)
+      # First, as in `on` and `repair`: Codex's adapter repair may fail, or rebuild a missing hooks.json.
+      report_kept_versions
       plugin_owns_hooks || repair_enabled_adapter
       print_status
-      report_kept_versions
       ;;
     usage)
       plugin_owns_hooks || repair_enabled_adapter

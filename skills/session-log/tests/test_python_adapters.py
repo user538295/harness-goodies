@@ -640,6 +640,9 @@ class AtomicSwapRaceTests(unittest.TestCase):
 HOOKS_KEPT_ASIDE = " changed while session-log was replacing it; another version is kept in "
 # What it says, after the hooks file's path and before the error, when such a write failed with nothing kept aside.
 HOOKS_NOT_UPDATED = "cannot update hooks file "
+# What it says after that error when the write failed on its own, not through another writer, and its backup of
+# hooks.json could not go back.
+HOOKS_VERSION_KEPT = "a version is kept in "
 
 
 class HooksFileWriteConflictTests(unittest.TestCase):
@@ -701,6 +704,62 @@ class HooksFileWriteConflictTests(unittest.TestCase):
         self.assertEqual(result, self.kept(backup))
         self.assertEqual(backup.read_bytes(), self.original)
         self.assertEqual(self.config.read_bytes(), b"another writer\n")
+
+    def test_a_raced_update_whose_backup_cannot_go_back_names_both_versions(self):
+        self.config.write_bytes(self.original)
+
+        def replace_after_the_update_and_after_it_goes_aside(dir_fd, source, target):
+            moved = self.native_move(dir_fd, source, target)
+            if target == self.config.name and not source.startswith(".session-log-backup."):
+                os.unlink(target, dir_fd=dir_fd)
+                self.write_another_version(dir_fd, target, b"another writer\n")
+            elif source == self.config.name and ".conflict." in target:
+                self.write_another_version(dir_fd, source, b"third writer\n")
+            return moved
+
+        result = self.run_installer("remove", "cursor", replace_after_the_update_and_after_it_goes_aside)
+        [conflict] = self.root.glob(".session-log-backup.*.conflict.0")
+        [backup] = set(self.root.glob(".session-log-backup.*")) - {conflict}
+        self.assertEqual(result, self.kept(f"{conflict} and {backup}"))
+        self.assertEqual(conflict.read_bytes(), b"another writer\n")
+        self.assertEqual(backup.read_bytes(), self.original)
+        self.assertEqual(self.config.read_bytes(), b"third writer\n")
+
+    def test_a_raced_update_that_finds_no_conflict_name_names_the_backup_it_cannot_put_back(self):
+        self.config.write_bytes(self.original)
+
+        def replace_after_the_update(dir_fd, source, target):
+            moved = self.native_move(dir_fd, source, target)
+            if target == self.config.name and not source.startswith(".session-log-backup."):
+                os.unlink(target, dir_fd=dir_fd)
+                self.write_another_version(dir_fd, target, b"another writer\n")
+            return moved
+
+        def exhaust(dir_fd, options):
+            raise SystemExit(options.exhaust_message)
+
+        with patch.object(self.installer.pathsafe, "rename_to_conflict", side_effect=exhaust):
+            result = self.run_installer("remove", "cursor", replace_after_the_update)
+        [backup] = self.root.glob(".session-log-backup.*")
+        self.assertEqual(result, self.kept(backup))
+        self.assertEqual(backup.read_bytes(), self.original)
+        self.assertEqual(self.config.read_bytes(), b"another writer\n")
+
+    def test_an_update_that_failed_on_its_own_names_its_error_and_the_backup_it_cannot_put_back(self):
+        self.config.write_bytes(self.original)
+        failure = OSError(errno.EIO, os.strerror(errno.EIO))
+
+        def fail_every_move_onto_hooks_json(dir_fd, source, target):
+            if target == self.config.name:
+                raise failure
+            return self.native_move(dir_fd, source, target)
+
+        result = self.run_installer("remove", "cursor", fail_every_move_onto_hooks_json)
+        [backup] = self.root.glob(".session-log-backup.*")
+        self.assertEqual(result, (1, f"session-log: {HOOKS_NOT_UPDATED}{self.config}: {failure}; "
+                                     f"{HOOKS_VERSION_KEPT}{backup}\n"))
+        self.assertEqual(backup.read_bytes(), self.original)
+        self.assertFalse(self.config.exists())
 
     def test_a_file_swapped_in_for_the_update_of_an_absent_hooks_json_is_kept_aside_and_named(self):
         def swap_the_update(dir_fd, source, target):
@@ -1259,10 +1318,10 @@ def run_claude_hook(package, home, lifecycle, *, payload="{}", environment=None)
 SESSION_LOG_TIMEOUT_SECONDS = 60
 
 
-def run_session_log(package, home, harness, *arguments):
+def run_session_log(package, home, harness, *arguments, environment=None):
     return subprocess.run(
         ["bash", str(package / "bin/session-log"), "--entrypoint", harness, "--harness", harness, *arguments],
-        capture_output=True, text=True, env=harness_environment(home), timeout=SESSION_LOG_TIMEOUT_SECONDS,
+        capture_output=True, text=True, env=environment or harness_environment(home), timeout=SESSION_LOG_TIMEOUT_SECONDS,
     )
 
 
@@ -1713,8 +1772,8 @@ CLAUDE_SETTINGS_KEPT_ASIDE = "Claude settings changed while the legacy cleanup w
 # How `status`, `repair`, and `on` name each version of settings.json the cleanup kept aside, until the user deletes it.
 CLAUDE_SETTINGS_KEPT_ASIDE_REPORT = "another version of settings.json is kept in {}; review it, then delete it"
 # The same, while settings.json itself is missing, so the kept version may be the only one left.
-CLAUDE_SETTINGS_KEPT_INSTEAD_REPORT = ("another version of settings.json is kept in {}; settings.json is missing, "
-                                       "so review it, then restore it as settings.json")
+CLAUDE_SETTINGS_KEPT_INSTEAD_REPORT = ("settings.json is missing; another version of it is kept in {}; "
+                                       "review it and copy back what you still need")
 # What claude_settings.py says when it put its backup back as settings.json after another writer created one there
 # and removed it again: the other writer's removal is undone, so this is a failure, not a transient stop.
 CLAUDE_SETTINGS_RESTORED = ("Claude settings changed while the legacy cleanup was replacing it; another program "
@@ -1849,6 +1908,32 @@ class ClaudeSettingsWriteConflictTests(unittest.TestCase):
         self.assertEqual(self.backup.read_bytes(), self.original)
         self.assertEqual(list(self.directory.glob("*.conflict.*")), [])
 
+    def test_a_backup_another_program_removed_before_it_could_go_back_is_not_named(self):
+        def remove_the_backup_before_it_goes_back(dir_fd, source, target):
+            if source == self.backup.name and target == "settings.json":
+                self.backup.unlink()
+            return self.native_move(dir_fd, source, target)
+
+        with patch.object(self.settings.os, "link", side_effect=self.create_then_link), \
+                patch.object(self.settings.pathsafe, "move_no_replace", side_effect=remove_the_backup_before_it_goes_back):
+            self.assertEqual(self.remove(), f"{CLAUDE_SETTINGS_KEPT_ASIDE}{self.conflict}")
+        self.assertEqual(self.conflict.read_bytes(), b"another writer\n")
+        self.assertEqual(sorted(path.name for path in self.directory.iterdir()),
+                         [self.conflict.name, "settings.json.session-log.lock"])
+
+    def test_a_backup_removed_after_the_settings_json_that_replaced_it_went_again_is_transient(self):
+        def remove_both_before_they_move(dir_fd, source, target):
+            if source == "settings.json" and ".conflict." in target:
+                self.settings_path.unlink()
+            elif source == self.backup.name and target == "settings.json":
+                self.backup.unlink()
+            return self.native_move(dir_fd, source, target)
+
+        with patch.object(self.settings.os, "link", side_effect=self.create_then_link), \
+                patch.object(self.settings.pathsafe, "move_no_replace", side_effect=remove_both_before_they_move):
+            self.assertEqual(self.remove(), CLAUDE_SETTINGS_CHANGED)
+        self.assertEqual(sorted(path.name for path in self.directory.iterdir()), ["settings.json.session-log.lock"])
+
     def test_a_backup_that_cannot_be_restored_after_the_conflict_is_named_too(self):
         def race_the_restore(dir_fd, source, target):
             if source == self.backup.name and target == "settings.json":
@@ -1926,10 +2011,10 @@ class ClaudeSettingsWriteConflictTests(unittest.TestCase):
             self.assertEqual((racing.returncode, racing.stdout, racing.stderr), (0, "", ""))
             [conflict] = settings.parent.glob(".session-log-backup.*.conflict.0")
             kept = f"Claude Code: {CLAUDE_SETTINGS_KEPT_ASIDE_REPORT.format(conflict)}\n"
-            for command, before in (("status", "Claude Code: off\n"), ("repair", "")):
+            for command, after in (("status", "Claude Code: off\n"), ("repair", "")):
                 with self.subTest(command):
                     result = run_session_log(package, home, "claude", command)
-                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, before + kept, ""))
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, kept + after, ""))
             self.assertTrue(conflict.is_file(), "the kept version is the user's to delete")
             conflict.unlink()
             self.assertEqual(run_session_log(package, home, "claude", "repair").stdout, CLAUDE_REPAIR_CLEAN)
@@ -1939,10 +2024,10 @@ class ClaudeSettingsWriteConflictTests(unittest.TestCase):
             home = Path(directory).resolve()
             package = claude_package(home)
             root = home / ".claude"
-            for name in (".session-log-update.1.0", "settings.json.session-log.lock", ".session-log-backup.x",
-                         "settings.json.conflict.0", ".session-log-backup.1.0.conflict.0.orig",
-                         ".session-log-backup.1.0123abcd.0", *(f".session-log-backup.1.0.conflict.{token}"
-                                                              for token in KEPT_CONFLICT_NEAR_MISSES)):
+            for name in (".settings.json.1.0", ".session-log-backup.x", ".settings.json.conflict.0",
+                         ".session-log-backup.1.0.conflict.0.orig", ".session-log-backup.1.0123abcd.0",
+                         *(f".session-log-backup.1.0.conflict.{token}" for token in KEPT_CONFLICT_NEAR_MISSES)):
+                self.assertTrue(reaches_the_kept_version_pattern(name, "settings.json"), name)
                 (root / name).write_text("{}\n")
             for command, output in (("status", "Claude Code: off\n"), ("repair", CLAUDE_REPAIR_CLEAN)):
                 with self.subTest(command):
@@ -1957,8 +2042,19 @@ KEPT_CONFLICT_NEAR_MISSES = (KEPT_CONFLICT_TOKEN[:-1], KEPT_CONFLICT_TOKEN + "0"
 # How `status`, `repair`, and `on` name a version of hooks.json session-log kept beside it, while hooks.json exists
 # and while it is missing.
 HOOKS_KEPT_ASIDE_REPORT = "another version of hooks.json is kept in {}; review it, then delete it"
-HOOKS_KEPT_INSTEAD_REPORT = ("another version of hooks.json is kept in {}; hooks.json is missing, "
-                             "so review it, then restore it as hooks.json")
+HOOKS_KEPT_INSTEAD_REPORT = ("hooks.json is missing; another version of it is kept in {}; "
+                             "review it and copy back what you still need")
+# The names report_kept_versions (lib/legacy_cleanup.sh) lists before it matches them: a name outside them never
+# reaches its pattern, so a lookalike outside them tests nothing.
+KEPT_VERSION_GLOBS = (".session-log-backup.*", ".{file}.*")
+
+
+# A directory its group may write to and that is not sticky: pathsafe's _is_untrusted_cleanup_directory.
+SHARED_DIRECTORY_MODE = 0o775
+
+
+def reaches_the_kept_version_pattern(name, file_name):
+    return any(fnmatch.fnmatchcase(name, glob.format(file=file_name)) for glob in KEPT_VERSION_GLOBS)
 
 
 class KeptVersionReportTests(unittest.TestCase):
@@ -1966,22 +2062,28 @@ class KeptVersionReportTests(unittest.TestCase):
     session-log kept beside it, under exactly the names it gives them, until the user deletes it."""
 
     # Per harness: its package below a home, its root, its label, the file kept, the names session-log keeps it
-    # under, and the names it never gives a kept version there.
+    # under, and the names it never gives a kept version there (each one reaches the pattern; see seed).
     HARNESSES = {
         "claude": (claude_package, ".claude", "Claude Code", "settings.json",
                    (".session-log-backup.12.3", ".session-log-backup.12.3.conflict.4",
                     f".session-log-backup.12.3.conflict.{KEPT_CONFLICT_TOKEN}"),
-                   (".session-log-backup.12.0123abcd.3", ".hooks.json.12.0123abcd.conflict.0")),
+                   (".session-log-backup.12.0123abcd.3", ".settings.json.12.0123abcd.conflict.0")),
         "codex": (lambda home: harness_package(home, CODEX_PLUGIN_ROOT_RELATIVE), ".codex", "Codex", "hooks.json",
                   (".session-log-backup.12.0123abcd.3", ".session-log-backup.12.0123abcd.3.conflict.4",
                    f".session-log-backup.12.0123abcd.3.conflict.{KEPT_CONFLICT_TOKEN}",
                    ".hooks.json.12.0123abcd.conflict.4", f".hooks.json.12.0123abcd.conflict.{KEPT_CONFLICT_TOKEN}"),
                   (".session-log-backup.12.3", ".session-log-backup.12.0123abc.3", ".session-log-backup.12.0123ABCD.3",
-                   ".hooks.json.12.0123abcd", ".hooks.json.12.0123abcd.conflict.4.orig", "hooks.json.conflict.0",
+                   ".hooks.json.12.0123abcd", ".hooks.json.12.0123abcd.conflict.4.orig", ".hooks.json.conflict.0",
                    *(f".hooks.json.12.0123abcd.conflict.{token}" for token in KEPT_CONFLICT_NEAR_MISSES))),
     }
     HARNESSES["cursor"] = (lambda home: cursor_plugin_root(home) / "skills/session-log", ".cursor", "Cursor",
                            *HARNESSES["codex"][3:])
+
+    @staticmethod
+    def first_on(harness):
+        """The line `on` ends with in a home holding nothing but the package."""
+        return {"claude": "Claude Code: on — logging starts with the next prompt",
+                "codex": CODEX_TRUST_STATUS, "cursor": CURSOR_ON_NEXT_PROMPT.rstrip("\n")}[harness]
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -1996,6 +2098,7 @@ class KeptVersionReportTests(unittest.TestCase):
         root = self.home / subroot
         root.mkdir(parents=True, exist_ok=True)
         for name in (*kept, *lookalikes):
+            self.assertTrue(reaches_the_kept_version_pattern(name, file_name), name)
             (root / name).write_text("{}\n")
         dangling = root / f"{kept[0]}.conflict.5"
         dangling.symlink_to(root / "missing")
@@ -2006,17 +2109,21 @@ class KeptVersionReportTests(unittest.TestCase):
             (CLAUDE_SETTINGS_KEPT_INSTEAD_REPORT if harness == "claude" else HOOKS_KEPT_INSTEAD_REPORT)
         return package, sorted(f"{label}: {report.format(root / name)}" for name in (*kept, dangling.name))
 
+    def assert_named_first(self, result, kept, after, message=None):
+        lines = result.stdout.splitlines()
+        self.assertEqual(sorted(lines[:len(kept)]), kept, message)
+        self.assertEqual(lines[len(kept):], after, message)
+
     def test_status_and_repair_name_each_kept_version_and_say_how_to_settle_it(self):
         for harness, label in ((harness, entry[2]) for harness, entry in self.HARNESSES.items()):
             for state, contents in (("present", "{}\n"), ("missing", None)):
                 with self.subTest(harness=harness, file=state):
                     self.setUp()
                     package, kept = self.seed(harness, contents)
-                    for command, before in (("status", [f"{label}: off"]), ("repair", [])):
+                    for command, after in (("status", [f"{label}: off"]), ("repair", [])):
                         result = run_session_log(package, self.home, harness, command)
                         self.assertEqual((result.returncode, result.stderr), (0, ""), command)
-                        self.assertEqual(result.stdout.splitlines()[:len(before)], before, command)
-                        self.assertEqual(sorted(result.stdout.splitlines()[len(before):]), kept, command)
+                        self.assert_named_first(result, kept, after, command)
 
     def test_a_repair_that_fails_still_names_them_first(self):
         for harness in self.HARNESSES:
@@ -2029,14 +2136,54 @@ class KeptVersionReportTests(unittest.TestCase):
 
     def test_on_names_them_before_the_rest_of_its_report(self):
         for harness in self.HARNESSES:
+            for state, contents in (("present", "{}\n"), ("missing", None)):
+                with self.subTest(harness=harness, file=state):
+                    self.setUp()
+                    package, kept = self.seed(harness, contents)
+                    result = run_session_log(package, self.home, harness, "on")
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+                    self.assert_named_first(result, kept, [self.first_on(harness)])
+
+    def test_codex_status_names_them_before_it_repairs_the_adapter_of_enabled_logging(self):
+        """While logging is on, Codex `status` reinstalls a missing or broken adapter: the names come first, so a
+        failing reinstall cannot hide them and a missing hooks.json is named missing before it is rebuilt."""
+        for state, contents, status, after in (("broken", "not json\n", 1, []),
+                                               ("missing", None, 0, [CODEX_TRUST_STATUS])):
+            with self.subTest(state):
+                self.setUp()
+                flag = self.home / CODEX_FLAG_RELATIVE
+                package, kept = self.seed("codex", contents)
+                flag.parent.mkdir(parents=True)
+                flag.write_text("")
+                result = run_session_log(package, self.home, "codex", "status")
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assert_named_first(result, kept, after)
+
+    def test_a_hooks_json_directory_pathsafe_does_not_trust_names_none(self):
+        """In a group- or other-writable, non-sticky ~/.codex or ~/.cursor pathsafe leaves the backup of every
+        hooks.json write it makes, so naming those would never stop; settings.json writes leave none there."""
+        for harness in self.HARNESSES:
             with self.subTest(harness):
                 self.setUp()
                 package, kept = self.seed(harness, "{}\n")
-                result = run_session_log(package, self.home, harness, "on")
+                root = self.home / self.HARNESSES[harness][1]
+                root.chmod(SHARED_DIRECTORY_MODE)
+                result = run_session_log(package, self.home, harness, "status")
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
-                lines = result.stdout.splitlines()
-                self.assertEqual(sorted(lines[:len(kept)]), kept)
-                self.assertTrue(lines[len(kept):], "on printed nothing after naming the kept versions")
+                self.assert_named_first(result, kept if harness == "claude" else [],
+                                        [f"{self.HARNESSES[harness][2]}: off"])
+
+    def test_a_successful_cursor_cleanup_in_a_directory_pathsafe_does_not_trust_leaves_a_backup_no_one_names(self):
+        package = cursor_plugin_root(self.home) / "skills/session-log"
+        root = self.home / ".cursor"
+        (root / "hooks.json").write_text(json.dumps(build_cursor_legacy_hooks(self.home / CURSOR_SEEDED_RELATIVE
+                                                                             / CURSOR_SEEDED_HOOK_RELATIVE)))
+        root.chmod(SHARED_DIRECTORY_MODE)
+        repaired = run_session_log(package, self.home, "cursor", "repair")
+        self.assertEqual((repaired.returncode, repaired.stderr), (0, ""))
+        self.assertEqual(len(list(root.glob(".session-log-backup.*"))), 1, "pathsafe kept no backup here")
+        status = run_session_log(package, self.home, "cursor", "status")
+        self.assertEqual((status.returncode, status.stdout, status.stderr), (0, "Cursor: off\n", ""))
 
 
 # Bash reports a command a signal ended with an exit status above this: 128 + the signal number (claude_hook.sh).
@@ -2714,6 +2861,39 @@ class ClaudeHookSilentFailureTests(unittest.TestCase):
             self.assert_silent(run_claude_hook(package, home, "user-prompt"), home)
 
 
+# Install locks too unsafe to touch, each made at the lock path it is given; returns the refusal it draws.
+def symlinked_lock(lock):
+    (lock.parent / "elsewhere").mkdir()
+    lock.symlink_to(lock.parent / "elsewhere")
+    return f"refusing to follow symlinked parent: {lock}"
+
+
+def lock_not_a_directory(lock):
+    lock.write_text("not a lock\n")
+    return f"refusing non-directory parent: {lock}"
+
+
+def lock_holding_an_unexpected_file(lock):
+    lock.mkdir()
+    (lock / "extra").write_text("")
+    return f"refusing install lock containing unexpected file: {lock / 'extra'}"
+
+
+def lock_with_a_directory_owner(lock):
+    (lock / "owner").mkdir(parents=True)
+    return f"refusing invalid install lock owner: {lock / 'owner'}"
+
+
+def lock_with_a_symlinked_owner(lock):
+    lock.mkdir()
+    (lock / "owner").symlink_to(lock.parent / "missing")
+    return f"refusing invalid install lock owner: {lock / 'owner'}"
+
+
+UNSAFE_INSTALL_LOCKS = (symlinked_lock, lock_not_a_directory, lock_holding_an_unexpected_file, lock_with_a_directory_owner,
+                        lock_with_a_symlinked_owner)
+
+
 class RepairCommandEdgeTests(unittest.TestCase):
     """`repair` reports every change it makes and refuses unsafe or invalid files without touching them."""
 
@@ -2845,32 +3025,8 @@ class RepairCommandEdgeTests(unittest.TestCase):
                     self.assertFalse(lock.exists())
 
     def test_repair_and_on_refuse_an_install_lock_unsafe_to_touch_and_leave_it_and_settings_as_they_are(self):
-        def symlinked(lock):
-            (lock.parent / "elsewhere").mkdir()
-            lock.symlink_to(lock.parent / "elsewhere")
-            return f"refusing to follow symlinked parent: {lock}"
-
-        def not_a_directory(lock):
-            lock.write_text("not a lock\n")
-            return f"refusing non-directory parent: {lock}"
-
-        def holding_an_unexpected_file(lock):
-            lock.mkdir()
-            (lock / "extra").write_text("")
-            return f"refusing install lock containing unexpected file: {lock / 'extra'}"
-
-        def with_a_directory_owner(lock):
-            (lock / "owner").mkdir(parents=True)
-            return f"refusing invalid install lock owner: {lock / 'owner'}"
-
-        def with_a_symlinked_owner(lock):
-            lock.mkdir()
-            (lock / "owner").symlink_to(lock.parent / "missing")
-            return f"refusing invalid install lock owner: {lock / 'owner'}"
-
         for command in ("repair", "on"):
-            for unsafe in (symlinked, not_a_directory, holding_an_unexpected_file, with_a_directory_owner,
-                           with_a_symlinked_owner):
+            for unsafe in UNSAFE_INSTALL_LOCKS:
                 with self.subTest(command=command, lock=unsafe.__name__), tempfile.TemporaryDirectory() as directory:
                     home = Path(directory).resolve()
                     package = claude_package(home)
@@ -2888,6 +3044,23 @@ class RepairCommandEdgeTests(unittest.TestCase):
                             0, f"Claude Code: legacy cleanup failed: {error}; fix it, then run repair\n"
                                "Claude Code: on — logging starts with the next prompt\n", ""))
                     self.assertEqual(settings.read_bytes(), original)
+                    self.assertTrue(os.path.lexists(lock))
+
+    def test_on_of_every_other_plugin_owned_harness_refuses_an_install_lock_unsafe_to_touch_and_still_enables(self):
+        harnesses = {"cursor": (lambda home: cursor_plugin_root(home) / "skills/session-log", CURSOR_ON_NEXT_PROMPT),
+                     "omp": (omp_package, OMP_RESTART_REQUIRED), "opencode": (opencode_package, OPENCODE_ON_FIRST)}
+        for harness, (package_at, status) in harnesses.items():
+            for unsafe in UNSAFE_INSTALL_LOCKS:
+                with self.subTest(harness=harness, lock=unsafe.__name__), tempfile.TemporaryDirectory() as directory:
+                    home = Path(directory).resolve()
+                    package = package_at(home)
+                    lock = home / HARNESS_SUBROOTS[harness] / "session-log/.install.lock"
+                    lock.parent.mkdir(parents=True)
+                    error = unsafe(lock)
+                    result = run_session_log(package, home, harness, "on")
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (
+                        0, f"{HARNESS_LABELS[harness]}: legacy cleanup failed: {error}; fix it, then run repair\n{status}",
+                        ""))
                     self.assertTrue(os.path.lexists(lock))
 
     def test_on_releases_the_install_lock_whether_its_cleanup_succeeds_or_fails(self):
@@ -4153,7 +4326,49 @@ def seed_cursor_copy(home):
     return seeded
 
 
-class CursorPluginHooksTests(unittest.TestCase):
+# Another writer creates hooks.json while install_hooks.py has it moved aside as its backup, before its update goes in:
+# the update fails and the backup cannot go back, so it stays beside hooks.json. sys.argv[3] is the hooks file.
+HOOKS_BACKUP_RACE_SITECUSTOMIZE = '''import os, sys
+_stat = os.stat
+def _stat_then_create_the_hooks_file(path, *arguments, **options):
+    result = _stat(path, *arguments, **options)
+    if (os.path.basename(sys.argv[0]) == "install_hooks.py" and str(path).startswith(".session-log-backup.")
+            and not os.path.lexists(sys.argv[3])):
+        with open(sys.argv[3], "x", encoding="utf-8") as handle:
+            handle.write("another writer\\n")
+    return result
+os.stat = _stat_then_create_the_hooks_file
+'''
+
+
+def hooks_race_environment(home):
+    """An environment whose python3 runs install_hooks.py with HOOKS_BACKUP_RACE_SITECUSTOMIZE."""
+    race_directory = home / "race"
+    race_directory.mkdir()
+    (race_directory / "sitecustomize.py").write_text(HOOKS_BACKUP_RACE_SITECUSTOMIZE)
+    return {**harness_environment(home), "PYTHONPATH": str(race_directory)}
+
+
+class KeptHooksBackupAssertions:
+    """For a test case whose ``home``, ``config`` (hooks.json), and ``original`` (its text before the race) are set."""
+
+    def kept_aside(self, backup):
+        return f"{self.config}{HOOKS_KEPT_ASIDE}{backup}"
+
+    def assert_kept_backup_named_afterwards(self, package, harness, label, status):
+        """The race left the original hooks.json as a backup beside the other writer's; `status` names it before its
+        ``status`` line, and `repair` (failing on the other writer's text) names it before anything else."""
+        [backup] = self.config.parent.glob(".session-log-backup.*")
+        self.assertEqual(backup.read_text(), self.original)
+        self.assertEqual(self.config.read_text(), "another writer\n")
+        kept = f"{label}: {HOOKS_KEPT_ASIDE_REPORT.format(backup)}"
+        result = run_session_log(package, self.home, harness, "status")
+        self.assertEqual((result.returncode, result.stdout.splitlines(), result.stderr), (0, [kept, status], ""))
+        result = run_session_log(package, self.home, harness, "repair")
+        self.assertEqual((result.returncode, result.stdout.splitlines()), (1, [kept]), result.stderr)
+
+
+class CursorPluginHooksTests(KeptHooksBackupAssertions, unittest.TestCase):
     """The cursor-goodies plugin registers the hooks; `on`/`off` flip the flag; legacy registrations go."""
 
     maxDiff = None
@@ -4176,14 +4391,18 @@ class CursorPluginHooksTests(unittest.TestCase):
     def run_cursor(self, *arguments):
         return run_session_log(self.package, self.home, "cursor", *arguments)
 
+    def run_cursor_with(self, environment, *arguments):
+        return run_session_log(self.package, self.home, "cursor", *arguments, environment=environment)
+
     def enable(self):
         self.assertEqual(self.run_cursor("on").returncode, 0)
 
-    def run_plugin_hook(self, event, payload, shell="/bin/sh", plugin_root=None, *, heredoc=False, path=None):
+    def run_plugin_hook(self, event, payload, shell="/bin/sh", plugin_root=None, *, heredoc=False, path=None,
+                        environment=None):
         """Run a plugin hook the way Cursor does: `$SHELL -c` from the plugin root, with CURSOR_PLUGIN_ROOT exported.
 
         The workbench writes the payload to stdin; the agent-host daemon (``heredoc``) appends it to the command as a
-        heredoc (see CURSOR_HEREDOC_DELIMITER). ``path`` replaces PATH."""
+        heredoc (see CURSOR_HEREDOC_DELIMITER). ``path`` replaces PATH; ``environment`` replaces the test's own."""
         plugin_root = str(plugin_root or self.plugin_root)
         command = next(hook["command"] for hook in json.loads(CURSOR_PLUGIN_HOOKS_PATH.read_text())["hooks"][event])
         # Cursor also substitutes a braced ${CURSOR_PLUGIN_ROOT} textually (workbench _executeCommandHookScript);
@@ -4191,7 +4410,7 @@ class CursorPluginHooksTests(unittest.TestCase):
         command = command.replace(CURSOR_PLUGIN_ROOT_PLACEHOLDER, plugin_root)
         if heredoc:
             command = f"{command} <<'{CURSOR_HEREDOC_DELIMITER}'\n{json.dumps(payload)}\n{CURSOR_HEREDOC_DELIMITER}"
-        environment = {**harness_environment(self.home), "CURSOR_PLUGIN_ROOT": plugin_root}
+        environment = {**(environment or harness_environment(self.home)), "CURSOR_PLUGIN_ROOT": plugin_root}
         if path is not None:
             environment["PATH"] = str(path)
         return subprocess.run(
@@ -4564,6 +4783,26 @@ class CursorPluginHooksTests(unittest.TestCase):
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
                 self.assertEqual(self.config.read_bytes(), original)
 
+    def write_legacy_hooks_then_race_their_removal(self):
+        self.config.write_text(json.dumps(build_cursor_legacy_hooks(self.seeded_hook)))
+        self.original = self.config.read_text()
+        return hooks_race_environment(self.home)
+
+    def test_on_reports_a_cleanup_that_kept_a_version_aside_as_failed_and_later_commands_name_it(self):
+        result = self.run_cursor_with(self.write_legacy_hooks_then_race_their_removal(), "on")
+        [backup] = self.config.parent.glob(".session-log-backup.*")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (
+            0, f"Cursor: legacy cleanup failed: {self.kept_aside(backup)}; fix it, then run repair\n"
+               f"{CURSOR_ON_NEXT_PROMPT}", ""))
+        self.assert_kept_backup_named_afterwards(self.package, "cursor", "Cursor", CURSOR_HOOKS_NOT_LOADED.rstrip("\n"))
+
+    def test_a_session_start_cleanup_that_kept_a_version_aside_is_named_by_later_commands(self):
+        self.enable()
+        environment = self.write_legacy_hooks_then_race_their_removal()
+        started = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"}, environment=environment)
+        self.assertEqual((started.returncode, started.stdout, started.stderr), (0, "{}\n", ""))
+        self.assert_kept_backup_named_afterwards(self.package, "cursor", "Cursor", "Cursor: on")
+
     def test_usage_and_status_never_touch_legacy_registrations(self):
         self.config.write_text(json.dumps(build_cursor_legacy_hooks(self.seeded_hook)))
         seeded = seed_cursor_copy(self.home)
@@ -4581,6 +4820,27 @@ class CursorPluginHooksTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), sorted(OBSOLETE_ADAPTER_STATE))
 
 
+
+
+class HooksFileConflictReportTests(KeptHooksBackupAssertions, CodexHomeTestCase):
+    """A Codex hooks.json write that raced another writer fails `on` and `repair` naming the version it kept, never with
+    the transient status, and later commands name that version."""
+
+    def test_codex_on_and_repair_fail_naming_the_version_kept_and_later_commands_name_it(self):
+        for command in ("on", "repair"):
+            with self.subTest(command):
+                self.setUp()
+                if command == "repair":
+                    self.write_legacy_hooks(self.package)
+                else:
+                    self.write_hooks({})
+                self.original = self.config.read_text()
+                result = run_session_log(self.package, self.home, "codex", command,
+                                         environment=hooks_race_environment(self.home))
+                [backup] = self.config.parent.glob(".session-log-backup.*")
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (1, "", f"session-log: {self.kept_aside(backup)}\n"))
+                self.assert_kept_backup_named_afterwards(self.package, "codex", "Codex", "Codex: off")
 
 
 OMP_SUBROOT = ".omp/agent"

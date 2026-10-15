@@ -77,3 +77,9 @@ write_private_file() {
 safe_remove_path() {
   SESSION_LOG_REMOVE_PATH="$1" python3 "$SESSION_LOG_LIB/pathsafe.py" remove
 }
+
+# True when lib/pathsafe.py does not trust directory $1 (not sticky, and group- or other-writable or not
+# this user's), so it leaves its backup there after every file it replaces.
+pathsafe_keeps_backups_in() {
+  SESSION_LOG_DIRECTORY="$1" python3 "$SESSION_LOG_LIB/pathsafe.py" is-untrusted-dir 2>/dev/null
+}

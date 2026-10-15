@@ -169,8 +169,13 @@ def _stage_backup(parent_fd, options):
     raise SystemExit(options.exhaust_message)
 
 
+# What became of the backup _restore_after_conflict moves back as settings.json: back in place, kept beside a
+# settings.json that took its place first, or removed by another program.
+BACKUP_RESTORED, BACKUP_KEPT, BACKUP_GONE = "restored", "kept", "gone"
+
+
 def _restore_after_conflict(parent_fd, options):
-    """Move the settings.json another writer created aside, then the backup back: ``(conflict name, restored)``.
+    """Move the settings.json another writer created aside, then the backup back: ``(conflict name, BACKUP_*)``.
     The conflict name is None when that settings.json went again before it could be moved aside."""
     try:
         conflict = pathsafe.rename_to_conflict(
@@ -183,11 +188,11 @@ def _restore_after_conflict(parent_fd, options):
         )
     except FileNotFoundError:
         conflict = None
-    return conflict, pathsafe.move_no_replace(
-        parent_fd,
-        options.backup_name,
-        options.settings_name,
-    )
+    try:
+        restored = pathsafe.move_no_replace(parent_fd, options.backup_name, options.settings_name)
+    except FileNotFoundError:
+        return conflict, BACKUP_GONE
+    return conflict, BACKUP_RESTORED if restored else BACKUP_KEPT
 
 
 def _owner_prefix(owner):
@@ -294,9 +299,11 @@ def _remove_managed_hooks(document, removable):
 
 CHANGED = "Claude settings changed during the legacy cleanup; run repair again"
 # EX_TEMPFAIL, TRANSIENT_FAILURE_EXIT_CODE in lib/adapter_install.sh: the exit status of CHANGED, which is transient:
-# the step that hit it left everything as it found it (a backup it had staged is back as settings.json), so a retry is
-# safe; reports printed by earlier steps (say, migrate's "removed N") stand. A change that leaves a version of
-# settings.json beside it is a failure naming where that version is kept.
+# the step that hit it left everything as it found it (a backup it had staged is back as settings.json), or other
+# programs removed both settings.json and that backup, leaving nothing to clean; so a retry is safe, and reports
+# printed by earlier steps (say, migrate's "removed N") stand. A change that leaves a version of settings.json beside
+# it is a failure naming where that version is kept; RESTORED, which undoes another program's removal of
+# settings.json, is a failure too.
 TRANSIENT_FAILURE_EXIT_CODE = 75
 KEPT_ASIDE = "Claude settings changed while the legacy cleanup was replacing it; another version is kept in "
 # Another writer created settings.json while the cleanup's backup stood in for it, and it went again before the
@@ -528,7 +535,7 @@ def _replace_settings(context):
             follow_symlinks=False,
         )
     except FileExistsError:
-        conflict, restored = _restore_after_conflict(
+        conflict, backup = _restore_after_conflict(
             context.parent_fd,
             ConflictRestoreOptions(
                 settings_name=context.settings_name,
@@ -536,9 +543,11 @@ def _replace_settings(context):
                 message=_kept_aside(context, state.backup_name),
             ),
         )
-        state.backup_active = not restored
-        kept = [name for name in (conflict, None if restored else state.backup_name) if name is not None]
-        raise SystemExit(_kept_aside(context, *kept) if kept else RESTORED)
+        state.backup_active = backup == BACKUP_KEPT
+        kept = [name for name in (conflict, state.backup_name if state.backup_active else None) if name is not None]
+        if kept:
+            raise SystemExit(_kept_aside(context, *kept))
+        raise SystemExit(RESTORED if backup == BACKUP_RESTORED else CHANGED)
     os.unlink(state.temporary_name, dir_fd=context.parent_fd)
     state.temporary_name = None
     backup_stat, backup_settings = _read_named(context.parent_fd, state.backup_name)

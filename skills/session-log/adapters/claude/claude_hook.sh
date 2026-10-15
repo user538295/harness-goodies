@@ -98,9 +98,10 @@ cleanup_fingerprint() {
 }
 
 # The exit status of a session-log command that stopped on something transient: another one holds the
-# install lock, or settings.json changed during the cleanup with no version of it left beside it. The step
-# that hit it left everything as it found it, so a retry is safe; reports printed by earlier steps stand
-# (TRANSIENT_FAILURE_EXIT_CODE in lib/adapter_install.sh).
+# install lock, or settings.json changed during the cleanup before it was replaced (lib/claude_settings.py's
+# CHANGED). A retry is safe and reports printed by earlier steps stand (TRANSIENT_FAILURE_EXIT_CODE in
+# lib/adapter_install.sh); a change that left a version of settings.json beside it, or that the cleanup undid
+# by restoring settings.json, is a failure.
 readonly TRANSIENT_FAILURE_EXIT_CODE=75
 # Bash reports a command a signal ended with an exit status above this: 128 + the signal number.
 readonly SIGNAL_EXIT_STATUS_BASE=128

@@ -102,8 +102,11 @@ readonly KEPT_HOOKS_NAME="^($KEPT_HOOKS_BACKUP_NAME|$KEPT_HOOKS_TEMPORARY_NAME)\
 # every `status`, `repair`, and `on` until the user deletes it: a cleanup that failed at session start said so to
 # no one. While the file itself is missing, a kept version may be the only one left. Read-only, since `status`
 # runs it without the install lock; so it would also name the backup a write running at that instant holds.
+# Known limit: in a ~/.codex or ~/.cursor lib/pathsafe.py does not trust it names nothing, since pathsafe leaves
+# its backup there after every hooks.json write, successful or not; claude_settings.py removes its own backup
+# after every write that succeeds, so settings.json versions are named in any directory.
 report_kept_versions() {
-  local file pattern candidate
+  local file pattern candidate checked=0
   case "$HARNESS" in
     claude) file=settings.json pattern="$CLAUDE_KEPT_SETTINGS_NAME" ;;
     codex|cursor) file=hooks.json pattern="$KEPT_HOOKS_NAME" ;;
@@ -111,10 +114,14 @@ report_kept_versions() {
   esac
   for candidate in "$HARNESS_ROOT"/.session-log-backup.* "$HARNESS_ROOT/.$file".*; do
     [[ "${candidate##*/}" =~ $pattern && ( -e "$candidate" || -L "$candidate" ) ]] || continue
+    if ((!checked)); then
+      checked=1
+      [[ "$file" != hooks.json ]] || ! pathsafe_keeps_backups_in "$HARNESS_ROOT" || return 0
+    fi
     if [[ -e "$HARNESS_ROOT/$file" || -L "$HARNESS_ROOT/$file" ]]; then
       print_repair_report "another version of $file is kept in $candidate; review it, then delete it"
     else
-      print_repair_report "another version of $file is kept in $candidate; $file is missing, so review it, then restore it as $file"
+      print_repair_report "$file is missing; another version of it is kept in $candidate; review it and copy back what you still need"
     fi
   done
 }

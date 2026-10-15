@@ -38,11 +38,13 @@ class ConflictRenameOptions:
 
 
 class KeptAsideError(OSError):
-    """An atomic replacement raced another writer and left versions of the target beside it, under ``kept``."""
+    """An atomic replacement failed and left versions of the target beside it, under ``kept``: it raced another
+    writer, or, when ``cause`` is set, it failed on that error of its own and could not put the target back."""
 
-    def __init__(self, message, kept):
+    def __init__(self, message, kept, cause=None):
         super().__init__(errno.EAGAIN, message)
         self.kept = tuple(kept)
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -313,6 +315,13 @@ def _restore_backup(dir_fd, backup_name, target_name):
     return False
 
 
+def _is_raced_replacement(error):
+    """Whether _install_replacement failed because another writer changed the target or the temporary file: the
+    target changed (EAGAIN, KeptAsideError too), the target came back (EEXIST), or rename_to_conflict found no free
+    name for a raced target (SystemExit)."""
+    return isinstance(error, SystemExit) or error.errno in (errno.EAGAIN, errno.EEXIST)
+
+
 def _replace_present_target(request):
     dir_fd = request.dir_fd
     backup_name = _stage_replacement_backup(request)
@@ -321,11 +330,12 @@ def _replace_present_target(request):
         backup_stat = os.stat(backup_name, dir_fd=dir_fd, follow_symlinks=False)
         _install_replacement(request, backup_name, backup_stat)
     except BaseException as error:
-        if _restore_backup(dir_fd, backup_name, request.target_name) or not isinstance(error, OSError):
+        if _restore_backup(dir_fd, backup_name, request.target_name) or not isinstance(error, (OSError, SystemExit)):
             raise
         raise KeptAsideError(
             "cannot restore the target after a failed atomic replacement",
             (*getattr(error, "kept", ()), backup_name),
+            cause=None if _is_raced_replacement(error) else error,
         ) from error
     unlink_if_same_file(dir_fd, backup_name, backup_stat)
 
@@ -363,6 +373,10 @@ def main(argv):
         write_file(os.environ["SESSION_LOG_FILE"], os.environ["SESSION_LOG_CONTENT"])
     elif operation == "remove":
         remove_path(os.environ["SESSION_LOG_REMOVE_PATH"])
+    elif operation == "is-untrusted-dir":
+        # Exit status 0 when unlink_if_same_file leaves its files in that directory.
+        untrusted = _is_untrusted_cleanup_directory(os.stat(os.environ["SESSION_LOG_DIRECTORY"]))
+        raise SystemExit(0 if untrusted else 1)
     else:
         raise SystemExit(f"pathsafe: unknown operation: {operation}")
 

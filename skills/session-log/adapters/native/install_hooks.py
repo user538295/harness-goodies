@@ -371,9 +371,12 @@ def main(argv=None):
     try:
         run(mode, harness, config)
     except pathsafe.KeptAsideError as error:
-        # bin/session-log's report_kept_versions names these at every status and repair until they are deleted.
-        fail(f"{config} changed while session-log was replacing it; another version is kept in "
-             + " and ".join(str(config.parent / name) for name in error.kept))
+        # report_kept_versions (lib/legacy_cleanup.sh) names these at every `status`, `repair`, and `on` until they
+        # are deleted.
+        kept = " and ".join(str(config.parent / name) for name in error.kept)
+        if error.cause is not None:
+            fail(f"cannot update hooks file {config}: {error.cause}; a version is kept in {kept}")
+        fail(f"{config} changed while session-log was replacing it; another version is kept in {kept}")
     except OSError as error:
         fail(f"cannot update hooks file {config}: {error}")
 

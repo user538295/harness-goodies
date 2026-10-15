@@ -110,10 +110,9 @@ preflight_off() {
 
 # EX_TEMPFAIL, as in lib/locking.py and lib/claude_settings.py: a session-log command exits with it when,
 # and only when, it stopped on something transient, so a caller can tell "try later" from a failure:
-# another live command holds the install lock, or settings.json changed during the legacy cleanup with no
-# version of it left beside it (one that is left is a failure naming it). The step that hit it left
-# everything as it found it, so a retry is safe; reports printed by earlier steps (say, migrate's
-# "removed N") stand.
+# another live command holds the install lock, or settings.json changed during the legacy cleanup before it
+# was replaced (lib/claude_settings.py's CHANGED; a change that leaves a version of settings.json beside it is
+# a failure naming it). A retry is safe; reports printed by earlier steps (say, migrate's "removed N") stand.
 readonly TRANSIENT_FAILURE_EXIT_CODE=75
 
 fail_install_lock_busy() {
