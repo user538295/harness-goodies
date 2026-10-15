@@ -197,8 +197,8 @@ If that's not your speed, this repo isn't for you. If it is — install in 30 se
 ## Requirements
 
 - Universal session-log: Claude Code, Codex, Cursor, OpenCode, or OMP.
-- macOS or Linux — or Windows via WSL.
-- Native Windows is partial: the Claude Code plugin's session-log hooks run under Git Bash (install Git for Windows), exit 0 silently when their script is missing, and need no jq while logging is off. `/session-log on`, `off`, `repair`, and the session-start legacy cleanup need WSL. While older releases' leftovers remain, a startup on native Windows attempts that cleanup, and the attempt fails silently; like any failed attempt it is stamped, so it runs again only when `settings.json`, the package, or those leftovers change. Use WSL to log sessions on Windows.
+- macOS or Linux — or Windows, natively for Claude Code or via WSL.
+- Native Windows runs the Claude Code plugin under Git Bash (install Git for Windows), with a Windows Python 3 as `python3` and jq on its PATH: the session-log hooks, `/session-log on`, `off`, `status`, `usage`, `repair`, and the session-start legacy cleanup all work. The hooks exit 0 silently when their script is missing, and need no jq while logging is off. Windows has no `dir_fd`, so session-log checks that no folder on a path is a symlink or junction just before it uses the path, not through an open folder: a program running as the same user could swap one in between, which the macOS and Linux design also trusts such a program not to do. The other harnesses need WSL on Windows.
 - Bash 4+, Python 3, jq, standard POSIX utilities, and `shasum` or `sha256sum`. Stock macOS Bash 3.2 is insufficient for the session-log CLI; put an installed Bash 4+ on `PATH`.
 - sqlite3 for OpenCode native usage reports.
 - OMP native usage reports run on Bun when it is installed, otherwise on the Bun built into the `omp` binary.
