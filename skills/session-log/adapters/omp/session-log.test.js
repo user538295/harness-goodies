@@ -171,8 +171,12 @@ const FAILED_EXIT_CODE = 1;
 // EX_TEMPFAIL: the CLI's exit status for a transient failure, such as another session-log command holding the install lock.
 const TRANSIENT_FAILURE_EXIT_CODE = 75;
 const NON_EXECUTABLE_MODE = 0o644;
-// Short enough for a test, long enough for bash to start the stub CLI's first command under load.
-const SHORT_CLI_TIMEOUT_MS = 1000;
+// Long enough for the CLI to start its long child, which writes its pid, before the timeout fires even under load, so
+// the timeout tests can require that pid instead of passing when the timeout struck first.
+const LONG_CHILD_CLI_TIMEOUT_MS = 3000;
+// A loader that hangs (say, on a long child the timeout left holding the CLI's output open) fails its test instead of
+// blocking the suite until that child ends.
+const LOADER_TIMEOUT_MS = 30_000;
 const PACKAGE_REMOVED_MESSAGE = "session-log: the session-log package this omp session loaded is gone (upgraded or uninstalled); restart omp";
 const LOCK_BUSY_ERROR = "session-log: another session-log command is already in progress for omp";
 const BACKGROUND_REPAIR = "background:--entrypoint omp --harness omp repair";
@@ -282,7 +286,7 @@ const loaderEnvironment = () => {
 	return environment;
 };
 const loadExtension = (home, extension, env = {}) => {
-	const result = Bun.spawnSync(["bun", "--eval", LOAD_AND_RUN], { env: { ...loaderEnvironment(), HOME: home, EXTENSION: extension, ...env } });
+	const result = Bun.spawnSync(["bun", "--eval", LOAD_AND_RUN], { env: { ...loaderEnvironment(), HOME: home, EXTENSION: extension, ...env }, timeout: LOADER_TIMEOUT_MS });
 	expect(result.exitCode).toBe(0);
 	return { stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 };
@@ -326,7 +330,7 @@ const processEnds = async (pid, waitMs = BACKGROUND_WAIT_MS) => {
 // Makes the CLI start a long child in its process group and wait for it; the child writes its own pid to `pidFile` first.
 const startLongChild = (cli, pidFile) => fs.writeFileSync(cli, fs.readFileSync(cli, "utf8")
 	.replace(/^#!.*\n/, (shebang) => `${shebang}sh -c 'echo $$ > "$1"; exec sleep 600' sh ${shellQuote(pidFile)} & wait\n`));
-// The long child's pid, or 0 when the timeout killed it before it wrote one, so it cannot have outlived the timeout.
+// The long child's pid, or 0 when it never wrote one.
 const longChildPid = (pidFile) => {
 	try {
 		return Number(fs.readFileSync(pidFile, "utf8")) || 0;
@@ -418,10 +422,11 @@ describe("plugin command", () => {
 		const childPidFile = path.join(home, "cli-child");
 		startLongChild(cliOf(plugin), childPidFile);
 		try {
-			const { stdout } = loadExtension(home, extensionOf(plugin), { COMMAND: "status", CLI_TIMEOUT_MS: String(SHORT_CLI_TIMEOUT_MS) });
-			expect(stdout.split("\n")[0]).toBe(`command failed: session-log: status timed out after ${SHORT_CLI_TIMEOUT_MS} ms`);
+			const { stdout } = loadExtension(home, extensionOf(plugin), { COMMAND: "status", CLI_TIMEOUT_MS: String(LONG_CHILD_CLI_TIMEOUT_MS) });
+			expect(stdout.split("\n")[0]).toBe(`command failed: session-log: status timed out after ${LONG_CHILD_CLI_TIMEOUT_MS} ms`);
 			const pid = longChildPid(childPidFile);
-			if (pid) expect(await processEnds(pid)).toBe(true);
+			expect(pid).toBeGreaterThan(0);
+			expect(await processEnds(pid)).toBe(true);
 		} finally {
 			// The test's own child, should the extension have left it running.
 			const pid = longChildPid(childPidFile);
@@ -686,10 +691,11 @@ describe("legacy cleanup at load", () => {
 		const childPidFile = path.join(home, "cli-child");
 		startLongChild(cliOf(plugin), childPidFile);
 		try {
-			const { stderr } = loadExtension(home, extensionOf(plugin), { CLI_TIMEOUT_MS: String(SHORT_CLI_TIMEOUT_MS), WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
-			expect(stderr).toBe(`${REPAIR_FAILURE_PREFIX}repair timed out after ${SHORT_CLI_TIMEOUT_MS} ms${REPAIR_FAILURE_SUFFIX}`);
+			const { stderr } = loadExtension(home, extensionOf(plugin), { CLI_TIMEOUT_MS: String(LONG_CHILD_CLI_TIMEOUT_MS), WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
+			expect(stderr).toBe(`${REPAIR_FAILURE_PREFIX}repair timed out after ${LONG_CHILD_CLI_TIMEOUT_MS} ms${REPAIR_FAILURE_SUFFIX}`);
 			const pid = longChildPid(childPidFile);
-			if (pid) expect(await processEnds(pid)).toBe(true);
+			expect(pid).toBeGreaterThan(0);
+			expect(await processEnds(pid)).toBe(true);
 			expect(fs.existsSync(path.join(agent, "session-log", LEGACY_CLEANUP_STAMP))).toBe(false);
 			expect(await repairRunsAtNextStart(home, plugin)).toBe(true);
 		} finally {

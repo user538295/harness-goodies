@@ -69,37 +69,22 @@ preflight_state_file() {
     fail "refusing to overwrite state directory: $file"
 }
 
-# Fails while another live command holds the install lock (busy) or the lock is unsafe. A lock whose
-# owner file is missing or incomplete is left to lib/locking.py, which `on` takes the lock with too: its
-# holder may still be creating it (the lock, then the owner file, then its content) or removing it (in
-# reverse), so locking.py reports it busy while fresh and reclaims it once stale.
+# Fails when the install lock is unsafe to touch: a symlink or a non-directory (ensure_safe_parent
+# checks every component of the owner file's path, the lock included), or a directory holding anything
+# but a regular owner file. Whether it is busy or stale is left to lib/locking.py, which
+# acquire_install_lock runs next.
 preflight_install_lock() {
-  local owner_pid owner_start actual_start child
+  local child
   ensure_safe_parent "$INSTALL_LOCK/owner"
-  [[ ! -L "$INSTALL_LOCK" ]] ||
-    fail "refusing symlinked install lock: $INSTALL_LOCK"
-  [[ ! -e "$INSTALL_LOCK" ]] && return
-  [[ -d "$INSTALL_LOCK" || ! -e "$INSTALL_LOCK" ]] ||
-    fail "refusing non-directory install lock: $INSTALL_LOCK"
+  [[ -e "$INSTALL_LOCK" ]] || return 0
   for child in "$INSTALL_LOCK"/* "$INSTALL_LOCK"/.[!.]* "$INSTALL_LOCK"/..?*; do
     [[ -e "$child" || -L "$child" ]] || continue
     [[ "$child" == "$INSTALL_LOCK/owner" ]] ||
       fail "refusing install lock containing unexpected file: $child"
   done
-  [[ -e "$INSTALL_LOCK/owner" ]] || return 0
+  [[ -e "$INSTALL_LOCK/owner" || -L "$INSTALL_LOCK/owner" ]] || return 0
   [[ ! -L "$INSTALL_LOCK/owner" && ( -f "$INSTALL_LOCK/owner" || ! -e "$INSTALL_LOCK/owner" ) ]] ||
     fail "refusing invalid install lock owner: $INSTALL_LOCK/owner"
-  owner_pid="$(sed -n '1p' "$INSTALL_LOCK/owner" 2>/dev/null)" || [[ ! -e "$INSTALL_LOCK/owner" ]] ||
-    fail "cannot read install lock owner: $INSTALL_LOCK/owner"
-  owner_start="$(sed -n '2p' "$INSTALL_LOCK/owner" 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')" || true
-  [[ "$owner_pid" =~ ^[1-9][0-9]*$ && -n "$owner_start" ]] || return 0
-  if kill -0 "$owner_pid" 2>/dev/null; then
-    actual_start="$(ps -p "$owner_pid" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
-    if [[ -n "$actual_start" && "$actual_start" == "$owner_start" ]]; then
-      fail_install_lock_busy
-    fi
-  fi
-  return 0
 }
 
 preflight_native_hooks() {
@@ -124,9 +109,11 @@ preflight_off() {
 }
 
 # EX_TEMPFAIL, as in lib/locking.py and lib/claude_settings.py: a session-log command exits with it when,
-# and only when, it stopped on something transient with nothing decided, so a caller can tell "try later"
-# from a failure: another live command holds the install lock, or settings.json changed before the legacy
-# cleanup moved any version of it aside (a change found later is a failure naming the version kept).
+# and only when, it stopped on something transient, so a caller can tell "try later" from a failure:
+# another live command holds the install lock, or settings.json changed during the legacy cleanup with no
+# version of it left beside it (one that is left is a failure naming it). The step that hit it left
+# everything as it found it, so a retry is safe; reports printed by earlier steps (say, migrate's
+# "removed N") stand.
 readonly TRANSIENT_FAILURE_EXIT_CODE=75
 
 fail_install_lock_busy() {
@@ -147,11 +134,8 @@ _install_lock_operation() {
 acquire_install_lock() {
   local status=0
   validate_state_dir
+  # Refuses a symlinked or non-directory lock: the lock is a component of the owner file's path.
   ensure_safe_parent "$INSTALL_LOCK/owner"
-  [[ ! -L "$INSTALL_LOCK" ]] ||
-    fail "refusing symlinked install lock: $INSTALL_LOCK"
-  [[ ! -e "$INSTALL_LOCK" || -d "$INSTALL_LOCK" ]] ||
-    fail "refusing non-directory install lock: $INSTALL_LOCK"
   ensure_private_directory "$STATE_DIR"
   INSTALL_LOCK_OWNER_START="$(ps -p "$$" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
   [[ -n "$INSTALL_LOCK_OWNER_START" ]] ||

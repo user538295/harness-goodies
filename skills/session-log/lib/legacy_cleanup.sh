@@ -8,7 +8,7 @@
 # setup run it silently through `repair`, and so does a Cursor session start while logging is on and
 # ~/.cursor/hooks.json still holds a legacy session-log entry; the OMP extension starts `repair` in
 # the background when it loads. Claude Code, Cursor, OMP, and OpenCode `status` and `usage` never run
-# it; in Codex, `status` and `usage` run it too when they repair an enabled adapter, so an unowned
+# it (Claude Code `status` only names the settings.json versions it kept aside); in Codex, `status` and `usage` run it too when they repair an enabled adapter, so an unowned
 # file at a legacy path fails them, as the old installer did before every command. It removes only
 # what is proven to be session-log's and never clears runtime markers: a harness plugin's own hooks
 # keep logging whatever duplicate registration goes. Claude Code, Cursor, and OpenCode removals of
@@ -79,7 +79,24 @@ legacy_cleanup_claude() {
   [[ -n "$unrecognized" ]] || remove_claude_legacy_scripts
   remove_seeded_package "$HARNESS_ROOT/skills/session-log"
   remove_claude_obsolete_state
+  report_kept_claude_settings
   [[ -z "$unrecognized" ]] || fail "refusing to remove unrecognized legacy Claude script: $unrecognized"
+}
+
+# The names lib/claude_settings.py gives the versions of settings.json it keeps beside it when another writer
+# changes the file during the cleanup: its backup, .session-log-backup.<pid>.<attempt>, and that name followed by
+# the .conflict.<attempt> or .conflict.<16 hex digits> (CONFLICT_NAME_BYTES) of lib/pathsafe.py rename_to_conflict.
+readonly CLAUDE_KEPT_SETTINGS_NAME='^\.session-log-backup\.[0-9]+\.[0-9]+(\.conflict\.([0-9]+|[0-9a-f]{16}))?$'
+
+# Names each version of settings.json a legacy cleanup kept beside it, at every `status` and `repair` until the
+# user deletes it: a cleanup that failed at session start said so to no one. Read-only, since `status` runs it
+# without the install lock; so it would also name the backup a cleanup running at that instant holds.
+report_kept_claude_settings() {
+  local candidate
+  for candidate in "$HARNESS_ROOT"/.session-log-backup.*; do
+    [[ "${candidate##*/}" =~ $CLAUDE_KEPT_SETTINGS_NAME && ( -e "$candidate" || -L "$candidate" ) ]] || continue
+    print_repair_report "another version of settings.json is kept in $candidate; review it, then delete it"
+  done
 }
 
 # The package copy (or link) older install.sh releases seeded into ~/.codex/skills, and their

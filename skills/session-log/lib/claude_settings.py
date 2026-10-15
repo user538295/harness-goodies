@@ -170,15 +170,19 @@ def _stage_backup(parent_fd, options):
 
 
 def _restore_after_conflict(parent_fd, options):
-    """Move the settings.json another writer created aside, then the backup back: ``(conflict name, restored)``."""
-    conflict = pathsafe.rename_to_conflict(
-        parent_fd,
-        pathsafe.ConflictRenameOptions(
-            source_name=options.settings_name,
-            prefix=options.backup_name,
-            exhaust_message=options.message,
-        ),
-    )
+    """Move the settings.json another writer created aside, then the backup back: ``(conflict name, restored)``.
+    The conflict name is None when that settings.json went again before it could be moved aside."""
+    try:
+        conflict = pathsafe.rename_to_conflict(
+            parent_fd,
+            pathsafe.ConflictRenameOptions(
+                source_name=options.settings_name,
+                prefix=options.backup_name,
+                exhaust_message=options.message,
+            ),
+        )
+    except FileNotFoundError:
+        conflict = None
     return conflict, pathsafe.move_no_replace(
         parent_fd,
         options.backup_name,
@@ -289,9 +293,10 @@ def _remove_managed_hooks(document, removable):
 
 
 CHANGED = "Claude settings changed during the legacy cleanup; run repair again"
-# EX_TEMPFAIL, TRANSIENT_FAILURE_EXIT_CODE in lib/adapter_install.sh: CHANGED is raised only before anything is
-# moved aside, so settings.json stays as the other writer left it and the session-log command exits with the status
-# that means "try later". A change found once a version is moved aside is a failure naming where it is kept.
+# EX_TEMPFAIL, TRANSIENT_FAILURE_EXIT_CODE in lib/adapter_install.sh: the exit status of CHANGED, which is transient:
+# the step that hit it left everything as it found it (a backup it had staged is back as settings.json), so a retry is
+# safe; reports printed by earlier steps (say, migrate's "removed N") stand. A change that leaves a version of
+# settings.json beside it is a failure naming where that version is kept.
 TRANSIENT_FAILURE_EXIT_CODE = 75
 KEPT_ASIDE = "Claude settings changed while the legacy cleanup was replacing it; another version is kept in "
 
@@ -306,15 +311,15 @@ class SettingsWriteState:
 @dataclass
 class SettingsWriteContext:
     parent_fd: object
+    directory: str
     settings_name: str
     snapshot: SettingsSnapshot
     state: SettingsWriteState
 
 
-def _kept_aside(*names):
+def _kept_aside(context, *names):
     """The failure that names the versions of settings.json the cleanup had to keep beside it."""
-    directory = os.path.dirname(os.environ["SETTINGS_PATH"])
-    return KEPT_ASIDE + " and ".join(os.path.join(directory, name) for name in names)
+    return KEPT_ASIDE + " and ".join(os.path.join(context.directory, name) for name in names)
 
 
 def _write_settings_document(descriptor, document):
@@ -495,7 +500,7 @@ def _stage_settings_backup(context):
             state.backup_name,
             context.settings_name,
         ):
-            raise SystemExit(_kept_aside(state.backup_name))
+            raise SystemExit(_kept_aside(context, state.backup_name))
         state.backup_active = False
         raise SystemExit(CHANGED)
 
@@ -518,11 +523,12 @@ def _replace_settings(context):
             ConflictRestoreOptions(
                 settings_name=context.settings_name,
                 backup_name=state.backup_name,
-                message=_kept_aside(state.backup_name),
+                message=_kept_aside(context, state.backup_name),
             ),
         )
         state.backup_active = not restored
-        raise SystemExit(_kept_aside(conflict) if restored else _kept_aside(conflict, state.backup_name))
+        kept = [name for name in (conflict, None if restored else state.backup_name) if name is not None]
+        raise SystemExit(_kept_aside(context, *kept) if kept else CHANGED)
     os.unlink(state.temporary_name, dir_fd=context.parent_fd)
     state.temporary_name = None
     backup_stat, backup_settings = _read_named(context.parent_fd, state.backup_name)
@@ -535,11 +541,11 @@ def _replace_settings(context):
             pathsafe.ConflictRenameOptions(
                 source_name=state.backup_name,
                 prefix=state.backup_name,
-                exhaust_message=_kept_aside(state.backup_name),
+                exhaust_message=_kept_aside(context, state.backup_name),
             ),
         )
         state.backup_active = False
-        raise SystemExit(_kept_aside(conflict))
+        raise SystemExit(_kept_aside(context, conflict))
     os.unlink(state.backup_name, dir_fd=context.parent_fd)
     state.backup_active = False
 
@@ -565,7 +571,7 @@ def _cleanup_settings_write(parent_fd, settings_name, state):
                 pass
 
 
-def _write_settings(parent_fd, settings_name, update):
+def _write_settings(parent_fd, directory, settings_name, update):
     document = update.document
     snapshot = update.snapshot
     mode = stat.S_IMODE(snapshot.metadata.st_mode)
@@ -587,7 +593,7 @@ def _write_settings(parent_fd, settings_name, update):
         _write_settings_document(temporary_fd, document)
         _verify_snapshot(parent_fd, settings_name, snapshot)
         _replace_settings(
-            SettingsWriteContext(parent_fd, settings_name, snapshot, state)
+            SettingsWriteContext(parent_fd, directory, settings_name, snapshot, state)
         )
         os.fsync(parent_fd)
     finally:
@@ -632,7 +638,7 @@ def _edit_settings(edit):
                 changed = edit(document)
                 if changed:
                     _verify_snapshot(parent_fd, settings_name, snapshot)
-                    _write_settings(parent_fd, settings_name, SettingsUpdate(document=document, snapshot=snapshot))
+                    _write_settings(parent_fd, directory, settings_name, SettingsUpdate(document=document, snapshot=snapshot))
                 return changed
             finally:
                 os.close(settings_fd)

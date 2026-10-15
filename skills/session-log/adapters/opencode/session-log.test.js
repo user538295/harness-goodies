@@ -25,6 +25,10 @@ const FAILED_EXIT_CODE = 1;
 // How long a killed process may take to be gone, polled at this interval.
 const PROCESS_END_WAIT_MS = 5000;
 const POLL_INTERVAL_MS = 50;
+// Long enough for the CLI stand-in to start its long child, which writes its pid, before the timeout fires even under
+// load, so the timeout tests can require that pid instead of passing when the timeout struck first.
+const LONG_CHILD_CLI_TIMEOUT_MS = 3000;
+const LONG_CHILD_TEST_TIMEOUT_MS = LONG_CHILD_CLI_TIMEOUT_MS + 2 * PROCESS_END_WAIT_MS;
 // launchd or init: alive, and signalling it fails with EPERM rather than ESRCH for anyone but root.
 const INIT_PID = 1;
 
@@ -132,7 +136,7 @@ const wrapperDirectory = (name, lines) => {
 const pathWith = (directory) => `${directory}:${process.env.PATH}`;
 // A CLI stand-in that starts a long child and waits for it; the child writes its own pid to `pidFile` first.
 const longChildWrapper = (pidFile) => wrapperDirectory("bash", [`sh -c 'echo $$ > "$1"; exec sleep 600' sh "${pidFile}"`]);
-// The long child's pid, or 0 when the timeout killed it before it wrote one, so it cannot have outlived the timeout.
+// The long child's pid, or 0 when it never wrote one.
 const longChildPid = (pidFile) => {
   try {
     return Number(fs.readFileSync(pidFile, "utf8")) || 0;
@@ -149,12 +153,13 @@ const isGone = (pid) => {
     return error.code === "ESRCH";
   }
 };
-// Whether the long child is gone; once killed it may linger briefly.
+// Whether the long child started (wrote its pid) and is gone; once killed it may linger briefly.
 const longChildEnds = async (pidFile) => {
   const pid = longChildPid(pidFile);
+  if (!pid) return false;
   const deadline = Date.now() + PROCESS_END_WAIT_MS;
-  while (pid && !isGone(pid) && Date.now() < deadline) await Bun.sleep(POLL_INTERVAL_MS);
-  return !pid || isGone(pid);
+  while (!isGone(pid) && Date.now() < deadline) await Bun.sleep(POLL_INTERVAL_MS);
+  return isGone(pid);
 };
 // The test's own child, should the plugin have left it running.
 const killLongChild = (pidFile) => {
@@ -712,16 +717,16 @@ test("the CLI's timeout ends the commands it started too", async () => {
     // The CLI's child holds its output open, so the command settles only once the timeout ended that child too.
     const result = runPlugin(`
       let failure = "";
-      try { await sessionLog.runSessionLogCli("status", { timeoutMs: 200 }); }
+      try { await sessionLog.runSessionLogCli("status", { timeoutMs: ${LONG_CHILD_CLI_TIMEOUT_MS} }); }
       catch (error) { failure = error.message; }
       process.stdout.write(failure);
     `, { PATH: pathWith(wrapper) });
-    expect(result.stdout).toBe("session-log: status timed out after 200 ms");
+    expect(result.stdout).toBe(`session-log: status timed out after ${LONG_CHILD_CLI_TIMEOUT_MS} ms`);
     expect(await longChildEnds(pidFile)).toBe(true);
   } finally {
     killLongChild(pidFile);
   }
-});
+}, LONG_CHILD_TEST_TIMEOUT_MS);
 
 test("/session-log usage without a target reports the session it ran in", () => {
   const record = path.join(home, "arguments");
@@ -772,7 +777,7 @@ test("a cleanup that never finished (timed out, killed, or not started) is not s
   const pidFile = path.join(home, "cli-child");
   try {
     for (const [outcome, options, environment, expected] of [
-      ["timed out", "{ timeoutMs: 200 }", { PATH: pathWith(longChildWrapper(pidFile)) }, "timed out after 200 ms"],
+      ["timed out", `{ timeoutMs: ${LONG_CHILD_CLI_TIMEOUT_MS} }`, { PATH: pathWith(longChildWrapper(pidFile)) }, `timed out after ${LONG_CHILD_CLI_TIMEOUT_MS} ms`],
       ["killed", "", { PATH: pathWith(wrapperDirectory("bash", ["kill -KILL $$"])) }, "exited with SIGKILL"],
       ["not started", "", { PATH: emptyDirectory }, "not found"],
     ]) {
@@ -785,7 +790,7 @@ test("a cleanup that never finished (timed out, killed, or not started) is not s
   } finally {
     killLongChild(pidFile);
   }
-});
+}, LONG_CHILD_TEST_TIMEOUT_MS);
 
 test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run, and stamps all but a transient failure (exit 75)", () => {
   for (const [lines, expected, stamped] of [
