@@ -98,16 +98,19 @@ cleanup_fingerprint() {
 }
 
 # The exit status of a session-log command that stopped on something transient with nothing decided:
-# another one holds the install lock, or settings.json changed under the cleanup (INSTALL_LOCK_BUSY in
-# lib/adapter_install.sh).
-readonly INSTALL_LOCK_BUSY=75
+# another one holds the install lock, or settings.json changed before the cleanup moved any version of it
+# aside (TRANSIENT_FAILURE_EXIT_CODE in lib/adapter_install.sh).
+readonly TRANSIENT_FAILURE_EXIT_CODE=75
+# Bash reports a command a signal ended with an exit status above this: 128 + the signal number.
+readonly SIGNAL_EXIT_STATUS_BASE=128
 
 # Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never
 # fails the hook and all output is discarded. A stamp of the fingerprint after the run skips it
 # until settings.json, this package, or whether a seeded copy or legacy scripts exist changes. Only
-# a transient stop (INSTALL_LOCK_BUSY) leaves no stamp, so the next session start tries again; any
-# other failure (say, an edited legacy script) is stamped like a success, since rerunning it at
-# every session start cannot fix it, and `on` and `repair` report why it failed.
+# a transient stop (TRANSIENT_FAILURE_EXIT_CODE) or a repair a signal ended before it finished leaves no
+# stamp, so the next session start tries again; any other failure (say, an edited legacy script) is
+# stamped like a success, since rerunning it at every session start cannot fix it, and `on` and
+# `repair` report why it failed.
 # With no leftover it costs one grep.
 cleanup_legacy_leftovers() {
   local fingerprint status=0
@@ -117,7 +120,7 @@ cleanup_legacy_leftovers() {
     return 0
   fi
   bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || status=$?
-  ((status != INSTALL_LOCK_BUSY)) || return 0
+  ((status != TRANSIENT_FAILURE_EXIT_CODE && status <= SIGNAL_EXIT_STATUS_BASE)) || return 0
   # The fingerprint is taken again after the cleanup. If something else changes settings.json
   # in between, that change is stamped without a cleanup; the next change triggers one.
   fingerprint="$(cleanup_fingerprint)" || return 0

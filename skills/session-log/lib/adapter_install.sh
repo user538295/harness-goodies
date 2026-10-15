@@ -69,20 +69,10 @@ preflight_state_file() {
     fail "refusing to overwrite state directory: $file"
 }
 
-# STALE_LOCK_SECONDS in lib/locking.py: how long a lock may lack a complete owner file before it is stale.
-readonly INSTALL_LOCK_STALE_SECONDS=5
-
-# True while the install lock is younger than INSTALL_LOCK_STALE_SECONDS: its holder may still be
-# writing the owner file into it (locking.py creates the lock, then the owner file, then its content).
-install_lock_fresh() {
-  local modified
-  # GNU stat is probed first: GNU `stat -f` would print file-system info.
-  modified="$(stat -c %Y "$INSTALL_LOCK" 2>/dev/null || stat -f %m "$INSTALL_LOCK" 2>/dev/null)" || return 1
-  (($(date +%s) - modified < INSTALL_LOCK_STALE_SECONDS))
-}
-
-# Fails while another live command holds the install lock (busy) or the lock is unsafe. A lock its
-# holder is still creating counts as busy; one it is removing (owner file first, then the lock) as free.
+# Fails while another live command holds the install lock (busy) or the lock is unsafe. A lock whose
+# owner file is missing or incomplete is left to lib/locking.py, which `on` takes the lock with too: its
+# holder may still be creating it (the lock, then the owner file, then its content) or removing it (in
+# reverse), so locking.py reports it busy while fresh and reclaims it once stale.
 preflight_install_lock() {
   local owner_pid owner_start actual_start child
   ensure_safe_parent "$INSTALL_LOCK/owner"
@@ -96,17 +86,13 @@ preflight_install_lock() {
     [[ "$child" == "$INSTALL_LOCK/owner" ]] ||
       fail "refusing install lock containing unexpected file: $child"
   done
-  [[ -e "$INSTALL_LOCK/owner" ]] || return
+  [[ -e "$INSTALL_LOCK/owner" ]] || return 0
   [[ ! -L "$INSTALL_LOCK/owner" && ( -f "$INSTALL_LOCK/owner" || ! -e "$INSTALL_LOCK/owner" ) ]] ||
     fail "refusing invalid install lock owner: $INSTALL_LOCK/owner"
   owner_pid="$(sed -n '1p' "$INSTALL_LOCK/owner" 2>/dev/null)" || [[ ! -e "$INSTALL_LOCK/owner" ]] ||
     fail "cannot read install lock owner: $INSTALL_LOCK/owner"
   owner_start="$(sed -n '2p' "$INSTALL_LOCK/owner" 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')" || true
-  if [[ ! "$owner_pid" =~ ^[1-9][0-9]*$ || -z "$owner_start" ]]; then
-    [[ -e "$INSTALL_LOCK/owner" ]] || return 0
-    install_lock_fresh && fail_install_lock_busy
-    fail "refusing invalid install lock owner: $INSTALL_LOCK/owner"
-  fi
+  [[ "$owner_pid" =~ ^[1-9][0-9]*$ && -n "$owner_start" ]] || return 0
   if kill -0 "$owner_pid" 2>/dev/null; then
     actual_start="$(ps -p "$owner_pid" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
     if [[ -n "$actual_start" && "$actual_start" == "$owner_start" ]]; then
@@ -137,15 +123,15 @@ preflight_off() {
   preflight_install_lock
 }
 
-# EX_TEMPFAIL, LOCK_BUSY in lib/locking.py: a session-log command exits with it when, and only
-# when, it stopped on something transient with nothing decided, so a caller can tell "try later" from
-# a failure: another live command holds the install lock, or (SETTINGS_CHANGED_STATUS in
-# lib/claude_settings.py) settings.json changed while the legacy cleanup was updating it.
-readonly INSTALL_LOCK_BUSY=75
+# EX_TEMPFAIL, as in lib/locking.py and lib/claude_settings.py: a session-log command exits with it when,
+# and only when, it stopped on something transient with nothing decided, so a caller can tell "try later"
+# from a failure: another live command holds the install lock, or settings.json changed before the legacy
+# cleanup moved any version of it aside (a change found later is a failure naming the version kept).
+readonly TRANSIENT_FAILURE_EXIT_CODE=75
 
 fail_install_lock_busy() {
   printf '%s: another session-log command is already in progress for %s\n' "$SESSION_LOG_LOG_PREFIX" "$HARNESS" >&2
-  exit "$INSTALL_LOCK_BUSY"
+  exit "$TRANSIENT_FAILURE_EXIT_CODE"
 }
 
 # Per-harness install lock on lib/locking.py: the
@@ -171,7 +157,7 @@ acquire_install_lock() {
   [[ -n "$INSTALL_LOCK_OWNER_START" ]] ||
     fail "cannot determine install lock owner"
   _install_lock_operation acquire || status=$?
-  ((status != INSTALL_LOCK_BUSY)) || fail_install_lock_busy
+  ((status != TRANSIENT_FAILURE_EXIT_CODE)) || fail_install_lock_busy
   # locking.py has already said what failed.
   ((status == 0)) || exit 1
 }

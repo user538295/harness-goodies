@@ -169,13 +169,15 @@ const BACKGROUND_TEST_TIMEOUT_MS = 2 * BACKGROUND_WAIT_MS;
 const POLL_INTERVAL_MS = 50;
 const FAILED_EXIT_CODE = 1;
 // EX_TEMPFAIL: the CLI's exit status for a transient failure, such as another session-log command holding the install lock.
-const LOCK_BUSY_EXIT_CODE = 75;
+const TRANSIENT_FAILURE_EXIT_CODE = 75;
 const NON_EXECUTABLE_MODE = 0o644;
 // Short enough for a test, long enough for bash to start the stub CLI's first command under load.
 const SHORT_CLI_TIMEOUT_MS = 1000;
 const PACKAGE_REMOVED_MESSAGE = "session-log: the session-log package this omp session loaded is gone (upgraded or uninstalled); restart omp";
 const LOCK_BUSY_ERROR = "session-log: another session-log command is already in progress for omp";
 const BACKGROUND_REPAIR = "background:--entrypoint omp --harness omp repair";
+const REPAIR_FAILURE_PREFIX = "session-log: legacy cleanup failed: ";
+const REPAIR_FAILURE_SUFFIX = "; /session-log repair shows the details\n";
 const LEGACY_CLEANUP_STAMP = "legacy-cleanup.stamp";
 const KEPT_COPY_REPORT = "OMP: kept legacy package copy /home/u/.omp/agent/skills/session-log: SKILL.md was changed; move it aside";
 const PRIVATE_DIRECTORY_MODE = 0o700;
@@ -295,6 +297,13 @@ const waitForCliCalls = async (home, waitMs = BACKGROUND_WAIT_MS) => {
 	while (!cliCalls(home) && Date.now() < deadline) await Bun.sleep(POLL_INTERVAL_MS);
 	return cliCalls(home);
 };
+// Restores the plugin's recording CLI, loads the extension again, and tells whether that start ran the repair.
+const repairRunsAtNextStart = async (home, plugin) => {
+	fs.writeFileSync(cliOf(plugin), recordingCli("1.0.0"));
+	fs.chmodSync(cliOf(plugin), EXECUTABLE_MODE);
+	loadExtension(home, extensionOf(plugin));
+	return await waitForCliCalls(home) === "1.0.0 --entrypoint omp --harness omp repair\n";
+};
 const leaveSessionLogOmpExtension = (agent) => {
 	fs.mkdirSync(path.join(agent, "extensions"), { recursive: true });
 	fs.writeFileSync(path.join(agent, "extensions", "session-log-omp.js"), "// universal-session-log: managed\n");
@@ -313,6 +322,18 @@ const processEnds = async (pid, waitMs = BACKGROUND_WAIT_MS) => {
 	const deadline = Date.now() + waitMs;
 	while (!isGone(pid) && Date.now() < deadline) await Bun.sleep(POLL_INTERVAL_MS);
 	return isGone(pid);
+};
+// Makes the CLI start a long child in its process group and wait for it; the child writes its own pid to `pidFile` first.
+const startLongChild = (cli, pidFile) => fs.writeFileSync(cli, fs.readFileSync(cli, "utf8")
+	.replace(/^#!.*\n/, (shebang) => `${shebang}sh -c 'echo $$ > "$1"; exec sleep 600' sh ${shellQuote(pidFile)} & wait\n`));
+// The long child's pid, or 0 when the timeout killed it before it wrote one, so it cannot have outlived the timeout.
+const longChildPid = (pidFile) => {
+	try {
+		return Number(fs.readFileSync(pidFile, "utf8")) || 0;
+	} catch (error) {
+		if (error.code === "ENOENT") return 0;
+		throw error;
+	}
 };
 
 describe("plugin command", () => {
@@ -367,7 +388,9 @@ describe("plugin command", () => {
 			breakCli(cliOf(loaded));
 			const { stdout, stderr } = loadExtension(home, extensionOf(loaded), { COMMAND: "status" });
 			expect(stderr).toBe("");
-			expect(stdout.split("\n")[0]).toBe(`command failed: ${error}, posix_spawn '${cliOf(loaded)}'`);
+			// Bun words the spawn error itself; only its code and the CLI it names are this extension's.
+			expect(stdout.split("\n")[0]).toStartWith(`command failed: ${error}`);
+			expect(stdout.split("\n")[0]).toContain(cliOf(loaded));
 			expect(cliCalls(home)).toBe("");
 		});
 	}
@@ -393,14 +416,15 @@ describe("plugin command", () => {
 		const home = temporaryDirectory();
 		const plugin = installPlugin(home, "1.0.0");
 		const childPidFile = path.join(home, "cli-child");
-		fs.writeFileSync(cliOf(plugin), fs.readFileSync(cliOf(plugin), "utf8").replace(/^(#!.*\n)/, `$1sleep 600 & echo $! > ${shellQuote(childPidFile)}; wait\n`));
+		startLongChild(cliOf(plugin), childPidFile);
 		try {
 			const { stdout } = loadExtension(home, extensionOf(plugin), { COMMAND: "status", CLI_TIMEOUT_MS: String(SHORT_CLI_TIMEOUT_MS) });
 			expect(stdout.split("\n")[0]).toBe(`command failed: session-log: status timed out after ${SHORT_CLI_TIMEOUT_MS} ms`);
-			expect(await processEnds(Number(fs.readFileSync(childPidFile, "utf8")))).toBe(true);
+			const pid = longChildPid(childPidFile);
+			if (pid) expect(await processEnds(pid)).toBe(true);
 		} finally {
 			// The test's own child, should the extension have left it running.
-			const pid = fs.existsSync(childPidFile) ? Number(fs.readFileSync(childPidFile, "utf8")) : 0;
+			const pid = longChildPid(childPidFile);
 			if (pid && !isGone(pid)) process.kill(pid, "SIGKILL");
 		}
 	}, BACKGROUND_TEST_TIMEOUT_MS);
@@ -590,7 +614,7 @@ describe("legacy cleanup at load", () => {
 			retried: false,
 		},
 		"stays silent when another session-log command holds the install lock": {
-			behaviour: { stderr: [LOCK_BUSY_ERROR], exitCode: LOCK_BUSY_EXIT_CODE },
+			behaviour: { stderr: [LOCK_BUSY_ERROR], exitCode: TRANSIENT_FAILURE_EXIT_CODE },
 			expected: "",
 			retried: true,
 		},
@@ -631,23 +655,27 @@ describe("legacy cleanup at load", () => {
 	const unfinishedRepairs = {
 		"cannot start": {
 			breakCli: (cli) => fs.chmodSync(cli, NON_EXECUTABLE_MODE),
-			reason: (cli) => `EACCES: permission denied, posix_spawn '${cli}'`,
+			// Bun words the spawn error itself; only its code and the CLI it names are this extension's.
+			reasonParts: (cli) => ["EACCES", cli],
 		},
 		"is killed": {
 			breakCli: (cli) => fs.writeFileSync(cli, "#!/usr/bin/env bash\nkill -KILL $$\n"),
-			reason: () => "repair was killed by SIGKILL",
+			reasonParts: () => ["repair was killed by SIGKILL"],
 		},
 	};
-	for (const [name, { breakCli, reason }] of Object.entries(unfinishedRepairs)) {
-		test(`reports a repair that ${name} and retries it at the next start`, () => {
+	for (const [name, { breakCli, reasonParts }] of Object.entries(unfinishedRepairs)) {
+		test(`reports a repair that ${name} and retries it at the next start`, async () => {
 			const home = temporaryDirectory();
 			const plugin = installPlugin(home, "1.0.0");
 			const agent = path.join(home, ".omp", "agent");
 			leaveSessionLogOmpExtension(agent);
 			breakCli(cliOf(plugin));
 			const { stderr } = loadExtension(home, extensionOf(plugin), { WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
-			expect(stderr).toBe(`session-log: legacy cleanup failed: ${reason(cliOf(plugin))}; /session-log repair shows the details\n`);
+			expect(stderr).toStartWith(REPAIR_FAILURE_PREFIX);
+			expect(stderr).toEndWith(REPAIR_FAILURE_SUFFIX);
+			for (const part of reasonParts(cliOf(plugin))) expect(stderr).toContain(part);
 			expect(fs.existsSync(path.join(agent, "session-log", LEGACY_CLEANUP_STAMP))).toBe(false);
+			expect(await repairRunsAtNextStart(home, plugin)).toBe(true);
 		}, BACKGROUND_TEST_TIMEOUT_MS);
 	}
 	test("ends a repair that outlives the timeout, with the processes it started, reports it, and retries it at the next start", async () => {
@@ -656,15 +684,17 @@ describe("legacy cleanup at load", () => {
 		const agent = path.join(home, ".omp", "agent");
 		leaveSessionLogOmpExtension(agent);
 		const childPidFile = path.join(home, "cli-child");
-		fs.writeFileSync(cliOf(plugin), fs.readFileSync(cliOf(plugin), "utf8").replace(/^(#!.*\n)/, `$1sleep 600 & echo $! > ${shellQuote(childPidFile)}; wait\n`));
+		startLongChild(cliOf(plugin), childPidFile);
 		try {
 			const { stderr } = loadExtension(home, extensionOf(plugin), { CLI_TIMEOUT_MS: String(SHORT_CLI_TIMEOUT_MS), WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
-			expect(stderr).toBe(`session-log: legacy cleanup failed: repair timed out after ${SHORT_CLI_TIMEOUT_MS} ms; /session-log repair shows the details\n`);
-			expect(await processEnds(Number(fs.readFileSync(childPidFile, "utf8")))).toBe(true);
+			expect(stderr).toBe(`${REPAIR_FAILURE_PREFIX}repair timed out after ${SHORT_CLI_TIMEOUT_MS} ms${REPAIR_FAILURE_SUFFIX}`);
+			const pid = longChildPid(childPidFile);
+			if (pid) expect(await processEnds(pid)).toBe(true);
 			expect(fs.existsSync(path.join(agent, "session-log", LEGACY_CLEANUP_STAMP))).toBe(false);
+			expect(await repairRunsAtNextStart(home, plugin)).toBe(true);
 		} finally {
 			// The test's own child, should the extension have left it running.
-			const pid = fs.existsSync(childPidFile) ? Number(fs.readFileSync(childPidFile, "utf8")) : 0;
+			const pid = longChildPid(childPidFile);
 			if (pid && !isGone(pid)) process.kill(pid, "SIGKILL");
 		}
 	}, BACKGROUND_TEST_TIMEOUT_MS);
@@ -690,7 +720,7 @@ describe("legacy cleanup at load", () => {
 		].join("\n"), { mode: EXECUTABLE_MODE });
 		const { stderr } = loadExtension(home, extensionOf(plugin), { WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
 		expect(stderr).toBe("");
-		expect(fs.readFileSync(path.join(home, "cli-exit-status"), "utf8")).toBe(`${LOCK_BUSY_EXIT_CODE}\n`);
+		expect(fs.readFileSync(path.join(home, "cli-exit-status"), "utf8")).toBe(`${TRANSIENT_FAILURE_EXIT_CODE}\n`);
 	}, BACKGROUND_TEST_TIMEOUT_MS);
 	test("reports the seeded copy the real CLI keeps", () => {
 		const home = temporaryDirectory();

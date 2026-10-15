@@ -210,7 +210,8 @@ _jq_absent=$(bash -c 'source "$1"; REPO_ROOT="$2"; PATH=/nonexistent
   assert_session_log_version_bumped v1.0.3 2>&1 || echo "exit $?"' _ "$SCRIPT_DIR/release.sh" "$REPO_ROOT")
 assert_eq "fails closed, naming jq, when jq is not installed" \
   $'Error: jq is required to check the session-log VERSION bump\nexit 1' "$_jq_absent"
-write_package_json 2.0.0 ./one.js ./other.js
+# Only .exports changes: omp.extensions stays ./two.js as at v1.0.3.
+write_package_json 2.0.0 ./two.js ./other.js
 fixture_git commit -q -am exports
 assert_exits_1 "exports changed without a VERSION bump" assert_session_log_version_bumped v1.0.3
 printf '1.0.4\n' > "$REPO_ROOT/skills/session-log/VERSION"

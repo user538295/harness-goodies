@@ -1059,7 +1059,10 @@ function cleanupLegacyLeftovers(timeoutMs) {
 // Bound on one CLI run (a /session-log command or the startup repair), as the OpenCode adapter caps its CLI.
 const CLI_TIMEOUT_MS = 120_000;
 // Runs the CLI in its own process group, so its timeout also ends the helpers it started, which would
-// otherwise hold its output open. A background run does not keep omp's process alive.
+// otherwise hold its output open. A background run does not keep omp's process alive: should omp exit
+// first, its timeout goes with it and the run, in its own group, continues to its end unbounded and
+// unreported. That run holds the install lock, which locking.py reclaims once its owner has died, and it
+// leaves no stamp, so the next start repeats it while leftovers remain.
 async function runCli(cliArguments, timeoutMs, { background = false } = {}) {
 	const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }), cliArguments);
 	let timedOut = false;

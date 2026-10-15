@@ -361,8 +361,8 @@ def remove_legacy_cursor_hooks(root):
     except subprocess.TimeoutExpired:
         try:
             os.killpg(repair.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # Every process of the group ended after the timeout.
+        except (ProcessLookupError, PermissionError):
+            pass  # Every process of the group ended after the timeout (macOS answers EPERM while only zombies remain).
         repair.wait()
         print(f"session-log: legacy cleanup timed out after {REPAIR_TIMEOUT_SECONDS}s; run repair", file=sys.stderr)
 

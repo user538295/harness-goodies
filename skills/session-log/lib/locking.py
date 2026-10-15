@@ -5,7 +5,7 @@
 The O_NOFOLLOW walk and owner bookkeeping of bin/session-log's install lock
 live here in one auditable, testable place. Invoked as
 ``python3 locking.py acquire|release`` with the SESSION_LOG_LOCK_* env vars.
-Exits LOCK_BUSY while another live owner holds the lock; any other failure
+Exits TRANSIENT_FAILURE_EXIT_CODE while another live owner holds the lock; any other failure
 exits 1 with a message naming it.
 """
 import errno
@@ -17,8 +17,8 @@ import time
 import pathsafe
 
 STALE_LOCK_SECONDS = 5
-# EX_TEMPFAIL; adapter_install.sh (INSTALL_LOCK_BUSY) makes it the exit status of a session-log command too.
-LOCK_BUSY = 75
+# EX_TEMPFAIL; adapter_install.sh (TRANSIENT_FAILURE_EXIT_CODE) makes it the exit status of a session-log command too.
+TRANSIENT_FAILURE_EXIT_CODE = 75
 
 mode = sys.argv[1]
 lock_path = os.environ["SESSION_LOG_LOCK_PATH"]
@@ -90,7 +90,7 @@ try:
                 try:
                     fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
-                    raise SystemExit(LOCK_BUSY)
+                    raise SystemExit(TRANSIENT_FAILURE_EXIT_CODE)
                 try:
                     lock_fd = os.open(name, flags, dir_fd=parent_fd)
                 except FileNotFoundError:
@@ -100,10 +100,10 @@ try:
                 except FileNotFoundError:
                     lines = []
                 if owner_alive(lines):
-                    raise SystemExit(LOCK_BUSY)
+                    raise SystemExit(TRANSIENT_FAILURE_EXIT_CODE)
                 age = time.time() - os.fstat(lock_fd).st_mtime
                 if age < STALE_LOCK_SECONDS:
-                    raise SystemExit(LOCK_BUSY)
+                    raise SystemExit(TRANSIENT_FAILURE_EXIT_CODE)
                 try:
                     os.unlink("owner", dir_fd=lock_fd)
                 except FileNotFoundError:

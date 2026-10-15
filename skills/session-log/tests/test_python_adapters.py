@@ -147,6 +147,8 @@ CODEX_ROOT_SOURCE = "vscode"
 CODEX_CHILD_SOURCE = {"subagent": {"thread_spawn": {"parent_thread_id": "session-a"}}}
 OLD_MTIME = 1_000_000
 NEW_MTIME = 2_000_000
+# How far in the future a lock's modification time is set to keep it fresh for a whole test.
+FUTURE_MTIME_OFFSET_SECONDS = 3600
 
 
 def codex_user_prompt(timestamp):
@@ -816,8 +818,8 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
             environment = {**os.environ, "SETTINGS_PATH": str(settings_path), "SESSION_LOG_OWNER_MARKER": self.OWNER,
                            "CLAUDE_SCRIPTS_DIR": str(Path(directory).resolve() / "scripts")}
             cases = {
-                "unreadable": ("{}", 0, f"cannot update Claude settings: [Errno 13] Permission denied: 'settings.json'"),
-                "an array root": ("[]", PRIVATE_FILE_MODE, "cannot update Claude settings: root must be an object"),
+                "unreadable": ("{}", 0, f"session-log: cannot update Claude settings: [Errno 13] Permission denied: 'settings.json'"),
+                "an array root": ("[]", PRIVATE_FILE_MODE, "session-log: cannot update Claude settings: root must be an object"),
             }
             for name, (contents, mode, message) in cases.items():
                 for operation in ("remove", "migrate"):
@@ -1268,6 +1270,27 @@ class SessionLogRepairCommandTests(unittest.TestCase):
                 self.assertFalse(os.path.lexists(seeded / "SKILL.md"))
                 self.assertEqual((seeded / "notes.md").read_text(), "mine\n")
 
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_repair_names_a_kept_seeded_copy_whose_skill_file_cannot_go(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            seeded = home / SEEDED_RELATIVE
+            seeded.parent.mkdir(parents=True)
+            shutil.copytree(REPO / "skills/session-log", seeded)
+            write_seeded_manifest(seeded)
+            (seeded / "notes.md").write_text("mine\n")
+            seeded.chmod(READ_ONLY_DIRECTORY_MODE)
+            try:
+                result = run_session_log(package, home, "claude", "repair")
+            finally:
+                seeded.chmod(PRIVATE_DIRECTORY_MODE)
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertEqual(result.stdout, (
+                f"Claude Code: kept legacy package copy {seeded}: notes.md is not a file session-log installed; "
+                "cannot remove SKILL.md: Permission denied, so it may still be loaded as a skill; move it aside\n"))
+            self.assertTrue((seeded / "SKILL.md").is_file())
+
     def test_claude_repair_removes_obsolete_state_and_keeps_runtime_markers(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
@@ -1579,13 +1602,164 @@ def _dump_after_a_concurrent_change(*arguments, **options):
 json.dump = _dump_after_a_concurrent_change
 '''
 CLAUDE_SETTINGS_CHANGED = "Claude settings changed during the legacy cleanup; run repair again"
+# Another writer changes the settings.json claude_settings.py moved aside as its backup, just after it put its update
+# in place: the backup no longer holds the version the update was made from.
+SETTINGS_BACKUP_RACE_SITECUSTOMIZE = '''import os, sys
+_link = os.link
+def _link_then_change_the_backup(source, target, **options):
+    result = _link(source, target, **options)
+    if os.path.basename(sys.argv[0]) == "claude_settings.py" and target == "settings.json":
+        directory = os.path.dirname(os.environ["SETTINGS_PATH"])
+        with open(os.path.join(directory, f".session-log-backup.{os.getpid()}.0"), "a", encoding="utf-8") as handle:
+            handle.write("\\n")
+    return result
+os.link = _link_then_change_the_backup
+'''
+# What claude_settings.py says when it had to keep another writer's version of settings.json beside it.
+CLAUDE_SETTINGS_KEPT_ASIDE = "Claude settings changed while the legacy cleanup was replacing it; another version is kept in "
 
 
-def settings_race_environment(home, race_directory):
-    """An environment whose python3 runs claude_settings.py with SETTINGS_RACE_SITECUSTOMIZE."""
+def settings_race_environment(home, race_directory, sitecustomize=SETTINGS_RACE_SITECUSTOMIZE):
+    """An environment whose python3 runs claude_settings.py with ``sitecustomize``."""
     race_directory.mkdir()
-    (race_directory / "sitecustomize.py").write_text(SETTINGS_RACE_SITECUSTOMIZE)
+    (race_directory / "sitecustomize.py").write_text(sitecustomize)
     return {**harness_environment(home), "PYTHONPATH": str(race_directory)}
+
+
+class ClaudeSettingsWriteConflictTests(unittest.TestCase):
+    """A settings.json change found before the cleanup moved anything aside is transient (CHANGED); once a version
+    is moved aside, the cleanup fails naming where that version is kept."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name).resolve()
+        self.settings_path = self.directory / "settings.json"
+        self.original = json.dumps({"hooks": {
+            "Stop": [{"hooks": [command_hook(f"SESSION_LOG_OWNER={OWNER_MARKER} bash /x/claude_hook.sh stop")]}],
+            "Notification": [{"hooks": [FOREIGN_HOOK]}],
+        }}).encode()
+        self.settings_path.write_bytes(self.original)
+        with patch.object(sys, "path", [str(CLAUDE_SETTINGS_PATH.parent), *sys.path]):
+            self.settings = load_module(CLAUDE_SETTINGS_PATH, "claude_settings_conflict_test")
+        self.native_move = self.settings.pathsafe.move_no_replace
+        self.native_link = os.link
+        self.backup = self.directory / f".session-log-backup.{os.getpid()}.0"
+        self.conflict = self.directory / f"{self.backup.name}.conflict.0"
+
+    def remove(self):
+        """The message `remove` stops with."""
+        with patch.dict(os.environ, {"SETTINGS_PATH": str(self.settings_path), "SESSION_LOG_OWNER_MARKER": OWNER_MARKER}), \
+                self.assertRaises(SystemExit) as raised:
+            self.settings.main(["remove"])
+        return raised.exception.code
+
+    def change_settings(self):
+        with open(self.settings_path, "ab") as handle:
+            handle.write(b"\n")
+
+    def test_a_change_found_while_staging_the_backup_is_transient_and_keeps_nothing_aside(self):
+        def change_then_stage(dir_fd, source, target):
+            if source == "settings.json":
+                self.change_settings()
+            return self.native_move(dir_fd, source, target)
+
+        with patch.object(self.settings.pathsafe, "move_no_replace", side_effect=change_then_stage):
+            self.assertEqual(self.remove(), CLAUDE_SETTINGS_CHANGED)
+        self.assertEqual(self.settings_path.read_bytes(), self.original + b"\n")
+        self.assertEqual(sorted(path.name for path in self.directory.iterdir()),
+                         ["settings.json", "settings.json.session-log.lock"])
+
+    def test_a_changed_backup_that_cannot_go_back_is_named(self):
+        def change_then_stage_and_race_the_restore(dir_fd, source, target):
+            if source == "settings.json":
+                self.change_settings()
+            elif target == "settings.json":
+                self.settings_path.write_bytes(b"another writer\n")
+            return self.native_move(dir_fd, source, target)
+
+        with patch.object(self.settings.pathsafe, "move_no_replace", side_effect=change_then_stage_and_race_the_restore):
+            self.assertEqual(self.remove(), f"{CLAUDE_SETTINGS_KEPT_ASIDE}{self.backup}")
+        self.assertEqual(self.settings_path.read_bytes(), b"another writer\n")
+        self.assertEqual(self.backup.read_bytes(), self.original + b"\n")
+
+    def create_then_link(self, source, target, **options):
+        if target == "settings.json":
+            self.settings_path.write_bytes(b"another writer\n")
+        return self.native_link(source, target, **options)
+
+    def test_a_settings_json_created_while_the_update_goes_in_is_kept_aside_and_named(self):
+        with patch.object(self.settings.os, "link", side_effect=self.create_then_link):
+            self.assertEqual(self.remove(), f"{CLAUDE_SETTINGS_KEPT_ASIDE}{self.conflict}")
+        self.assertEqual(self.settings_path.read_bytes(), self.original)
+        self.assertEqual(self.conflict.read_bytes(), b"another writer\n")
+        self.assertFalse(self.backup.exists())
+
+    def test_a_backup_that_cannot_be_restored_after_the_conflict_is_named_too(self):
+        def race_the_restore(dir_fd, source, target):
+            if source == self.backup.name and target == "settings.json":
+                self.settings_path.write_bytes(b"third writer\n")
+            return self.native_move(dir_fd, source, target)
+
+        with patch.object(self.settings.os, "link", side_effect=self.create_then_link), \
+                patch.object(self.settings.pathsafe, "move_no_replace", side_effect=race_the_restore):
+            self.assertEqual(self.remove(), f"{CLAUDE_SETTINGS_KEPT_ASIDE}{self.conflict} and {self.backup}")
+        self.assertEqual(self.settings_path.read_bytes(), b"third writer\n")
+        self.assertEqual(self.conflict.read_bytes(), b"another writer\n")
+        self.assertEqual(self.backup.read_bytes(), self.original)
+
+    def test_a_backup_changed_after_the_update_went_in_is_kept_aside_and_named(self):
+        def link_then_change_the_backup(source, target, **options):
+            result = self.native_link(source, target, **options)
+            with open(self.backup, "ab") as handle:
+                handle.write(b"\n")
+            return result
+
+        with patch.object(self.settings.os, "link", side_effect=link_then_change_the_backup):
+            self.assertEqual(self.remove(), f"{CLAUDE_SETTINGS_KEPT_ASIDE}{self.conflict}")
+        self.assertEqual(json.loads(self.settings_path.read_text()), {"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}})
+        self.assertEqual(self.conflict.read_bytes(), self.original + b"\n")
+        self.assertFalse(self.backup.exists())
+
+    def test_a_conflict_name_that_cannot_be_found_names_the_backup_left_in_its_place(self):
+        def exhaust(dir_fd, options):
+            raise SystemExit(options.exhaust_message)
+
+        def link_then_change_the_backup(source, target, **options):
+            result = self.native_link(source, target, **options)
+            with open(self.backup, "ab") as handle:
+                handle.write(b"\n")
+            return result
+
+        for name, link in (("before the update", self.create_then_link), ("after the update", link_then_change_the_backup)):
+            with self.subTest(name):
+                self.settings_path.write_bytes(self.original)
+                self.backup.unlink(missing_ok=True)
+                with patch.object(self.settings.os, "link", side_effect=link), \
+                        patch.object(self.settings.pathsafe, "rename_to_conflict", side_effect=exhaust):
+                    self.assertEqual(self.remove(), f"{CLAUDE_SETTINGS_KEPT_ASIDE}{self.backup}")
+                self.assertTrue(self.backup.is_file())
+
+    def test_a_version_kept_aside_fails_repair_and_on_naming_it_without_the_transient_status(self):
+        for command in ("repair", "on"):
+            with self.subTest(command), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve() / "home"
+                package = claude_package(home)
+                settings = home / ".claude/settings.json"
+                settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
+                environment = settings_race_environment(home, Path(directory) / "race", SETTINGS_BACKUP_RACE_SITECUSTOMIZE)
+                result = subprocess.run(
+                    ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", command],
+                    capture_output=True, text=True, env=environment, timeout=SESSION_LOG_TIMEOUT_SECONDS)
+                [conflict] = settings.parent.glob(".session-log-backup.*.conflict.0")
+                kept = f"{CLAUDE_SETTINGS_KEPT_ASIDE}{conflict}"
+                if command == "repair":
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", f"session-log: {kept}\n"))
+                else:
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (
+                        0, f"Claude Code: legacy cleanup failed: {kept}; fix it, then run repair\n"
+                           "Claude Code: on — logging starts with the next prompt\n", ""))
+                self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists())
 
 
 RECORDING_SESSION_LOG = '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$SESSION_LOG_TEST_RECORD"\n'
@@ -1763,6 +1937,21 @@ class SessionStartCleanupStampTests(unittest.TestCase):
             self.assertNotEqual(json.loads(settings.read_text()), {}, "the racing settings change did not abort the cleanup")
             self.assertFalse(os.path.lexists(home / LEGACY_CLEANUP_STAMP_RELATIVE))
 
+            self.assert_cleaned(package, home, settings)
+            self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
+
+    def test_a_cleanup_a_signal_killed_is_not_stamped_and_runs_again_at_the_next_session_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package, settings = self.dirty_settings(home)
+            cli = package / "bin/session-log"
+            real_cli = cli.read_text()
+            cli.write_text('#!/usr/bin/env bash\nkill -KILL "$$"\n')
+            killed = run_claude_hook(package, home, "session-start")
+            self.assertEqual((killed.returncode, killed.stdout, killed.stderr), (0, "", ""))
+            self.assertFalse(os.path.lexists(home / LEGACY_CLEANUP_STAMP_RELATIVE))
+
+            cli.write_text(real_cli)
             self.assert_cleaned(package, home, settings)
             self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
 
@@ -2319,7 +2508,7 @@ class RepairCommandEdgeTests(unittest.TestCase):
             settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, REPEATED_REGISTRATIONS)}))
             original = settings.read_bytes()
             hold_install_lock(home)
-            busy = (LOCK_BUSY_STATUS, "", "session-log: another session-log command is already in progress for claude\n")
+            busy = (TRANSIENT_FAILURE_EXIT_CODE, "", "session-log: another session-log command is already in progress for claude\n")
             result = run_session_log(package, home, "claude", "repair")
             self.assertEqual((result.returncode, result.stdout, result.stderr), busy)
             entrypoint = subprocess.run(["bash", str(package / "install.sh"), "--harness", "claude", "--arguments", "repair"],
@@ -2328,32 +2517,42 @@ class RepairCommandEdgeTests(unittest.TestCase):
             self.assertEqual((entrypoint.returncode, entrypoint.stdout, entrypoint.stderr), busy)
             self.assertEqual(settings.read_bytes(), original)
 
-    def test_repair_reports_a_lock_whose_holder_has_not_finished_its_owner_file_as_busy(self):
+    # Owner files a lock may hold while its holder creates or removes it (None: no owner file), or that a crashed
+    # holder or a stray write left behind.
+    INCOMPLETE_LOCK_OWNERS = {"no owner file": None, "empty": "", "pid only": f"{os.getpid()}\n",
+                              "not a pid": "not a pid\nsome start\n"}
+
+    def incomplete_lock(self, home, contents, modified):
+        lock = home / INSTALL_LOCK_RELATIVE
+        lock.mkdir(parents=True)
+        if contents is not None:
+            (lock / "owner").write_text(contents)
+        os.utime(lock, (modified, modified))
+        return lock
+
+    def test_repair_reports_a_fresh_lock_without_a_complete_owner_file_as_busy(self):
         """locking.py creates the lock, then the owner file, then writes it: a command may read it in between."""
-        for name, contents in {"empty": "", "pid only": f"{os.getpid()}\n"}.items():
+        for name, contents in self.INCOMPLETE_LOCK_OWNERS.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
                 package = claude_package(home)
-                lock = home / INSTALL_LOCK_RELATIVE
-                lock.mkdir(parents=True)
-                (lock / "owner").write_text(contents)
+                # Modified in the future, the lock stays fresh however long the command takes to reach it.
+                lock = self.incomplete_lock(home, contents, time.time() + FUTURE_MTIME_OFFSET_SECONDS)
                 result = run_session_log(package, home, "claude", "repair")
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (
-                    LOCK_BUSY_STATUS, "", "session-log: another session-log command is already in progress for claude\n"))
+                    TRANSIENT_FAILURE_EXIT_CODE, "", "session-log: another session-log command is already in progress for claude\n"))
+                self.assertTrue(lock.is_dir())
 
-    def test_repair_refuses_a_stale_lock_with_an_invalid_owner(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            package = claude_package(home)
-            lock = home / INSTALL_LOCK_RELATIVE
-            lock.mkdir(parents=True)
-            owner = lock / "owner"
-            owner.write_text("")
-            os.utime(lock, (OLD_MTIME, OLD_MTIME))
-            result = run_session_log(package, home, "claude", "repair")
-            self.assertEqual((result.returncode, result.stdout, result.stderr),
-                             (1, "", f"session-log: refusing invalid install lock owner: {owner}\n"))
-            self.assertTrue(owner.is_file())
+    def test_repair_reclaims_a_stale_lock_without_a_complete_owner_file_as_on_does(self):
+        for command, output in (("repair", CLAUDE_REPAIR_CLEAN), ("on", "Claude Code: on — logging starts with the next prompt\n")):
+            for name, contents in self.INCOMPLETE_LOCK_OWNERS.items():
+                with self.subTest(command=command, owner=name), tempfile.TemporaryDirectory() as directory:
+                    home = Path(directory).resolve()
+                    package = claude_package(home)
+                    lock = self.incomplete_lock(home, contents, OLD_MTIME)
+                    result = run_session_log(package, home, "claude", command)
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, output, ""))
+                    self.assertFalse(lock.exists())
 
     def test_repair_takes_a_lock_its_holder_releases_while_repair_reads_the_owner(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2376,11 +2575,6 @@ class RepairCommandEdgeTests(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout, result.stderr),
                              (0, "Claude Code: repair found no duplicate or stale registrations\n", ""))
             self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists())
-
-    def test_the_lock_preflight_and_locking_py_agree_on_when_a_lock_turns_stale(self):
-        stale = re.search(r"^STALE_LOCK_SECONDS = (\d+)$", LOCKING_PATH.read_text(), re.MULTILINE).group(1)
-        adapter_install = (REPO / "skills/session-log/lib/adapter_install.sh").read_text()
-        self.assertRegex(adapter_install, rf"(?m)^readonly INSTALL_LOCK_STALE_SECONDS={stale}$")
 
     def test_on_releases_the_install_lock_whether_its_cleanup_succeeds_or_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2427,7 +2621,7 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "repair"],
                 capture_output=True, text=True, env=environment, timeout=SESSION_LOG_TIMEOUT_SECONDS)
             self.assertEqual((repair.returncode, repair.stdout, repair.stderr),
-                             (LOCK_BUSY_STATUS, "", CLAUDE_SETTINGS_CHANGED + "\n"))
+                             (TRANSIENT_FAILURE_EXIT_CODE, "", f"session-log: {CLAUDE_SETTINGS_CHANGED}\n"))
             on = subprocess.run(
                 ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "on"],
                 capture_output=True, text=True, env=environment, timeout=SESSION_LOG_TIMEOUT_SECONDS)
@@ -2437,6 +2631,29 @@ class RepairCommandEdgeTests(unittest.TestCase):
             self.assertNotEqual(json.loads(settings.read_text()), {})
             self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists())
 
+    def test_on_names_the_cleanups_reason_even_when_releasing_the_lock_fails_after_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home = root / "home"
+            package = claude_package(home)
+            settings = home / ".claude/settings.json"
+            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
+            shims = root / "shims"
+            shims.mkdir()
+            release_error = "session-log: cannot release install lock: test failure"
+            (shims / "python3").write_text(
+                f'#!/bin/sh\ncase "$*" in *"locking.py release"*) echo "{release_error}" >&2; exit 1 ;; esac\n'
+                f'exec "{sys.executable}" "$@"\n')
+            (shims / "python3").chmod(EXECUTABLE_MODE)
+            environment = settings_race_environment(home, root / "race")
+            environment["PATH"] = f"{shims}{os.pathsep}{environment['PATH']}"
+            on = subprocess.run(
+                ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "on"],
+                capture_output=True, text=True, env=environment, timeout=SESSION_LOG_TIMEOUT_SECONDS)
+            self.assertEqual((on.returncode, on.stdout, on.stderr), (
+                0, f"Claude Code: legacy cleanup skipped: {CLAUDE_SETTINGS_CHANGED}\n"
+                   "Claude Code: on — logging starts with the next prompt\n", f"{release_error}\n"))
+
     def test_codex_on_reports_a_busy_install_lock_with_the_busy_status(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
@@ -2444,7 +2661,7 @@ class RepairCommandEdgeTests(unittest.TestCase):
             hold_install_lock(home, ".codex")
             result = run_session_log(package, home, "codex", "on")
             self.assertEqual((result.returncode, result.stdout, result.stderr), (
-                LOCK_BUSY_STATUS, "", "session-log: another session-log command is already in progress for codex\n"))
+                TRANSIENT_FAILURE_EXIT_CODE, "", "session-log: another session-log command is already in progress for codex\n"))
             self.assertFalse((home / CODEX_FLAG_RELATIVE).exists())
 
     @unittest.skipIf(os.geteuid() == 0, "root reads files whatever their mode")
@@ -4573,8 +4790,9 @@ class ClaudeHookWithoutPythonTests(unittest.TestCase):
 STALE_OWNER_START = "Stale Owner Start"
 ACQUIRER_START = "Acquirer Start"
 # EX_TEMPFAIL: the exit status of locking.py when the lock is busy, and of every session-log command when, and
-# only when, it stopped on something transient (the busy lock, a concurrent settings.json change).
-LOCK_BUSY_STATUS = 75
+# only when, it stopped on something transient (the busy lock, a settings.json change found before anything was
+# moved aside).
+TRANSIENT_FAILURE_EXIT_CODE = 75
 
 
 class PackageLockTests(unittest.TestCase):
@@ -4653,7 +4871,7 @@ class PackageLockTests(unittest.TestCase):
         parent = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
         self.addCleanup(os.close, parent)
         fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.assertEqual(self.acquire(), LOCK_BUSY_STATUS)
+        self.assertEqual(self.acquire(), TRANSIENT_FAILURE_EXIT_CODE)
         self.assertEqual(self.owner_lines(), [str(os.getpid()), STALE_OWNER_START])
 
     def test_acquire_retries_when_holder_releases_after_mkdir_conflict(self):
@@ -4685,12 +4903,12 @@ class PackageLockTests(unittest.TestCase):
 
         with patch.object(os, "open", side_effect=release_then_open):
             status = self.acquire()
-        self.assertEqual(status, LOCK_BUSY_STATUS)
+        self.assertEqual(status, TRANSIENT_FAILURE_EXIT_CODE)
 
     def test_acquire_reports_busy_while_a_live_owner_holds_the_lock(self):
         self.lock.mkdir()
         (self.lock / "owner").write_text(f"{os.getpid()}\n{process_start(os.getpid())}\n")
-        self.assertEqual(self.acquire(), LOCK_BUSY_STATUS)
+        self.assertEqual(self.acquire(), TRANSIENT_FAILURE_EXIT_CODE)
 
     @unittest.skipIf(os.geteuid() == 0, "root reads files whatever their mode")
     def test_acquire_reports_what_failed_when_the_lock_is_broken_not_busy(self):
@@ -4784,6 +5002,8 @@ def process_group_exists(group):
         os.killpg(group, 0)
     except ProcessLookupError:
         return False
+    except PermissionError:
+        return True  # macOS: only zombies remain, until their new parent reaps them.
     return True
 
 
@@ -4816,15 +5036,23 @@ class CursorSessionStartCleanupTests(unittest.TestCase):
         self.assertEqual(record.read_text(), "--entrypoint cursor --harness cursor repair ")
 
     def test_a_cleanup_that_times_out_ends_with_every_process_it_started_and_is_reported_on_stderr_only(self):
-        group_file = self.root / "repair.pgid"
         # A repair whose helper (as lib/*.py runs under bin/session-log) outlives the shell that started it. The
-        # shell leads its own process group; it records it before starting the helper, so the timeout cannot win.
-        script = f'printf "%s" "$$" > "{group_file}"\nsleep {CLEANUP_HELPER_SECONDS} &\nwait\n'
-        with patch.object(self.hook, "REPAIR_TIMEOUT_SECONDS", CLEANUP_TEST_TIMEOUT_SECONDS):
+        # shell leads its own process group, whose id is its pid, recorded as the hook starts it.
+        script = f"sleep {CLEANUP_HELPER_SECONDS} &\nwait\n"
+        native_popen = self.hook.subprocess.Popen
+        started = []
+
+        def record_the_repair(*arguments, **options):
+            started.append(native_popen(*arguments, **options))
+            return started[-1]
+
+        with patch.object(self.hook, "REPAIR_TIMEOUT_SECONDS", CLEANUP_TEST_TIMEOUT_SECONDS), \
+                patch.object(self.hook.subprocess, "Popen", side_effect=record_the_repair):
             stdout, stderr = self.remove_legacy_hooks(script)
         self.assertEqual((stdout, stderr), (
             "", f"session-log: legacy cleanup timed out after {CLEANUP_TEST_TIMEOUT_SECONDS}s; run repair\n"))
-        group = int(group_file.read_text())
+        [repair] = started
+        group = repair.pid
         deadline = time.monotonic() + PROCESS_EXIT_WAIT_SECONDS
         while process_group_exists(group) and time.monotonic() < deadline:
             time.sleep(PROCESS_POLL_SECONDS)
@@ -4833,17 +5061,19 @@ class CursorSessionStartCleanupTests(unittest.TestCase):
             self.fail("the cleanup's helper process outlived its timeout")
 
     def test_a_cleanup_whose_process_group_is_gone_when_it_times_out_is_still_reported(self):
+        """ESRCH: the group ended; EPERM: macOS's answer for a group of zombies only."""
         native_killpg = os.killpg
+        for error_type, error_number in ((ProcessLookupError, errno.ESRCH), (PermissionError, errno.EPERM)):
+            def kill_then_find_the_group_gone(group, signal_number):
+                native_killpg(group, signal_number)
+                raise error_type(error_number, os.strerror(error_number))
 
-        def kill_then_find_the_group_gone(group, signal_number):
-            native_killpg(group, signal_number)
-            raise ProcessLookupError(errno.ESRCH, os.strerror(errno.ESRCH))
-
-        with patch.object(self.hook, "REPAIR_TIMEOUT_SECONDS", CLEANUP_TEST_TIMEOUT_SECONDS), \
-                patch.object(self.hook.os, "killpg", side_effect=kill_then_find_the_group_gone):
-            stdout, stderr = self.remove_legacy_hooks(f"exec sleep {CLEANUP_HELPER_SECONDS}\n")
-        self.assertEqual((stdout, stderr), (
-            "", f"session-log: legacy cleanup timed out after {CLEANUP_TEST_TIMEOUT_SECONDS}s; run repair\n"))
+            with self.subTest(error_type.__name__), \
+                    patch.object(self.hook, "REPAIR_TIMEOUT_SECONDS", CLEANUP_TEST_TIMEOUT_SECONDS), \
+                    patch.object(self.hook.os, "killpg", side_effect=kill_then_find_the_group_gone):
+                stdout, stderr = self.remove_legacy_hooks(f"exec sleep {CLEANUP_HELPER_SECONDS}\n")
+                self.assertEqual((stdout, stderr), (
+                    "", f"session-log: legacy cleanup timed out after {CLEANUP_TEST_TIMEOUT_SECONDS}s; run repair\n"))
 
     def test_a_cleanup_that_cannot_start_is_reported_on_stderr_only(self):
         with patch.object(self.hook.subprocess, "Popen", side_effect=FileNotFoundError(2, "No such file or directory", "bash")), \

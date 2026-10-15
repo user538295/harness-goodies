@@ -441,24 +441,25 @@ run_repair() {
 }
 
 # The legacy cleanup `on` runs for a plugin-owned harness, best effort: a transient stop
-# (INSTALL_LOCK_BUSY: another session-log command holds the install lock and runs the same cleanup, or
-# settings.json changed under it) is reported as skipped, and a failure, taking the lock included, is
-# reported once; neither fails `on`. `repair` repeats the cleanup and fails with the error.
+# (TRANSIENT_FAILURE_EXIT_CODE: another session-log command holds the install lock and runs the same cleanup, or
+# settings.json changed before the cleanup moved any version of it aside) is reported as skipped, and a
+# failure, taking the lock included, is reported once; neither fails `on`. `repair` repeats the cleanup and fails with the error.
 run_best_effort_cleanup() {
   local error_file error status
   error_file="$(mktemp "${TMPDIR:-/tmp}/session-log-cleanup.XXXXXX")"
   # The lock and the cleanup run in an errexit subshell, so their first failing step ends only the
   # cleanup, and the subshell's EXIT trap releases the lock; the stdout report passes through while
-  # stderr is captured. Nothing may wrap the subshell in `||`, `&&`, or `if`: bash would then ignore
-  # errexit inside it.
+  # stderr is captured, but for the release's (fd 3, the command's own stderr), so the last captured
+  # line stays the cleanup's reason. Nothing may wrap the subshell in `||`, `&&`, or `if`: bash would
+  # then ignore errexit inside it.
   set +e
-  (set -e; acquire_install_lock; trap release_install_lock EXIT; legacy_cleanup) 2>"$error_file"
+  (set -e; acquire_install_lock; trap 'release_install_lock 2>&3' EXIT; legacy_cleanup) 3>&2 2>"$error_file"
   status=$?
   set -e
   error="$(awk 'NF { line = $0 } END { print line }' "$error_file")"
   error="${error#"$SESSION_LOG_LOG_PREFIX: "}"
   unlink "$error_file"
-  if ((status == INSTALL_LOCK_BUSY)); then
+  if ((status == TRANSIENT_FAILURE_EXIT_CODE)); then
     printf '%s: legacy cleanup skipped: %s\n' "$HARNESS_LABEL" "$error"
     return 0
   fi

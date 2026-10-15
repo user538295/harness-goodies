@@ -1376,10 +1376,12 @@ def create_restore_collision(dir_fd, source_name, target_name):
 
 os.link = create_settings_races
 claude_settings.pathsafe._rename_no_replace = create_restore_collision
+backup = os.path.join(os.path.dirname(settings), f".session-log-backup.{os.getpid()}.0")
 try:
     claude_settings.main(["remove"])
 except SystemExit as error:
-    if str(error) != "Claude settings changed during the legacy cleanup; run repair again":
+    if str(error) != ("Claude settings changed while the legacy cleanup was replacing it; another version is kept in "
+                      f"{backup}.conflict.0 and {backup}"):
         raise
 else:
     raise SystemExit("settings removal accepted concurrent target")
@@ -1483,8 +1485,8 @@ assert_file "locking records owner" "$LK/owner"
 SESSION_LOG_LOCK_PATH="$LK" SESSION_LOG_LOCK_PID="$$" SESSION_LOG_LOCK_START="$LK_START" python3 "$PSLIB/locking.py" acquire
 lk2_rc=$?
 # EX_TEMPFAIL: locking.py's status while another live owner holds the lock.
-LOCK_BUSY_STATUS=75
-assert_exact "locking blocks while held by a live owner" "$LOCK_BUSY_STATUS" "$lk2_rc"
+TRANSIENT_FAILURE_EXIT_CODE=75
+assert_exact "locking blocks while held by a live owner" "$TRANSIENT_FAILURE_EXIT_CODE" "$lk2_rc"
 SESSION_LOG_LOCK_PATH="$LK" SESSION_LOG_LOCK_PID="$$" SESSION_LOG_LOCK_START="$LK_START" python3 "$PSLIB/locking.py" release
 assert_not_file "locking release removes the lock" "$LK"
 mkdir -p "$LK"

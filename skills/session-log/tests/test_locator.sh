@@ -46,12 +46,12 @@ resolve() {
 }
 newhome() { mktemp -d "$WORKROOT/home.XXXXXX"; }
 
-# run_block <home> [announced BASE] → stdout and stderr of the whole SKILL.md block run as host claude
-# with arguments `status`, then `exit <status>`
+# run_block <home> [announced BASE] [host] → stdout and stderr of the whole SKILL.md block run as that
+# host (default claude) with arguments `status`, then `exit <status>`
 run_block() {
-  local home="$1" announced="${2:-}" cwd script
+  local home="$1" announced="${2:-}" host="${3:-claude}" cwd script
   cwd="$(mktemp -d "$WORKROOT/project.XXXXXX")"
-  script="$(printf '%s\n' "$BLOCK" | sed -e "s|^harness=.*|harness='claude'|" \
+  script="$(printf '%s\n' "$BLOCK" | sed -e "s|^harness=.*|harness='$host'|" \
     -e "s|^BASE=.*|BASE='$announced'|" -e "s|^arguments=.*|arguments='status'|")"
   (cd "$cwd" && HOME="$home" SESSION_LOG_HOME="" bash -c "$script" 2>&1; echo "exit $?")
 }
@@ -150,6 +150,10 @@ run_block() {
 ( t "a loop match without install.sh is named as incomplete, never run"
   H="$(newhome)"; mkskillonly "$H/.agents/skills/session-log"
   assert_eq "$(run_block "$H")" "session-log: $H/.agents/skills/session-log is not a complete package (no install.sh) — set SESSION_LOG_HOME=<skill dir>"$'\nexit 1' )
+
+( t "an unsupported host identity is named and stops the block before install.sh runs"
+  H="$(newhome)"; mkpackage "$H/.agents/skills/session-log"
+  assert_eq "$(run_block "$H" "" gemini)" $'session-log: unsupported host identity: gemini\nexit 1' )
 
 ( t "nothing installed anywhere names the missing package"
   assert_eq "$(run_block "$(newhome)")" $'session-log: complete package not found in any known skills root — set SESSION_LOG_HOME=<skill dir>\nexit 1' )

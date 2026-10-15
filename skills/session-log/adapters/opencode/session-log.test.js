@@ -20,8 +20,11 @@ const PRIVATE_DIRECTORY_MODE = 0o700;
 const ROOT_UID = 0;
 const runsAsRoot = process.getuid?.() === ROOT_UID;
 // EX_TEMPFAIL: the CLI's exit status for a transient failure, such as another session-log command holding the install lock.
-const LOCK_BUSY_EXIT_CODE = 75;
+const TRANSIENT_FAILURE_EXIT_CODE = 75;
 const FAILED_EXIT_CODE = 1;
+// How long a killed process may take to be gone, polled at this interval.
+const PROCESS_END_WAIT_MS = 5000;
+const POLL_INTERVAL_MS = 50;
 // launchd or init: alive, and signalling it fails with EPERM rather than ESRCH for anyone but root.
 const INIT_PID = 1;
 
@@ -127,6 +130,37 @@ const wrapperDirectory = (name, lines) => {
   return directory;
 };
 const pathWith = (directory) => `${directory}:${process.env.PATH}`;
+// A CLI stand-in that starts a long child and waits for it; the child writes its own pid to `pidFile` first.
+const longChildWrapper = (pidFile) => wrapperDirectory("bash", [`sh -c 'echo $$ > "$1"; exec sleep 600' sh "${pidFile}"`]);
+// The long child's pid, or 0 when the timeout killed it before it wrote one, so it cannot have outlived the timeout.
+const longChildPid = (pidFile) => {
+  try {
+    return Number(fs.readFileSync(pidFile, "utf8")) || 0;
+  } catch (error) {
+    if (error.code === "ENOENT") return 0;
+    throw error;
+  }
+};
+const isGone = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+};
+// Whether the long child is gone; once killed it may linger briefly.
+const longChildEnds = async (pidFile) => {
+  const pid = longChildPid(pidFile);
+  const deadline = Date.now() + PROCESS_END_WAIT_MS;
+  while (pid && !isGone(pid) && Date.now() < deadline) await Bun.sleep(POLL_INTERVAL_MS);
+  return !pid || isGone(pid);
+};
+// The test's own child, should the plugin have left it running.
+const killLongChild = (pidFile) => {
+  const pid = longChildPid(pidFile);
+  if (pid && !isGone(pid)) process.kill(pid, "SIGKILL");
+};
 const projectLogFiles = (project) => fs.readdirSync(path.join(logDirectory, project)).filter((name) => name.endsWith(".md"));
 
 test("logs the root prompt and each root step in the release log format", () => {
@@ -670,17 +704,23 @@ test("closing the plugin does not wait for a startup cleanup still running", () 
   expect(result.stdout).toBe("closed");
 });
 
-test("the CLI's timeout ends the commands it started too", () => {
+test("the CLI's timeout ends the commands it started too", async () => {
   // A CLI whose child keeps the output pipes open after the CLI itself is killed.
-  const wrapper = wrapperDirectory("bash", ["sleep 600"]);
-  // The CLI's child holds its output open, so the command settles only once the timeout ended that child too.
-  const result = runPlugin(`
-    let failure = "";
-    try { await sessionLog.runSessionLogCli("status", { timeoutMs: 200 }); }
-    catch (error) { failure = error.message; }
-    process.stdout.write(failure);
-  `, { PATH: pathWith(wrapper) });
-  expect(result.stdout).toBe("session-log: status timed out after 200 ms");
+  const pidFile = path.join(home, "cli-child");
+  const wrapper = longChildWrapper(pidFile);
+  try {
+    // The CLI's child holds its output open, so the command settles only once the timeout ended that child too.
+    const result = runPlugin(`
+      let failure = "";
+      try { await sessionLog.runSessionLogCli("status", { timeoutMs: 200 }); }
+      catch (error) { failure = error.message; }
+      process.stdout.write(failure);
+    `, { PATH: pathWith(wrapper) });
+    expect(result.stdout).toBe("session-log: status timed out after 200 ms");
+    expect(await longChildEnds(pidFile)).toBe(true);
+  } finally {
+    killLongChild(pidFile);
+  }
 });
 
 test("/session-log usage without a target reports the session it ran in", () => {
@@ -717,7 +757,7 @@ test("the legacy cleanup runs `repair` again only when the package or a disrupti
   expect(repairs()).toBe(2);
 });
 
-for (const [outcome, exitCode, runs] of [["another session-log command's install lock skipped", LOCK_BUSY_EXIT_CODE, 2], ["failed", FAILED_EXIT_CODE, 1]]) {
+for (const [outcome, exitCode, runs] of [["that failed transiently (exit 75)", TRANSIENT_FAILURE_EXIT_CODE, 2], ["that failed", FAILED_EXIT_CODE, 1]]) {
   test(`a cleanup ${outcome} runs ${runs === 1 ? "once" : "again at the next start"}`, () => {
     const record = path.join(home, "repairs");
     const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, "echo 'cannot clean' >&2", `exit ${exitCode}`]);
@@ -726,26 +766,32 @@ for (const [outcome, exitCode, runs] of [["another session-log command's install
   });
 }
 
-test("a cleanup that never finished (timed out, killed, or not started) is not stamped, so the next start retries it", () => {
+test("a cleanup that never finished (timed out, killed, or not started) is not stamped, so the next start retries it", async () => {
   const stamp = path.join(stateDirectory, "legacy-cleanup.stamp");
   const emptyDirectory = fs.mkdtempSync(path.join(home, "no-bash-"));
-  for (const [outcome, options, environment, expected] of [
-    ["timed out", "{ timeoutMs: 200 }", { PATH: pathWith(wrapperDirectory("bash", ["sleep 600"])) }, "timed out after 200 ms"],
-    ["killed", "", { PATH: pathWith(wrapperDirectory("bash", ["kill -KILL $$"])) }, "exited with SIGKILL"],
-    ["not started", "", { PATH: emptyDirectory }, "not found"],
-  ]) {
-    const result = runPlugin(`await sessionLog.cleanupLegacyLeftovers(${options});`, environment);
-    expect(result.stderr, outcome).toContain(expected);
-    expect(result.stderr, outcome).not.toContain("session-log: session-log:");
-    expect(fs.existsSync(stamp), outcome).toBe(false);
+  const pidFile = path.join(home, "cli-child");
+  try {
+    for (const [outcome, options, environment, expected] of [
+      ["timed out", "{ timeoutMs: 200 }", { PATH: pathWith(longChildWrapper(pidFile)) }, "timed out after 200 ms"],
+      ["killed", "", { PATH: pathWith(wrapperDirectory("bash", ["kill -KILL $$"])) }, "exited with SIGKILL"],
+      ["not started", "", { PATH: emptyDirectory }, "not found"],
+    ]) {
+      const result = runPlugin(`await sessionLog.cleanupLegacyLeftovers(${options});`, environment);
+      expect(result.stderr, outcome).toContain(expected);
+      expect(result.stderr, outcome).not.toContain("session-log: session-log:");
+      expect(fs.existsSync(stamp), outcome).toBe(false);
+    }
+    expect(await longChildEnds(pidFile)).toBe(true);
+  } finally {
+    killLongChild(pidFile);
   }
 });
 
-test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run, and stamps all but a busy lock", () => {
+test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run, and stamps all but a transient failure (exit 75)", () => {
   for (const [lines, expected, stamped] of [
     [["echo 'OpenCode: kept /x/commands/session-log.md: move it aside'"], "session-log: OpenCode: kept /x/commands/session-log.md: move it aside\n", true],
     [["echo 'cannot clean' >&2", `exit ${FAILED_EXIT_CODE}`], "session-log: cannot clean\n", true],
-    [["echo 'another command is running' >&2", `exit ${LOCK_BUSY_EXIT_CODE}`], "session-log: another command is running\n", false],
+    [["echo 'another command is running' >&2", `exit ${TRANSIENT_FAILURE_EXIT_CODE}`], "session-log: another command is running\n", false],
     [["echo 'OpenCode: repair found no duplicate or stale registrations'"], "", true],
   ]) {
     fs.rmSync(stateDirectory, { recursive: true, force: true });
@@ -766,7 +812,7 @@ test.skipIf(runsAsRoot)("names a cleanup stamp it cannot read, then runs the cle
   fs.mkdirSync(stateDirectory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   const stamp = path.join(stateDirectory, "legacy-cleanup.stamp");
   fs.writeFileSync(stamp, "", { mode: UNREADABLE_FILE_MODE });
-  const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, "exit 75"]);
+  const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, `exit ${TRANSIENT_FAILURE_EXIT_CODE}`]);
   const result = runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapper) });
   expect(result.stderr).toStartWith(`session-log: EACCES: permission denied, open '${stamp}'\n`);
   expect(fs.readFileSync(record, "utf8")).toBe("repair\n");
