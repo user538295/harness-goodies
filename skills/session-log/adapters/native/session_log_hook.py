@@ -340,8 +340,8 @@ def has_legacy_cursor_hooks(root):
 def remove_legacy_cursor_hooks(root):
     """Session start removes the legacy entries, since Cursor runs them beside the plugin's hooks; the
     plugin's hook commands start this script only while logging is on. Best effort: `repair` output
-    is discarded and its failure is ignored, as `on` and `repair` report why it failed; a cleanup that
-    never started or ran out of time is named on stderr, which Cursor logs, never on stdout, which it
+    is discarded and its failure is ignored, as `on` and `repair` report why it failed, and `status`,
+    `repair`, and `on` name any version of hooks.json it kept aside; a cleanup that never started or ran out of time is named on stderr, which Cursor logs, never on stdout, which it
     reads as the hook's answer."""
     if not has_legacy_cursor_hooks(root):
         return

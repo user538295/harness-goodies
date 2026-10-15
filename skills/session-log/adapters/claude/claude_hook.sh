@@ -111,7 +111,7 @@ readonly SIGNAL_EXIT_STATUS_BASE=128
 # a transient stop (TRANSIENT_FAILURE_EXIT_CODE) or a repair a signal ended before it finished leaves no
 # stamp, so the next session start tries again; any other failure (say, an edited legacy script) is
 # stamped like a success and runs again only when one of those changes, and `on` and `repair`
-# report why it failed; `status` and `repair` name any version of settings.json it kept aside.
+# report why it failed; `status`, `repair`, and `on` name any version of settings.json it kept aside.
 # With no leftover it costs one grep.
 cleanup_legacy_leftovers() {
   local fingerprint status=0

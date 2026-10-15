@@ -299,6 +299,10 @@ CHANGED = "Claude settings changed during the legacy cleanup; run repair again"
 # settings.json beside it is a failure naming where that version is kept.
 TRANSIENT_FAILURE_EXIT_CODE = 75
 KEPT_ASIDE = "Claude settings changed while the legacy cleanup was replacing it; another version is kept in "
+# Another writer created settings.json while the cleanup's backup stood in for it, and it went again before the
+# cleanup could move it aside: the backup is back as settings.json, undoing that removal, so this is a failure.
+RESTORED = ("Claude settings changed while the legacy cleanup was replacing it; another program removed settings.json, "
+            "so the cleanup restored it from its backup; review it")
 
 
 @dataclass
@@ -467,7 +471,10 @@ def _file_versions_match(descriptor_stat, path_stat, snapshot):
 
 def _verify_snapshot(parent_fd, settings_name, snapshot):
     final_stat = os.fstat(snapshot.descriptor)
-    final_path_stat = os.stat(settings_name, dir_fd=parent_fd, follow_symlinks=False)
+    try:
+        final_path_stat = os.stat(settings_name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        raise SystemExit(CHANGED) from None
     if not _file_versions_match(final_stat, final_path_stat, snapshot):
         raise SystemExit(CHANGED)
     if _read_fd(snapshot.descriptor) != snapshot.contents:
@@ -481,14 +488,17 @@ def _stage_settings_backup(context):
         f".session-log-backup.{os.getpid()}.{attempt}"
         for attempt in range(BACKUP_ATTEMPTS)
     )
-    state.backup_name = _stage_backup(
-        context.parent_fd,
-        BackupOptions(
-            settings_name=context.settings_name,
-            candidates=backups,
-            exhaust_message="cannot stage Claude settings update",
-        ),
-    )
+    try:
+        state.backup_name = _stage_backup(
+            context.parent_fd,
+            BackupOptions(
+                settings_name=context.settings_name,
+                candidates=backups,
+                exhaust_message="cannot stage Claude settings update",
+            ),
+        )
+    except FileNotFoundError:
+        raise SystemExit(CHANGED) from None
     state.backup_active = True
     backup_stat, backup_settings = _read_named(context.parent_fd, state.backup_name)
     if (
@@ -528,7 +538,7 @@ def _replace_settings(context):
         )
         state.backup_active = not restored
         kept = [name for name in (conflict, None if restored else state.backup_name) if name is not None]
-        raise SystemExit(_kept_aside(context, *kept) if kept else CHANGED)
+        raise SystemExit(_kept_aside(context, *kept) if kept else RESTORED)
     os.unlink(state.temporary_name, dir_fd=context.parent_fd)
     state.temporary_name = None
     backup_stat, backup_settings = _read_named(context.parent_fd, state.backup_name)

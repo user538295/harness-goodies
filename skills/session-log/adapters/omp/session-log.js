@@ -1008,8 +1008,9 @@ const CLI_MESSAGE_PREFIX = "session-log: ";
 const CLI_REPORT_PREFIX = "OMP: ";
 // A repair report that needs the user: a package copy it kept and asks them to move aside.
 const KEPT_REPORT_PREFIX = `${CLI_REPORT_PREFIX}kept `;
-// EX_TEMPFAIL: the CLI exits with it for a transient failure that decided nothing (another session-log
-// command holds the install lock, or settings.json changed during the cleanup), so a later run retries.
+// EX_TEMPFAIL: the CLI exits with it for a transient failure (e.g. another session-log command holds
+// the install lock); the step that hit it left everything as it found it, so a later run retries
+// safely. Reports printed by earlier steps stand.
 const TRANSIENT_FAILURE_EXIT_CODE = 75;
 let legacyCleanupStarted = false;
 const pathPresent = (candidate) => {

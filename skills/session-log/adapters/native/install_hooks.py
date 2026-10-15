@@ -347,13 +347,7 @@ def invalid_arguments(argv):
     return harness != ("cursor" if mode == "remove" else "codex") or mode not in ("check", "install", "repair", "remove")
 
 
-def main(argv=None):
-    args = sys.argv if argv is None else [sys.argv[0], *argv]
-    if invalid_arguments(args):
-        fail("hooks configurator requires check|install|repair with codex and a config path, "
-             "or remove with cursor and a config path")
-    mode, harness, config_path = args[1:]
-    config = Path(config_path)
+def run(mode, harness, config):
     if mode == "remove":
         remove(config, harness)
         return
@@ -365,6 +359,23 @@ def main(argv=None):
         raise SystemExit(0 if is_current(document, harness) else 1)
     update(document, harness)
     atomic_write(config, document)
+
+
+def main(argv=None):
+    args = sys.argv if argv is None else [sys.argv[0], *argv]
+    if invalid_arguments(args):
+        fail("hooks configurator requires check|install|repair with codex and a config path, "
+             "or remove with cursor and a config path")
+    mode, harness, config_path = args[1:]
+    config = Path(config_path).absolute()
+    try:
+        run(mode, harness, config)
+    except pathsafe.KeptAsideError as error:
+        # bin/session-log's report_kept_versions names these at every status and repair until they are deleted.
+        fail(f"{config} changed while session-log was replacing it; another version is kept in "
+             + " and ".join(str(config.parent / name) for name in error.kept))
+    except OSError as error:
+        fail(f"cannot update hooks file {config}: {error}")
 
 
 if __name__ == "__main__":

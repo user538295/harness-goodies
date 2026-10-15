@@ -8,14 +8,15 @@
 # setup run it silently through `repair`, and so does a Cursor session start while logging is on and
 # ~/.cursor/hooks.json still holds a legacy session-log entry; the OMP extension starts `repair` in
 # the background when it loads. Claude Code, Cursor, OMP, and OpenCode `status` and `usage` never run
-# it (Claude Code `status` only names the settings.json versions it kept aside); in Codex, `status` and `usage` run it too when they repair an enabled adapter, so an unowned
-# file at a legacy path fails them, as the old installer did before every command. It removes only
-# what is proven to be session-log's and never clears runtime markers: a harness plugin's own hooks
-# keep logging whatever duplicate registration goes. Claude Code, Cursor, and OpenCode removals of
-# registrations, adapters, commands, scripts, and package copies, Codex package copies, and OMP
-# removals of adapter links and package copies are reported through print_repair_report; obsolete
-# state files, the OMP standalone extension copy, and the session-log-omp leftovers of pre-universal
-# releases go silently.
+# it (`status` only names the versions of settings.json or hooks.json session-log kept aside, through
+# report_kept_versions); in Codex, `status` and `usage` run it too when they repair an enabled
+# adapter, so an unowned file at a legacy path fails them, as the old installer did before every
+# command. It removes only what is proven to be session-log's and never clears runtime markers: a
+# harness plugin's own hooks keep logging whatever duplicate registration goes. Claude Code, Cursor,
+# and OpenCode removals of registrations, adapters, commands, scripts, and package copies, Codex
+# package copies, and OMP removals of adapter links and package copies are reported through
+# print_repair_report; obsolete state files, the OMP standalone extension copy, and the
+# session-log-omp leftovers of pre-universal releases go silently.
 
 readonly OWNERSHIP_MARKER="universal-session-log: managed"
 # The legacy Claude Code scripts the pre-plugin install copied into ~/.claude/scripts.
@@ -79,23 +80,42 @@ legacy_cleanup_claude() {
   [[ -n "$unrecognized" ]] || remove_claude_legacy_scripts
   remove_seeded_package "$HARNESS_ROOT/skills/session-log"
   remove_claude_obsolete_state
-  report_kept_claude_settings
   [[ -z "$unrecognized" ]] || fail "refusing to remove unrecognized legacy Claude script: $unrecognized"
 }
 
+# The suffix lib/pathsafe.py rename_to_conflict gives a version it moves aside: .conflict.<attempt>, or
+# .conflict.<16 hex digits> (CONFLICT_NAME_BYTES).
+readonly KEPT_CONFLICT_SUFFIX='\.conflict\.([0-9]+|[0-9a-f]{16})'
 # The names lib/claude_settings.py gives the versions of settings.json it keeps beside it when another writer
 # changes the file during the cleanup: its backup, .session-log-backup.<pid>.<attempt>, and that name followed by
-# the .conflict.<attempt> or .conflict.<16 hex digits> (CONFLICT_NAME_BYTES) of lib/pathsafe.py rename_to_conflict.
-readonly CLAUDE_KEPT_SETTINGS_NAME='^\.session-log-backup\.[0-9]+\.[0-9]+(\.conflict\.([0-9]+|[0-9a-f]{16}))?$'
+# a conflict suffix.
+readonly CLAUDE_KEPT_SETTINGS_NAME="^\.session-log-backup\.[0-9]+\.[0-9]+($KEPT_CONFLICT_SUFFIX)?\$"
+# The names lib/pathsafe.py replace_file_no_replace, which adapters/native/install_hooks.py writes hooks.json with,
+# gives the versions it keeps beside hooks.json: its backup, .session-log-backup.<pid>.<8 hex digits>.<attempt>,
+# that name followed by a conflict suffix, and install_hooks.py's temporary, .hooks.json.<pid>.<8 hex digits>,
+# followed by one.
+readonly KEPT_HOOKS_BACKUP_NAME="\.session-log-backup\.[0-9]+\.[0-9a-f]{8}\.[0-9]+($KEPT_CONFLICT_SUFFIX)?"
+readonly KEPT_HOOKS_TEMPORARY_NAME="\.hooks\.json\.[0-9]+\.[0-9a-f]{8}$KEPT_CONFLICT_SUFFIX"
+readonly KEPT_HOOKS_NAME="^($KEPT_HOOKS_BACKUP_NAME|$KEPT_HOOKS_TEMPORARY_NAME)\$"
 
-# Names each version of settings.json a legacy cleanup kept beside it, at every `status` and `repair` until the
-# user deletes it: a cleanup that failed at session start said so to no one. Read-only, since `status` runs it
-# without the install lock; so it would also name the backup a cleanup running at that instant holds.
-report_kept_claude_settings() {
-  local candidate
-  for candidate in "$HARNESS_ROOT"/.session-log-backup.*; do
-    [[ "${candidate##*/}" =~ $CLAUDE_KEPT_SETTINGS_NAME && ( -e "$candidate" || -L "$candidate" ) ]] || continue
-    print_repair_report "another version of settings.json is kept in $candidate; review it, then delete it"
+# Names each version of settings.json (Claude Code) or hooks.json (Codex, Cursor) session-log kept beside it, at
+# every `status`, `repair`, and `on` until the user deletes it: a cleanup that failed at session start said so to
+# no one. While the file itself is missing, a kept version may be the only one left. Read-only, since `status`
+# runs it without the install lock; so it would also name the backup a write running at that instant holds.
+report_kept_versions() {
+  local file pattern candidate
+  case "$HARNESS" in
+    claude) file=settings.json pattern="$CLAUDE_KEPT_SETTINGS_NAME" ;;
+    codex|cursor) file=hooks.json pattern="$KEPT_HOOKS_NAME" ;;
+    *) return 0 ;;
+  esac
+  for candidate in "$HARNESS_ROOT"/.session-log-backup.* "$HARNESS_ROOT/.$file".*; do
+    [[ "${candidate##*/}" =~ $pattern && ( -e "$candidate" || -L "$candidate" ) ]] || continue
+    if [[ -e "$HARNESS_ROOT/$file" || -L "$HARNESS_ROOT/$file" ]]; then
+      print_repair_report "another version of $file is kept in $candidate; review it, then delete it"
+    else
+      print_repair_report "another version of $file is kept in $candidate; $file is missing, so review it, then restore it as $file"
+    fi
   done
 }
 

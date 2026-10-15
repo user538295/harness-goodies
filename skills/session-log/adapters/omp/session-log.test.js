@@ -174,9 +174,15 @@ const NON_EXECUTABLE_MODE = 0o644;
 // Long enough for the CLI to start its long child, which writes its pid, before the timeout fires even under load, so
 // the timeout tests can require that pid instead of passing when the timeout struck first.
 const LONG_CHILD_CLI_TIMEOUT_MS = 3000;
-// A loader that hangs (say, on a long child the timeout left holding the CLI's output open) fails its test instead of
-// blocking the suite until that child ends.
-const LOADER_TIMEOUT_MS = 30_000;
+// Once bun has started a loader and imported the extension (allowed this long, even under load), the loader runs at most
+// its stderr wait, BACKGROUND_WAIT_MS, which outlasts LONG_CHILD_CLI_TIMEOUT_MS. A loader that hangs past both (say, on
+// a long child the timeout left holding the CLI's output open) is killed and fails its test instead of blocking the
+// suite until that child ends.
+const LOADER_START_ALLOWANCE_MS = 5000;
+const LOADER_TIMEOUT_MS = BACKGROUND_WAIT_MS + LOADER_START_ALLOWANCE_MS;
+// A long-child timeout test loads the extension at most twice (the timed-out start and the next one), each load followed
+// by a wait of up to BACKGROUND_WAIT_MS, so its budget covers both loaders running into LOADER_TIMEOUT_MS.
+const LONG_CHILD_TEST_TIMEOUT_MS = 2 * (LOADER_TIMEOUT_MS + BACKGROUND_WAIT_MS);
 const PACKAGE_REMOVED_MESSAGE = "session-log: the session-log package this omp session loaded is gone (upgraded or uninstalled); restart omp";
 const LOCK_BUSY_ERROR = "session-log: another session-log command is already in progress for omp";
 const BACKGROUND_REPAIR = "background:--entrypoint omp --harness omp repair";
@@ -432,7 +438,7 @@ describe("plugin command", () => {
 			const pid = longChildPid(childPidFile);
 			if (pid && !isGone(pid)) process.kill(pid, "SIGKILL");
 		}
-	}, BACKGROUND_TEST_TIMEOUT_MS);
+	}, LONG_CHILD_TEST_TIMEOUT_MS);
 });
 
 describe("unsupported OMP root", () => {
@@ -703,7 +709,7 @@ describe("legacy cleanup at load", () => {
 			const pid = longChildPid(childPidFile);
 			if (pid && !isGone(pid)) process.kill(pid, "SIGKILL");
 		}
-	}, BACKGROUND_TEST_TIMEOUT_MS);
+	}, LONG_CHILD_TEST_TIMEOUT_MS);
 	// The same outcomes from the package's real CLI, so a reworded repair report or a changed lock exit status fails here.
 	test("stays silent when the real CLI finds the install lock held by a live command", () => {
 		const home = temporaryDirectory();

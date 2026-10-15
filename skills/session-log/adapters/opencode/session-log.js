@@ -75,8 +75,9 @@ const STATE_DIR = path.join(CONFIG_DIR, "session-log");
 const DISRUPTIVE_LEFTOVERS = ["commands/session-log.md", "skills/session-log", "plugins/session-log.js"];
 // What `repair` prints when it found nothing to remove.
 const CLEAN_REPAIR_REPORT = "repair found no duplicate or stale registrations";
-// EX_TEMPFAIL: the CLI exits with it for a transient failure that decided nothing (another session-log
-// command holds the install lock, or settings.json changed during the cleanup), so a later run retries.
+// EX_TEMPFAIL: the CLI exits with it for a transient failure (e.g. another session-log command holds
+// the install lock); the step that hit it left everything as it found it, so a later run retries
+// safely. Reports printed by earlier steps stand.
 const TRANSIENT_FAILURE_EXIT_CODE = 75;
 
 // Writes one line to OpenCode's log (its stderr).

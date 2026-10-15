@@ -428,6 +428,7 @@ run_usage() {
 # Remove legacy leftovers and duplicate or stale session-log hook registrations under the
 # install lock, then report what was removed (or that nothing was).
 run_repair() {
+  report_kept_versions
   validate_state_dir
   preflight_install_lock
   acquire_install_lock
@@ -460,9 +461,10 @@ run_best_effort_cleanup() {
   # cleanup, and the subshell's EXIT trap releases the lock; the stdout report passes through while
   # stderr is captured, but for the release's (fd 3, the command's own stderr), so the last captured
   # line stays the cleanup's reason. Nothing may wrap the subshell in `||`, `&&`, or `if`: bash would
-  # then ignore errexit inside it.
+  # then ignore errexit inside it. The lock preflight refuses a lock unsafe to touch, as `repair`'s does.
   set +e
-  (set -e; acquire_install_lock; trap 'release_install_lock_labelled 2>&3' EXIT; legacy_cleanup) 3>&2 2>"$error_file"
+  (set -e; preflight_install_lock; acquire_install_lock; trap 'release_install_lock_labelled 2>&3' EXIT
+    legacy_cleanup) 3>&2 2>"$error_file"
   status=$?
   set -e
   error="$(awk 'NF { line = $0 } END { print line }' "$error_file")"
@@ -522,6 +524,7 @@ main() {
   resolve_roots
   case "$COMMAND" in
     on)
+      report_kept_versions
       if plugin_owns_hooks; then
         enable_plugin_hooks
         return
@@ -563,7 +566,7 @@ main() {
     status)
       plugin_owns_hooks || repair_enabled_adapter
       print_status
-      [[ "$HARNESS" != claude ]] || report_kept_claude_settings
+      report_kept_versions
       ;;
     usage)
       plugin_owns_hooks || repair_enabled_adapter

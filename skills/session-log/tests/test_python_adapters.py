@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -633,6 +633,99 @@ class AtomicSwapRaceTests(unittest.TestCase):
                 os.close(directory_fd)
 
             self.assertEqual((root / "temporary").read_bytes(), b"keep this file\n")
+
+
+# What install_hooks.py says, after the hooks file's path, when another writer changed hooks.json while session-log
+# replaced it and a version of it stays beside hooks.json.
+HOOKS_KEPT_ASIDE = " changed while session-log was replacing it; another version is kept in "
+# What it says, after the hooks file's path and before the error, when such a write failed with nothing kept aside.
+HOOKS_NOT_UPDATED = "cannot update hooks file "
+
+
+class HooksFileWriteConflictTests(unittest.TestCase):
+    """A hooks.json write that races another writer fails naming each version it kept beside hooks.json, or naming
+    the error when it kept none, never with a traceback."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.config = self.root / "hooks.json"
+        self.installer = load_module(INSTALL_PATH, "install_hooks_conflict_test")
+        self.native_move = self.installer.pathsafe.move_no_replace
+        self.original = json.dumps(build_cursor_legacy_hooks(Path("/x") / CURSOR_SEEDED_RELATIVE
+                                                             / CURSOR_SEEDED_HOOK_RELATIVE)).encode()
+
+    def run_installer(self, mode, harness, move):
+        """``(exit status, stderr)`` of install_hooks.py with pathsafe's no-replace move replaced by ``move``."""
+        stderr = io.StringIO()
+        with patch.object(self.installer.pathsafe, "move_no_replace", side_effect=move), redirect_stderr(stderr), \
+                self.assertRaises(SystemExit) as raised:
+            self.installer.main([mode, harness, str(self.config)])
+        return raised.exception.code, stderr.getvalue()
+
+    def kept(self, kept):
+        return 1, f"session-log: {self.config}{HOOKS_KEPT_ASIDE}{kept}\n"
+
+    def write_another_version(self, dir_fd, name, contents):
+        descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, PRIVATE_FILE_MODE, dir_fd=dir_fd)
+        os.write(descriptor, contents)
+        os.close(descriptor)
+
+    def test_a_hooks_json_replaced_after_the_update_went_in_is_kept_aside_and_named(self):
+        self.config.write_bytes(self.original)
+
+        def replace_after_the_update(dir_fd, source, target):
+            moved = self.native_move(dir_fd, source, target)
+            if target == self.config.name and not source.startswith(".session-log-backup."):
+                os.unlink(target, dir_fd=dir_fd)
+                self.write_another_version(dir_fd, target, b"another writer\n")
+            return moved
+
+        result = self.run_installer("remove", "cursor", replace_after_the_update)
+        [conflict] = self.root.glob(".session-log-backup.*.conflict.0")
+        self.assertEqual(result, self.kept(conflict))
+        self.assertEqual(conflict.read_bytes(), b"another writer\n")
+        self.assertEqual(self.config.read_bytes(), self.original)
+
+    def test_a_backup_that_cannot_go_back_is_named(self):
+        self.config.write_bytes(self.original)
+
+        def create_before_the_update(dir_fd, source, target):
+            if target == self.config.name and not source.startswith(".session-log-backup."):
+                self.write_another_version(dir_fd, target, b"another writer\n")
+            return self.native_move(dir_fd, source, target)
+
+        result = self.run_installer("remove", "cursor", create_before_the_update)
+        [backup] = self.root.glob(".session-log-backup.*")
+        self.assertEqual(result, self.kept(backup))
+        self.assertEqual(backup.read_bytes(), self.original)
+        self.assertEqual(self.config.read_bytes(), b"another writer\n")
+
+    def test_a_file_swapped_in_for_the_update_of_an_absent_hooks_json_is_kept_aside_and_named(self):
+        def swap_the_update(dir_fd, source, target):
+            if _is_temp_swap_target(source, target, self.config.name):
+                os.unlink(source, dir_fd=dir_fd)
+                self.write_another_version(dir_fd, source, b"raced replacement\n")
+            return self.native_move(dir_fd, source, target)
+
+        result = self.run_installer("install", "codex", swap_the_update)
+        [conflict] = self.root.glob(".hooks.json.*.conflict.0")
+        self.assertEqual(result, self.kept(conflict))
+        self.assertEqual(conflict.read_bytes(), b"raced replacement\n")
+        self.assertFalse(self.config.exists())
+
+    def test_a_write_that_kept_nothing_aside_names_its_error(self):
+        def create_before_the_update(dir_fd, source, target):
+            if target == self.config.name:
+                self.write_another_version(dir_fd, target, b"another writer\n")
+            return self.native_move(dir_fd, source, target)
+
+        status, stderr = self.run_installer("install", "codex", create_before_the_update)
+        self.assertEqual(status, 1)
+        self.assertTrue(stderr.startswith(f"session-log: {HOOKS_NOT_UPDATED}{self.config}: [Errno {errno.EEXIST}]"), stderr)
+        self.assertEqual(self.config.read_bytes(), b"another writer\n")
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), [self.config.name])
 
 
 class DirectoryLifecycleTests(unittest.TestCase):
@@ -1617,8 +1710,15 @@ os.link = _link_then_change_the_backup
 '''
 # What claude_settings.py says when it had to keep another writer's version of settings.json beside it.
 CLAUDE_SETTINGS_KEPT_ASIDE = "Claude settings changed while the legacy cleanup was replacing it; another version is kept in "
-# How `status` and `repair` name each version of settings.json the cleanup kept aside, until the user deletes it.
+# How `status`, `repair`, and `on` name each version of settings.json the cleanup kept aside, until the user deletes it.
 CLAUDE_SETTINGS_KEPT_ASIDE_REPORT = "another version of settings.json is kept in {}; review it, then delete it"
+# The same, while settings.json itself is missing, so the kept version may be the only one left.
+CLAUDE_SETTINGS_KEPT_INSTEAD_REPORT = ("another version of settings.json is kept in {}; settings.json is missing, "
+                                       "so review it, then restore it as settings.json")
+# What claude_settings.py says when it put its backup back as settings.json after another writer created one there
+# and removed it again: the other writer's removal is undone, so this is a failure, not a transient stop.
+CLAUDE_SETTINGS_RESTORED = ("Claude settings changed while the legacy cleanup was replacing it; another program "
+                            "removed settings.json, so the cleanup restored it from its backup; review it")
 
 
 def settings_race_environment(home, race_directory, sitecustomize=SETTINGS_RACE_SITECUSTOMIZE):
@@ -1697,7 +1797,31 @@ class ClaudeSettingsWriteConflictTests(unittest.TestCase):
         self.assertEqual(self.conflict.read_bytes(), b"another writer\n")
         self.assertFalse(self.backup.exists())
 
-    def test_a_settings_json_created_then_removed_again_while_the_update_goes_in_is_transient_and_keeps_nothing_aside(self):
+    def test_a_settings_json_removed_before_the_update_goes_in_is_transient_and_keeps_nothing_aside(self):
+        write_document = self.settings._write_settings_document
+
+        def write_then_remove_the_settings(descriptor, document):
+            write_document(descriptor, document)
+            self.settings_path.unlink()
+
+        def remove_then_stage(dir_fd, source, target):
+            if source == "settings.json":
+                self.settings_path.unlink()
+            return self.native_move(dir_fd, source, target)
+
+        for step, patched in (
+                ("while the update is checked", patch.object(
+                    self.settings, "_write_settings_document", side_effect=write_then_remove_the_settings)),
+                ("while the backup is staged", patch.object(
+                    self.settings.pathsafe, "move_no_replace", side_effect=remove_then_stage))):
+            with self.subTest(step):
+                self.settings_path.write_bytes(self.original)
+                with patched:
+                    self.assertEqual(self.remove(), CLAUDE_SETTINGS_CHANGED)
+                self.assertEqual(sorted(path.name for path in self.directory.iterdir()),
+                                 ["settings.json.session-log.lock"])
+
+    def test_a_settings_json_created_then_removed_again_while_the_update_goes_in_is_restored_and_says_so(self):
         def remove_it_before_it_goes_aside(dir_fd, source, target):
             if source == "settings.json" and ".conflict." in target:
                 self.settings_path.unlink()
@@ -1705,10 +1829,25 @@ class ClaudeSettingsWriteConflictTests(unittest.TestCase):
 
         with patch.object(self.settings.os, "link", side_effect=self.create_then_link), \
                 patch.object(self.settings.pathsafe, "move_no_replace", side_effect=remove_it_before_it_goes_aside):
-            self.assertEqual(self.remove(), CLAUDE_SETTINGS_CHANGED)
+            self.assertEqual(self.remove(), CLAUDE_SETTINGS_RESTORED)
         self.assertEqual(self.settings_path.read_bytes(), self.original)
         self.assertEqual(sorted(path.name for path in self.directory.iterdir()),
                          ["settings.json", "settings.json.session-log.lock"])
+
+    def test_a_settings_json_created_then_removed_and_created_again_names_the_backup_it_cannot_restore(self):
+        def remove_it_then_race_the_restore(dir_fd, source, target):
+            if source == "settings.json" and ".conflict." in target:
+                self.settings_path.unlink()
+            elif source == self.backup.name and target == "settings.json":
+                self.settings_path.write_bytes(b"third writer\n")
+            return self.native_move(dir_fd, source, target)
+
+        with patch.object(self.settings.os, "link", side_effect=self.create_then_link), \
+                patch.object(self.settings.pathsafe, "move_no_replace", side_effect=remove_it_then_race_the_restore):
+            self.assertEqual(self.remove(), f"{CLAUDE_SETTINGS_KEPT_ASIDE}{self.backup}")
+        self.assertEqual(self.settings_path.read_bytes(), b"third writer\n")
+        self.assertEqual(self.backup.read_bytes(), self.original)
+        self.assertEqual(list(self.directory.glob("*.conflict.*")), [])
 
     def test_a_backup_that_cannot_be_restored_after_the_conflict_is_named_too(self):
         def race_the_restore(dir_fd, source, target):
@@ -1802,12 +1941,102 @@ class ClaudeSettingsWriteConflictTests(unittest.TestCase):
             root = home / ".claude"
             for name in (".session-log-update.1.0", "settings.json.session-log.lock", ".session-log-backup.x",
                          "settings.json.conflict.0", ".session-log-backup.1.0.conflict.0.orig",
-                         ".session-log-backup.1.0123abcd.0"):
+                         ".session-log-backup.1.0123abcd.0", *(f".session-log-backup.1.0.conflict.{token}"
+                                                              for token in KEPT_CONFLICT_NEAR_MISSES)):
                 (root / name).write_text("{}\n")
             for command, output in (("status", "Claude Code: off\n"), ("repair", CLAUDE_REPAIR_CLEAN)):
                 with self.subTest(command):
                     result = run_session_log(package, home, "claude", command)
                     self.assertEqual((result.returncode, result.stdout, result.stderr), (0, output, ""))
+
+
+# pathsafe.rename_to_conflict's random suffix: CONFLICT_NAME_BYTES (8) bytes as lowercase hex.
+KEPT_CONFLICT_TOKEN = "0123456789abcdef"
+# Suffixes no conflict name has: one hex digit short, one too many, and uppercase.
+KEPT_CONFLICT_NEAR_MISSES = (KEPT_CONFLICT_TOKEN[:-1], KEPT_CONFLICT_TOKEN + "0", KEPT_CONFLICT_TOKEN.upper())
+# How `status`, `repair`, and `on` name a version of hooks.json session-log kept beside it, while hooks.json exists
+# and while it is missing.
+HOOKS_KEPT_ASIDE_REPORT = "another version of hooks.json is kept in {}; review it, then delete it"
+HOOKS_KEPT_INSTEAD_REPORT = ("another version of hooks.json is kept in {}; hooks.json is missing, "
+                             "so review it, then restore it as hooks.json")
+
+
+class KeptVersionReportTests(unittest.TestCase):
+    """`status`, `repair`, and `on` name every version of settings.json (Claude Code) or hooks.json (Codex, Cursor)
+    session-log kept beside it, under exactly the names it gives them, until the user deletes it."""
+
+    # Per harness: its package below a home, its root, its label, the file kept, the names session-log keeps it
+    # under, and the names it never gives a kept version there.
+    HARNESSES = {
+        "claude": (claude_package, ".claude", "Claude Code", "settings.json",
+                   (".session-log-backup.12.3", ".session-log-backup.12.3.conflict.4",
+                    f".session-log-backup.12.3.conflict.{KEPT_CONFLICT_TOKEN}"),
+                   (".session-log-backup.12.0123abcd.3", ".hooks.json.12.0123abcd.conflict.0")),
+        "codex": (lambda home: harness_package(home, CODEX_PLUGIN_ROOT_RELATIVE), ".codex", "Codex", "hooks.json",
+                  (".session-log-backup.12.0123abcd.3", ".session-log-backup.12.0123abcd.3.conflict.4",
+                   f".session-log-backup.12.0123abcd.3.conflict.{KEPT_CONFLICT_TOKEN}",
+                   ".hooks.json.12.0123abcd.conflict.4", f".hooks.json.12.0123abcd.conflict.{KEPT_CONFLICT_TOKEN}"),
+                  (".session-log-backup.12.3", ".session-log-backup.12.0123abc.3", ".session-log-backup.12.0123ABCD.3",
+                   ".hooks.json.12.0123abcd", ".hooks.json.12.0123abcd.conflict.4.orig", "hooks.json.conflict.0",
+                   *(f".hooks.json.12.0123abcd.conflict.{token}" for token in KEPT_CONFLICT_NEAR_MISSES))),
+    }
+    HARNESSES["cursor"] = (lambda home: cursor_plugin_root(home) / "skills/session-log", ".cursor", "Cursor",
+                           *HARNESSES["codex"][3:])
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name).resolve()
+
+    def seed(self, harness, file_contents):
+        """A package and the kept versions of ``harness``; the kept file holds ``file_contents`` unless it is None.
+        Returns the package and the report lines expected, sorted."""
+        package_at, subroot, label, file_name, kept, lookalikes = self.HARNESSES[harness]
+        package = package_at(self.home)
+        root = self.home / subroot
+        root.mkdir(parents=True, exist_ok=True)
+        for name in (*kept, *lookalikes):
+            (root / name).write_text("{}\n")
+        dangling = root / f"{kept[0]}.conflict.5"
+        dangling.symlink_to(root / "missing")
+        if file_contents is not None:
+            (root / file_name).write_text(file_contents)
+        report = (CLAUDE_SETTINGS_KEPT_ASIDE_REPORT if harness == "claude" else HOOKS_KEPT_ASIDE_REPORT) \
+            if file_contents is not None else \
+            (CLAUDE_SETTINGS_KEPT_INSTEAD_REPORT if harness == "claude" else HOOKS_KEPT_INSTEAD_REPORT)
+        return package, sorted(f"{label}: {report.format(root / name)}" for name in (*kept, dangling.name))
+
+    def test_status_and_repair_name_each_kept_version_and_say_how_to_settle_it(self):
+        for harness, label in ((harness, entry[2]) for harness, entry in self.HARNESSES.items()):
+            for state, contents in (("present", "{}\n"), ("missing", None)):
+                with self.subTest(harness=harness, file=state):
+                    self.setUp()
+                    package, kept = self.seed(harness, contents)
+                    for command, before in (("status", [f"{label}: off"]), ("repair", [])):
+                        result = run_session_log(package, self.home, harness, command)
+                        self.assertEqual((result.returncode, result.stderr), (0, ""), command)
+                        self.assertEqual(result.stdout.splitlines()[:len(before)], before, command)
+                        self.assertEqual(sorted(result.stdout.splitlines()[len(before):]), kept, command)
+
+    def test_a_repair_that_fails_still_names_them_first(self):
+        for harness in self.HARNESSES:
+            with self.subTest(harness):
+                self.setUp()
+                package, kept = self.seed(harness, "not json\n")
+                result = run_session_log(package, self.home, harness, "repair")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(sorted(result.stdout.splitlines()), kept)
+
+    def test_on_names_them_before_the_rest_of_its_report(self):
+        for harness in self.HARNESSES:
+            with self.subTest(harness):
+                self.setUp()
+                package, kept = self.seed(harness, "{}\n")
+                result = run_session_log(package, self.home, harness, "on")
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                lines = result.stdout.splitlines()
+                self.assertEqual(sorted(lines[:len(kept)]), kept)
+                self.assertTrue(lines[len(kept):], "on printed nothing after naming the kept versions")
 
 
 # Bash reports a command a signal ended with an exit status above this: 128 + the signal number (claude_hook.sh).
@@ -2615,7 +2844,7 @@ class RepairCommandEdgeTests(unittest.TestCase):
                     self.assertEqual((result.returncode, result.stdout, result.stderr), (0, output, ""))
                     self.assertFalse(lock.exists())
 
-    def test_repair_refuses_an_install_lock_unsafe_to_touch_and_leaves_it_and_settings_as_they_are(self):
+    def test_repair_and_on_refuse_an_install_lock_unsafe_to_touch_and_leave_it_and_settings_as_they_are(self):
         def symlinked(lock):
             (lock.parent / "elsewhere").mkdir()
             lock.symlink_to(lock.parent / "elsewhere")
@@ -2639,20 +2868,27 @@ class RepairCommandEdgeTests(unittest.TestCase):
             (lock / "owner").symlink_to(lock.parent / "missing")
             return f"refusing invalid install lock owner: {lock / 'owner'}"
 
-        for unsafe in (symlinked, not_a_directory, holding_an_unexpected_file, with_a_directory_owner, with_a_symlinked_owner):
-            with self.subTest(unsafe.__name__), tempfile.TemporaryDirectory() as directory:
-                home = Path(directory).resolve()
-                package = claude_package(home)
-                settings = home / ".claude/settings.json"
-                settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
-                original = settings.read_bytes()
-                lock = home / INSTALL_LOCK_RELATIVE
-                lock.parent.mkdir(parents=True, exist_ok=True)
-                error = unsafe(lock)
-                result = run_session_log(package, home, "claude", "repair")
-                self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", f"session-log: {error}\n"))
-                self.assertEqual(settings.read_bytes(), original)
-                self.assertTrue(os.path.lexists(lock))
+        for command in ("repair", "on"):
+            for unsafe in (symlinked, not_a_directory, holding_an_unexpected_file, with_a_directory_owner,
+                           with_a_symlinked_owner):
+                with self.subTest(command=command, lock=unsafe.__name__), tempfile.TemporaryDirectory() as directory:
+                    home = Path(directory).resolve()
+                    package = claude_package(home)
+                    settings = home / ".claude/settings.json"
+                    settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
+                    original = settings.read_bytes()
+                    lock = home / INSTALL_LOCK_RELATIVE
+                    lock.parent.mkdir(parents=True, exist_ok=True)
+                    error = unsafe(lock)
+                    result = run_session_log(package, home, "claude", command)
+                    if command == "repair":
+                        self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", f"session-log: {error}\n"))
+                    else:
+                        self.assertEqual((result.returncode, result.stdout, result.stderr), (
+                            0, f"Claude Code: legacy cleanup failed: {error}; fix it, then run repair\n"
+                               "Claude Code: on — logging starts with the next prompt\n", ""))
+                    self.assertEqual(settings.read_bytes(), original)
+                    self.assertTrue(os.path.lexists(lock))
 
     def test_on_releases_the_install_lock_whether_its_cleanup_succeeds_or_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2710,21 +2946,31 @@ class RepairCommandEdgeTests(unittest.TestCase):
             self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists())
 
     def test_on_names_the_cleanups_reason_and_a_labelled_lock_release_error_after_it(self):
-        removed = f"Claude Code: removed {len(CLAUDE_LIFECYCLE_EVENTS)} legacy session-log hook registration(s) from {{}}\n"
-        for name, sitecustomize, report in (
-                ("transient cleanup", SETTINGS_RACE_SITECUSTOMIZE, f"Claude Code: legacy cleanup skipped: {CLAUDE_SETTINGS_CHANGED}\n"),
-                ("successful cleanup", "", removed)):
+        removed = f"Claude Code: removed {len(CLAUDE_LIFECYCLE_EVENTS)} legacy session-log hook registration(s) from {{settings}}\n"
+        failed = ("Claude Code: legacy cleanup failed: refusing to remove unrecognized legacy Claude script: {script}; "
+                  "fix it, then run repair\n")
+        for name, sitecustomize, edits_a_script, report in (
+                ("transient cleanup", SETTINGS_RACE_SITECUSTOMIZE, False,
+                 f"Claude Code: legacy cleanup skipped: {CLAUDE_SETTINGS_CHANGED}\n"),
+                ("successful cleanup", "", False, removed),
+                ("failed cleanup", "", True, removed + failed)):
             with self.subTest(name), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
                 home = root / "home"
                 package = claude_package(home)
                 settings = home / ".claude/settings.json"
                 settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
+                script = home / ".claude/scripts/prompt_log_save.sh"
+                if edits_a_script:
+                    script.parent.mkdir(parents=True)
+                    script.write_text("#!/usr/bin/env bash\n# edited by the user\n")
+                # lib/locking.py's own message shape: "cannot release install lock <lock>: <error>".
+                release_error = f"cannot release install lock {home / INSTALL_LOCK_RELATIVE}: test failure"
                 shims = root / "shims"
                 shims.mkdir()
                 (shims / "python3").write_text(
                     '#!/bin/sh\ncase "$*" in *"locking.py release"*) '
-                    'echo "session-log: cannot release install lock: test failure" >&2; exit 1 ;; esac\n'
+                    f'echo "session-log: {release_error}" >&2; exit 1 ;; esac\n'
                     f'exec "{sys.executable}" "$@"\n')
                 (shims / "python3").chmod(EXECUTABLE_MODE)
                 environment = settings_race_environment(home, root / "race", sitecustomize)
@@ -2733,8 +2979,8 @@ class RepairCommandEdgeTests(unittest.TestCase):
                     ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "on"],
                     capture_output=True, text=True, env=environment, timeout=SESSION_LOG_TIMEOUT_SECONDS)
                 self.assertEqual((on.returncode, on.stdout, on.stderr), (
-                    0, report.format(settings) + "Claude Code: on — logging starts with the next prompt\n",
-                    "Claude Code: cannot release install lock: test failure\n"))
+                    0, report.format(settings=settings, script=script) + "Claude Code: on — logging starts with the next prompt\n",
+                    f"Claude Code: {release_error}\n"))
 
     def test_codex_on_reports_a_busy_install_lock_with_the_busy_status(self):
         with tempfile.TemporaryDirectory() as directory:

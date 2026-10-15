@@ -37,6 +37,14 @@ class ConflictRenameOptions:
     exhaust_message: str
 
 
+class KeptAsideError(OSError):
+    """An atomic replacement raced another writer and left versions of the target beside it, under ``kept``."""
+
+    def __init__(self, message, kept):
+        super().__init__(errno.EAGAIN, message)
+        self.kept = tuple(kept)
+
+
 @dataclass(frozen=True)
 class AtomicReplacement:
     dir_fd: object
@@ -249,7 +257,7 @@ def _install_absent_target(request):
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), request.target_name)
     installed = os.stat(request.target_name, dir_fd=dir_fd, follow_symlinks=False)
     if not _same_file_identity(installed, request.expected_source):
-        rename_to_conflict(
+        conflict = rename_to_conflict(
             dir_fd,
             ConflictRenameOptions(
                 source_name=request.target_name,
@@ -257,11 +265,7 @@ def _install_absent_target(request):
                 exhaust_message="cannot preserve raced atomic replacement target",
             ),
         )
-        raise OSError(
-            errno.EAGAIN,
-            "temporary file changed during atomic replacement",
-            request.target_name,
-        )
+        raise KeptAsideError("temporary file changed during atomic replacement", (conflict,))
 
 
 def _stage_replacement_backup(request):
@@ -282,7 +286,7 @@ def _install_replacement(request, backup_name, backup_stat):
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), request.target_name)
     current = os.stat(request.target_name, dir_fd=dir_fd, follow_symlinks=False)
     if not _same_file_identity(current, request.expected_source):
-        rename_to_conflict(
+        conflict = rename_to_conflict(
             dir_fd,
             ConflictRenameOptions(
                 source_name=request.target_name,
@@ -290,29 +294,40 @@ def _install_replacement(request, backup_name, backup_stat):
                 exhaust_message="cannot preserve raced atomic replacement target",
             ),
         )
-        raise OSError(errno.EAGAIN, "temporary file changed during atomic replacement", request.target_name)
+        raise KeptAsideError("temporary file changed during atomic replacement", (conflict,))
+
+
+def _restore_backup(dir_fd, backup_name, target_name):
+    """Move the staged backup back unless something took the target's place; True once it is gone from its name."""
+    try:
+        os.stat(target_name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            move_no_replace(dir_fd, backup_name, target_name)
+        except OSError:
+            pass
+    try:
+        os.stat(backup_name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    return False
 
 
 def _replace_present_target(request):
     dir_fd = request.dir_fd
     backup_name = _stage_replacement_backup(request)
-    installed = False
     backup_stat = None
     try:
         backup_stat = os.stat(backup_name, dir_fd=dir_fd, follow_symlinks=False)
         _install_replacement(request, backup_name, backup_stat)
-        installed = True
-    finally:
-        if installed:
-            unlink_if_same_file(dir_fd, backup_name, backup_stat)
-        else:
-            try:
-                os.stat(request.target_name, dir_fd=dir_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                try:
-                    move_no_replace(dir_fd, backup_name, request.target_name)
-                except OSError:
-                    pass
+    except BaseException as error:
+        if _restore_backup(dir_fd, backup_name, request.target_name) or not isinstance(error, OSError):
+            raise
+        raise KeptAsideError(
+            "cannot restore the target after a failed atomic replacement",
+            (*getattr(error, "kept", ()), backup_name),
+        ) from error
+    unlink_if_same_file(dir_fd, backup_name, backup_stat)
 
 
 def replace_file_no_replace(request):
