@@ -139,9 +139,40 @@ input="$(cat)" || exit 0
 # hook command's final `exit 0`, leaving this script no input. This detection relies on that Cursor
 # behaviour. Past the legacy cleanup above, Cursor's runs neither log nor touch Claude's runtime markers.
 [[ -n "$input" && "$input" != *'"cursor_version":'* ]] || exit 0
+# The Claude Code process that runs these hooks, as "<pid><TAB><start time>". Git Bash numbers its own
+# processes and sees a native parent such as Claude Code as pid 1, and a Git Bash exec ends the Windows
+# process it replaces. So on Windows the hook climbs its Git Bash ancestors to the one a native process
+# started, and lib/process_identity.py goes on from that one's Windows process id.
+harness_identity() {
+  local top=$$ parent
+  if [[ ! -r "/proc/$$/winpid" ]]; then
+    printf '%s\t%s\n' "$PPID" "$(ps -p "$PPID" -o lstart= 2>/dev/null | sed 's/^ *//')"
+    return
+  fi
+  while parent="$(cat "/proc/$top/ppid" 2>/dev/null)" && [[ "$parent" =~ ^[0-9]+$ && "$parent" != 1 ]]; do
+    top="$parent"
+  done
+  python3 "$PACKAGE_ROOT/lib/process_identity.py" harness "$(cat "/proc/$top/winpid")" 2>/dev/null
+}
+# Whether process $1, an id harness_identity gives, still runs. A live process this user may not signal
+# (kill -0 fails, ps still lists it) counts, as in the omp and OpenCode adapters.
+process_alive() {
+  if [[ -r "/proc/$$/winpid" ]]; then
+    [[ -n "$(python3 "$PACKAGE_ROOT/lib/process_identity.py" start "$1" 2>/dev/null)" ]]
+  else
+    kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1
+  fi
+}
 enabled_file="$CLAUDE_ROOT/prompt-logs/.enabled"
 runtime="$STATE_DIR/runtime.json"
-process_runtime="$STATE_DIR/runtime.${PPID}.json"
+process_runtime=""
+# The lookup starts a process (Python on Windows), so while logging is off it runs only when a
+# per-process marker is left that it may name.
+if [[ -f "$enabled_file" && ! -L "$enabled_file" ]] || compgen -G "$STATE_DIR/runtime.*.json" >/dev/null; then
+  IFS=$'\t' read -r harness_pid harness_start <<< "$(harness_identity)" || true
+  [[ "$harness_pid" =~ ^[1-9][0-9]*$ ]] || exit 0
+  process_runtime="$STATE_DIR/runtime.${harness_pid}.json"
+fi
 if [[ -L "$runtime" || ( -e "$runtime" && ! -f "$runtime" ) ||
       -L "$process_runtime" || ( -e "$process_runtime" && ! -f "$process_runtime" ) ]]; then
   exit 0  # unsafe runtime file
@@ -177,21 +208,19 @@ if [[ -n "$session_id" ]]; then
       --arg session_id "$session_id" \
       --arg nonce "$nonce" \
       --arg loaded_at "$(date +%s)" \
-      --arg pid "$PPID" \
-      --arg process_start "$(ps -p "$PPID" -o lstart= 2>/dev/null | sed 's/^ *//')" \
+      --arg pid "$harness_pid" \
+      --arg process_start "$harness_start" \
       '{harness:$harness,version:$version,session_id:$session_id,nonce:$nonce,
         loaded_at:$loaded_at,pid:$pid,process_start:$process_start}' > "$target")
   }
-  # The per-process markers of Claude Code processes that are gone: status never counts them. A live
-  # process this user may not signal (kill -0 fails, ps still lists it) keeps its marker, as in the
-  # omp and OpenCode adapters.
+  # The per-process markers of Claude Code processes that are gone: status never counts them.
   prune_dead_runtime_markers() {
     local marker pid
     for marker in "$STATE_DIR"/runtime.*.json; do
       pid="${marker##*/runtime.}"
       pid="${pid%.json}"
       [[ "$pid" =~ ^[1-9][0-9]*$ && -f "$marker" && ! -L "$marker" ]] || continue
-      kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1 || unlink "$marker" 2>/dev/null || true
+      process_alive "$pid" || unlink "$marker" 2>/dev/null || true
     done
   }
   write_runtime_temp "$temp" 2>/dev/null || exit 0

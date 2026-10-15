@@ -58,7 +58,7 @@ if [ "$target" = "--latest" ]; then
   # is written before its file's mtime, so the newest-first scan stops once no
   # older file can hold a newer prompt — a project holds thousands of them, so
   # each is checked only when the scan reaches it.
-  project_dir="$_CLAUDE_HOME/.claude/projects/$(resolve_project_key "$PWD")"
+  project_dir="$_CLAUDE_HOME/.claude/projects/$(resolve_project_key "$(_claude_harness_path "$PWD")")"
   # GNU stat is probed first: GNU `stat -f` would print file-system info.
   if stat -c %Y / >/dev/null 2>&1; then mtime_fmt=(-c $'%Y\t%n'); else mtime_fmt=(-f $'%m\t%N'); fi
   transcript=""
@@ -79,8 +79,9 @@ if [ "$target" = "--latest" ]; then
   )
 elif [ -e "$target" ] || [ -L "$target" ]; then
   display_transcript="$target"
-  transcript_target="$target"
-  if [ "${target#/}" = "$target" ]; then transcript_target="$(pwd -P)/$target"; fi
+  # A Windows path (C:\...) is absolute too.
+  transcript_target="$(_claude_shell_path "$target")"
+  if [ "${transcript_target#/}" = "$transcript_target" ]; then transcript_target="$(pwd -P)/$target"; fi
   transcript=$(_claude_transcript_file_is_safe "$transcript_target" 2>/dev/null) || transcript=""
 else
   transcript=""

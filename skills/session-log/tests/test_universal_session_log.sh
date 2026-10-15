@@ -36,9 +36,12 @@ assert_mode() {
   actual="$(stat -f '%Lp' "$file" 2>/dev/null)" || actual="$(stat -c '%a' "$file" 2>/dev/null)"
   if [[ "$actual" == "$expected" ]]; then pass "$label"; else fail "$label (expected $expected, got $actual)"; fi
 }
-# How Claude Code names ~/.claude/projects/<key> for directory $1.
+# How Claude Code names ~/.claude/projects/<key> for directory $1, which it knows in its Windows C:\... form
+# under Git Bash.
 project_key() {
-  printf '%s' "$1" | sed 's|[^A-Za-z0-9]|-|g'
+  local path="$1"
+  if command -v cygpath >/dev/null 2>&1; then path="$(cygpath -wl "$path")"; fi
+  printf '%s' "$path" | sed 's|[^A-Za-z0-9]|-|g'
 }
 assert_link() {
   local label="$1" expected="$2" file="$3" actual
