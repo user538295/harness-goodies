@@ -1005,6 +1005,32 @@ omp_usage="$(run_harness_at_home "$OMP_HOME" omp usage --latest 2>&1)"
 assert_contains "OMP usage names harness" "OMP: usage" "$omp_usage"
 assert_contains "OMP usage keeps native total output" "TOTAL" "$omp_usage"
 assert_contains "OMP usage sums all token components when totalTokens is absent" "total_tokens: 15" "$omp_usage"
+# Every command on PATH except bun and omp, so the OMP usage runner is whichever stand-in a test adds.
+OMP_NO_BUN_PATH="$WORKROOT/omp-no-bun-path"
+mkdir "$OMP_NO_BUN_PATH"
+IFS=: read -r -a omp_path_dirs <<< "$PATH"
+for omp_path_dir in "${omp_path_dirs[@]}"; do
+  for omp_path_tool in "$omp_path_dir"/*; do
+    omp_path_name="${omp_path_tool##*/}"
+    if [[ "$omp_path_name" != bun && "$omp_path_name" != omp && -x "$omp_path_tool" && ! -e "$OMP_NO_BUN_PATH/$omp_path_name" ]]; then
+      ln -s "$omp_path_tool" "$OMP_NO_BUN_PATH/$omp_path_name"
+    fi
+  done
+done
+# omp ships as a Bun-compiled binary that runs scripts as Bun under BUN_BE_BUN=1; this stand-in does only that.
+OMP_BUILTIN_BUN_BIN="$WORKROOT/omp-builtin-bun-bin"
+mkdir "$OMP_BUILTIN_BUN_BIN"
+# shellcheck disable=SC2016  # the stand-in script's ${BUN_BE_BUN} and "$@" expand when it runs, not here
+printf '#!/bin/bash\n[[ "${BUN_BE_BUN:-}" == 1 ]] || { echo "omp ran without BUN_BE_BUN" >&2; exit 1; }\nexec %q "$@"\n' "$(command -v bun)" > "$OMP_BUILTIN_BUN_BIN/omp"
+chmod +x "$OMP_BUILTIN_BUN_BIN/omp"
+set +e
+omp_builtin_usage="$(PATH="$OMP_BUILTIN_BUN_BIN:$OMP_NO_BUN_PATH" run_harness_at_home "$OMP_HOME" omp usage --latest 2>&1)"
+assert_contains "OMP usage runs on omp's built-in Bun when bun is not installed" "total_tokens: 15" "$omp_builtin_usage"
+omp_no_runtime="$(PATH="$OMP_NO_BUN_PATH" run_harness_at_home "$OMP_HOME" omp usage --latest 2>&1)"
+omp_no_runtime_rc=$?
+set -e
+if [[ "$omp_no_runtime_rc" -ne 0 ]]; then pass "OMP usage fails without bun or omp"; else fail "OMP usage fails without bun or omp"; fi
+assert_contains "OMP usage names both runtimes it can use" "missing dependency: bun or omp" "$omp_no_runtime"
 OMP_SAFE_HOME="$WORKROOT/omp-safe-home"
 mkdir -p "$OMP_SAFE_HOME/.Trash" "$OMP_SAFE_HOME/.omp/agent/skills"
 cp -R "$REPO/skills/session-log" "$OMP_SAFE_HOME/.omp/agent/skills/session-log"

@@ -394,14 +394,24 @@ validate_usage_args() {
 }
 run_usage() {
   validate_usage_args
-  local parser runner output_file error_file
+  local parser output_file error_file
+  local -a runner=()
   parser=""
-  runner=""
   case "$HARNESS" in
-    claude) parser="$PACKAGE_ROOT/adapters/claude/scripts/prompt_log_usage.sh"; runner=bash; require_command jq ;;
-    codex|cursor) parser="$(source_for usage)"; runner=python3; require_command python3 ;;
-    opencode) parser="$(source_for usage)"; runner=bash; require_command jq; require_command sqlite3 ;;
-    omp) parser="$(source_for usage)"; runner=bun; require_command bun ;;
+    claude) parser="$PACKAGE_ROOT/adapters/claude/scripts/prompt_log_usage.sh"; runner=(bash); require_command jq ;;
+    codex|cursor) parser="$(source_for usage)"; runner=(python3); require_command python3 ;;
+    opencode) parser="$(source_for usage)"; runner=(bash); require_command jq; require_command sqlite3 ;;
+    omp)
+      parser="$(source_for usage)"
+      # omp ships as a Bun-compiled binary, and BUN_BE_BUN=1 makes it run the parser as Bun; an omp
+      # installed from npm runs on Bun, so a missing bun means the compiled binary.
+      if command -v bun >/dev/null 2>&1; then
+        runner=(bun)
+      else
+        command -v omp >/dev/null 2>&1 || fail "missing dependency: bun or omp"
+        runner=(env BUN_BE_BUN=1 omp)
+      fi
+      ;;
   esac
   [[ -f "$parser" ]] || fail "native usage parser is missing for $HARNESS"
   if ((${#COMMAND_ARGS[@]} == 0)); then COMMAND_ARGS=(--latest); fi
@@ -409,7 +419,7 @@ run_usage() {
   error_file="$(mktemp "${TMPDIR:-/tmp}/session-log-usage-error.XXXXXX")"
   printf '%s: usage\n' "$HARNESS_LABEL"
   set +e
-  "$runner" "$parser" "${COMMAND_ARGS[@]}" >"$output_file" 2>"$error_file"
+  "${runner[@]}" "$parser" "${COMMAND_ARGS[@]}" >"$output_file" 2>"$error_file"
   local status=$?
   set -e
   if ((status != 0)); then
