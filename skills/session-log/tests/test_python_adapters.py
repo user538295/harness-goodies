@@ -1,5 +1,6 @@
 import importlib.util
 import inspect
+import errno
 import fcntl
 import fnmatch
 import hashlib
@@ -1461,7 +1462,8 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             hold_install_lock(home)
             result = run_session_log(package, home, "claude", "on")
             self.assertEqual((result.returncode, result.stderr), (0, ""))
-            self.assertEqual(result.stdout, "Claude Code: legacy cleanup skipped: another session-log command is running\n"
+            self.assertEqual(result.stdout, "Claude Code: legacy cleanup skipped: "
+                                            "another session-log command is already in progress for claude\n"
                                             "Claude Code: on — logging starts with the next prompt\n")
             self.assertTrue((home / ".claude/prompt-logs/.enabled").is_file())
             self.assertEqual(settings.read_bytes(), original)
@@ -1563,6 +1565,27 @@ def hold_install_lock(home, harness_subroot=".claude"):
     lock = home / harness_subroot / Path(INSTALL_LOCK_RELATIVE).relative_to(".claude")
     lock.mkdir(parents=True)
     (lock / "owner").write_text(f"{os.getpid()}\n{start}\n")
+
+
+# Another writer changes settings.json while claude_settings.py writes its update: a newline appended just before
+# it serializes the new document, after it read the old one.
+SETTINGS_RACE_SITECUSTOMIZE = '''import json, os, sys
+_dump = json.dump
+def _dump_after_a_concurrent_change(*arguments, **options):
+    if os.path.basename(sys.argv[0]) == "claude_settings.py":
+        with open(os.environ["SETTINGS_PATH"], "a", encoding="utf-8") as handle:
+            handle.write("\\n")
+    return _dump(*arguments, **options)
+json.dump = _dump_after_a_concurrent_change
+'''
+CLAUDE_SETTINGS_CHANGED = "Claude settings changed during the legacy cleanup; run repair again"
+
+
+def settings_race_environment(home, race_directory):
+    """An environment whose python3 runs claude_settings.py with SETTINGS_RACE_SITECUSTOMIZE."""
+    race_directory.mkdir()
+    (race_directory / "sitecustomize.py").write_text(SETTINGS_RACE_SITECUSTOMIZE)
+    return {**harness_environment(home), "PYTHONPATH": str(race_directory)}
 
 
 RECORDING_SESSION_LOG = '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$SESSION_LOG_TEST_RECORD"\n'
@@ -1730,6 +1753,19 @@ class SessionStartCleanupStampTests(unittest.TestCase):
             self.assert_cleaned(package, home, settings)
             self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
 
+    def test_a_cleanup_a_concurrent_settings_change_aborted_is_not_stamped_and_runs_again_at_the_next_session_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve() / "home"
+            package, settings = self.dirty_settings(home)
+            racing = run_claude_hook(package, home, "session-start",
+                                     environment=settings_race_environment(home, Path(directory) / "race"))
+            self.assertEqual((racing.returncode, racing.stdout, racing.stderr), (0, "", ""))
+            self.assertNotEqual(json.loads(settings.read_text()), {}, "the racing settings change did not abort the cleanup")
+            self.assertFalse(os.path.lexists(home / LEGACY_CLEANUP_STAMP_RELATIVE))
+
+            self.assert_cleaned(package, home, settings)
+            self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
+
     def test_a_cleanup_that_fails_for_good_is_stamped_and_not_rerun_at_every_session_start(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
@@ -1799,17 +1835,29 @@ class ClaudeRuntimeMarkerPruneTests(unittest.TestCase):
             finished = subprocess.run(["sh", "-c", "echo $$"], capture_output=True, text=True, check=True)
             dead = state / f"runtime.{finished.stdout.strip()}.json"
             live = state / f"runtime.{os.getpid()}.json"
-            # A live process this user may not signal (EPERM) counts as alive, as in the omp and OpenCode adapters.
-            unsignalable = state / f"runtime.{INIT_PID}.json"
             unrelated = state / "runtime.notes.json"
-            for marker in (dead, live, unsignalable, unrelated):
+            for marker in (dead, live, unrelated):
                 marker.write_text('{"harness": "claude"}')
             result = run_claude_hook(package, home, "session-start", payload=json.dumps({"session_id": "prune"}))
             self.assertEqual((result.returncode, result.stderr), (0, ""))
             self.assertFalse(os.path.lexists(dead))
             self.assertTrue(live.is_file())
-            self.assertTrue(unsignalable.is_file())
             self.assertTrue(unrelated.is_file())
+
+    @unittest.skipIf(os.geteuid() == 0, "root may signal every process")
+    def test_session_start_keeps_the_marker_of_a_live_process_it_may_not_signal(self):
+        """A live process this user may not signal (EPERM) counts as alive, as in the omp and OpenCode adapters."""
+        if shutil.which("jq") is None:
+            self.skipTest("jq is not installed")
+        with tempfile.TemporaryDirectory() as directory:
+            home, package = enabled_claude_home(directory)
+            state = home / ".claude/session-log"
+            state.mkdir(parents=True)
+            unsignalable = state / f"runtime.{INIT_PID}.json"
+            unsignalable.write_text('{"harness": "claude"}')
+            result = run_claude_hook(package, home, "session-start", payload=json.dumps({"session_id": "prune"}))
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertTrue(unsignalable.is_file())
 
 
 # A hook payload naming a session, so a hook that got past its safety checks would record a runtime marker.
@@ -2279,6 +2327,115 @@ class RepairCommandEdgeTests(unittest.TestCase):
                                         timeout=SESSION_LOG_TIMEOUT_SECONDS)
             self.assertEqual((entrypoint.returncode, entrypoint.stdout, entrypoint.stderr), busy)
             self.assertEqual(settings.read_bytes(), original)
+
+    def test_repair_reports_a_lock_whose_holder_has_not_finished_its_owner_file_as_busy(self):
+        """locking.py creates the lock, then the owner file, then writes it: a command may read it in between."""
+        for name, contents in {"empty": "", "pid only": f"{os.getpid()}\n"}.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = claude_package(home)
+                lock = home / INSTALL_LOCK_RELATIVE
+                lock.mkdir(parents=True)
+                (lock / "owner").write_text(contents)
+                result = run_session_log(package, home, "claude", "repair")
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (
+                    LOCK_BUSY_STATUS, "", "session-log: another session-log command is already in progress for claude\n"))
+
+    def test_repair_refuses_a_stale_lock_with_an_invalid_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            lock = home / INSTALL_LOCK_RELATIVE
+            lock.mkdir(parents=True)
+            owner = lock / "owner"
+            owner.write_text("")
+            os.utime(lock, (OLD_MTIME, OLD_MTIME))
+            result = run_session_log(package, home, "claude", "repair")
+            self.assertEqual((result.returncode, result.stdout, result.stderr),
+                             (1, "", f"session-log: refusing invalid install lock owner: {owner}\n"))
+            self.assertTrue(owner.is_file())
+
+    def test_repair_takes_a_lock_its_holder_releases_while_repair_reads_the_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home = root / "home"
+            package = claude_package(home)
+            hold_install_lock(home)
+            shims = root / "shims"
+            shims.mkdir()
+            # A sed that runs just after the holder released the lock: owner first, then the lock directory.
+            (shims / "sed").write_text(
+                '#!/bin/sh\nfor argument; do case "$argument" in */.install.lock/owner)\n'
+                '  unlink "$argument"; rmdir "${argument%/owner}" ;; esac; done\n'
+                f'exec {shutil.which("sed")} "$@"\n')
+            (shims / "sed").chmod(EXECUTABLE_MODE)
+            result = subprocess.run(
+                ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "repair"],
+                capture_output=True, text=True, timeout=SESSION_LOG_TIMEOUT_SECONDS,
+                env={**harness_environment(home), "PATH": f"{shims}{os.pathsep}{os.environ['PATH']}"})
+            self.assertEqual((result.returncode, result.stdout, result.stderr),
+                             (0, "Claude Code: repair found no duplicate or stale registrations\n", ""))
+            self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists())
+
+    def test_the_lock_preflight_and_locking_py_agree_on_when_a_lock_turns_stale(self):
+        stale = re.search(r"^STALE_LOCK_SECONDS = (\d+)$", LOCKING_PATH.read_text(), re.MULTILINE).group(1)
+        adapter_install = (REPO / "skills/session-log/lib/adapter_install.sh").read_text()
+        self.assertRegex(adapter_install, rf"(?m)^readonly INSTALL_LOCK_STALE_SECONDS={stale}$")
+
+    def test_on_releases_the_install_lock_whether_its_cleanup_succeeds_or_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            succeeded = run_session_log(package, home, "claude", "on")
+            self.assertEqual((succeeded.returncode, succeeded.stderr), (0, ""))
+            self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists(), "a successful cleanup kept the install lock")
+            edited = home / ".claude/scripts/prompt_log_save.sh"
+            edited.parent.mkdir(parents=True)
+            edited.write_text("#!/usr/bin/env bash\n# edited by the user\n")
+            failed = run_session_log(package, home, "claude", "on")
+            self.assertEqual(failed.returncode, 0, failed.stderr)
+            self.assertIn("Claude Code: legacy cleanup failed: refusing to remove unrecognized legacy Claude script", failed.stdout)
+            self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists(), "a failed cleanup kept the install lock")
+
+    @unittest.skipIf(os.geteuid() == 0, "root removes files whatever their directory's mode")
+    def test_off_fails_naming_a_runtime_marker_it_cannot_remove(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            self.assertEqual(run_session_log(package, home, "claude", "on").returncode, 0)
+            state = home / ".claude/session-log"
+            marker = state / "runtime.json"
+            marker.write_text("{}\n")
+            state.chmod(READ_ONLY_DIRECTORY_MODE)
+            try:
+                result = run_session_log(package, home, "claude", "off")
+            finally:
+                state.chmod(PRIVATE_DIRECTORY_MODE)
+            self.assertEqual((result.returncode, result.stdout, result.stderr),
+                             (1, "", f"session-log: cannot remove runtime state: {marker}\n"))
+            self.assertTrue(marker.is_file())
+            self.assertFalse((home / ".claude/prompt-logs/.enabled").exists())
+
+    def test_a_concurrent_settings_change_is_transient_for_repair_and_on(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve() / "home"
+            package = claude_package(home)
+            settings = home / ".claude/settings.json"
+            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
+            environment = settings_race_environment(home, Path(directory) / "race")
+            repair = subprocess.run(
+                ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "repair"],
+                capture_output=True, text=True, env=environment, timeout=SESSION_LOG_TIMEOUT_SECONDS)
+            self.assertEqual((repair.returncode, repair.stdout, repair.stderr),
+                             (LOCK_BUSY_STATUS, "", CLAUDE_SETTINGS_CHANGED + "\n"))
+            on = subprocess.run(
+                ["bash", str(package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "on"],
+                capture_output=True, text=True, env=environment, timeout=SESSION_LOG_TIMEOUT_SECONDS)
+            self.assertEqual((on.returncode, on.stdout, on.stderr), (
+                0, f"Claude Code: legacy cleanup skipped: {CLAUDE_SETTINGS_CHANGED}\n"
+                   "Claude Code: on — logging starts with the next prompt\n", ""))
+            self.assertNotEqual(json.loads(settings.read_text()), {})
+            self.assertFalse((home / INSTALL_LOCK_RELATIVE).exists())
 
     def test_codex_on_reports_a_busy_install_lock_with_the_busy_status(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -3415,7 +3572,7 @@ CURSOR_ON_NEXT_PROMPT = ("Cursor: on — logging starts with the next prompt onc
 CURSOR_HOOKS_NOT_LOADED = ("Cursor: on — no hook of this cursor-goodies version has run; install or update the plugin, "
                            "check that Include Third-Party Plugins, Skills, and Other Configs is on in Cursor Settings, "
                            "then restart Cursor\n")
-CURSOR_LOCK_BUSY = "Cursor: legacy cleanup skipped: another session-log command is running\n"
+CURSOR_LOCK_BUSY = "Cursor: legacy cleanup skipped: another session-log command is already in progress for cursor\n"
 CURSOR_FOREIGN_HOOK = {"command": "echo keep-cursor"}
 # A user hook that mentions the hook script's name but is not one session-log registered.
 CURSOR_LOOKALIKE_HOOK = {"command": "python3 /opt/tools/session_log_hook.py cursor stop"}
@@ -3970,7 +4127,7 @@ class OmpPluginOwnedTests(unittest.TestCase):
         hold_install_lock(self.home, OMP_SUBROOT)
         result = self.run_omp("on")
         self.assertEqual((result.returncode, result.stderr), (0, ""))
-        self.assertEqual(result.stdout, "OMP: legacy cleanup skipped: another session-log command is running\n"
+        self.assertEqual(result.stdout, "OMP: legacy cleanup skipped: another session-log command is already in progress for omp\n"
                                         + OMP_RESTART_REQUIRED)
         self.assertTrue((self.home / OMP_SUBROOT / "prompt-logs/.enabled").is_file())
 
@@ -4415,7 +4572,8 @@ class ClaudeHookWithoutPythonTests(unittest.TestCase):
 
 STALE_OWNER_START = "Stale Owner Start"
 ACQUIRER_START = "Acquirer Start"
-# EX_TEMPFAIL: the exit status of locking.py and of every session-log command when, and only when, the lock is busy.
+# EX_TEMPFAIL: the exit status of locking.py when the lock is busy, and of every session-log command when, and
+# only when, it stopped on something transient (the busy lock, a concurrent settings.json change).
 LOCK_BUSY_STATUS = 75
 
 
@@ -4621,9 +4779,9 @@ PROCESS_EXIT_WAIT_SECONDS = 5
 PROCESS_POLL_SECONDS = 0.05
 
 
-def process_exists(pid):
+def process_group_exists(group):
     try:
-        os.kill(pid, 0)
+        os.killpg(group, 0)
     except ProcessLookupError:
         return False
     return True
@@ -4658,20 +4816,34 @@ class CursorSessionStartCleanupTests(unittest.TestCase):
         self.assertEqual(record.read_text(), "--entrypoint cursor --harness cursor repair ")
 
     def test_a_cleanup_that_times_out_ends_with_every_process_it_started_and_is_reported_on_stderr_only(self):
-        helper_pid = self.root / "helper.pid"
-        # A repair whose helper (as lib/*.py runs under bin/session-log) outlives the shell that started it.
-        script = f'sleep {CLEANUP_HELPER_SECONDS} &\nprintf "%s" "$!" > "{helper_pid}"\nwait\n'
+        group_file = self.root / "repair.pgid"
+        # A repair whose helper (as lib/*.py runs under bin/session-log) outlives the shell that started it. The
+        # shell leads its own process group; it records it before starting the helper, so the timeout cannot win.
+        script = f'printf "%s" "$$" > "{group_file}"\nsleep {CLEANUP_HELPER_SECONDS} &\nwait\n'
         with patch.object(self.hook, "REPAIR_TIMEOUT_SECONDS", CLEANUP_TEST_TIMEOUT_SECONDS):
             stdout, stderr = self.remove_legacy_hooks(script)
         self.assertEqual((stdout, stderr), (
             "", f"session-log: legacy cleanup timed out after {CLEANUP_TEST_TIMEOUT_SECONDS}s; run repair\n"))
-        pid = int(helper_pid.read_text())
+        group = int(group_file.read_text())
         deadline = time.monotonic() + PROCESS_EXIT_WAIT_SECONDS
-        while process_exists(pid) and time.monotonic() < deadline:
+        while process_group_exists(group) and time.monotonic() < deadline:
             time.sleep(PROCESS_POLL_SECONDS)
-        if process_exists(pid):
-            os.kill(pid, signal.SIGKILL)
+        if process_group_exists(group):
+            os.killpg(group, signal.SIGKILL)
             self.fail("the cleanup's helper process outlived its timeout")
+
+    def test_a_cleanup_whose_process_group_is_gone_when_it_times_out_is_still_reported(self):
+        native_killpg = os.killpg
+
+        def kill_then_find_the_group_gone(group, signal_number):
+            native_killpg(group, signal_number)
+            raise ProcessLookupError(errno.ESRCH, os.strerror(errno.ESRCH))
+
+        with patch.object(self.hook, "REPAIR_TIMEOUT_SECONDS", CLEANUP_TEST_TIMEOUT_SECONDS), \
+                patch.object(self.hook.os, "killpg", side_effect=kill_then_find_the_group_gone):
+            stdout, stderr = self.remove_legacy_hooks(f"exec sleep {CLEANUP_HELPER_SECONDS}\n")
+        self.assertEqual((stdout, stderr), (
+            "", f"session-log: legacy cleanup timed out after {CLEANUP_TEST_TIMEOUT_SECONDS}s; run repair\n"))
 
     def test_a_cleanup_that_cannot_start_is_reported_on_stderr_only(self):
         with patch.object(self.hook.subprocess, "Popen", side_effect=FileNotFoundError(2, "No such file or directory", "bash")), \

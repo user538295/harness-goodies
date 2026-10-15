@@ -168,7 +168,7 @@ const BACKGROUND_WAIT_MS = 5000;
 const BACKGROUND_TEST_TIMEOUT_MS = 2 * BACKGROUND_WAIT_MS;
 const POLL_INTERVAL_MS = 50;
 const FAILED_EXIT_CODE = 1;
-// EX_TEMPFAIL: the CLI's exit status when, and only when, another session-log command holds the install lock.
+// EX_TEMPFAIL: the CLI's exit status for a transient failure, such as another session-log command holding the install lock.
 const LOCK_BUSY_EXIT_CODE = 75;
 const NON_EXECUTABLE_MODE = 0o644;
 // Short enough for a test, long enough for bash to start the stub CLI's first command under load.
@@ -220,7 +220,8 @@ const extensionOf = (root) => path.join(root, "skills", "session-log", "adapters
 // Loads the extension LOADS times (default once), optionally deletes a directory the way an upgrade deletes the old
 // cache, then runs a command; prints a failed command's message and then what the extension registered, including
 // each background command its loads started ("background:<CLI arguments>"). With WAIT_FOR_STDERR_MS it stays alive until
-// the extension writes to stderr (or that wait ends), so the outcome of a background repair reaches it.
+// the extension writes to stderr (or that wait ends), so the outcome of a background repair reaches it. With NOTICES_FILE
+// it appends each notice the command shows the user to that file, one JSON string per line.
 const LOAD_AND_RUN = String.raw`
 import fs from "node:fs";
 if (process.env.WAIT_FOR_STDERR_MS) {
@@ -249,7 +250,8 @@ for (let load = 0; load < Number(process.env.LOADS || 1); load += 1) loaded.defa
 loading = false;
 if (process.env.DELETE_BEFORE_COMMAND) fs.rmSync(process.env.DELETE_BEFORE_COMMAND, { recursive: true, force: true });
 if (process.env.COMMAND) {
-	try { await handler(process.env.COMMAND, { ui: { notify() {} } }); }
+	const notify = (message) => { if (process.env.NOTICES_FILE) fs.appendFileSync(process.env.NOTICES_FILE, JSON.stringify(message) + "\n"); };
+	try { await handler(process.env.COMMAND, { ui: { notify } }); }
 	catch (error) { console.log("command failed: " + error.message); }
 }
 console.log(JSON.stringify(registrations));
@@ -367,6 +369,24 @@ describe("plugin command", () => {
 			expect(stderr).toBe("");
 			expect(stdout.split("\n")[0]).toBe(`command failed: ${error}, posix_spawn '${cliOf(loaded)}'`);
 			expect(cliCalls(home)).toBe("");
+		});
+	}
+	const commandOutcomes = {
+		"shows the CLI's output as a notice": { behaviour: { stdout: ["OMP: on", ""] }, failure: "", notice: "OMP: on" },
+		"shows a failed CLI's error as a notice and fails the command with it": {
+			behaviour: { stdout: ["partial"], stderr: ["session-log: boom"], exitCode: FAILED_EXIT_CODE },
+			failure: "command failed: session-log: boom\n",
+			notice: "session-log: boom",
+		},
+	};
+	for (const [name, { behaviour, failure, notice }] of Object.entries(commandOutcomes)) {
+		test(name, () => {
+			const home = temporaryDirectory();
+			const notices = path.join(home, "notices");
+			const plugin = installPlugin(home, "1.0.0", behaviour);
+			const { stdout } = loadExtension(home, extensionOf(plugin), { COMMAND: "on", NOTICES_FILE: notices });
+			expect(stdout.slice(0, failure.length)).toBe(failure);
+			expect(fs.readFileSync(notices, "utf8")).toBe(`${JSON.stringify(notice)}\n`);
 		});
 	}
 	test("ends a command whose CLI outlives the timeout, with the processes it started, and names the timeout", async () => {
@@ -606,6 +626,47 @@ describe("legacy cleanup at load", () => {
 		expect(backgroundCommands(loadExtension(home, extensionOf(loaded)).stdout)).toEqual([]);
 		const upgraded = installPlugin(home, "2.0.0");
 		expect(backgroundCommands(loadExtension(home, extensionOf(upgraded)).stdout)).toEqual([BACKGROUND_REPAIR]);
+	}, BACKGROUND_TEST_TIMEOUT_MS);
+	// A repair that never finished decided nothing: each is reported but not stamped, so the next start retries it.
+	const unfinishedRepairs = {
+		"cannot start": {
+			breakCli: (cli) => fs.chmodSync(cli, NON_EXECUTABLE_MODE),
+			reason: (cli) => `EACCES: permission denied, posix_spawn '${cli}'`,
+		},
+		"is killed": {
+			breakCli: (cli) => fs.writeFileSync(cli, "#!/usr/bin/env bash\nkill -KILL $$\n"),
+			reason: () => "repair was killed by SIGKILL",
+		},
+	};
+	for (const [name, { breakCli, reason }] of Object.entries(unfinishedRepairs)) {
+		test(`reports a repair that ${name} and retries it at the next start`, () => {
+			const home = temporaryDirectory();
+			const plugin = installPlugin(home, "1.0.0");
+			const agent = path.join(home, ".omp", "agent");
+			leaveSessionLogOmpExtension(agent);
+			breakCli(cliOf(plugin));
+			const { stderr } = loadExtension(home, extensionOf(plugin), { WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
+			expect(stderr).toBe(`session-log: legacy cleanup failed: ${reason(cliOf(plugin))}; /session-log repair shows the details\n`);
+			expect(fs.existsSync(path.join(agent, "session-log", LEGACY_CLEANUP_STAMP))).toBe(false);
+		}, BACKGROUND_TEST_TIMEOUT_MS);
+	}
+	test("ends a repair that outlives the timeout, with the processes it started, reports it, and retries it at the next start", async () => {
+		const home = temporaryDirectory();
+		const plugin = installPlugin(home, "1.0.0");
+		const agent = path.join(home, ".omp", "agent");
+		leaveSessionLogOmpExtension(agent);
+		const childPidFile = path.join(home, "cli-child");
+		fs.writeFileSync(cliOf(plugin), fs.readFileSync(cliOf(plugin), "utf8").replace(/^(#!.*\n)/, `$1sleep 600 & echo $! > ${shellQuote(childPidFile)}; wait\n`));
+		try {
+			const { stderr } = loadExtension(home, extensionOf(plugin), { CLI_TIMEOUT_MS: String(SHORT_CLI_TIMEOUT_MS), WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
+			expect(stderr).toBe(`session-log: legacy cleanup failed: repair timed out after ${SHORT_CLI_TIMEOUT_MS} ms; /session-log repair shows the details\n`);
+			expect(await processEnds(Number(fs.readFileSync(childPidFile, "utf8")))).toBe(true);
+			expect(fs.existsSync(path.join(agent, "session-log", LEGACY_CLEANUP_STAMP))).toBe(false);
+		} finally {
+			// The test's own child, should the extension have left it running.
+			const pid = fs.existsSync(childPidFile) ? Number(fs.readFileSync(childPidFile, "utf8")) : 0;
+			if (pid && !isGone(pid)) process.kill(pid, "SIGKILL");
+		}
 	}, BACKGROUND_TEST_TIMEOUT_MS);
 	// The same outcomes from the package's real CLI, so a reworded repair report or a changed lock exit status fails here.
 	test("stays silent when the real CLI finds the install lock held by a live command", () => {

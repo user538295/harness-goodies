@@ -144,10 +144,10 @@ echo "=== assert_session_log_version_bumped ==="
 # The fixture repository must not run the developer's commit signing, hooks, or other global settings.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 fixture_git() { git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com "$@"; }
-# write_package_json <version> <omp extension> → the fixture's package.json
+# write_package_json <version> <omp extension> [exports] → the fixture's package.json
 write_package_json() {
-  printf '{\n  "version": "%s",\n  "omp": {\n    "extensions": [\n      "%s"\n    ]\n  }\n}\n' "$1" "$2" \
-    > "$REPO_ROOT/package.json"
+  printf '{\n  "version": "%s",\n  "exports": "%s",\n  "omp": {\n    "extensions": [\n      "%s"\n    ]\n  }\n}\n' \
+    "$1" "${3:-./index.js}" "$2" > "$REPO_ROOT/package.json"
 }
 # write_plugin_json <harness> <version> <hooks pointer> → the fixture's .<harness>-plugin/plugin.json
 write_plugin_json() {
@@ -210,9 +210,25 @@ _jq_absent=$(bash -c 'source "$1"; REPO_ROOT="$2"; PATH=/nonexistent
   assert_session_log_version_bumped v1.0.3 2>&1 || echo "exit $?"' _ "$SCRIPT_DIR/release.sh" "$REPO_ROOT")
 assert_eq "fails closed, naming jq, when jq is not installed" \
   $'Error: jq is required to check the session-log VERSION bump\nexit 1' "$_jq_absent"
+write_package_json 2.0.0 ./one.js ./other.js
+fixture_git commit -q -am exports
+assert_exits_1 "exports changed without a VERSION bump" assert_session_log_version_bumped v1.0.3
+printf '1.0.4\n' > "$REPO_ROOT/skills/session-log/VERSION"
+fixture_git rm -q .codex-plugin/plugin.json
+fixture_git commit -q -am "bump, drop the codex manifest"
+fixture_git tag v1.0.4
+assert_eq "a manifest absent at the revision reads as null" "null" "$(json_field_at v1.0.4 .codex-plugin/plugin.json .hooks)"
+write_plugin_json codex 2.0.0 ./one.json
+fixture_git add -A
+fixture_git commit -q -m "codex manifest added"
+assert_exits_1 "a hooks pointer added since the last tag without a VERSION bump" assert_session_log_version_bumped v1.0.4
+# The VERSION bump makes the guard pass on everything but the unreadable manifest itself.
+printf '1.0.5\n' > "$REPO_ROOT/skills/session-log/VERSION"
 printf '{ not json\n' > "$REPO_ROOT/package.json"
 fixture_git commit -q -am broken
-assert_exits_1 "fails closed when a wiring manifest is not valid JSON" assert_session_log_version_bumped v1.0.3
+assert_exits_1 "fails closed when a wiring manifest is not valid JSON" assert_session_log_version_bumped v1.0.4
+assert_eq "names the unreadable manifest" "1" \
+  "$(assert_session_log_version_bumped v1.0.4 2>&1 >/dev/null | grep -cxF 'Error: cannot read .omp.extensions from package.json at HEAD')"
 discard "$REPO_ROOT"
 REPO_ROOT="$_orig_root"
 

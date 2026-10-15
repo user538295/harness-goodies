@@ -97,14 +97,15 @@ cleanup_fingerprint() {
   if compgen -G "$LEGACY_SCRIPTS_GLOB" >/dev/null; then printf 'legacy scripts\n'; fi
 }
 
-# The exit status of a session-log command while another one holds the install lock
-# (INSTALL_LOCK_BUSY in lib/adapter_install.sh).
+# The exit status of a session-log command that stopped on something transient with nothing decided:
+# another one holds the install lock, or settings.json changed under the cleanup (INSTALL_LOCK_BUSY in
+# lib/adapter_install.sh).
 readonly INSTALL_LOCK_BUSY=75
 
 # Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never
 # fails the hook and all output is discarded. A stamp of the fingerprint after the run skips it
 # until settings.json, this package, or whether a seeded copy or legacy scripts exist changes. Only
-# a run the busy install lock skipped leaves no stamp, so the next session start tries again; any
+# a transient stop (INSTALL_LOCK_BUSY) leaves no stamp, so the next session start tries again; any
 # other failure (say, an edited legacy script) is stamped like a success, since rerunning it at
 # every session start cannot fix it, and `on` and `repair` report why it failed.
 # With no leftover it costs one grep.

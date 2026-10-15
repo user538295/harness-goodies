@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Claude Code restart status with plugin-owned hooks: the claude-goodies plugin's hooks/hooks.json
-# always registers the session-log hooks, which stay no-ops until the enable flag exists. `on` and
-# `off` only flip that flag (`off` also clears the runtime markers), `status` only reads, and
-# removing a legacy settings.json registration never clears the runtime marker of a session the
-# plugin's hooks keep logging.
+# always registers the session-log hooks, which stay no-ops until the enable flag exists. `on` runs
+# the legacy cleanup and sets that flag, `off` removes it and clears the runtime markers, `status`
+# only reads, and removing a legacy settings.json registration never clears the runtime marker of a
+# session the plugin's hooks keep logging.
 # Run: bash skills/session-log/tests/test_claude_plugin_update_restart_status.sh
 set -euo pipefail
 

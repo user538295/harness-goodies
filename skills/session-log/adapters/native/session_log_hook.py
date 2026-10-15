@@ -347,7 +347,9 @@ def remove_legacy_cursor_hooks(root):
         return
     try:
         # Its own process group, so a timeout ends the Python helpers bin/session-log runs too: one left
-        # behind would go on changing files after the install lock it ran under turned reclaimable.
+        # behind would go on changing files after the install lock it ran under turned reclaimable. Outside
+        # this hook's group, the repair outlives a kill of the hook's group, so only REPAIR_TIMEOUT_SECONDS
+        # bounds it, and only while this hook lives: it stays below Cursor's hook timeout for that reason.
         repair = subprocess.Popen(["bash", str(SESSION_LOG_CLI), "--entrypoint", "cursor", "--harness", "cursor", "repair"],
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                   start_new_session=True)
@@ -357,7 +359,10 @@ def remove_legacy_cursor_hooks(root):
     try:
         repair.wait(timeout=REPAIR_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        os.killpg(repair.pid, signal.SIGKILL)
+        try:
+            os.killpg(repair.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # Every process of the group ended after the timeout.
         repair.wait()
         print(f"session-log: legacy cleanup timed out after {REPAIR_TIMEOUT_SECONDS}s; run repair", file=sys.stderr)
 

@@ -19,7 +19,7 @@ const UNREADABLE_FILE_MODE = 0o000;
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const ROOT_UID = 0;
 const runsAsRoot = process.getuid?.() === ROOT_UID;
-// EX_TEMPFAIL: the CLI's exit status when, and only when, another session-log command holds the install lock.
+// EX_TEMPFAIL: the CLI's exit status for a transient failure, such as another session-log command holding the install lock.
 const LOCK_BUSY_EXIT_CODE = 75;
 const FAILED_EXIT_CODE = 1;
 // launchd or init: alive, and signalling it fails with EPERM rather than ESRCH for anyone but root.
@@ -725,6 +725,21 @@ for (const [outcome, exitCode, runs] of [["another session-log command's install
     expect(fs.readFileSync(record, "utf8")).toBe("repair\n".repeat(runs));
   });
 }
+
+test("a cleanup that never finished (timed out, killed, or not started) is not stamped, so the next start retries it", () => {
+  const stamp = path.join(stateDirectory, "legacy-cleanup.stamp");
+  const emptyDirectory = fs.mkdtempSync(path.join(home, "no-bash-"));
+  for (const [outcome, options, environment, expected] of [
+    ["timed out", "{ timeoutMs: 200 }", { PATH: pathWith(wrapperDirectory("bash", ["sleep 600"])) }, "timed out after 200 ms"],
+    ["killed", "", { PATH: pathWith(wrapperDirectory("bash", ["kill -KILL $$"])) }, "exited with SIGKILL"],
+    ["not started", "", { PATH: emptyDirectory }, "not found"],
+  ]) {
+    const result = runPlugin(`await sessionLog.cleanupLegacyLeftovers(${options});`, environment);
+    expect(result.stderr, outcome).toContain(expected);
+    expect(result.stderr, outcome).not.toContain("session-log: session-log:");
+    expect(fs.existsSync(stamp), outcome).toBe(false);
+  }
+});
 
 test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run, and stamps all but a busy lock", () => {
   for (const [lines, expected, stamped] of [

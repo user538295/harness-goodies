@@ -288,6 +288,9 @@ def _remove_managed_hooks(document, removable):
 
 
 CHANGED = "Claude settings changed during the legacy cleanup; run repair again"
+# EX_TEMPFAIL, INSTALL_LOCK_BUSY in lib/adapter_install.sh: CHANGED is transient and leaves settings.json as
+# the other writer left it, so the session-log command exits with the status that means "try later".
+SETTINGS_CHANGED_STATUS = 75
 
 
 @dataclass
@@ -648,4 +651,10 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except SystemExit as error:
+        if error.code != CHANGED:
+            raise
+        print(CHANGED, file=sys.stderr)
+        raise SystemExit(SETTINGS_CHANGED_STATUS) from None

@@ -992,10 +992,11 @@ function currentSessionFile(ctx) {
 
 // Older releases linked an extension into the OMP root and seeded a package copy into its skill
 // root; omp loads such an extension beside this one. `repair` removes them in the background, once
-// per process, logging on or off. An attempt stamps the fingerprint of this package and the leftovers
-// present, which skips it until either changes, so a copy it keeps or a failure (reported on stderr;
-// `/session-log repair` shows it) is reported once. Only an attempt skipped because another
-// session-log command holds the install lock leaves no stamp and runs again at the next start.
+// per process, logging on or off. A repair that ran to its end stamps the fingerprint of this package
+// and the leftovers present, which skips it until either changes, so a copy it keeps or a failure
+// (reported on stderr; `/session-log repair` shows it) is reported once. A transient failure (exit 75)
+// or a repair that never finished (timed out, killed, or not started) leaves no stamp and runs again
+// at the next start.
 const LEGACY_LEFTOVERS = [
 	path.join(agentDir, "extensions", "session-log.js"),
 	path.join(agentDir, "extensions", "session-log-omp.js"),
@@ -1007,8 +1008,9 @@ const CLI_MESSAGE_PREFIX = "session-log: ";
 const CLI_REPORT_PREFIX = "OMP: ";
 // A repair report that needs the user: a package copy it kept and asks them to move aside.
 const KEPT_REPORT_PREFIX = `${CLI_REPORT_PREFIX}kept `;
-// EX_TEMPFAIL: the CLI exits with it when, and only when, another session-log command holds the install lock.
-const INSTALL_LOCK_BUSY_EXIT_CODE = 75;
+// EX_TEMPFAIL: the CLI exits with it for a transient failure that decided nothing (another session-log
+// command holds the install lock, or settings.json changed during the cleanup), so a later run retries.
+const TRANSIENT_FAILURE_EXIT_CODE = 75;
 let legacyCleanupStarted = false;
 const pathPresent = (candidate) => {
 	try { return Boolean(fs.lstatSync(candidate)); } catch { return false; }
@@ -1031,7 +1033,6 @@ const stampLegacyCleanup = () => {
 	}
 };
 const reportLegacyCleanupFailure = (detail) => {
-	stampLegacyCleanup();
 	const reason = detail.startsWith(CLI_MESSAGE_PREFIX) ? detail.slice(CLI_MESSAGE_PREFIX.length) : detail;
 	process.stderr.write(`session-log: legacy cleanup failed: ${reason}; /session-log repair shows the details\n`);
 };
@@ -1040,34 +1041,27 @@ const reportKeptLeftovers = (stdout) => {
 		if (line.startsWith(KEPT_REPORT_PREFIX)) process.stderr.write(`${CLI_MESSAGE_PREFIX}${line.slice(CLI_REPORT_PREFIX.length)}\n`);
 	}
 };
-function cleanupLegacyLeftovers() {
+function cleanupLegacyLeftovers(timeoutMs) {
 	if (legacyCleanupStarted || !LEGACY_LEFTOVERS.some(pathPresent) || legacyCleanupStamped()) return;
 	legacyCleanupStarted = true;
-	try {
-		const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe" }), ["repair"]);
-		child.unref();
-		Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]).then(([exitCode, stdout, stderr]) => {
-			reportKeptLeftovers(stdout);
-			if (exitCode === INSTALL_LOCK_BUSY_EXIT_CODE) return;
-			if (exitCode === 0) {
-				stampLegacyCleanup();
-				return;
-			}
-			const lastLine = stderr.split("\n").filter((line) => line.trim()).pop();
-			reportLegacyCleanupFailure(lastLine || `exit status ${exitCode}`);
-		}).catch((error) => reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error)));
-	} catch (error) {
-		reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error));
-	}
+	runCli(["repair"], timeoutMs, { background: true }).then(({ exitCode, signalCode, timedOut, stdout, stderr }) => {
+		reportKeptLeftovers(stdout);
+		if (timedOut) throw new Error(`repair timed out after ${timeoutMs} ms`);
+		if (signalCode) throw new Error(`repair was killed by ${signalCode}`);
+		if (exitCode === TRANSIENT_FAILURE_EXIT_CODE) return;
+		stampLegacyCleanup();
+		if (exitCode === 0) return;
+		const lastLine = stderr.split("\n").filter((line) => line.trim()).pop();
+		reportLegacyCleanupFailure(lastLine || `exit status ${exitCode}`);
+	}).catch((error) => reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error)));
 }
 
-// Bound on one /session-log command, as the OpenCode adapter caps its CLI. The CLI runs in its own
-// process group, so its timeout also ends the helpers it started, which would otherwise hold its
-// output open.
+// Bound on one CLI run (a /session-log command or the startup repair), as the OpenCode adapter caps its CLI.
 const CLI_TIMEOUT_MS = 120_000;
-async function runUniversalCommand(argumentString, ctx, timeoutMs) {
-	const rawArguments = usageCommandArguments(String(argumentString || "status"), currentSessionFile(ctx));
-	const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }), ["--arguments", rawArguments]);
+// Runs the CLI in its own process group, so its timeout also ends the helpers it started, which would
+// otherwise hold its output open. A background run does not keep omp's process alive.
+async function runCli(cliArguments, timeoutMs, { background = false } = {}) {
+	const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }), cliArguments);
 	let timedOut = false;
 	const timer = setTimeout(() => {
 		timedOut = true;
@@ -1078,8 +1072,17 @@ async function runUniversalCommand(argumentString, ctx, timeoutMs) {
 			if (error?.code !== "ESRCH") process.stderr.write(`${CLI_MESSAGE_PREFIX}${error.message}\n`);
 		}
 	}, timeoutMs);
-	const [exitCode, output, errors] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+	if (background) {
+		child.unref();
+		timer.unref();
+	}
+	const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
 		.finally(() => clearTimeout(timer));
+	return { exitCode, signalCode: child.signalCode, timedOut, stdout, stderr };
+}
+async function runUniversalCommand(argumentString, ctx, timeoutMs) {
+	const rawArguments = usageCommandArguments(String(argumentString || "status"), currentSessionFile(ctx));
+	const { exitCode, timedOut, stdout: output, stderr: errors } = await runCli(["--arguments", rawArguments], timeoutMs);
 	if (timedOut) throw new Error(`${CLI_MESSAGE_PREFIX}${rawArguments} timed out after ${timeoutMs} ms`);
 	const stdout = output.trimEnd();
 	const stderr = errors.trim();
@@ -1154,7 +1157,7 @@ export default function sessionLogOmp(pi, options = {}) {
 		registerSessionLogCommand(pi, cliTimeoutMs);
 		return;
 	}
-	cleanupLegacyLeftovers();
+	cleanupLegacyLeftovers(cliTimeoutMs);
 	registerSessionLogCommand(pi, cliTimeoutMs);
 	const promptStates = new Map();
 	const promptAttempts = new Map();

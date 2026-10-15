@@ -2,9 +2,9 @@
 # Tests for the fallback package locator in SKILL.md — run: bash skills/session-log/tests/test_locator.sh
 #
 # When the host announced no skill directory holding install.sh, SKILL.md resolves `$BASE` with the
-# shared harness-neutral locator loop (.claude/rules/skill-paths.md). These tests extract that loop from
-# SKILL.md verbatim and run it against fixture layouts under a sandbox $HOME, so the doc and the code
-# under test cannot drift apart.
+# shared harness-neutral locator loop (.claude/rules/skill-paths.md). These tests extract that loop, and
+# the whole bash block around it, from SKILL.md verbatim and run them against fixture layouts under a
+# sandbox $HOME, so the doc and the code under test cannot drift apart.
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,8 +24,17 @@ assert_eq() { if [ "$1" = "$2" ]; then ok; else bad "expected [$2], got [$1]"; f
 resolution_loop() { grep -o 'BASE=""; for d in .*; done' "$1"; }
 LOOP="$(resolution_loop "$SKILL_DIR/SKILL.md")"
 
-# A package copy as a plugin ships it: SKILL.md beside install.sh.
-mkpackage() { mkdir -p "$1"; printf -- '---\nname: session-log\n---\n' > "$1/SKILL.md"; printf '#!/usr/bin/env bash\n' > "$1/install.sh"; }
+# The bash block of SKILL.md, from its first line through its closing fence.
+# shellcheck disable=SC2016 # the sed addresses match literal fence lines, not shell expressions
+BLOCK="$(sed -n '/^```bash$/,/^```$/p' "$SKILL_DIR/SKILL.md" | sed '1d;$d')"
+
+# A package copy as a plugin ships it: SKILL.md beside an install.sh that reports how it was run.
+mkpackage() {
+  mkdir -p "$1"; printf -- '---\nname: session-log\n---\n' > "$1/SKILL.md"
+  printf '#!/usr/bin/env bash\nprintf "ran %%s\\n" "$*"\n' > "$1/install.sh"
+}
+# A directory holding only a SKILL.md: the loop accepts it, but it has no install.sh to run.
+mkskillonly() { mkdir -p "$1"; printf -- '---\nname: session-log\n---\n' > "$1/SKILL.md"; }
 # A copy the legacy cleanup kept: its SKILL.md removed so no harness loads it, install.sh still present.
 mkneutralized() { mkdir -p "$1"; printf '#!/usr/bin/env bash\n' > "$1/install.sh"; }
 
@@ -36,6 +45,16 @@ resolve() {
   (cd "$cwd" && HOME="$home" SESSION_LOG_HOME="${SESSION_LOG_HOME_OVERRIDE:-}" bash -c "$LOOP"$'\nprintf %s "$BASE"')
 }
 newhome() { mktemp -d "$WORKROOT/home.XXXXXX"; }
+
+# run_block <home> [announced BASE] → stdout and stderr of the whole SKILL.md block run as host claude
+# with arguments `status`, then `exit <status>`
+run_block() {
+  local home="$1" announced="${2:-}" cwd script
+  cwd="$(mktemp -d "$WORKROOT/project.XXXXXX")"
+  script="$(printf '%s\n' "$BLOCK" | sed -e "s|^harness=.*|harness='claude'|" \
+    -e "s|^BASE=.*|BASE='$announced'|" -e "s|^arguments=.*|arguments='status'|")"
+  (cd "$cwd" && HOME="$home" SESSION_LOG_HOME="" bash -c "$script" 2>&1; echo "exit $?")
+}
 
 # ---------------------------------------------------------------- guards on the loop itself
 
@@ -117,6 +136,23 @@ newhome() { mktemp -d "$WORKROOT/home.XXXXXX"; }
 
 ( t "nothing installed anywhere leaves BASE empty"
   assert_eq "$(resolve "$(newhome)")" "" )
+
+# ---------------------------------------------------------------- the whole block
+
+( t "the announced directory runs its install.sh with the harness and the arguments"
+  H="$(newhome)"; A="$WORKROOT/announced"; mkpackage "$A"
+  assert_eq "$(run_block "$H" "$A")" $'ran --harness claude --arguments status\nexit 0' )
+
+( t "a package the loop finds runs its install.sh"
+  H="$(newhome)"; mkpackage "$H/.agents/skills/session-log"
+  assert_eq "$(run_block "$H")" $'ran --harness claude --arguments status\nexit 0' )
+
+( t "a loop match without install.sh is named as incomplete, never run"
+  H="$(newhome)"; mkskillonly "$H/.agents/skills/session-log"
+  assert_eq "$(run_block "$H")" "session-log: $H/.agents/skills/session-log is not a complete package (no install.sh) — set SESSION_LOG_HOME=<skill dir>"$'\nexit 1' )
+
+( t "nothing installed anywhere names the missing package"
+  assert_eq "$(run_block "$(newhome)")" $'session-log: complete package not found in any known skills root — set SESSION_LOG_HOME=<skill dir>\nexit 1' )
 
 # ----------------------------------------------------------------
 

@@ -75,11 +75,14 @@ const STATE_DIR = path.join(CONFIG_DIR, "session-log");
 const DISRUPTIVE_LEFTOVERS = ["commands/session-log.md", "skills/session-log", "plugins/session-log.js"];
 // What `repair` prints when it found nothing to remove.
 const CLEAN_REPAIR_REPORT = "repair found no duplicate or stale registrations";
-// EX_TEMPFAIL: the CLI exits with it when, and only when, another session-log command holds the install lock.
-const INSTALL_LOCK_BUSY_EXIT_CODE = 75;
+// EX_TEMPFAIL: the CLI exits with it for a transient failure that decided nothing (another session-log
+// command holds the install lock, or settings.json changed during the cleanup), so a later run retries.
+const TRANSIENT_FAILURE_EXIT_CODE = 75;
 
 // Writes one line to OpenCode's log (its stderr).
-const writeLog = (message) => process.stderr.write(`session-log: ${message}\n`);
+const LOG_PREFIX = "session-log: ";
+// CLI errors (and the CLI timeout) already carry the prefix.
+const writeLog = (message) => process.stderr.write(`${String(message).startsWith(LOG_PREFIX) ? "" : LOG_PREFIX}${message}\n`);
 const reportError = (error) => writeLog(error?.message || error);
 // The roots bin/session-log refuses (guard_relocated_root), so the handlers never log where every
 // command would fail. Returns why the root is unsupported, or "" when it is supported.
@@ -1055,10 +1058,10 @@ const cleanupFingerprint = () => [
 // Runs `repair`, which removes what older releases left in ~/.config/opencode and is proven
 // session-log's, including a markdown /session-log command that would override this package's. The
 // fingerprint taken after an attempt skips it until this package or a disruptive leftover changes,
-// so a leftover it keeps or a failure is reported once; only an attempt another session-log
-// command's install lock skipped runs again at the next start. Its report or failure goes to
-// OpenCode's log; `on` and `repair` show the user what it did or why it failed.
-export async function cleanupLegacyLeftovers() {
+// so a leftover it keeps or a failure is reported once; only a transient failure (exit 75) or a
+// repair that never finished (timed out, killed, or not started) runs again at the next start. Its
+// report or failure goes to OpenCode's log; `on` and `repair` show the user what it did or why it failed.
+export async function cleanupLegacyLeftovers({ timeoutMs = CLI_TIMEOUT_MS } = {}) {
   const stamp = path.join(STATE_DIR, "legacy-cleanup.stamp");
   try {
     if (fs.lstatSync(stamp).isFile() && fs.readFileSync(stamp, "utf8") === cleanupFingerprint()) return;
@@ -1066,11 +1069,12 @@ export async function cleanupLegacyLeftovers() {
     if (error?.code !== "ENOENT") reportError(error);
   }
   try {
-    const report = await runSessionLogCli("repair");
+    const report = await runSessionLogCli("repair", { timeoutMs });
     if (report && !report.endsWith(CLEAN_REPAIR_REPORT)) writeLog(report);
   } catch (error) {
     reportError(error);
-    if (error?.exitCode === INSTALL_LOCK_BUSY_EXIT_CODE) return;
+    // Only a repair that exited on its own carries a numeric exit status.
+    if (typeof error?.exitCode !== "number" || error.exitCode === TRANSIENT_FAILURE_EXIT_CODE) return;
   }
   try {
     ensureFile(stamp);
