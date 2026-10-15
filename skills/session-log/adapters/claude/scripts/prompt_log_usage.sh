@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # Totals one Claude session — every request plus every sub-agent transcript —
 # with the same engine the session-log Stop hook uses, so the numbers here and
@@ -27,7 +28,6 @@ display_path() {
 
 target=""
 check=0
-explicit_path=0
 display_transcript=""
 for arg in "$@"; do
   case "$arg" in
@@ -78,7 +78,6 @@ if [ "$target" = "--latest" ]; then
       | sort -t $'\t' -k1,1nr -k2,2
   )
 elif [ -e "$target" ] || [ -L "$target" ]; then
-  explicit_path=1
   display_transcript="$target"
   transcript_target="$target"
   if [ "${target#/}" = "$target" ]; then transcript_target="$(pwd -P)/$target"; fi

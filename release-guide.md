@@ -36,7 +36,7 @@ omp plugin upgrade omp-goodies@user538295
 omp reads `.omp-plugin/marketplace.json` and ignores the Claude catalog when it exists. `omp plugin upgrade` compares the catalog entry's `"version"`, so it must change on every release. `.omp-plugin/plugin.json` marks the plugin as omp-native and carries no version.
 
 ### Cursor marketplace
-First time only: submit the repository at [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish) for the Cursor Marketplace, or import it into a team marketplace (**Dashboard → Plugins & MCPs → Add Marketplace → Import from Repo**). Cursor reads `.cursor-plugin/marketplace.json`, which lists `cursor-goodies` at `source: "./"`, and merges it with `.cursor-plugin/plugin.json`. Cursor caches installs per commit (`~/.cursor/plugins/cache/<marketplace>/cursor-goodies/<commit>/`), so a pushed commit is what reaches users: the Cursor Marketplace after Cursor reviews the update, a team marketplace on its next Auto Refresh or manual **Refresh**. `plugin.json` points `hooks` at the empty `.cursor-plugin/hooks.json`, so Cursor never loads the Claude Code hooks in `hooks/hooks.json`.
+First time only: submit the repository at [cursor.com/marketplace/publish](https://cursor.com/marketplace/publish) for the Cursor Marketplace, or import it into a team marketplace (**Dashboard → Plugins & MCPs → Add Marketplace → Import from Repo**). Cursor reads `.cursor-plugin/marketplace.json`, which lists `cursor-goodies` at `source: "./"`, and merges it with `.cursor-plugin/plugin.json`. Cursor caches installs per commit (`~/.cursor/plugins/cache/<marketplace>/cursor-goodies/<commit>/`), so a pushed commit is what reaches users: the Cursor Marketplace after Cursor reviews the update, a team marketplace on its next Auto Refresh or manual **Refresh**. `plugin.json` points `hooks` at `.cursor-plugin/hooks.json`, which registers the session-log hooks in Cursor's own format, so the cursor-goodies install never loads the Claude Code hooks in `hooks/hooks.json` (Cursor runs those only for an imported claude-goodies plugin, where only their session-start hook runs, for the legacy cleanup, and none of them logs).
 
 ### Codex plugin marketplace
 ```bash
@@ -83,6 +83,8 @@ Follow semver (`MAJOR.MINOR.PATCH`):
 - PATCH — bug fixes, doc updates, small additions
 - MINOR — new skill, command, or agent
 - MAJOR — breaking change to the workflow or install contract
+
+Session-log's runtime markers carry `skills/session-log/VERSION`, which `release.sh` does not bump: it refuses the release when anything under `skills/session-log/`, a hook manifest or entry file that wires it in (`SESSION_LOG_WIRING_FILES`: `hooks/hooks.json`, `.cursor-plugin/hooks.json`, `.codex-plugin/hooks.json`, `.opencode-plugin/index.js`), or a field that wires it into a manifest also carrying the release version (`JSON_WIRING_FIELDS`: `omp.extensions` and `exports` of `package.json`, `hooks` of `.cursor-plugin/plugin.json` and `.codex-plugin/plugin.json`) changed since the last tag while that `VERSION` did not (a manifest missing on one side counts as lacking the field, so adding or removing one with the field set counts as a change). Bump it by hand first. The check needs `jq` and refuses the release when `jq` is missing or one of those manifests is not valid JSON.
 
 ### 3. Commit
 ```bash

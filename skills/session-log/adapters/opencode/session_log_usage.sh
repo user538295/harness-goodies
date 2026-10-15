@@ -149,12 +149,8 @@ session_exists=$(q "SELECT count(*) FROM sqlite_master WHERE type='table' AND na
 message_exists=$(q "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='message';") || exit 1
 session_v2_exists=$(q "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_v2';") || exit 1
 session_message_exists=$(q "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_message';") || exit 1
-session_count=0
-session_v2_count=0
 session_message_count=0
 message_count=0
-[ "$session_exists" = "1" ] && session_count=$(q "SELECT count(*) FROM session;") || true
-[ "$session_v2_exists" = "1" ] && session_v2_count=$(q "SELECT count(*) FROM session_v2;") || true
 [ "$session_message_exists" = "1" ] && session_message_count=$(q "SELECT count(*) FROM session_message;") || true
 [ "$message_exists" = "1" ] && message_count=$(q "SELECT count(*) FROM message;") || true
 session_message_seq_exists=0

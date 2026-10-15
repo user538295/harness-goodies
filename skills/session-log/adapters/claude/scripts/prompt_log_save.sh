@@ -1,7 +1,9 @@
 #!/bin/bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 # UserPromptSubmit hooks that exit 2 erase the user's typed prompt; normalize to 1 (non-blocking).
 # Other non-zero exits surface as hook error banners — intentional for diagnostics.
+# shellcheck disable=SC2154  # code is assigned inside the trap body, which shellcheck does not track
 trap 'code=$?; [ "$code" -eq 2 ] && exit 1; exit "$code"' EXIT
 umask 077
 [ -f "$HOME/.claude/prompt-logs/.enabled" ] || exit 0

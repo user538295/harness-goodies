@@ -54,7 +54,7 @@ resolve_project_key() {
   printf '%s\n' "$1" | sed 's|[/._]|-|g'
 }
 _claude_path_components_secure() {
-  local path="$1" current="$1"
+  local current="$1"
   while :; do
     [ ! -L "$current" ] || return 1
     [ "$current" = "/" ] && break
@@ -187,7 +187,7 @@ _claude_secure_append() {
     printf '%s\n' "$record"
   else
     printf '%s\n\n' "$record"
-  fi | SESSION_LOG_ENABLE_LOCK="$_CLAUDE_HOME/.claude/prompt-logs/.enabled.lock" SESSION_LOG_ENABLE_FLAG="$_CLAUDE_HOME/.claude/prompt-logs/.enabled" SESSION_LOG_ENABLE_SIGNATURE="$expected_signature" SESSION_LOG_EXPECTED_DEV="$expected_dev" SESSION_LOG_EXPECTED_INO="$expected_ino" python3 -c '
+  fi | SESSION_LOG_ENABLE_LOCK="$_CLAUDE_HOME/.claude/prompt-logs/.enabled.lock" SESSION_LOG_ENABLE_FLAG="$_CLAUDE_HOME/.claude/prompt-logs/.enabled" SESSION_LOG_ENABLE_SIGNATURE="$expected_signature" SESSION_LOG_EXPECTED_DEV="$expected_dev" SESSION_LOG_EXPECTED_INO="$expected_ino" python3 -I -c '
 import fcntl
 import json
 import os
@@ -445,7 +445,7 @@ _claude_append_state_record() {
   _claude_secure_append "$file" "$record" state
 }
 _claude_safe_snapshot() {
-  python3 -c '
+  python3 -I -c '
 import os
 import stat
 import sys
@@ -616,6 +616,7 @@ create_session_file() {
     {
       printf '# Prompts — %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S')"
       printf '**Session ID:** %s\n' "$session_id"
+      # shellcheck disable=SC2016  # the backticks are Markdown code formatting, not command substitution
       printf '**Session file:** `%s`\n\n' "$session_jsonl"
       printf '%s\n\n' '---'
     } > "$session_file"

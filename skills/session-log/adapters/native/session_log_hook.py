@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
@@ -16,6 +17,10 @@ from typing import Optional
 LIB_PATH = str(Path(__file__).resolve().parents[2] / "lib")
 if LIB_PATH not in sys.path:
     sys.path.insert(0, LIB_PATH)
+# install_hooks.py beside this script, also when a test loads this module from elsewhere.
+NATIVE_PATH = str(Path(__file__).resolve().parent)
+if NATIVE_PATH not in sys.path:
+    sys.path.insert(0, NATIVE_PATH)
 import pathsafe
 
 MAX_SESSION_ID_LENGTH = 128
@@ -26,6 +31,10 @@ SAFE_ID = re.compile(rf"^[A-Za-z0-9._-]{{1,{MAX_SESSION_ID_LENGTH}}}$")
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 TOKENS_SUFFIX = ".tokens.jsonl"
 PROMPT_HEAD_LENGTH = 60
+# Cursor kills a hook after the "timeout" .cursor-plugin/hooks.json gives it (30 s); the session-start
+# cleanup ends well before, so the hook still answers in time.
+REPAIR_TIMEOUT_SECONDS = 20
+SESSION_LOG_CLI = Path(__file__).resolve().parents[2] / "bin" / "session-log"
 
 
 def fail(message):
@@ -313,6 +322,52 @@ def process_payload(request, hooks=RuntimeHooks()):
     respond(harness, event)
 
 
+def has_legacy_cursor_hooks(root):
+    """Whether ~/.cursor/hooks.json holds a session-log entry older releases registered there, by the
+    same recognizer `repair` removes them with. A symlinked or unreadable file counts as none."""
+    config = root / "hooks.json"
+    try:
+        if config.is_symlink() or not config.is_file():
+            return False
+        document = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    # Imported here so that only a Cursor session start loads the configurator.
+    import install_hooks
+    return install_hooks.has_managed_entries(document, "cursor")
+
+
+def remove_legacy_cursor_hooks(root):
+    """Session start removes the legacy entries, since Cursor runs them beside the plugin's hooks; the
+    plugin's hook commands start this script only while logging is on. Best effort: `repair` output
+    is discarded and its failure is ignored, as `on` and `repair` report why it failed, and `status`,
+    `repair`, and `on` name any version of hooks.json it kept aside; a cleanup that never started or ran
+    out of time is named on stderr, which Cursor logs, never on stdout, which it reads as the hook's
+    answer."""
+    if not has_legacy_cursor_hooks(root):
+        return
+    try:
+        # Its own process group, so a timeout ends the Python helpers bin/session-log runs too: one left
+        # behind would go on changing files after the install lock it ran under turned reclaimable. Outside
+        # this hook's group, the repair outlives a kill of the hook's group, so only REPAIR_TIMEOUT_SECONDS
+        # bounds it, and only while this hook lives: it stays below Cursor's hook timeout for that reason.
+        repair = subprocess.Popen(["bash", str(SESSION_LOG_CLI), "--entrypoint", "cursor", "--harness", "cursor", "repair"],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  start_new_session=True)
+    except OSError as error:
+        print(f"session-log: cannot start the legacy cleanup: {error}", file=sys.stderr)
+        return
+    try:
+        repair.wait(timeout=REPAIR_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(repair.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass  # Every process of the group ended after the timeout (macOS answers EPERM while only zombies remain).
+        repair.wait()
+        print(f"session-log: legacy cleanup timed out after {REPAIR_TIMEOUT_SECONDS}s; run repair", file=sys.stderr)
+
+
 def main(argv=None):
     supported = {"cursor": ".cursor", "codex": ".codex"}
     events = {
@@ -334,6 +389,8 @@ def main(argv=None):
     flag = root / "prompt-logs" / ".enabled"
     runtime = state_dir / "runtime.json"
     ensure_directory(root, harness)
+    if harness == "cursor" and event == "session-start":
+        remove_legacy_cursor_hooks(root)
     safe_regular(flag, harness)
     safe_regular(runtime, harness)
     if not flag.is_file():

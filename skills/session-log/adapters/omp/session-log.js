@@ -362,7 +362,7 @@ print("1")
 `;
 const secureAppend = (file, payload, { dedupe = false, enableSignature = "", dedupeKey = "" } = {}) => {
 	const expected = fs.lstatSync(file);
-	const result = execFileSync("python3", ["-c", SECURE_APPEND_SCRIPT], {
+	const result = execFileSync("python3", ["-I", "-c", SECURE_APPEND_SCRIPT], {
 		env: {
 			...process.env,
 			SESSION_LOG_FILE: file,
@@ -427,7 +427,7 @@ finally:
 	os.close(parent_fd)
 `;
 const secureEnsureFile = (file, content) => {
-	execFileSync("python3", ["-c", SECURE_FILE_SCRIPT], {
+	execFileSync("python3", ["-I", "-c", SECURE_FILE_SCRIPT], {
 		env: {
 			...process.env,
 			SESSION_LOG_FILE: file,
@@ -475,20 +475,66 @@ const rawDefaultAgentDir = path.join(home, ".omp", "agent");
 const rawDefaultLogDir = path.join(rawDefaultAgentDir, "prompt-logs");
 const rawAgentDir = process.env.PI_CODING_AGENT_DIR || rawDefaultAgentDir;
 const rawLogDir = process.env.OMP_PROMPT_LOG_DIR || rawDefaultLogDir;
-if (containsSymlinkComponent(rawAgentDir) || containsSymlinkComponent(rawLogDir)) {
-	throw new Error("OMP root contains an unsafe symlink");
-}
 const defaultAgentDir = path.join(home, ".omp", "agent");
 const defaultLogDir = path.join(defaultAgentDir, "prompt-logs");
 const agentDir = canonicalPath(process.env.PI_CODING_AGENT_DIR || defaultAgentDir);
 const logDir = canonicalPath(process.env.OMP_PROMPT_LOG_DIR || defaultLogDir);
-if (agentDir !== canonicalPath(defaultAgentDir) || logDir !== canonicalPath(defaultLogDir)) {
-	throw new Error("OMP root is relocated; universal session-log does not support custom roots");
+// Why this process cannot log, or "" when its roots are the supported defaults. omp loads every
+// installed plugin's extension, so an unsupported root (a named profile sets PI_CODING_AGENT_DIR)
+// must not fail the load: the extension then registers only /session-log, whose CLI names the error.
+function unsupportedRootReason() {
+	try {
+		if (containsSymlinkComponent(rawAgentDir) || containsSymlinkComponent(rawLogDir)) return "OMP root contains an unsafe symlink";
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+	if (agentDir !== canonicalPath(defaultAgentDir) || logDir !== canonicalPath(defaultLogDir)) {
+		return "OMP root is relocated; universal session-log does not support custom roots";
+	}
+	return "";
 }
+const unsupportedRoot = unsupportedRootReason();
 const enabledFile = path.join(logDir, ".enabled");
 const stateDir = path.join(agentDir, "session-log");
 const packageRoot = path.resolve(import.meta.dir, "../..");
 const version = fs.readFileSync(path.join(packageRoot, "VERSION"), "utf8").trim();
+// omp runs a marketplace plugin from <plugins>/cache/plugins/<marketplace>___<plugin>___<version>,
+// linked as <plugins>/node_modules/<package name>, and an upgrade deletes the version a running
+// session loaded this module from. The package that link names then runs the session's commands.
+// It is found at load, while the loaded version's package.json still exists. Every install scope
+// shares that one cache, so for a project-scope install this fallback runs the package the
+// user-scope link names, which may be another installed version; with no such link the restart
+// error appears instead.
+const CACHE_DIR_SEGMENTS = ["cache", "plugins"];
+const PACKAGE_REMOVED_MESSAGE = "session-log: the session-log package this omp session loaded is gone (upgraded or uninstalled); restart omp";
+// packageRoot is <plugin root>/skills/session-log.
+const pluginRoot = path.dirname(path.dirname(packageRoot));
+// The plugin root sits in <plugins>/cache/plugins.
+const pluginsDir = path.dirname(path.dirname(path.dirname(pluginRoot)));
+function resolveLinkedPackageRoot() {
+	if (path.relative(pluginsDir, path.dirname(pluginRoot)) !== path.join(...CACHE_DIR_SEGMENTS)) return "";
+	try {
+		const { name } = JSON.parse(fs.readFileSync(path.join(pluginRoot, "package.json"), "utf8"));
+		return typeof name === "string" && name ? path.join(pluginsDir, "node_modules", name, "skills", "session-log") : "";
+	} catch {
+		return "";
+	}
+}
+const linkedPackageRoot = resolveLinkedPackageRoot();
+// Starts `bin/session-log --entrypoint omp --harness omp <cliArguments>` through `start` with the
+// loaded package's CLI, or the linked package's once an upgrade deleted the loaded one. A missing
+// interpreter fails with ENOENT too, so only a CLI that is gone moves on to the next package.
+function spawnSessionLogCli(start, cliArguments) {
+	for (const root of [packageRoot, linkedPackageRoot].filter(Boolean)) {
+		const cli = path.join(root, "bin", "session-log");
+		try {
+			return start([cli, "--entrypoint", "omp", "--harness", "omp", ...cliArguments]);
+		} catch (error) {
+			if (error?.code !== "ENOENT" || fs.existsSync(cli)) throw error;
+		}
+	}
+	throw new Error(PACKAGE_REMOVED_MESSAGE);
+}
 const MAX_APPEND_ATTEMPTS = 5;
 const APPEND_RETRY_DELAY_MS = 250;
 const MAX_CLOSED_SESSIONS = 1024;
@@ -872,8 +918,35 @@ function processStart(pid) {
 	try { return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" }).trim(); } catch { return ""; }
 }
 
+const PROCESS_RUNTIME_PATTERN = /^runtime\.(\d+)\.json$/;
+const isDeadProcess = (pid) => {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		return error?.code === "ESRCH";
+	}
+};
+// Every load writes runtime.<pid>.json and `off` keeps them, so the markers of exited omp processes
+// go here; runtime.json and the markers of live processes stay.
+function pruneDeadProcessRuntimes() {
+	let names;
+	try { names = fs.readdirSync(stateDir); } catch { return; }
+	for (const name of names) {
+		const pid = Number(PROCESS_RUNTIME_PATTERN.exec(name)?.[1]);
+		if (!pid || pid === process.pid || !isDeadProcess(pid)) continue;
+		const marker = path.join(stateDir, name);
+		try {
+			if (fs.lstatSync(marker).isFile()) fs.unlinkSync(marker);
+		} catch (error) {
+			if (error?.code !== "ENOENT") process.stderr.write(`${CLI_MESSAGE_PREFIX}${error.message}\n`);
+		}
+	}
+}
+
 function markLoaded() {
 	ensureDirectory(stateDir);
+	pruneDeadProcessRuntimes();
 	const nonce = `${process.pid}-${Date.now()}-${randomUUID()}`;
 	const temporary = path.join(stateDir, `.runtime.${nonce}.tmp`);
 	const processTemporary = path.join(stateDir, `.runtime.${nonce}.process.tmp`);
@@ -917,13 +990,107 @@ function currentSessionFile(ctx) {
 	try { return file && fs.statSync(file).isFile() ? file : ""; } catch { return ""; }
 }
 
-function runUniversalCommand(argumentString, ctx) {
-	const cli = path.join(packageRoot, "bin", "session-log");
+// Older releases linked an extension into the OMP root and seeded a package copy into its skill
+// root; omp loads such an extension beside this one. `repair` removes them in the background, once
+// per process, logging on or off. A repair that ran to its end stamps the fingerprint of this package
+// and the leftovers present, which skips it until either changes, so a copy it keeps or a failure
+// (reported on stderr; `/session-log repair` shows it) is reported once. A transient failure (exit 75)
+// or a repair that never finished (timed out, killed, or not started) leaves no stamp and runs again
+// at the next start.
+const LEGACY_LEFTOVERS = [
+	path.join(agentDir, "extensions", "session-log.js"),
+	path.join(agentDir, "extensions", "session-log-omp.js"),
+	path.join(agentDir, "skills", "session-log-omp"),
+	path.join(agentDir, "skills", "session-log", ".universal-session-log.manifest"),
+];
+const LEGACY_CLEANUP_STAMP = path.join(stateDir, "legacy-cleanup.stamp");
+const CLI_MESSAGE_PREFIX = "session-log: ";
+const CLI_REPORT_PREFIX = "OMP: ";
+// A repair report that needs the user: a package copy it kept and asks them to move aside.
+const KEPT_REPORT_PREFIX = `${CLI_REPORT_PREFIX}kept `;
+// EX_TEMPFAIL: the CLI exits with it for a transient failure (e.g. another session-log command holds
+// the install lock); the step that hit it left everything as it found it, so a later run retries
+// safely. Reports printed by earlier steps stand.
+const TRANSIENT_FAILURE_EXIT_CODE = 75;
+let legacyCleanupStarted = false;
+const pathPresent = (candidate) => {
+	try { return Boolean(fs.lstatSync(candidate)); } catch { return false; }
+};
+const legacyCleanupFingerprint = () => `${[packageRoot, version, ...LEGACY_LEFTOVERS.filter(pathPresent)].join("\n")}\n`;
+const legacyCleanupStamped = () => {
+	try {
+		return fs.lstatSync(LEGACY_CLEANUP_STAMP).isFile() && fs.readFileSync(LEGACY_CLEANUP_STAMP, "utf8") === legacyCleanupFingerprint();
+	} catch (error) {
+		if (error?.code !== "ENOENT") process.stderr.write(`${CLI_MESSAGE_PREFIX}${error.message}\n`);
+		return false;
+	}
+};
+const stampLegacyCleanup = () => {
+	try {
+		ensureFile(LEGACY_CLEANUP_STAMP);
+		fs.writeFileSync(LEGACY_CLEANUP_STAMP, legacyCleanupFingerprint(), { mode: 0o600 });
+	} catch (error) {
+		process.stderr.write(`${CLI_MESSAGE_PREFIX}${error instanceof Error ? error.message : String(error)}\n`);
+	}
+};
+const reportLegacyCleanupFailure = (detail) => {
+	const reason = detail.startsWith(CLI_MESSAGE_PREFIX) ? detail.slice(CLI_MESSAGE_PREFIX.length) : detail;
+	process.stderr.write(`session-log: legacy cleanup failed: ${reason}; /session-log repair shows the details\n`);
+};
+const reportKeptLeftovers = (stdout) => {
+	for (const line of stdout.split("\n")) {
+		if (line.startsWith(KEPT_REPORT_PREFIX)) process.stderr.write(`${CLI_MESSAGE_PREFIX}${line.slice(CLI_REPORT_PREFIX.length)}\n`);
+	}
+};
+function cleanupLegacyLeftovers(timeoutMs) {
+	if (legacyCleanupStarted || !LEGACY_LEFTOVERS.some(pathPresent) || legacyCleanupStamped()) return;
+	legacyCleanupStarted = true;
+	runCli(["repair"], timeoutMs, { background: true }).then(({ exitCode, signalCode, timedOut, stdout, stderr }) => {
+		reportKeptLeftovers(stdout);
+		if (timedOut) throw new Error(`repair timed out after ${timeoutMs} ms`);
+		if (signalCode) throw new Error(`repair was killed by ${signalCode}`);
+		if (exitCode === TRANSIENT_FAILURE_EXIT_CODE) return;
+		stampLegacyCleanup();
+		if (exitCode === 0) return;
+		const lastLine = stderr.split("\n").filter((line) => line.trim()).pop();
+		reportLegacyCleanupFailure(lastLine || `exit status ${exitCode}`);
+	}).catch((error) => reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error)));
+}
+
+// Bound on one CLI run (a /session-log command or the startup repair), as the OpenCode adapter caps its CLI.
+const CLI_TIMEOUT_MS = 120_000;
+// Runs the CLI in its own process group, so its timeout also ends the helpers it started, which would
+// otherwise hold its output open. A background run does not keep omp's process alive: should omp exit
+// first, its timeout goes with it and the run, in its own group, continues to its end unbounded and
+// unreported. That run holds the install lock, which locking.py reclaims once its owner has died, and it
+// leaves no stamp, so the next start repeats it while leftovers remain.
+async function runCli(cliArguments, timeoutMs, { background = false } = {}) {
+	const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }), cliArguments);
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		try {
+			process.kill(-child.pid, "SIGKILL");
+		} catch (error) {
+			// The process group may already be gone.
+			if (error?.code !== "ESRCH") process.stderr.write(`${CLI_MESSAGE_PREFIX}${error.message}\n`);
+		}
+	}, timeoutMs);
+	if (background) {
+		child.unref();
+		timer.unref();
+	}
+	const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+		.finally(() => clearTimeout(timer));
+	return { exitCode, signalCode: child.signalCode, timedOut, stdout, stderr };
+}
+async function runUniversalCommand(argumentString, ctx, timeoutMs) {
 	const rawArguments = usageCommandArguments(String(argumentString || "status"), currentSessionFile(ctx));
-	const child = Bun.spawnSync([cli, "--entrypoint", "omp", "--harness", "omp", "--arguments", rawArguments], { stdout: "pipe", stderr: "pipe" });
-	const stdout = new TextDecoder().decode(child.stdout).trimEnd();
-	const stderr = new TextDecoder().decode(child.stderr).trim();
-	if (child.exitCode !== 0) throw new Error(stderr || stdout || `session-log exited with ${child.exitCode}`);
+	const { exitCode, timedOut, stdout: output, stderr: errors } = await runCli(["--arguments", rawArguments], timeoutMs);
+	if (timedOut) throw new Error(`${CLI_MESSAGE_PREFIX}${rawArguments} timed out after ${timeoutMs} ms`);
+	const stdout = output.trimEnd();
+	const stderr = errors.trim();
+	if (exitCode !== 0) throw new Error(stderr || stdout || `session-log exited with ${exitCode}`);
 	notify(ctx, stdout);
 }
 
@@ -957,13 +1124,11 @@ function composeFinalizeRecord({ state, root, messages, ctx, start, end, previou
 	return { record, model, responseIdentity };
 }
 
-export default function sessionLogOmp(pi, options = {}) {
-	const now = options.now ?? Date.now;
-	markLoaded();
+function registerSessionLogCommand(pi, cliTimeoutMs) {
 	pi.registerCommand("session-log", {
 		description: "Manage session prompt logging and usage totals",
 		handler: async (args, ctx) => {
-			try { runUniversalCommand(args, ctx); }
+			try { await runUniversalCommand(args, ctx, cliTimeoutMs); }
 			catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				notify(ctx, message);
@@ -971,6 +1136,33 @@ export default function sessionLogOmp(pi, options = {}) {
 			}
 		},
 	});
+}
+
+// Writes the runtime marker; returns whether it could. A throw out of the factory fails omp's plugin
+// install (leaving /session-log unregistered too), and one out of a handler reaches omp.
+function markLoadedOrReport() {
+	try {
+		markLoaded();
+		return true;
+	} catch (error) {
+		process.stderr.write(`${CLI_MESSAGE_PREFIX}${error instanceof Error ? error.message : String(error)}\n`);
+		return false;
+	}
+}
+
+export default function sessionLogOmp(pi, options = {}) {
+	const cliTimeoutMs = options.cliTimeoutMs ?? CLI_TIMEOUT_MS;
+	if (unsupportedRoot) {
+		registerSessionLogCommand(pi, cliTimeoutMs);
+		return;
+	}
+	const now = options.now ?? Date.now;
+	if (!markLoadedOrReport()) {
+		registerSessionLogCommand(pi, cliTimeoutMs);
+		return;
+	}
+	cleanupLegacyLeftovers(cliTimeoutMs);
+	registerSessionLogCommand(pi, cliTimeoutMs);
 	const promptStates = new Map();
 	const promptAttempts = new Map();
 	const promptRetryTimers = new Map();
@@ -1107,7 +1299,7 @@ export default function sessionLogOmp(pi, options = {}) {
 	};
 	const discardDisabledSession = forgetSession;
 	pi.on("session_start", () => {
-		markLoaded();
+		markLoadedOrReport();
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		const state = sessionState(ctx);

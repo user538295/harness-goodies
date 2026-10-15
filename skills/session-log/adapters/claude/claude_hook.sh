@@ -3,10 +3,13 @@
 set -euo pipefail
 # A hook never reports an error: every failure below exits 0 without output.
 
-readonly PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-readonly VERSION="$(tr -d '[:space:]' 2>/dev/null < "$PACKAGE_ROOT/VERSION")"
+PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)" || exit 0
+readonly PACKAGE_ROOT
+VERSION="$(tr -d '[:space:]' 2>/dev/null < "$PACKAGE_ROOT/VERSION")" || VERSION=""
+readonly VERSION
 [[ -n "$VERSION" ]] || exit 0  # incomplete package
-readonly HOME_ROOT="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+HOME_ROOT="$(cd "$HOME" 2>/dev/null && pwd -P || printf '%s' "$HOME")"
+readonly HOME_ROOT
 readonly CLAUDE_ROOT="$HOME_ROOT/.claude"
 readonly STATE_DIR="$CLAUDE_ROOT/session-log"
 readonly SCRIPT_DIR="$PACKAGE_ROOT/adapters/claude/scripts"
@@ -68,66 +71,74 @@ write_state_file() {
   mv -f "$temp" "$target" 2>/dev/null || unlink "$temp" 2>/dev/null || true
 }
 
-# The plugin's own SessionStart proves its hooks are active; a standalone copy reads this
-# marker so its on/status/repair stop registering duplicate settings.json hooks.
-record_plugin_root() {
-  local marker="$1"
-  if [[ -f "$marker" && ! -L "$marker" && "$(< "$marker")" == "$PACKAGE_ROOT" ]]; then
-    return 0
-  fi
-  write_state_file "$marker" "$PACKAGE_ROOT"
+readonly SEEDED_COPY="$CLAUDE_ROOT/skills/session-log"
+readonly LEGACY_SCRIPTS_GLOB="$CLAUDE_ROOT/scripts/prompt_log_*"
+readonly LEGACY_CLEANUP_STAMP="$STATE_DIR/legacy-cleanup.stamp"
+
+# Whether older releases may have left something behind: session-log registrations in
+# settings.json, the package copy they seeded under ~/.claude/skills, or their ~/.claude/scripts.
+# Their obsolete state files do not count: they are harmless, and on/repair remove them.
+legacy_leftovers_present() {
+  local settings="$CLAUDE_ROOT/settings.json"
+  [[ -e "$SEEDED_COPY/.universal-session-log.manifest" || -L "$SEEDED_COPY" ]] && return 0
+  compgen -G "$LEGACY_SCRIPTS_GLOB" >/dev/null && return 0
+  # A cheap superset of the registrations claude_settings.py recognizes as session-log's (owner
+  # marker, claude_hook.sh commands, pre-plugin prompt_log_* scripts); keep the two in step.
+  [[ -f "$settings" && ! -L "$settings" ]] && grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=|prompt_log_' "$settings"
 }
 
-# What a session-start repair depends on: settings.json, this package, the plugin's marker,
-# and whether each claude_hook.sh path settings.json names (bare or single-quoted) is a file,
-# so a removed copy's dead registrations are repaired. Paths spelled with JSON escapes or
-# double quotes are not resolved: their removal is repaired at the next settings change.
-repair_fingerprint() {
-  local settings="$1" marker="$2" hook
-  cksum < "$settings" || return 1
+# What the cleanup depends on: settings.json, this package, and whether a seeded copy or legacy
+# scripts remain.
+cleanup_fingerprint() {
+  local settings="$CLAUDE_ROOT/settings.json"
+  if [[ -f "$settings" && ! -L "$settings" ]]; then cksum < "$settings" || return 1; fi
   printf '%s\n%s\n' "$PACKAGE_ROOT" "$VERSION"
-  [[ ! -f "$marker" || -L "$marker" ]] || cat "$marker"
-  while IFS= read -r hook; do
-    hook="${hook#\'}"
-    hook="${hook%\'}"
-    if [[ -f "$hook" ]]; then printf 'file %s\n' "$hook"; else printf 'none %s\n' "$hook"; fi
-  done < <(grep -oE "'[^']*claude_hook\.sh'|[^\"' ]*claude_hook\.sh" "$settings" || true)
+  if [[ -e "$SEEDED_COPY" || -L "$SEEDED_COPY" ]]; then printf 'seeded copy\n'; fi
+  if compgen -G "$LEGACY_SCRIPTS_GLOB" >/dev/null; then printf 'legacy scripts\n'; fi
 }
 
-# Session start runs the shared repair, logging on or off: a plugin copy drops every
-# settings.json registration while enabled at user scope (its hooks/hooks.json owns the
-# hooks), otherwise only dead ones; a standalone copy collapses repeated or stale ones.
-# A plugin copy's removal clears the runtime markers before this hook writes its own (other
-# running sessions rewrite theirs on their next hook event). Best effort: it never fails the
-# hook and all output is discarded. A per-copy stamp of the last successful repair's
-# fingerprint skips it until that fingerprint changes; a file without session-log hooks costs
-# one grep.
-repair_settings_registrations() {
-  local settings="$CLAUDE_ROOT/settings.json" marker fingerprint stamp checksum
-  # shellcheck source=../../lib/common.sh
-  source "$PACKAGE_ROOT/lib/common.sh" || return 0
-  marker="$STATE_DIR/$PLUGIN_ROOT_MARKER_NAME"
-  if claude_plugin_package_path "$PACKAGE_ROOT"; then record_plugin_root "$marker"; fi
-  [[ -f "$settings" && ! -L "$settings" ]] || return 0
-  grep -qE 'claude_hook\.sh|SESSION_LOG_OWNER=' "$settings" || return 0
-  fingerprint="$(repair_fingerprint "$settings" "$marker")" || return 0
-  # One stamp per copy: a plugin and a standalone copy must not overwrite each other's.
-  checksum="$(printf '%s' "$PACKAGE_ROOT" | cksum)" || return 0
-  stamp="$STATE_DIR/settings-repair.${checksum%% *}.stamp"
-  if [[ -f "$stamp" && ! -L "$stamp" && "$(< "$stamp")" == "$fingerprint" ]]; then
+# The exit status of a session-log command that stopped on something transient: another one holds the
+# install lock, or settings.json changed during the cleanup before it was replaced (lib/claude_settings.py's
+# CHANGED). A retry is safe and reports printed by earlier steps stand (TRANSIENT_FAILURE_EXIT_CODE in
+# lib/adapter_install.sh); a change that left a version of settings.json beside it, or that the cleanup undid
+# by restoring settings.json, is a failure.
+readonly TRANSIENT_FAILURE_EXIT_CODE=75
+# Bash reports a command a signal ended with an exit status above this: 128 + the signal number.
+readonly SIGNAL_EXIT_STATUS_BASE=128
+
+# Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never
+# fails the hook and all output is discarded. A stamp of the fingerprint after the run skips it
+# until settings.json, this package, or whether a seeded copy or legacy scripts exist changes. Only
+# a transient stop (TRANSIENT_FAILURE_EXIT_CODE) or a repair a signal ended before it finished leaves no
+# stamp, so the next session start tries again; any other failure (say, an edited legacy script) is
+# stamped like a success and runs again only when one of those changes, and `on` and `repair`
+# report why it failed; `status`, `repair`, and `on` name any version of settings.json it kept aside.
+# With no leftover it costs one grep.
+cleanup_legacy_leftovers() {
+  local fingerprint status=0
+  legacy_leftovers_present || return 0
+  fingerprint="$(cleanup_fingerprint)" || return 0
+  if [[ -f "$LEGACY_CLEANUP_STAMP" && ! -L "$LEGACY_CLEANUP_STAMP" && "$(< "$LEGACY_CLEANUP_STAMP")" == "$fingerprint" ]]; then
     return 0
   fi
-  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || return 0
-  # Benign race: a write landing between the repair and this fingerprint is stamped unrepaired;
-  # the next change to the fingerprint triggers the repair again.
-  fingerprint="$(repair_fingerprint "$settings" "$marker")" || return 0
-  write_state_file "$stamp" "$fingerprint"
+  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || status=$?
+  ((status != TRANSIENT_FAILURE_EXIT_CODE && status <= SIGNAL_EXIT_STATUS_BASE)) || return 0
+  # The fingerprint is taken again after the cleanup. If something else changes settings.json
+  # in between, that change is stamped without a cleanup; the next change triggers one.
+  fingerprint="$(cleanup_fingerprint)" || return 0
+  write_state_file "$LEGACY_CLEANUP_STAMP" "$fingerprint"
 }
 if [[ "${1:-}" == session-start ]]; then
-  repair_settings_registrations </dev/null >/dev/null 2>&1 || true
+  cleanup_legacy_leftovers </dev/null >/dev/null 2>&1 || true
 fi
 
-input="$(cat)"
+input="$(cat)" || exit 0
+# Claude Code passes hook input as JSON on stdin (https://code.claude.com/docs/en/hooks). Cursor 3.23.12
+# also runs enabled Claude Code plugins' hooks: its workbench sends JSON carrying "cursor_version" (a
+# prompt that merely mentions it arrives JSON-escaped), and its agent-host daemon's heredoc binds to the
+# hook command's final `exit 0`, leaving this script no input. This detection relies on that Cursor
+# behaviour. Past the legacy cleanup above, Cursor's runs neither log nor touch Claude's runtime markers.
+[[ -n "$input" && "$input" != *'"cursor_version":'* ]] || exit 0
 enabled_file="$CLAUDE_ROOT/prompt-logs/.enabled"
 runtime="$STATE_DIR/runtime.json"
 process_runtime="$STATE_DIR/runtime.${PPID}.json"
@@ -171,10 +182,23 @@ if [[ -n "$session_id" ]]; then
       '{harness:$harness,version:$version,session_id:$session_id,nonce:$nonce,
         loaded_at:$loaded_at,pid:$pid,process_start:$process_start}' > "$target")
   }
+  # The per-process markers of Claude Code processes that are gone: status never counts them. A live
+  # process this user may not signal (kill -0 fails, ps still lists it) keeps its marker, as in the
+  # omp and OpenCode adapters.
+  prune_dead_runtime_markers() {
+    local marker pid
+    for marker in "$STATE_DIR"/runtime.*.json; do
+      pid="${marker##*/runtime.}"
+      pid="${pid%.json}"
+      [[ "$pid" =~ ^[1-9][0-9]*$ && -f "$marker" && ! -L "$marker" ]] || continue
+      kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1 || unlink "$marker" 2>/dev/null || true
+    done
+  }
   write_runtime_temp "$temp" 2>/dev/null || exit 0
   write_runtime_temp "$process_temp" 2>/dev/null || exit 0
   mv -f "$temp" "$runtime" 2>/dev/null || exit 0
   mv -f "$process_temp" "$process_runtime" 2>/dev/null || exit 0
+  [[ "${1:-}" != session-start ]] || prune_dead_runtime_markers
 else
   :
 fi

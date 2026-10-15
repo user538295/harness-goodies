@@ -11,6 +11,17 @@ CODEX_PLUGIN_JSON="$REPO_ROOT/.codex-plugin/plugin.json"
 OPENCODE_PACKAGE_JSON="$REPO_ROOT/package.json"
 # Every file carrying the release version; a release bumps them together.
 VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON" "$CURSOR_PLUGIN_JSON" "$CODEX_PLUGIN_JSON" "$OPENCODE_PACKAGE_JSON")
+# Files outside skills/session-log/ that wire its hooks into a harness. Changing one changes what
+# session-log's VERSION stands for, so it needs a VERSION bump like a change inside the package.
+SESSION_LOG_WIRING_FILES=(hooks/hooks.json .cursor-plugin/hooks.json .codex-plugin/hooks.json .opencode-plugin/index.js)
+# Manifests that also carry the release version, so only the field that wires session-log in counts:
+# <file>:<jq path>. Each entry stands for a change of that field in the changed-path list.
+JSON_WIRING_FIELDS=(
+  "package.json:.omp.extensions"
+  "package.json:.exports"
+  ".cursor-plugin/plugin.json:.hooks"
+  ".codex-plugin/plugin.json:.hooks"
+)
 # Seconds to wait after the push so the marketplaces see the new tag before updating.
 UPDATE_DELAY_SECONDS=15
 # Per-harness update commands run after the release (Cursor has no CLI: refresh it in the dashboard).
@@ -45,6 +56,20 @@ diff_has_new_items() {
 # filter_valid_tags <newline-separated tag list> → first vX.Y.Z tag, or empty
 filter_valid_tags() {
   echo "$1" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true
+}
+
+# session_log_version_stale <changed paths, one per line> → 0 when a file under skills/session-log/,
+# a SESSION_LOG_WIRING_FILES entry, or a JSON_WIRING_FIELDS entry changed but skills/session-log/VERSION
+# did not; 1 otherwise. Runtime markers carry that VERSION, so a change without a bump would let
+# markers of the old code count as current.
+session_log_version_stale() {
+  local changed="$1" path
+  ! grep -qx 'skills/session-log/VERSION' <<< "$changed" || return 1
+  grep -q '^skills/session-log/' <<< "$changed" && return 0
+  for path in "${SESSION_LOG_WIRING_FILES[@]}" "${JSON_WIRING_FIELDS[@]}"; do
+    grep -qxF "$path" <<< "$changed" && return 0
+  done
+  return 1
 }
 
 # check_on_main <branch-name> → 0 if "main", 1 otherwise
@@ -113,6 +138,32 @@ assert_clean_tree() {
   fi
 }
 
+# json_field_at <revision> <file> <jq path> → that field of the file at that revision as compact JSON,
+# or "null" when the file is missing there; fails, naming the file, when it is not valid JSON
+json_field_at() {
+  git -C "$REPO_ROOT" cat-file -e "$1:$2" 2>/dev/null || { echo null; return 0; }
+  git -C "$REPO_ROOT" show "$1:$2" | jq -c "$3" || {
+    printf 'Error: cannot read %s from %s at %s\n' "$3" "$2" "$1" >&2
+    return 1
+  }
+}
+
+assert_session_log_version_bumped() {
+  local last_tag="$1" changed entry before after
+  command -v jq >/dev/null || { echo "Error: jq is required to check the session-log VERSION bump" >&2; return 1; }
+  changed=$(git -C "$REPO_ROOT" diff --name-only "${last_tag}..HEAD" -- skills/session-log "${SESSION_LOG_WIRING_FILES[@]}")
+  for entry in "${JSON_WIRING_FIELDS[@]}"; do
+    before=$(json_field_at "$last_tag" "${entry%%:*}" "${entry#*:}") || return 1
+    after=$(json_field_at HEAD "${entry%%:*}" "${entry#*:}") || return 1
+    [[ "$before" == "$after" ]] || changed="${changed:+$changed$'\n'}$entry"
+  done
+  if session_log_version_stale "$changed"; then
+    printf 'Error: session-log changed since %s but skills/session-log/VERSION did not — bump it first:\n%s\n' \
+      "$last_tag" "$changed" >&2
+    return 1
+  fi
+}
+
 has_new_items() {
   local last_tag="$1"
   local diff_output
@@ -144,6 +195,7 @@ main() {
     echo "Error: no valid vX.Y.Z tags found — tag the initial release manually" >&2
     exit 1
   fi
+  assert_session_log_version_bumped "$last_tag"
 
   local current
   current=$(current_version)

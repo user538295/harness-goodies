@@ -1,0 +1,15 @@
+{
+  "per_mtok": {
+    "fable-5": { "in": 10, "out": 50 },
+    "opus-5": { "in": 5, "out": 25 },
+    "opus-4-8": { "in": 5, "out": 25 },
+    "opus-4-7": { "in": 5, "out": 25 },
+    "opus-4-6": { "in": 5, "out": 25 },
+    "sonnet-5": { "in": 3, "out": 15 },
+    "sonnet-4-6": { "in": 3, "out": 15 },
+    "haiku-4-5": { "in": 1, "out": 5 }
+  },
+  "fast": { "in": 10, "out": 50 },
+  "mult": { "cache_read": 0.1, "cache_5m": 1.25, "cache_1h": 2 },
+  "_source": "platform.claude.com pricing, 2026-08"
+}

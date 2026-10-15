@@ -5,7 +5,7 @@
 Every directory walk goes through :func:`open_directory`, which opens each path
 component with ``O_NOFOLLOW`` so a symlink can never be traversed, and creates
 missing components privately (mode 0o700) in a race-safe way. This module owns
-the generic copy/link/write/remove primitives. The specialized locked writers
+the generic write/remove primitives. The specialized locked writers
 (``claude_settings.py``, ``enable_flag.py``, ``locking.py``) keep their own
 minimal O_NOFOLLOW walkers because their traversals raise domain-specific errors
 and hold flock/mkdir locks; each is small and audited in its own module.
@@ -16,8 +16,7 @@ import os
 import random
 import stat
 import sys
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -32,25 +31,20 @@ LINUX_RENAME_NOREPLACE = 0x00000001
 
 
 @dataclass(frozen=True)
-class AdapterLinkOptions:
-    source: str
-    target: str
-    store: str
-
-
-@dataclass(frozen=True)
-class CopyFileOptions:
-    source: str
-    target: str
-    preserve_mode: bool
-    manifest_owned: bool
-
-
-@dataclass(frozen=True)
 class ConflictRenameOptions:
     source_name: str
     prefix: str
     exhaust_message: str
+
+
+class KeptAsideError(OSError):
+    """An atomic replacement failed and left versions of the target beside it, under ``kept``: it raced another
+    writer, or, when ``cause`` is set, it failed on that error of its own and could not put the target back."""
+
+    def __init__(self, message, kept, cause=None):
+        super().__init__(errno.EAGAIN, message)
+        self.kept = tuple(kept)
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -60,22 +54,6 @@ class AtomicReplacement:
     target_name: str
     expected: object
     expected_source: object
-
-
-@dataclass(frozen=True)
-class TemporaryEntry:
-    name: str
-
-
-@dataclass(frozen=True)
-class BackupEntry:
-    name: str
-
-
-@dataclass
-class ReplacementResources:
-    temporary: Optional[TemporaryEntry] = None
-    backup: Optional[BackupEntry] = None
 
 
 def open_directory(path, *, create):
@@ -198,171 +176,6 @@ def remove_path(target):
         os.close(parent_fd)
 
 
-def _read_all(fd):
-    chunks = []
-    while True:
-        chunk = os.read(fd, 1024 * 1024)
-        if not chunk:
-            return b"".join(chunks)
-        chunks.append(chunk)
-
-
-def _classify(dir_fd, name, target):
-    try:
-        item = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return None
-    if stat.S_ISLNK(item.st_mode):
-        return ("link", os.readlink(name, dir_fd=dir_fd))
-    if not stat.S_ISREG(item.st_mode):
-        raise SystemExit(f"refusing to overwrite non-file adapter target: {target}")
-    descriptor = os.open(name, FILE_FLAGS, dir_fd=dir_fd)
-    try:
-        return ("file", _read_all(descriptor))
-    finally:
-        os.close(descriptor)
-
-
-def _is_safe_regular_file(info):
-    return stat.S_ISREG(info.st_mode) and info.st_nlink == 1
-
-
-def _is_managed_release_link(existing, store):
-    return existing.startswith(f"{store}/releases/")
-
-
-def _create_temporary_link(target_dir_fd, directory, source):
-    for _ in range(MAX_TEMP_FILE_ATTEMPTS):
-        candidate = f".session-log.{os.getpid()}.{random.randrange(1 << 30):08x}"
-        try:
-            os.symlink(source, candidate, dir_fd=target_dir_fd)
-            return candidate
-        except FileExistsError:
-            continue
-    raise SystemExit(f"cannot create temporary link in: {directory}")
-
-
-@dataclass
-class AdapterLinkContext:
-    source: str
-    target: str
-    name: str
-    target_dir_fd: object
-    initial: object = None
-    state: ReplacementResources = field(default_factory=ReplacementResources)
-
-
-def _stage_adapter_backup(context):
-    state = context.state
-    for attempt in range(MAX_TEMP_FILE_ATTEMPTS):
-        candidate = (
-            f".session-log-backup.{os.getpid()}.{random.randrange(1 << 30):08x}.{attempt}"
-        )
-        if move_no_replace(context.target_dir_fd, context.name, candidate):
-            state.backup = BackupEntry(candidate)
-            break
-    if state.backup is None:
-        raise SystemExit(f"cannot stage adapter target: {context.target}")
-    if _classify(context.target_dir_fd, state.backup.name, context.target) != context.initial:
-        if move_no_replace(context.target_dir_fd, state.backup.name, context.name):
-            state.backup = None
-        raise SystemExit(f"adapter target changed during update: {context.target}")
-
-
-def _replace_adapter_target(context):
-    state = context.state
-    if context.initial is None:
-        os.unlink(state.temporary.name, dir_fd=context.target_dir_fd)
-        state.temporary = None
-        try:
-            os.symlink(context.source, context.name, dir_fd=context.target_dir_fd)
-        except FileExistsError:
-            raise SystemExit(f"adapter target changed during update: {context.target}")
-        return
-    _stage_adapter_backup(context)
-    os.unlink(state.temporary.name, dir_fd=context.target_dir_fd)
-    state.temporary = None
-    try:
-        os.symlink(context.source, context.name, dir_fd=context.target_dir_fd)
-    except FileExistsError:
-        message = f"adapter target changed during update: {context.target}"
-        rename_to_conflict(
-            context.target_dir_fd,
-            ConflictRenameOptions(
-                source_name=context.name,
-                prefix=state.backup.name,
-                exhaust_message=message,
-            ),
-        )
-        if move_no_replace(context.target_dir_fd, state.backup.name, context.name):
-            state.backup = None
-        raise SystemExit(message)
-    os.unlink(state.backup.name, dir_fd=context.target_dir_fd)
-    state.backup = None
-
-
-def _cleanup_adapter_link(context):
-    state = context.state
-    if state.temporary is not None:
-        try:
-            os.unlink(state.temporary.name, dir_fd=context.target_dir_fd)
-        except OSError:
-            pass
-    if state.backup is not None:
-        try:
-            os.stat(context.name, dir_fd=context.target_dir_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            try:
-                if move_no_replace(context.target_dir_fd, state.backup.name, context.name):
-                    state.backup = None
-            except OSError:
-                pass
-
-
-def link_adapter(options):
-    """Atomically point the target at the source without clobbering unowned files."""
-    source, target, store = options.source, options.target, options.store
-    directory, name = os.path.split(target)
-    source_directory, source_name = os.path.split(source)
-    source_dir_fd = open_directory(source_directory, create=True)
-    try:
-        target_dir_fd = open_directory(directory, create=True)
-        context = AdapterLinkContext(
-            source=source, target=target, name=name, target_dir_fd=target_dir_fd
-        )
-        source_fd = None
-        try:
-            source_fd = os.open(source_name, FILE_FLAGS, dir_fd=source_dir_fd)
-            source_stat = os.fstat(source_fd)
-            if not _is_safe_regular_file(source_stat):
-                raise SystemExit(f"adapter asset is not a safe regular file: {source}")
-            source_data = _read_all(source_fd)
-            initial = _classify(target_dir_fd, name, target)
-            context.initial = initial
-            if initial is not None and initial[0] == "link":
-                existing = initial[1]
-                if existing == source:
-                    raise SystemExit(0)
-                if not _is_managed_release_link(existing, store):
-                    raise SystemExit(f"refusing to overwrite unowned adapter link: {target}")
-            elif initial is not None and initial[1] != source_data:
-                raise SystemExit(f"refusing to overwrite unowned adapter file: {target}")
-            context.state.temporary = TemporaryEntry(
-                _create_temporary_link(target_dir_fd, directory, source)
-            )
-            if _classify(target_dir_fd, name, target) != initial:
-                raise SystemExit(f"adapter target changed during update: {target}")
-            _replace_adapter_target(context)
-            os.fsync(target_dir_fd)
-        finally:
-            if source_fd is not None:
-                os.close(source_fd)
-            _cleanup_adapter_link(context)
-            os.close(target_dir_fd)
-    finally:
-        os.close(source_dir_fd)
-
-
 def _rename_no_replace(dir_fd, source_name, target_name):
     if sys.platform == "darwin":
         function_name = "renameatx_np"
@@ -446,7 +259,7 @@ def _install_absent_target(request):
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), request.target_name)
     installed = os.stat(request.target_name, dir_fd=dir_fd, follow_symlinks=False)
     if not _same_file_identity(installed, request.expected_source):
-        rename_to_conflict(
+        conflict = rename_to_conflict(
             dir_fd,
             ConflictRenameOptions(
                 source_name=request.target_name,
@@ -454,11 +267,7 @@ def _install_absent_target(request):
                 exhaust_message="cannot preserve raced atomic replacement target",
             ),
         )
-        raise OSError(
-            errno.EAGAIN,
-            "temporary file changed during atomic replacement",
-            request.target_name,
-        )
+        raise KeptAsideError("temporary file changed during atomic replacement", (conflict,))
 
 
 def _stage_replacement_backup(request):
@@ -479,7 +288,7 @@ def _install_replacement(request, backup_name, backup_stat):
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), request.target_name)
     current = os.stat(request.target_name, dir_fd=dir_fd, follow_symlinks=False)
     if not _same_file_identity(current, request.expected_source):
-        rename_to_conflict(
+        conflict = rename_to_conflict(
             dir_fd,
             ConflictRenameOptions(
                 source_name=request.target_name,
@@ -487,29 +296,48 @@ def _install_replacement(request, backup_name, backup_stat):
                 exhaust_message="cannot preserve raced atomic replacement target",
             ),
         )
-        raise OSError(errno.EAGAIN, "temporary file changed during atomic replacement", request.target_name)
+        raise KeptAsideError("temporary file changed during atomic replacement", (conflict,))
+
+
+def _restore_backup(dir_fd, backup_name, target_name):
+    """Move the staged backup back unless something took the target's place; True once it is gone from its name."""
+    try:
+        os.stat(target_name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            move_no_replace(dir_fd, backup_name, target_name)
+        except OSError:
+            pass
+    try:
+        os.stat(backup_name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    return False
+
+
+def _is_raced_replacement(error):
+    """Whether _install_replacement failed because another writer changed the target or the temporary file: the
+    target changed (EAGAIN, KeptAsideError too), the target came back (EEXIST), or rename_to_conflict found no free
+    name for a raced target (SystemExit)."""
+    return isinstance(error, SystemExit) or error.errno in (errno.EAGAIN, errno.EEXIST)
 
 
 def _replace_present_target(request):
     dir_fd = request.dir_fd
     backup_name = _stage_replacement_backup(request)
-    installed = False
     backup_stat = None
     try:
         backup_stat = os.stat(backup_name, dir_fd=dir_fd, follow_symlinks=False)
         _install_replacement(request, backup_name, backup_stat)
-        installed = True
-    finally:
-        if installed:
-            unlink_if_same_file(dir_fd, backup_name, backup_stat)
-        else:
-            try:
-                os.stat(request.target_name, dir_fd=dir_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                try:
-                    move_no_replace(dir_fd, backup_name, request.target_name)
-                except OSError:
-                    pass
+    except BaseException as error:
+        if _restore_backup(dir_fd, backup_name, request.target_name) or not isinstance(error, (OSError, SystemExit)):
+            raise
+        raise KeptAsideError(
+            "cannot restore the target after a failed atomic replacement",
+            (*getattr(error, "kept", ()), backup_name),
+            cause=None if _is_raced_replacement(error) else error,
+        ) from error
+    unlink_if_same_file(dir_fd, backup_name, backup_stat)
 
 
 def replace_file_no_replace(request):
@@ -535,246 +363,6 @@ def rename_to_conflict(dir_fd, options):
     raise SystemExit(options.exhaust_message)
 
 
-@dataclass
-class CopyContext:
-    options: CopyFileOptions
-    source_dir_fd: object
-    target_dir_fd: object
-    directory: str
-    source_fd: object = None
-    source_stat: object = None
-    source_data: bytes = None
-    target_fd: object = None
-    target_stat: object = None
-    target_data: bytes = None
-    state: ReplacementResources = field(default_factory=ReplacementResources)
-
-
-def _open_copy_source(context):
-    source_name = os.path.basename(context.options.source)
-    context.source_fd = os.open(
-        source_name, FILE_FLAGS, dir_fd=context.source_dir_fd
-    )
-    context.source_stat = os.fstat(context.source_fd)
-    if not _is_safe_regular_file(context.source_stat):
-        raise SystemExit(
-            f"package source is not a safe regular file: {context.options.source}"
-        )
-    context.source_data = _read_all(context.source_fd)
-
-
-def _open_copy_target(context):
-    name = os.path.basename(context.options.target)
-    try:
-        context.target_stat = os.stat(
-            name, dir_fd=context.target_dir_fd, follow_symlinks=False
-        )
-    except FileNotFoundError:
-        return
-    if stat.S_ISLNK(context.target_stat.st_mode):
-        raise SystemExit(
-            f"refusing to overwrite symlink: {context.options.target}"
-        )
-    if not stat.S_ISREG(context.target_stat.st_mode):
-        raise SystemExit(
-            f"refusing to overwrite non-file: {context.options.target}"
-        )
-    context.target_fd = os.open(name, FILE_FLAGS, dir_fd=context.target_dir_fd)
-    context.target_data = _read_all(context.target_fd)
-    if (
-        not context.options.manifest_owned
-        and context.target_data != context.source_data
-    ):
-        raise SystemExit(
-            f"refusing to overwrite unowned file: {context.options.target}"
-        )
-
-
-def _create_copy_temp(context):
-    for _ in range(MAX_TEMP_FILE_ATTEMPTS):
-        candidate = f".session-log.{os.getpid()}.{random.randrange(1 << 30):08x}"
-        try:
-            descriptor = os.open(
-                candidate,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
-                PRIVATE_FILE_MODE,
-                dir_fd=context.target_dir_fd,
-            )
-            context.state.temporary = TemporaryEntry(candidate)
-            break
-        except FileExistsError:
-            continue
-    else:
-        raise SystemExit(f"cannot create temporary copy in: {context.directory}")
-    try:
-        offset = 0
-        while offset < len(context.source_data):
-            offset += os.write(descriptor, context.source_data[offset:])
-        mode = (
-            stat.S_IMODE(context.source_stat.st_mode)
-            if context.options.preserve_mode
-            else PRIVATE_FILE_MODE
-        )
-        os.fchmod(descriptor, mode)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _matches_original_copy_target(current, original):
-    return (
-        not stat.S_ISLNK(current.st_mode)
-        and stat.S_ISREG(current.st_mode)
-        and current.st_dev == original.st_dev
-        and current.st_ino == original.st_ino
-    )
-
-
-def _target_contents_match(context):
-    os.lseek(context.target_fd, 0, os.SEEK_SET)
-    return _read_all(context.target_fd) == context.target_data
-
-
-def _restore_copy_target(context):
-    if move_no_replace(
-        context.target_dir_fd,
-        context.state.backup.name,
-        os.path.basename(context.options.target),
-    ):
-        context.state.backup = None
-
-
-def _stage_copy_target(context):
-    name = os.path.basename(context.options.target)
-    for attempt in range(MAX_TEMP_FILE_ATTEMPTS):
-        candidate = (
-            f".session-log-backup.{os.getpid()}.{random.randrange(1 << 30):08x}.{attempt}"
-        )
-        if move_no_replace(context.target_dir_fd, name, candidate):
-            context.state.backup = BackupEntry(candidate)
-            break
-    if context.state.backup is None:
-        raise SystemExit(f"cannot stage package target: {context.options.target}")
-    backup_stat = os.stat(
-        context.state.backup.name,
-        dir_fd=context.target_dir_fd,
-        follow_symlinks=False,
-    )
-    if not _matches_original_copy_target(backup_stat, context.target_stat):
-        _restore_copy_target(context)
-        raise SystemExit(
-            f"package target changed during copy: {context.options.target}"
-        )
-    if not _target_contents_match(context):
-        _restore_copy_target(context)
-        raise SystemExit(
-            f"package target changed during copy: {context.options.target}"
-        )
-
-
-def _replace_copy_target(context):
-    name = os.path.basename(context.options.target)
-    if context.target_stat is None:
-        try:
-            os.link(
-                context.state.temporary.name,
-                name,
-                src_dir_fd=context.target_dir_fd,
-                dst_dir_fd=context.target_dir_fd,
-                follow_symlinks=False,
-            )
-        except FileExistsError:
-            raise SystemExit(
-                f"package target appeared during copy: {context.options.target}"
-            )
-        os.unlink(context.state.temporary.name, dir_fd=context.target_dir_fd)
-        context.state.temporary = None
-        return
-    _stage_copy_target(context)
-    try:
-        os.link(
-            context.state.temporary.name,
-            name,
-            src_dir_fd=context.target_dir_fd,
-            dst_dir_fd=context.target_dir_fd,
-            follow_symlinks=False,
-        )
-    except FileExistsError:
-        message = f"package target changed during copy: {context.options.target}"
-        rename_to_conflict(
-            context.target_dir_fd,
-            ConflictRenameOptions(
-                source_name=name,
-                prefix=context.state.backup.name,
-                exhaust_message=message,
-            ),
-        )
-        raise SystemExit(message)
-    os.unlink(context.state.temporary.name, dir_fd=context.target_dir_fd)
-    context.state.temporary = None
-    if not _target_contents_match(context):
-        message = f"package target changed during copy: {context.options.target}"
-        rename_to_conflict(
-            context.target_dir_fd,
-            ConflictRenameOptions(
-                source_name=context.state.backup.name,
-                prefix=context.state.backup.name,
-                exhaust_message=message,
-            ),
-        )
-        context.state.backup = None
-        raise SystemExit(message)
-    os.unlink(context.state.backup.name, dir_fd=context.target_dir_fd)
-    context.state.backup = None
-
-
-def _cleanup_copy_file(context):
-    if context.target_fd is not None:
-        os.close(context.target_fd)
-    if context.source_fd is not None:
-        os.close(context.source_fd)
-    if context.state.temporary is not None:
-        try:
-            os.unlink(context.state.temporary.name, dir_fd=context.target_dir_fd)
-        except OSError:
-            pass
-    if context.state.backup is not None:
-        try:
-            os.stat(
-                os.path.basename(context.options.target),
-                dir_fd=context.target_dir_fd,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            try:
-                _restore_copy_target(context)
-            except OSError:
-                pass
-    os.close(context.source_dir_fd)
-    os.close(context.target_dir_fd)
-
-
-def copy_file(options):
-    """Atomically copy a package file and restore it if its target changes."""
-    directory, _ = os.path.split(options.target)
-    source_directory = os.path.realpath(os.path.dirname(options.source))
-    source_dir_fd = open_directory(source_directory, create=True)
-    try:
-        target_dir_fd = open_directory(directory, create=True)
-    except BaseException:
-        os.close(source_dir_fd)
-        raise
-    context = CopyContext(options, source_dir_fd, target_dir_fd, directory)
-    try:
-        _open_copy_source(context)
-        _open_copy_target(context)
-        _create_copy_temp(context)
-        _replace_copy_target(context)
-        os.fsync(target_dir_fd)
-    finally:
-        _cleanup_copy_file(context)
-
-
 def main(argv):
     if not argv:
         raise SystemExit("pathsafe: missing operation")
@@ -785,23 +373,10 @@ def main(argv):
         write_file(os.environ["SESSION_LOG_FILE"], os.environ["SESSION_LOG_CONTENT"])
     elif operation == "remove":
         remove_path(os.environ["SESSION_LOG_REMOVE_PATH"])
-    elif operation == "link-adapter":
-        link_adapter(
-            AdapterLinkOptions(
-                source=os.environ["SESSION_LOG_SOURCE"],
-                target=os.environ["SESSION_LOG_TARGET"],
-                store=os.environ["SESSION_LOG_STORE"],
-            )
-        )
-    elif operation == "copy-file":
-        copy_file(
-            CopyFileOptions(
-                source=os.environ["SESSION_LOG_SOURCE"],
-                target=os.environ["SESSION_LOG_TARGET"],
-                preserve_mode=os.environ["SESSION_LOG_PRESERVE_MODE"] == "1",
-                manifest_owned=os.environ["SESSION_LOG_MANIFEST_OWNED"] == "1",
-            )
-        )
+    elif operation == "is-untrusted-dir":
+        # Exit status 0 when unlink_if_same_file leaves its files in that directory.
+        untrusted = _is_untrusted_cleanup_directory(os.stat(os.environ["SESSION_LOG_DIRECTORY"]))
+        raise SystemExit(0 if untrusted else 1)
     else:
         raise SystemExit(f"pathsafe: unknown operation: {operation}")
 

@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
 readonly SUPPORTED_HARNESSES="claude, codex, cursor, opencode, omp"
 readonly OWNER_MARKER_VALUE="universal-session-log"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-readonly PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-readonly VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
-readonly HOME_ROOT="$(cd "${HOME:?HOME is required}" && pwd -P)"
+# What makes Codex run hooks.json commands it has not run yet: trusting them in /hooks reloads the
+# running session's hooks, and a restart shows the "Hooks need review" screen while any hook is new
+# or changed. RESTORE_FOLLOW_UP in adapters/native/install_hooks.py says the same (tests check it).
+readonly CODEX_TRUST_INSTRUCTION="approve the session-log hooks in /hooks, or restart Codex and choose 'Trust all and continue' if it shows the 'Hooks need review' screen"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+PACKAGE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+readonly PACKAGE_ROOT
+VERSION="$(tr -d '[:space:]' < "$PACKAGE_ROOT/VERSION")"
+readonly VERSION
+HOME_ROOT="$(cd "${HOME:?HOME is required}" && pwd -P)"
+readonly HOME_ROOT
 readonly STORE="$HOME_ROOT/.local/share/universal-session-log"
+# No hook of this package's version has seen the flag in the running Cursor: the cursor-goodies
+# plugin is missing or predates its hooks, Cursor still runs the hooks of an older plugin version
+# (the runtime marker must carry this VERSION), Cursor loads plugin hooks only while this setting is
+# on (and its server-side plugin import gate allows it), or Cursor has not restarted since.
+readonly CURSOR_HOOKS_NOT_LOADED="on — no hook of this cursor-goodies version has run; install or update the plugin, check that Include Third-Party Plugins, Skills, and Other Configs is on in Cursor Settings, then restart Cursor"
+# Cursor's first `on`: the flag exists, but only a hook run proves the plugin hooks are loaded.
+readonly CURSOR_ON_UNTIL_HOOKS_RUN="on — logging starts with the next prompt once the cursor-goodies hooks run; run status after it to confirm"
 HARNESS=""
 ENTRYPOINT=""
 COMMAND="status"
@@ -24,13 +40,14 @@ ENABLE_LOCK=""
 INSTALL_LOCK=""
 INSTALL_LOCK_OWNER_START=""
 REPAIR_REPORTED=0
-CLAUDE_SETTINGS_MODE=""
 
 SESSION_LOG_LOG_PREFIX="session-log"
 # shellcheck source=../lib/common.sh
 source "$PACKAGE_ROOT/lib/common.sh"
 # shellcheck source=../lib/adapter_install.sh
 source "$PACKAGE_ROOT/lib/adapter_install.sh"
+# shellcheck source=../lib/legacy_cleanup.sh
+source "$PACKAGE_ROOT/lib/legacy_cleanup.sh"
 
 declare -rA HARNESS_LABELS=(
   [claude]="Claude Code" [codex]="Codex" [cursor]="Cursor" [opencode]="OpenCode" [omp]="OMP"
@@ -40,30 +57,13 @@ declare -rA HARNESS_SUBROOTS=(
   [opencode]=".config/opencode" [omp]=".omp/agent"
 )
 declare -rA ADAPTER_SOURCES=(
-  [opencode:plugin]="adapters/opencode/session-log.js"
   [opencode:usage]="adapters/opencode/session_log_usage.sh"
   [omp:extension]="adapters/omp/session-log.js"
   [omp:usage]="adapters/omp/session_log_usage.ts"
-  [claude:hook]="adapters/claude/claude_hook.sh"
-  [cursor:hook]="adapters/native/session_log_hook.py"
-  [codex:hook]="adapters/native/session_log_hook.py"
   [cursor:configurator]="adapters/native/install_hooks.py"
   [codex:configurator]="adapters/native/install_hooks.py"
   [codex:usage]="adapters/codex/session_log_usage.py"
   [cursor:usage]="adapters/cursor/session_log_usage.py"
-)
-declare -rA ADAPTER_TARGETS=(
-  [opencode:plugin]="plugins/session-log.js"
-  [opencode:usage]="scripts/session_log_usage.sh"
-  [omp:extension]="extensions/session-log.js"
-  [omp:usage]="skills/session-log/scripts/session_log_usage.ts"
-)
-declare -rA HARNESS_KINDS=(
-  [claude]="hook"
-  [cursor]="hook configurator usage"
-  [codex]="hook configurator usage"
-  [opencode]="plugin usage"
-  [omp]="extension usage"
 )
 
 split_command_string() {
@@ -247,8 +247,10 @@ guard_relocated_root() {
       guard_env XDG_DATA_HOME "$HOME_ROOT/.local/share" "OpenCode data $relocated"
       ;;
     omp)
-      guard_env PI_CODING_AGENT_DIR "$HOME_ROOT/.omp/agent" "OMP $relocated"
-      guard_env OMP_PROMPT_LOG_DIR "$HOME_ROOT/.omp/agent/prompt-logs" "OMP prompt-log $relocated"
+      # The omp plugin has no install step to point elsewhere, so only the default root works.
+      guard_env PI_CODING_AGENT_DIR "$HOME_ROOT/.omp/agent" "OMP root is relocated; session-log supports only ~/.omp/agent"
+      guard_env OMP_PROMPT_LOG_DIR "$HOME_ROOT/.omp/agent/prompt-logs" \
+        "OMP prompt-log root is relocated; session-log supports only ~/.omp/agent/prompt-logs"
       ;;
   esac
 }
@@ -259,36 +261,16 @@ source_for() {
   printf '%s\n' "$PACKAGE_ROOT/$relative"
 }
 
-target_for() {
-  local relative="${ADAPTER_TARGETS[$HARNESS:$1]:-}"
-  [[ -n "$relative" ]] || fail "no adapter target for $HARNESS/$1"
-  printf '%s\n' "$HARNESS_ROOT/$relative"
-}
-
-# The VERSION the active hooks record in runtime.json: a standalone Claude copy deferring to
-# the plugin (plugin mode outside the plugin cache) expects the plugin package's, since the
-# plugin's hooks write it. Callers resolve CLAUDE_SETTINGS_MODE first.
-runtime_version() {
-  local root
-  if [[ "$CLAUDE_SETTINGS_MODE" == plugin ]] && ! claude_plugin_package_path "$PACKAGE_ROOT" &&
-    root="$(recorded_plugin_root)" && [[ -f "$root/VERSION" && ! -L "$root/VERSION" ]]; then
-    tr -d '[:space:]' < "$root/VERSION"
-  else
-    printf '%s' "$VERSION"
-  fi
-}
-
+# True when the hooks of a running session have written their runtime marker, for this VERSION.
 runtime_current() {
   validate_state_dir
   require_command jq
-  local candidate loaded_at now pid expected_start actual_start expected_version
+  local candidate loaded_at now pid expected_start actual_start
   local -a candidates=("$RUNTIME_FILE" "$STATE_DIR"/runtime.*.json)
-  resolve_claude_settings_mode
-  expected_version="$(runtime_version)"
   for candidate in "${candidates[@]}"; do
     [[ -f "$candidate" && ! -L "$candidate" ]] || continue
     [[ "$(jq -r '.harness // empty' "$candidate" 2>/dev/null)" == "$HARNESS" ]] || continue
-    [[ "$(jq -r '.version // empty' "$candidate" 2>/dev/null)" == "$expected_version" ]] || continue
+    [[ "$(jq -r '.version // empty' "$candidate" 2>/dev/null)" == "$VERSION" ]] || continue
     if [[ "$HARNESS" == claude ]]; then
       [[ -n "$(jq -r '.session_id // empty' "$candidate" 2>/dev/null)" ]] || continue
       [[ "$(jq -r '.loaded_at // empty' "$candidate" 2>/dev/null)" =~ ^[0-9]+$ ]] || continue
@@ -331,7 +313,24 @@ set_disabled() {
     ensure_private_directory "$(dirname "$FLAG_FILE")"
     set_enable_state_locked off
   fi
-  clear_runtime_markers
+  # A loaded extension stays loaded after `off`, so its marker stays too.
+  runtime_marks_load || clear_runtime_markers
+}
+
+# True when the harness plugin registers the session-log hooks from its own package. Its hooks
+# log nothing until the enable flag exists (omp's extension still writes its load marker and may
+# start the legacy cleanup when it loads), so `on` runs the legacy cleanup and sets that flag, `off`
+# removes it and clears the runtime markers (except omp's), and nothing installs, compares, or
+# reinstalls an adapter. A harness whose plugin takes over its hooks joins here; the leftovers of
+# its older releases go in its legacy_cleanup_<harness> (lib/legacy_cleanup.sh).
+plugin_owns_hooks() {
+  [[ "$HARNESS" == claude || "$HARNESS" == cursor || "$HARNESS" == omp || "$HARNESS" == opencode ]]
+}
+
+# True when the runtime marker means "the extension is loaded" rather than "the hooks saw the flag":
+# omp's extension writes it when it loads, logging on or off, and reads the flag at every prompt.
+runtime_marks_load() {
+  [[ "$HARNESS" == omp ]]
 }
 
 print_status() {
@@ -342,13 +341,19 @@ print_status() {
     printf '%s: off\n' "$HARNESS_LABEL"
     return
   fi
-  if ! adapter_current; then
+  if [[ "$HARNESS" == codex ]] && ! codex_plugin_package_present; then
+    printf '%s: on — codex-goodies plugin not installed\n' "$HARNESS_LABEL"
+    return
+  fi
+  if ! plugin_owns_hooks && ! adapter_current; then
     printf '%s: on — adapter missing\n' "$HARNESS_LABEL"
     return
   fi
   if ! runtime_current; then
     if [[ "$HARNESS" == codex ]]; then
-      printf '%s: on — trust review/restart required\n' "$HARNESS_LABEL"
+      printf '%s: on — %s\n' "$HARNESS_LABEL" "$CODEX_TRUST_INSTRUCTION"
+    elif [[ "$HARNESS" == cursor ]]; then
+      printf '%s: %s\n' "$HARNESS_LABEL" "$CURSOR_HOOKS_NOT_LOADED"
     else
       printf '%s: on — restart required\n' "$HARNESS_LABEL"
     fi
@@ -420,13 +425,15 @@ run_usage() {
   unlink "$error_file"
 }
 
-# Remove duplicate and stale session-log hook registrations under the install lock,
-# then report what was removed (or that nothing was).
+# Remove legacy leftovers and duplicate or stale session-log hook registrations under the
+# install lock, then report what was removed (or that nothing was).
 run_repair() {
+  report_kept_versions
   validate_state_dir
   preflight_install_lock
   acquire_install_lock
   trap release_install_lock EXIT
+  legacy_cleanup
   repair_registrations
   release_install_lock
   trap - EXIT
@@ -434,47 +441,135 @@ run_repair() {
     printf '%s: repair found no duplicate or stale registrations\n' "$HARNESS_LABEL"
 }
 
+# Releases the install lock; when that fails, lib/locking.py's message gets the label the rest of `on`'s output has.
+release_install_lock_labelled() {
+  local error
+  error="$(release_install_lock 2>&1)"
+  [[ -z "$error" ]] || printf '%s: %s\n' "$HARNESS_LABEL" "${error#"$SESSION_LOG_LOG_PREFIX: "}" >&2
+}
+
+# The legacy cleanup `on` runs for a plugin-owned harness, best effort: a transient stop
+# (TRANSIENT_FAILURE_EXIT_CODE: another session-log command holds the install lock and runs the same cleanup, or
+# settings.json changed before the cleanup replaced it, lib/claude_settings.py's CHANGED; a retry is safe, and
+# reports printed by earlier steps stand) is reported as skipped, and a failure, taking the lock included, is
+# reported once; neither fails `on`. `repair` repeats the cleanup and fails with the error.
+run_best_effort_cleanup() {
+  local error_file error status
+  error_file="$(mktemp "${TMPDIR:-/tmp}/session-log-cleanup.XXXXXX")"
+  # The lock and the cleanup run in an errexit subshell, so their first failing step ends only the
+  # cleanup, and the subshell's EXIT trap releases the lock; the stdout report passes through while
+  # stderr is captured, but for the release's (fd 3, the command's own stderr), so the last captured
+  # line stays the cleanup's reason. Nothing may wrap the subshell in `||`, `&&`, or `if`: bash would
+  # then ignore errexit inside it. The lock preflight refuses a lock unsafe to touch, as `repair`'s does.
+  set +e
+  (set -e; preflight_install_lock; acquire_install_lock; trap 'release_install_lock_labelled 2>&3' EXIT
+    legacy_cleanup) 3>&2 2>"$error_file"
+  status=$?
+  set -e
+  error="$(awk 'NF { line = $0 } END { print line }' "$error_file")"
+  error="${error#"$SESSION_LOG_LOG_PREFIX: "}"
+  unlink "$error_file"
+  if ((status == TRANSIENT_FAILURE_EXIT_CODE)); then
+    printf '%s: legacy cleanup skipped: %s\n' "$HARNESS_LABEL" "$error"
+    return 0
+  fi
+  ((status != 0)) || return 0
+  if [[ -n "$error" ]]; then
+    printf '%s: legacy cleanup failed: %s; fix it, then run repair\n' "$HARNESS_LABEL" "$error"
+  else
+    printf '%s: legacy cleanup failed; run repair to see why\n' "$HARNESS_LABEL"
+  fi
+}
+
+# `on` for a plugin-owned harness: best-effort legacy cleanup, then the enable flag. Without a
+# current runtime marker, a flag this command created takes effect at the next prompt (in Cursor
+# only once its plugin hooks run, which nothing here can see yet); a flag that was already on means
+# the hooks of the running session never saw it, so they are not loaded.
+# A missing load marker (runtime_marks_load) always means the extension is not loaded.
+enable_plugin_hooks() {
+  local was_enabled=0
+  preflight_enable_flag
+  validate_state_dir
+  require_command jq
+  run_best_effort_cleanup
+  [[ ! -e "$FLAG_FILE" ]] || was_enabled=1
+  set_enabled
+  if runtime_current; then
+    printf '%s: on\n' "$HARNESS_LABEL"
+  elif ((was_enabled)) && [[ "$HARNESS" == cursor ]]; then
+    printf '%s: %s\n' "$HARNESS_LABEL" "$CURSOR_HOOKS_NOT_LOADED"
+  elif ((was_enabled)) || runtime_marks_load; then
+    printf '%s: on — restart required\n' "$HARNESS_LABEL"
+  elif [[ "$HARNESS" == cursor ]]; then
+    printf '%s: %s\n' "$HARNESS_LABEL" "$CURSOR_ON_UNTIL_HOOKS_RUN"
+  else
+    printf '%s: on — logging starts with the next prompt\n' "$HARNESS_LABEL"
+  fi
+}
+
+# `off` for a plugin-owned harness: it only removes the enable flag (and, but for OMP, the runtime
+# markers), which needs no install lock: enable_flag.py locks the flag on its own. So it never waits
+# for the `repair` a session start may be running under that lock: Claude Code's and Cursor's
+# session-start hooks, the OpenCode plugin's setup, and the OMP extension's background repair.
+disable_plugin_logging() {
+  preflight_enable_flag
+  validate_state_dir
+  set_disabled
+  printf '%s: off\n' "$HARNESS_LABEL"
+}
+
 main() {
   parse_args "$@"
   resolve_roots
   case "$COMMAND" in
     on)
-      preflight_on
+      report_kept_versions
+      if plugin_owns_hooks; then
+        enable_plugin_hooks
+        return
+      fi
+      # Only Codex gets here: every other harness's plugin owns its hooks.
+      require_codex_plugin_package
+      # Legacy cleanup comes before the adapter preflight: it removes standalone adapter
+      # copies of earlier releases that sit where the adapter goes.
+      preflight_enable_flag
+      preflight_state_files
       acquire_install_lock
       trap release_install_lock EXIT
-      resolve_claude_settings_mode
+      legacy_cleanup
+      preflight_native_hooks
       repair_registrations
       if ! adapter_current; then install_adapter; fi
       set_enabled
       if runtime_current; then
         printf '%s: on\n' "$HARNESS_LABEL"
-      elif [[ "$HARNESS" == codex ]]; then
-        printf '%s: on — trust review/restart required\n' "$HARNESS_LABEL"
       else
-        printf '%s: on — restart required\n' "$HARNESS_LABEL"
+        printf '%s: on — %s\n' "$HARNESS_LABEL" "$CODEX_TRUST_INSTRUCTION"
       fi
       release_install_lock
       trap - EXIT
       ;;
     off)
+      if plugin_owns_hooks; then
+        disable_plugin_logging
+        return
+      fi
       preflight_off
       acquire_install_lock
       trap release_install_lock EXIT
-      if claude_registers_no_settings_hooks; then
-        preflight_claude_settings
-        remove_claude_settings_hooks
-      fi
       set_disabled
       printf '%s: off\n' "$HARNESS_LABEL"
       release_install_lock
       trap - EXIT
       ;;
     status)
-      repair_enabled_adapter
+      # First, as in `on` and `repair`: Codex's adapter repair may fail, or rebuild a missing hooks.json.
+      report_kept_versions
+      plugin_owns_hooks || repair_enabled_adapter
       print_status
       ;;
     usage)
-      repair_enabled_adapter
+      plugin_owns_hooks || repair_enabled_adapter
       run_usage
       ;;
     repair)
