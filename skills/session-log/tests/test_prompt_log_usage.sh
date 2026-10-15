@@ -505,8 +505,12 @@ parts_cents="$(grep '^est\. used token:' "$WORKROOT/by_path.txt" | head -10 | su
 total_cents="$(grep '^est\. used token:' "$WORKROOT/by_path.txt" | tail -1 | sum_cents)"
 assert_eq "TOTAL equals the sum of the per-part est-lines" "$parts_cents" "$total_cents"
 
-# --check with ccusage absent from PATH: a note, not a failure.
-check_out="$(cd "$PROJ_CWD" && PATH=/usr/bin:/bin HOME="$WORKROOT" bash "$AGG" "$MAIN" --check 2>&1)"
+# --check with ccusage absent from PATH: a note, not a failure. jq may live outside /usr/bin, beside a
+# ccusage (Homebrew, scoop shims), so only a wrapper of it joins PATH.
+mkdir -p "$WORKROOT/jq-only"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v jq)" > "$WORKROOT/jq-only/jq"
+chmod +x "$WORKROOT/jq-only/jq"
+check_out="$(cd "$PROJ_CWD" && PATH="$WORKROOT/jq-only:/usr/bin:/bin" HOME="$WORKROOT" bash "$AGG" "$MAIN" --check 2>&1)"
 check_rc=$?
 assert_eq "--check exits 0 when ccusage is missing" "0" "$check_rc"
 assert_match "--check prints a skip note when ccusage is missing" \
