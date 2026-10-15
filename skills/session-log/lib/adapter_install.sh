@@ -85,7 +85,8 @@ preflight_install_lock() {
   [[ -e "$INSTALL_LOCK/owner" ]] || return
   [[ -f "$INSTALL_LOCK/owner" && ! -L "$INSTALL_LOCK/owner" ]] ||
     fail "refusing invalid install lock owner: $INSTALL_LOCK/owner"
-  owner_pid="$(sed -n '1p' "$INSTALL_LOCK/owner")"
+  owner_pid="$(sed -n '1p' "$INSTALL_LOCK/owner" 2>/dev/null)" ||
+    fail "cannot read install lock owner: $INSTALL_LOCK/owner"
   owner_start="$(sed -n '2p' "$INSTALL_LOCK/owner" | sed 's/^ *//; s/[[:space:]]*$//')"
   [[ "$owner_pid" =~ ^[1-9][0-9]*$ && -n "$owner_start" ]] ||
     fail "refusing invalid install lock owner: $INSTALL_LOCK/owner"
@@ -111,12 +112,6 @@ preflight_state_files() {
   validate_state_dir
   preflight_state_file "$RUNTIME_FILE"
   preflight_install_lock
-}
-
-preflight_adapter() {
-  case "$HARNESS" in
-    codex) preflight_native_hooks ;;
-  esac
 }
 
 preflight_off() {
@@ -164,7 +159,8 @@ try_acquire_install_lock() {
     fail "cannot determine install lock owner"
   _install_lock_operation acquire || status=$?
   ((status != INSTALL_LOCK_BUSY)) || return 1
-  ((status == 0)) || fail "cannot acquire install lock: $INSTALL_LOCK"
+  # locking.py has already said what failed.
+  ((status == 0)) || exit 1
 }
 
 release_install_lock() {
@@ -178,7 +174,9 @@ clear_runtime_markers() {
     [[ -e "$candidate" || -L "$candidate" ]] || continue
     [[ ! -L "$candidate" ]] || fail "refusing to remove symlinked runtime state: $candidate"
     [[ ! -d "$candidate" ]] || fail "refusing to remove runtime directory: $candidate"
-    unlink "$candidate"
+    # A hook may have removed it already: plugin-owned `off` takes no install lock.
+    unlink "$candidate" 2>/dev/null || [[ ! -e "$candidate" && ! -L "$candidate" ]] ||
+      fail "cannot remove runtime state: $candidate"
   done
 }
 
@@ -215,28 +213,26 @@ repair_registrations() {
   esac
 }
 
+# Codex's hooks.json entries, the only adapter session-log installs.
 install_adapter() {
-  case "$HARNESS" in
-    codex)
-      python3 "$(source_for configurator)" install "$HARNESS" "$HARNESS_ROOT/hooks.json"
-      ;;
-  esac
+  python3 "$(source_for configurator)" install "$HARNESS" "$HARNESS_ROOT/hooks.json"
   clear_runtime_markers
 }
 
-# Like `on`, the legacy cleanup comes before the adapter preflight: it removes the standalone
-# adapter copies of earlier releases that sit where the adapter goes. Without a codex-goodies plugin
-# package nothing is installed for Codex, as in repair_registrations.
+# Codex's `status` and `usage` reinstall its adapter while logging is on. Like `on`, the legacy
+# cleanup comes before the adapter preflight: it removes the standalone adapter copies of earlier
+# releases that sit where the adapter goes. Without a codex-goodies plugin package nothing is
+# installed, as in repair_registrations.
 repair_enabled_adapter() {
   [[ -f "$FLAG_FILE" && ! -L "$FLAG_FILE" ]] || return 0
-  [[ "$HARNESS" != codex ]] || codex_plugin_package_present || return 0
+  codex_plugin_package_present || return 0
   adapter_current && return 0
   preflight_enable_flag
   preflight_state_files
   acquire_install_lock
   trap release_install_lock EXIT
   legacy_cleanup
-  preflight_adapter
+  preflight_native_hooks
   install_adapter
   release_install_lock
   trap - EXIT

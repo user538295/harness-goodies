@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
@@ -33,6 +34,7 @@ PROMPT_HEAD_LENGTH = 60
 # Cursor kills a hook after the "timeout" .cursor-plugin/hooks.json gives it (30 s); the session-start
 # cleanup ends well before, so the hook still answers in time.
 REPAIR_TIMEOUT_SECONDS = 20
+SESSION_LOG_CLI = Path(__file__).resolve().parents[2] / "bin" / "session-log"
 
 
 def fail(message):
@@ -343,15 +345,21 @@ def remove_legacy_cursor_hooks(root):
     reads as the hook's answer."""
     if not has_legacy_cursor_hooks(root):
         return
-    session_log = Path(__file__).resolve().parents[2] / "bin" / "session-log"
     try:
-        subprocess.run(["bash", str(session_log), "--entrypoint", "cursor", "--harness", "cursor", "repair"],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-                       timeout=REPAIR_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        print(f"session-log: legacy cleanup timed out after {REPAIR_TIMEOUT_SECONDS}s; run repair", file=sys.stderr)
+        # Its own process group, so a timeout ends the Python helpers bin/session-log runs too: one left
+        # behind would go on changing files after the install lock it ran under turned reclaimable.
+        repair = subprocess.Popen(["bash", str(SESSION_LOG_CLI), "--entrypoint", "cursor", "--harness", "cursor", "repair"],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  start_new_session=True)
     except OSError as error:
         print(f"session-log: cannot start the legacy cleanup: {error}", file=sys.stderr)
+        return
+    try:
+        repair.wait(timeout=REPAIR_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        os.killpg(repair.pid, signal.SIGKILL)
+        repair.wait()
+        print(f"session-log: legacy cleanup timed out after {REPAIR_TIMEOUT_SECONDS}s; run repair", file=sys.stderr)
 
 
 def main(argv=None):

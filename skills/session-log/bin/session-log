@@ -319,10 +319,10 @@ set_disabled() {
 
 # True when the harness plugin registers the session-log hooks from its own package. Its hooks
 # log nothing until the enable flag exists (omp's extension still writes its load marker and may
-# start the legacy cleanup when it loads), so `on` and `off` only flip that flag and nothing
-# installs, compares, or reinstalls an adapter. A harness whose plugin takes over its hooks joins
-# here; the leftovers of its older releases go in its legacy_cleanup_<harness>
-# (lib/legacy_cleanup.sh).
+# start the legacy cleanup when it loads), so `on` and `off` only flip that flag (`off` also
+# clears the runtime markers, except omp's) and nothing installs, compares, or reinstalls an
+# adapter. A harness whose plugin takes over its hooks joins here; the leftovers of its older
+# releases go in its legacy_cleanup_<harness> (lib/legacy_cleanup.sh).
 plugin_owns_hooks() {
   [[ "$HARNESS" == claude || "$HARNESS" == cursor || "$HARNESS" == omp || "$HARNESS" == opencode ]]
 }
@@ -441,27 +441,26 @@ run_repair() {
 }
 
 # The legacy cleanup `on` runs for a plugin-owned harness, best effort: it is skipped while another
-# session-log command holds the install lock (that command runs the same cleanup), and a failure is
-# reported without failing `on`; `repair` repeats it and fails with the error.
+# session-log command holds the install lock (that command runs the same cleanup), and a failure,
+# taking the lock included, is reported once without failing `on`; `repair` repeats it and fails
+# with the error.
 run_best_effort_cleanup() {
   local error_file error status
-  if ! try_acquire_install_lock; then
-    printf '%s: legacy cleanup skipped: another session-log command is running\n' "$HARNESS_LABEL"
-    return 0
-  fi
-  trap release_install_lock EXIT
   error_file="$(mktemp "${TMPDIR:-/tmp}/session-log-cleanup.XXXXXX")"
-  # The cleanup runs in an errexit subshell, so its first failing step ends only the cleanup; its
-  # stdout report passes through while its stderr is captured. Nothing may wrap the subshell in
-  # `||`, `&&`, or `if`: bash would then ignore errexit inside it.
+  # The lock and the cleanup run in an errexit subshell, so their first failing step ends only the
+  # cleanup, and the subshell's EXIT trap releases the lock; the stdout report passes through while
+  # stderr is captured. Nothing may wrap the subshell in `||`, `&&`, or `if`: bash would then ignore
+  # errexit inside it.
   set +e
-  (set -e; legacy_cleanup) 2>"$error_file"
+  (set -e; acquire_install_lock; trap release_install_lock EXIT; legacy_cleanup) 2>"$error_file"
   status=$?
   set -e
   error="$(awk 'NF { line = $0 } END { print line }' "$error_file")"
   unlink "$error_file"
-  release_install_lock
-  trap - EXIT
+  if ((status == INSTALL_LOCK_BUSY)); then
+    printf '%s: legacy cleanup skipped: another session-log command is running\n' "$HARNESS_LABEL"
+    return 0
+  fi
   ((status != 0)) || return 0
   if [[ -n "$error" ]]; then
     printf '%s: legacy cleanup failed: %s; fix it, then run repair\n' "$HARNESS_LABEL" "${error#"$SESSION_LOG_LOG_PREFIX: "}"
@@ -525,7 +524,7 @@ main() {
       acquire_install_lock
       trap release_install_lock EXIT
       legacy_cleanup
-      preflight_adapter
+      preflight_native_hooks
       repair_registrations
       if ! adapter_current; then install_adapter; fi
       set_enabled

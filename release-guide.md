@@ -84,7 +84,7 @@ Follow semver (`MAJOR.MINOR.PATCH`):
 - MINOR — new skill, command, or agent
 - MAJOR — breaking change to the workflow or install contract
 
-Session-log's runtime markers carry `skills/session-log/VERSION`, which `release.sh` does not bump: it refuses the release when anything under `skills/session-log/`, a hook manifest or entry file that wires it in (`SESSION_LOG_WIRING_FILES`: `hooks/hooks.json`, `.cursor-plugin/hooks.json`, `.codex-plugin/hooks.json`, `.opencode-plugin/index.js`), or the `omp.extensions` entry of `package.json` changed since the last tag while that `VERSION` did not. Bump it by hand first.
+Session-log's runtime markers carry `skills/session-log/VERSION`, which `release.sh` does not bump: it refuses the release when anything under `skills/session-log/`, a hook manifest or entry file that wires it in (`SESSION_LOG_WIRING_FILES`: `hooks/hooks.json`, `.cursor-plugin/hooks.json`, `.codex-plugin/hooks.json`, `.opencode-plugin/index.js`), or a field that wires it into a manifest also carrying the release version (`JSON_WIRING_FIELDS`: `omp.extensions` and `exports` of `package.json`, `hooks` of `.cursor-plugin/plugin.json` and `.codex-plugin/plugin.json`) changed since the last tag while that `VERSION` did not. Bump it by hand first. The check needs `jq` and refuses the release when `jq` is missing or one of those manifests is not valid JSON.
 
 ### 3. Commit
 ```bash

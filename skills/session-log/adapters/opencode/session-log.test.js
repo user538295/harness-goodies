@@ -19,6 +19,11 @@ const UNREADABLE_FILE_MODE = 0o000;
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const ROOT_UID = 0;
 const runsAsRoot = process.getuid?.() === ROOT_UID;
+// EX_TEMPFAIL: the CLI's exit status when, and only when, another session-log command holds the install lock.
+const LOCK_BUSY_EXIT_CODE = 75;
+const FAILED_EXIT_CODE = 1;
+// launchd or init: alive, and signalling it fails with EPERM rather than ESRCH for anyone but root.
+const INIT_PID = 1;
 
 let home;
 let configDirectory;
@@ -238,6 +243,18 @@ test("forgets the oldest root once it knows more roots than its bound", () => {
   expect(log).not.toContain("switched:");
 });
 
+test("forgets the root used least recently, not the one remembered first", () => {
+  runPlugin(`
+    for (const root of ["ses_first", "ses_second", "ses_third"]) sessions.set(root, undefined);
+    step("ses_first", "msg_first1", { texts: ["one"] });
+    step("ses_second", "msg_second", { texts: ["two"] });
+    step("ses_first", "msg_first2", { texts: ["three"] });
+    step("ses_third", "msg_third", { texts: ["four"] });
+    step("ses_first", "msg_first3", { texts: ["five"], model: "other-model" });
+  `, { SESSION_LOG_FIXTURE: "fixture/recent", SESSION_LOG_OPTIONS: JSON.stringify({ maxKnownSessions: 2 }) });
+  expect(readProjectLog("fixture-recent")).toContain("switched: model fixture-model → other-model\n");
+});
+
 test("logs a failed step and an ended step without a started event only once", () => {
   runPlugin(`
     sessions.set("ses_failed", undefined);
@@ -439,6 +456,30 @@ test.skipIf(runsAsRoot)("closing names this process's runtime marker it cannot r
   `);
   fs.chmodSync(stateDirectory, PRIVATE_DIRECTORY_MODE);
   expect(result.stderr).toMatch(/session-log: EACCES: permission denied, unlink '.*runtime\.[0-9]+\.json'/);
+});
+
+// A pid no process has: probe upward from one that just exited until signalling it fails with ESRCH.
+const unusedPid = () => {
+  for (let pid = spawnSync("true").pid; ; pid += 1) {
+    try { process.kill(pid, 0); } catch (error) { if (error.code === "ESRCH") return pid; }
+  }
+};
+test("writing the runtime marker removes the per-process markers of exited processes only", () => {
+  fs.mkdirSync(stateDirectory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  const marker = (pid) => path.join(stateDirectory, `runtime.${pid}.json`);
+  const dead = marker(unusedPid());
+  const live = marker(process.pid);
+  const deadDirectory = marker(unusedPid());
+  for (const file of [dead, live]) fs.writeFileSync(file, "{}\n", { mode: 0o600 });
+  fs.mkdirSync(deadDirectory, { mode: PRIVATE_DIRECTORY_MODE });
+  const unsignalable = marker(INIT_PID);
+  if (!runsAsRoot) fs.writeFileSync(unsignalable, "{}\n", { mode: 0o600 });
+  const result = runPlugin("const { cleanup } = await setup(); await cleanup();");
+  expect(result.stderr).toBe("");
+  expect(fs.existsSync(dead)).toBe(false);
+  expect(fs.existsSync(live)).toBe(true);
+  expect(fs.statSync(deadDirectory).isDirectory()).toBe(true);
+  if (!runsAsRoot) expect(fs.existsSync(unsignalable)).toBe(true);
 });
 
 test("setup writes no runtime marker while logging is off", () => {
@@ -676,17 +717,20 @@ test("the legacy cleanup runs `repair` again only when the package or a disrupti
   expect(repairs()).toBe(2);
 });
 
-test("a failed cleanup, such as one another session-log command's lock skipped, runs again at the next start", () => {
-  const record = path.join(home, "repairs");
-  const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, "echo 'another command is running' >&2", "exit 75"]);
-  for (let run = 0; run < 2; run += 1) runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapper) });
-  expect(fs.readFileSync(record, "utf8")).toBe("repair\nrepair\n");
-});
+for (const [outcome, exitCode, runs] of [["another session-log command's install lock skipped", LOCK_BUSY_EXIT_CODE, 2], ["failed", FAILED_EXIT_CODE, 1]]) {
+  test(`a cleanup ${outcome} runs ${runs === 1 ? "once" : "again at the next start"}`, () => {
+    const record = path.join(home, "repairs");
+    const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, "echo 'cannot clean' >&2", `exit ${exitCode}`]);
+    for (let run = 0; run < 2; run += 1) runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapper) });
+    expect(fs.readFileSync(record, "utf8")).toBe("repair\n".repeat(runs));
+  });
+}
 
-test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run, and stamps only a success", () => {
+test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run, and stamps all but a busy lock", () => {
   for (const [lines, expected, stamped] of [
     [["echo 'OpenCode: kept /x/commands/session-log.md: move it aside'"], "session-log: OpenCode: kept /x/commands/session-log.md: move it aside\n", true],
-    [["echo 'cannot clean' >&2", "exit 1"], "session-log: cannot clean\n", false],
+    [["echo 'cannot clean' >&2", `exit ${FAILED_EXIT_CODE}`], "session-log: cannot clean\n", true],
+    [["echo 'another command is running' >&2", `exit ${LOCK_BUSY_EXIT_CODE}`], "session-log: another command is running\n", false],
     [["echo 'OpenCode: repair found no duplicate or stale registrations'"], "", true],
   ]) {
     fs.rmSync(stateDirectory, { recursive: true, force: true });

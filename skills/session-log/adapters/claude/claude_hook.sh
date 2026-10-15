@@ -97,20 +97,26 @@ cleanup_fingerprint() {
   if compgen -G "$LEGACY_SCRIPTS_GLOB" >/dev/null; then printf 'legacy scripts\n'; fi
 }
 
+# The exit status of a session-log command while another one holds the install lock
+# (INSTALL_LOCK_BUSY in lib/adapter_install.sh).
+readonly INSTALL_LOCK_BUSY=75
+
 # Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never
-# fails the hook and all output is discarded. A stamp of the fingerprint after a successful run
-# skips it until settings.json, this package, or whether a seeded copy or legacy scripts exist
-# changes. A failed run (say, another command holds the install lock, or an edited legacy script)
-# leaves no stamp, so the next session start tries again; `on` and `repair` report why it failed.
+# fails the hook and all output is discarded. A stamp of the fingerprint after the run skips it
+# until settings.json, this package, or whether a seeded copy or legacy scripts exist changes. Only
+# a run the busy install lock skipped leaves no stamp, so the next session start tries again; any
+# other failure (say, an edited legacy script) is stamped like a success, since rerunning it at
+# every session start cannot fix it, and `on` and `repair` report why it failed.
 # With no leftover it costs one grep.
 cleanup_legacy_leftovers() {
-  local fingerprint
+  local fingerprint status=0
   legacy_leftovers_present || return 0
   fingerprint="$(cleanup_fingerprint)" || return 0
   if [[ -f "$LEGACY_CLEANUP_STAMP" && ! -L "$LEGACY_CLEANUP_STAMP" && "$(< "$LEGACY_CLEANUP_STAMP")" == "$fingerprint" ]]; then
     return 0
   fi
-  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || return 0
+  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || status=$?
+  ((status != INSTALL_LOCK_BUSY)) || return 0
   # The fingerprint is taken again after the cleanup. If something else changes settings.json
   # in between, that change is stamped without a cleanup; the next change triggers one.
   fingerprint="$(cleanup_fingerprint)" || return 0
@@ -170,14 +176,16 @@ if [[ -n "$session_id" ]]; then
       '{harness:$harness,version:$version,session_id:$session_id,nonce:$nonce,
         loaded_at:$loaded_at,pid:$pid,process_start:$process_start}' > "$target")
   }
-  # The per-process markers of Claude Code processes that are gone: status never counts them.
+  # The per-process markers of Claude Code processes that are gone: status never counts them. A live
+  # process this user may not signal (kill -0 fails, ps still lists it) keeps its marker, as in the
+  # omp and OpenCode adapters.
   prune_dead_runtime_markers() {
     local marker pid
     for marker in "$STATE_DIR"/runtime.*.json; do
       pid="${marker##*/runtime.}"
       pid="${pid%.json}"
       [[ "$pid" =~ ^[1-9][0-9]*$ && -f "$marker" && ! -L "$marker" ]] || continue
-      kill -0 "$pid" 2>/dev/null || unlink "$marker" 2>/dev/null || true
+      kill -0 "$pid" 2>/dev/null || ps -p "$pid" >/dev/null 2>&1 || unlink "$marker" 2>/dev/null || true
     done
   }
   write_runtime_temp "$temp" 2>/dev/null || exit 0

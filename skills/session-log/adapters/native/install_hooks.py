@@ -24,7 +24,7 @@ CODEX_TRUST_INSTRUCTION = (
     "approve the session-log hooks in /hooks, or restart Codex and choose 'Trust all and continue'"
     " if it shows the 'Hooks need review' screen"
 )
-RESTORE_FOLLOW_UP = {"codex": f"; {CODEX_TRUST_INSTRUCTION}"}
+RESTORE_FOLLOW_UP = f"; {CODEX_TRUST_INSTRUCTION}"
 # The marketplace Codex caches codex-goodies under: the "name" of .agents/plugins/marketplace.json.
 # Pinning it keeps another marketplace's codex-goodies from running under the trusted command, and
 # leaves `sort -V` comparing version directories only. lib/adapter_install.sh (CODEX_MARKETPLACE)
@@ -194,7 +194,7 @@ def repair(config, harness):
     if found > current:
         print(f"removed {found - current} duplicate or stale hook registration(s) from {config}")
     if events > current:
-        print(f"restored {events - current} missing hook registration(s) in {config}{RESTORE_FOLLOW_UP.get(harness, '')}")
+        print(f"restored {events - current} missing hook registration(s) in {config}{RESTORE_FOLLOW_UP}")
 
 
 def has_managed_entries(document, harness):

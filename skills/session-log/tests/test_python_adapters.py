@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import fcntl
 import fnmatch
 import hashlib
@@ -8,6 +9,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -322,7 +324,7 @@ class InstallerHooksTests(unittest.TestCase):
         instruction = re.search(r'^readonly CODEX_TRUST_INSTRUCTION="([^"]+)"$',
                                 (REPO / "skills/session-log/bin/session-log").read_text(), re.MULTILINE).group(1)
         self.assertEqual(instruction, CODEX_TRUST_INSTRUCTION)
-        self.assertEqual(installer.RESTORE_FOLLOW_UP["codex"], f"; {instruction}")
+        self.assertEqual(installer.RESTORE_FOLLOW_UP, f"; {instruction}")
 
     def test_installer_completes_partial_writes_before_replacing_hooks_file(self):
         installer = load_module(INSTALL_PATH, "install_hooks_partial_write_test")
@@ -806,6 +808,7 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, f"removed 3 legacy session-log hook registration(s) from {settings_path}\n")
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads files whatever their mode")
     def test_both_operations_report_unreadable_or_invalid_settings_the_same_way(self):
         with tempfile.TemporaryDirectory() as directory:
             settings_path = Path(directory).resolve() / "settings.json"
@@ -1242,23 +1245,27 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CLAUDE_REPAIR_CLEAN, ""))
             self.assertEqual(settings.read_bytes(), original)
 
-    def test_claude_repair_neutralizes_a_changed_seeded_copy_it_keeps(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            package = claude_package(home)
-            seeded = home / SEEDED_RELATIVE
-            seeded.parent.mkdir(parents=True)
-            shutil.copytree(REPO / "skills/session-log", seeded)
-            write_seeded_manifest(seeded)
-            (seeded / "notes.md").write_text("mine\n")
-            result = run_session_log(package, home, "claude", "repair")
-            self.assertEqual((result.returncode, result.stderr), (0, ""))
-            self.assertEqual(result.stdout.splitlines(), [
-                neutralized_seeded_copy_report("Claude Code", seeded),
-                f"Claude Code: kept legacy package copy {seeded}: notes.md is not a file session-log installed; move it aside",
-            ])
-            self.assertFalse(os.path.lexists(seeded / "SKILL.md"))
-            self.assertEqual((seeded / "notes.md").read_text(), "mine\n")
+    def test_repair_of_every_plugin_owned_harness_neutralizes_a_changed_seeded_copy_it_keeps(self):
+        packages = {"claude": claude_package, "cursor": lambda home: cursor_plugin_root(home) / "skills/session-log",
+                    "opencode": opencode_package, "omp": omp_package}
+        for harness, make_package in packages.items():
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = make_package(home)
+                seeded = home / HARNESS_SUBROOTS[harness] / "skills/session-log"
+                seeded.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(REPO / "skills/session-log", seeded)
+                write_seeded_manifest(seeded)
+                (seeded / "notes.md").write_text("mine\n")
+                result = run_session_log(package, home, harness, "repair")
+                label = HARNESS_LABELS[harness]
+                self.assertEqual((result.returncode, result.stderr), (0, ""))
+                self.assertEqual(result.stdout.splitlines(), [
+                    neutralized_seeded_copy_report(label, seeded),
+                    f"{label}: kept legacy package copy {seeded}: notes.md is not a file session-log installed; move it aside",
+                ])
+                self.assertFalse(os.path.lexists(seeded / "SKILL.md"))
+                self.assertEqual((seeded / "notes.md").read_text(), "mine\n")
 
     def test_claude_repair_removes_obsolete_state_and_keeps_runtime_markers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1708,7 +1715,7 @@ class SessionStartCleanupStampTests(unittest.TestCase):
                 if kind == "symlink":
                     self.assertEqual(target.read_text(), "unrelated")
 
-    def test_failed_cleanup_is_not_stamped_and_runs_again_at_the_next_session_start(self):
+    def test_a_cleanup_the_busy_install_lock_skipped_is_not_stamped_and_runs_again_at_the_next_session_start(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             package, settings = self.dirty_settings(home)
@@ -1722,6 +1729,23 @@ class SessionStartCleanupStampTests(unittest.TestCase):
             shutil.rmtree(home / INSTALL_LOCK_RELATIVE)
             self.assert_cleaned(package, home, settings)
             self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
+
+    def test_a_cleanup_that_fails_for_good_is_stamped_and_not_rerun_at_every_session_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            edited = home / ".claude/scripts/prompt_log_save.sh"
+            edited.parent.mkdir(parents=True)
+            edited.write_text("#!/usr/bin/env bash\n# edited by the user\n")
+            first = run_claude_hook(package, home, "session-start")
+            self.assertEqual((first.returncode, first.stdout, first.stderr), (0, "", ""))
+            self.assertTrue(edited.is_file(), "the cleanup removed an unrecognized legacy script")
+            self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
+
+            (package / "bin/session-log").write_text(RECORDING_SESSION_LOG)
+            record = Path(directory) / "record"
+            self.recorded_session_start(package, home, record)
+            self.assertFalse(record.exists(), "a cleanup that failed for good ran again at the next session start")
 
     def test_failed_stamp_write_leaves_no_temporary_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1758,6 +1782,10 @@ class SessionStartCleanupStampTests(unittest.TestCase):
             self.assertEqual(json.loads(settings.read_text()), {"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}})
 
 
+# The init process: always alive, and only root may signal it.
+INIT_PID = 1
+
+
 class ClaudeRuntimeMarkerPruneTests(unittest.TestCase):
     """Session start drops the per-process runtime markers of Claude Code processes that are gone."""
 
@@ -1771,13 +1799,16 @@ class ClaudeRuntimeMarkerPruneTests(unittest.TestCase):
             finished = subprocess.run(["sh", "-c", "echo $$"], capture_output=True, text=True, check=True)
             dead = state / f"runtime.{finished.stdout.strip()}.json"
             live = state / f"runtime.{os.getpid()}.json"
+            # A live process this user may not signal (EPERM) counts as alive, as in the omp and OpenCode adapters.
+            unsignalable = state / f"runtime.{INIT_PID}.json"
             unrelated = state / "runtime.notes.json"
-            for marker in (dead, live, unrelated):
+            for marker in (dead, live, unsignalable, unrelated):
                 marker.write_text('{"harness": "claude"}')
             result = run_claude_hook(package, home, "session-start", payload=json.dumps({"session_id": "prune"}))
             self.assertEqual((result.returncode, result.stderr), (0, ""))
             self.assertFalse(os.path.lexists(dead))
             self.assertTrue(live.is_file())
+            self.assertTrue(unsignalable.is_file())
             self.assertTrue(unrelated.is_file())
 
 
@@ -2259,23 +2290,23 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 LOCK_BUSY_STATUS, "", "session-log: another session-log command is already in progress for codex\n"))
             self.assertFalse((home / CODEX_FLAG_RELATIVE).exists())
 
-    def test_a_broken_install_lock_fails_without_the_busy_status_and_says_what_failed(self):
+    @unittest.skipIf(os.geteuid() == 0, "root reads files whatever their mode")
+    def test_a_broken_install_lock_fails_repair_once_without_the_busy_status_and_on_still_enables(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             package = claude_package(home)
             hold_install_lock(home)
             owner = home / INSTALL_LOCK_RELATIVE / "owner"
             owner.chmod(0)
-            result = run_session_log(package, home, "claude", "on")
-            self.assertEqual((result.returncode, result.stdout), (1, ""))
-            self.assertNotIn("another session-log command", result.stderr)
-            self.assertNotIn("Traceback", result.stderr)
-            self.assertEqual(result.stderr.splitlines(), [
-                f"session-log: cannot acquire install lock {home / INSTALL_LOCK_RELATIVE}: "
-                f"[Errno 13] Permission denied: 'owner'",
-                f"session-log: cannot acquire install lock: {home / INSTALL_LOCK_RELATIVE}",
-            ])
-            self.assertFalse((home / ".claude/prompt-logs/.enabled").exists())
+            repair = run_session_log(package, home, "claude", "repair")
+            self.assertEqual((repair.returncode, repair.stdout, repair.stderr),
+                             (1, "", f"session-log: cannot read install lock owner: {owner}\n"))
+            error = f"cannot acquire install lock {home / INSTALL_LOCK_RELATIVE}: [Errno 13] Permission denied: 'owner'"
+            on = run_session_log(package, home, "claude", "on")
+            self.assertEqual((on.returncode, on.stdout, on.stderr), (
+                0, f"Claude Code: legacy cleanup failed: {error}; fix it, then run repair\n"
+                   "Claude Code: on — logging starts with the next prompt\n", ""))
+            self.assertTrue((home / ".claude/prompt-logs/.enabled").is_file())
 
     def test_native_repair_leaves_absent_or_unmanaged_hooks_files_untouched(self):
         for harness, subroot in NATIVE_HARNESSES:
@@ -2295,18 +2326,12 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 self.assertEqual(config.read_bytes(), original)
 
 
-# The git blobs of the unmarked scripts pre-plugin releases copied into ~/.claude/scripts, one per name in
-# legacy_script_is_tracked (lib/legacy_cleanup.sh), whose sha256 allowlist must keep matching them.
-PRE_PLUGIN_SCRIPT_BLOBS = {
-    "prompt_log_save.sh": "6ab0eebb9b82f70f624306145e3a2dbd1f0a8da5",
-    "prompt_log_new_session.sh": "4b510c64f3016ad9d09f29856ef2416b92ca955e",
-    "prompt_log_stop.sh": "c197bf12096a6fe671e8276c056100af61136c8d",
-    "prompt_log_subagent.sh": "0afb9b5b1b715460d3887dbbf389dc36a456d731",
-    "prompt_log_lib.sh": "823f0f003b2ebaf3e6b0ee6d32e15e1e45cc3748",
-    "prompt_log_usage.sh": "c87b5418cf96ba84205598b550c6cf63f65c3871",
-    "prompt_log_usage.jq": "7233ac08f1a5460b3bcb04854e96d1b9b9397e85",
-    "prompt_log_prices.json": "0672150c609cf20664cb6bdcab95c1ff3e6b5b17",
-}
+# The unmarked scripts pre-plugin releases copied into ~/.claude/scripts (git blobs 6ab0eeb, 4b510c6, c197bf1,
+# 0afb9b5, 823f0f0, c87b541, 7233ac0, 0672150), one per name in legacy_script_is_tracked
+# (lib/legacy_cleanup.sh), whose sha256 allowlist must keep matching them. The .blob suffix keeps them out
+# of shellcheck and of anything that runs scripts.
+PRE_PLUGIN_SCRIPTS = Path(__file__).resolve().parent / "fixtures/pre_plugin_claude_scripts"
+PRE_PLUGIN_SCRIPT_SUFFIX = ".blob"
 
 
 class PrePluginClaudeScriptTests(unittest.TestCase):
@@ -2319,8 +2344,7 @@ class PrePluginClaudeScriptTests(unittest.TestCase):
             scripts = home / ".claude/scripts"
             scripts.mkdir(parents=True)
             for name in LEGACY_SCRIPT_NAMES:
-                content = subprocess.run(["git", "-C", str(REPO), "cat-file", "blob", PRE_PLUGIN_SCRIPT_BLOBS[name]],
-                                         capture_output=True, check=True).stdout
+                content = (PRE_PLUGIN_SCRIPTS / (name + PRE_PLUGIN_SCRIPT_SUFFIX)).read_bytes()
                 self.assertNotIn(OWNER_MARKER.encode(), content, f"{name} would be recognized by its marker")
                 (scripts / name).write_bytes(content)
             result = run_session_log(package, home, "claude", "repair")
@@ -2347,6 +2371,24 @@ class ClaudeOffTests(unittest.TestCase):
             (state / name).write_text("{}\n")
         result = run_session_log(self.package, self.home, "claude", "off")
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "Claude Code: off\n", ""))
+        self.assertFalse(os.path.lexists(self.flag))
+        self.assertEqual([path.name for path in state.glob("runtime*.json")], [])
+
+    def test_off_tolerates_a_runtime_marker_a_hook_removes_while_it_runs(self):
+        """`off` takes no install lock, so a hook may remove or prune a marker between its check and its unlink."""
+        state = self.home / ".claude/session-log"
+        (state / "runtime.1.json").write_text("{}\n")
+        tools = self.home / "racing-tools"
+        tools.mkdir()
+        # An unlink that loses the race: the marker is gone by the time it runs.
+        (tools / "unlink").write_text(f'#!/bin/sh\n{shutil.which("unlink")} "$1"\nexec {shutil.which("unlink")} "$@"\n')
+        (tools / "unlink").chmod(EXECUTABLE_MODE)
+        environment = harness_environment(self.home)
+        result = subprocess.run(
+            ["bash", str(self.package / "bin/session-log"), "--entrypoint", "claude", "--harness", "claude", "off"],
+            capture_output=True, text=True, env={**environment, "PATH": f"{tools}{os.pathsep}{environment['PATH']}"},
+            timeout=SESSION_LOG_TIMEOUT_SECONDS)
+        self.assertEqual((result.returncode, result.stdout), (0, "Claude Code: off\n"))
         self.assertFalse(os.path.lexists(self.flag))
         self.assertEqual([path.name for path in state.glob("runtime*.json")], [])
 
@@ -2549,7 +2591,8 @@ class LegacyPackageCopyTests(unittest.TestCase):
         (copy / "notes.md").write_text("mine\n")
         nested.parent.chmod(READ_ONLY_DIRECTORY_MODE)
         self.addCleanup(nested.parent.chmod, PRIVATE_DIRECTORY_MODE)
-        self.assertEqual(self.remove(), "kept: notes.md is not a file session-log installed\n")
+        self.assertEqual(self.remove(), "kept: notes.md is not a file session-log installed; cannot remove "
+                                        "templates/opencode/SKILL.md: Permission denied, so it may still be loaded as a skill\n")
         self.assertTrue(nested.is_file())
 
     def test_neutralize_leaves_unproven_copies_alone(self):
@@ -3878,6 +3921,10 @@ def write_live_omp_marker(home, package):
     (state / "runtime.json").write_text(json.dumps(marker))
 
 
+# A legacy file carrying session-log's ownership marker.
+MARKED_LEGACY_CONTENT = "# universal-session-log: managed\nlegacy\n"
+
+
 class OmpPluginOwnedTests(unittest.TestCase):
     """The omp plugin registers the extension: `on`/`off` flip the flag and the cleanup removes older installs."""
 
@@ -3957,6 +4004,50 @@ class OmpPluginOwnedTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in state.iterdir()), ["runtime.1.json", "runtime.json"])
         second = self.run_omp("repair")
         self.assertEqual((second.returncode, second.stdout, second.stderr), (0, OMP_REPAIR_CLEAN, ""))
+
+    def pre_universal_omp_skill(self, scripts):
+        """The session-log-omp skill pre-universal releases installed, holding ``scripts`` {name: content}."""
+        skill = self.home / OMP_SUBROOT / "skills/session-log-omp"
+        (skill / "scripts").mkdir(parents=True)
+        (skill / "SKILL.md").write_text(MARKED_LEGACY_CONTENT)
+        for name, content in scripts.items():
+            (skill / "scripts" / name).write_text(content)
+        return skill
+
+    def test_repair_silently_removes_the_pre_universal_omp_skill_with_its_usage_script(self):
+        skill = self.pre_universal_omp_skill({"session_log_usage.ts": MARKED_LEGACY_CONTENT})
+        result = self.run_omp("repair")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, OMP_REPAIR_CLEAN, ""))
+        self.assertFalse(os.path.lexists(skill))
+
+    def test_repair_silently_removes_only_a_pre_universal_extension_link_it_recognizes(self):
+        link = self.home / OMP_SUBROOT / "extensions/session-log-omp.js"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(self.package / OMP_EXTENSION_SOURCE)
+        removed = self.run_omp("repair")
+        self.assertEqual((removed.returncode, removed.stdout, removed.stderr), (0, OMP_REPAIR_CLEAN, ""))
+        self.assertFalse(os.path.lexists(link))
+        link.symlink_to(self.home / "elsewhere.js")
+        kept = self.run_omp("repair")
+        self.assertEqual((kept.returncode, kept.stdout, kept.stderr),
+                         (1, "", f"session-log: refusing to remove unowned legacy path: {link}\n"))
+        self.assertTrue(link.is_symlink())
+
+    def test_repair_keeps_the_pre_universal_omp_skill_while_its_scripts_hold_anything_else(self):
+        cases = {
+            "an unmarked usage script": {"session_log_usage.ts": "user edit\n"},
+            "another marked script": {"session_log_usage.ts": MARKED_LEGACY_CONTENT, "other.sh": MARKED_LEGACY_CONTENT},
+            "a user file": {"session_log_usage.ts": MARKED_LEGACY_CONTENT, "notes.txt": "mine\n"},
+        }
+        for name, scripts in cases.items():
+            with self.subTest(name):
+                skill = self.pre_universal_omp_skill(scripts)
+                result = self.run_omp("repair")
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (
+                    1, "", f"session-log: refusing to remove managed directory containing user files: {skill / 'scripts'}\n"))
+                self.assertEqual(sorted(path.name for path in (skill / "scripts").iterdir()), sorted(scripts))
+                self.assertTrue((skill / "SKILL.md").is_file())
+                shutil.rmtree(skill)
 
     def test_on_removes_the_seeded_install_before_enabling(self):
         seeded, extension = omp_seeded_install(self.home)
@@ -4443,6 +4534,7 @@ class PackageLockTests(unittest.TestCase):
         (self.lock / "owner").write_text(f"{os.getpid()}\n{process_start(os.getpid())}\n")
         self.assertEqual(self.acquire(), LOCK_BUSY_STATUS)
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads files whatever their mode")
     def test_acquire_reports_what_failed_when_the_lock_is_broken_not_busy(self):
         self.create_lock()
         (self.lock / "owner").chmod(0)
@@ -4497,6 +4589,15 @@ class LegacyCleanupTriggerTests(unittest.TestCase):
         self.assertTrue(triggers)
         self.assertLessEqual(triggers, cleanup_leftover_roots("legacy_cleanup_opencode", "remove_legacy_opencode_command"))
 
+    def test_the_cursor_trigger_names_only_leftovers_the_cursor_cleanup_removes(self):
+        """Cursor stamps nothing, so its trigger names only what every cleanup run removes: the hooks.json entries."""
+        hook = load_module(HOOK_PATH, "session_log_hook_trigger_test")
+        source = inspect.getsource(hook.has_legacy_cursor_hooks)
+        triggers = {leftover_root(relative) for relative in re.findall(r'root / "([^"]+)"', source)}
+        self.assertEqual(triggers, {"hooks.json"})
+        self.assertLessEqual(triggers, cleanup_leftover_roots("legacy_cleanup_cursor"))
+        self.assertIn('install_hooks.has_managed_entries(document, "cursor")', source)
+
     def test_the_claude_trigger_names_every_leftover_the_claude_cleanup_removes(self):
         hook = CLAUDE_HOOK_PATH.read_text()
         seeded = re.search(r'^readonly SEEDED_COPY="\$CLAUDE_ROOT/([^"]+)"', hook, re.MULTILINE).group(1)
@@ -4513,6 +4614,21 @@ class LegacyCleanupTriggerTests(unittest.TestCase):
                 self.assertRegex(registration, settings_gate)
 
 
+# A cleanup test's timeout, and how long its stand-in helper would outlive it.
+CLEANUP_TEST_TIMEOUT_SECONDS = 1
+CLEANUP_HELPER_SECONDS = 600
+PROCESS_EXIT_WAIT_SECONDS = 5
+PROCESS_POLL_SECONDS = 0.05
+
+
+def process_exists(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 class CursorSessionStartCleanupTests(unittest.TestCase):
     """The Cursor session-start cleanup is bounded by Cursor's hook timeout and says why it never ran."""
 
@@ -4525,26 +4641,44 @@ class CursorSessionStartCleanupTests(unittest.TestCase):
             Path("/old") / CURSOR_SEEDED_RELATIVE / CURSOR_SEEDED_HOOK_RELATIVE)))
         self.hook = load_module(HOOK_PATH, "session_log_hook_cleanup_test")
 
-    def remove_legacy_hooks(self, failure):
-        with patch.object(self.hook.subprocess, "run", side_effect=failure) as run, \
+    def remove_legacy_hooks(self, cli_script):
+        """Runs the session-start cleanup with ``cli_script`` standing in for bin/session-log."""
+        cli = self.root / "session-log"
+        cli.write_text(cli_script)
+        with patch.object(self.hook, "SESSION_LOG_CLI", cli), \
                 patch("sys.stdout", new_callable=io.StringIO) as stdout, \
                 patch("sys.stderr", new_callable=io.StringIO) as stderr:
             self.hook.remove_legacy_cursor_hooks(self.root)
-        return run, stdout.getvalue(), stderr.getvalue()
+        return stdout.getvalue(), stderr.getvalue()
 
     def test_the_cleanup_ends_before_cursor_kills_the_hook(self):
-        run, stdout, stderr = self.remove_legacy_hooks(None)
-        self.assertEqual((stdout, stderr), ("", ""))
-        self.assertLess(run.call_args.kwargs["timeout"], CURSOR_HOOK_TIMEOUT_SECONDS)
+        self.assertLess(self.hook.REPAIR_TIMEOUT_SECONDS, CURSOR_HOOK_TIMEOUT_SECONDS)
+        record = self.root / "arguments"
+        self.assertEqual(self.remove_legacy_hooks(f'printf "%s " "$@" > "{record}"\n'), ("", ""))
+        self.assertEqual(record.read_text(), "--entrypoint cursor --harness cursor repair ")
 
-    def test_a_cleanup_that_times_out_is_reported_on_stderr_only(self):
-        timeout = self.hook.REPAIR_TIMEOUT_SECONDS
-        _, stdout, stderr = self.remove_legacy_hooks(subprocess.TimeoutExpired("bash", timeout))
-        self.assertEqual((stdout, stderr), ("", f"session-log: legacy cleanup timed out after {timeout}s; run repair\n"))
+    def test_a_cleanup_that_times_out_ends_with_every_process_it_started_and_is_reported_on_stderr_only(self):
+        helper_pid = self.root / "helper.pid"
+        # A repair whose helper (as lib/*.py runs under bin/session-log) outlives the shell that started it.
+        script = f'sleep {CLEANUP_HELPER_SECONDS} &\nprintf "%s" "$!" > "{helper_pid}"\nwait\n'
+        with patch.object(self.hook, "REPAIR_TIMEOUT_SECONDS", CLEANUP_TEST_TIMEOUT_SECONDS):
+            stdout, stderr = self.remove_legacy_hooks(script)
+        self.assertEqual((stdout, stderr), (
+            "", f"session-log: legacy cleanup timed out after {CLEANUP_TEST_TIMEOUT_SECONDS}s; run repair\n"))
+        pid = int(helper_pid.read_text())
+        deadline = time.monotonic() + PROCESS_EXIT_WAIT_SECONDS
+        while process_exists(pid) and time.monotonic() < deadline:
+            time.sleep(PROCESS_POLL_SECONDS)
+        if process_exists(pid):
+            os.kill(pid, signal.SIGKILL)
+            self.fail("the cleanup's helper process outlived its timeout")
 
     def test_a_cleanup_that_cannot_start_is_reported_on_stderr_only(self):
-        _, stdout, stderr = self.remove_legacy_hooks(FileNotFoundError(2, "No such file or directory", "bash"))
-        self.assertEqual((stdout, stderr), (
+        with patch.object(self.hook.subprocess, "Popen", side_effect=FileNotFoundError(2, "No such file or directory", "bash")), \
+                patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+                patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.hook.remove_legacy_cursor_hooks(self.root)
+        self.assertEqual((stdout.getvalue(), stderr.getvalue()), (
             "", "session-log: cannot start the legacy cleanup: [Errno 2] No such file or directory: 'bash'\n"))
 
 

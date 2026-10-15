@@ -440,7 +440,23 @@ legacy_omp_script_is_managed() {
 }
 
 validate_managed_path() {
-  local path="$1" marker_path="${2:-$1}" target child scripts_dir=""
+  walk_managed_path validate "$@"
+}
+
+# Removes managed path $1 (a directory with ownership-marker file $2, or a file) once a first walk
+# has proven everything below it session-log's; remove_known_path checks each file again, and
+# safe_remove_path refuses a directory that gained a file since.
+remove_managed_path() {
+  walk_managed_path validate "$@"
+  walk_managed_path remove "$@"
+}
+
+# The one walk over managed path $2: with action $1 "validate" it fails unless $2 is session-log's
+# (a known legacy link, or a file or directory whose ownership-marker file $3 is marked) and holds
+# nothing else; with "remove" it removes what it walks. Only the pre-universal session-log-omp skill
+# may hold a scripts directory, which may hold only its marked usage script.
+walk_managed_path() {
+  local action="$1" path="$2" marker_path="${3:-$2}" target child script
   [[ -e "$path" || -L "$path" ]] || return 0
   ensure_safe_parent "$path"
   if [[ -L "$path" ]]; then
@@ -452,6 +468,7 @@ validate_managed_path() {
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$PACKAGE_ROOT/adapters/omp/session-log.js"|\
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$HOME_ROOT/.omp/agent/skills/session-log/adapters/omp/session-log.js"|\
       "$HOME_ROOT/.omp/agent/extensions/session-log-omp.js:$STORE/releases/"*/adapters/omp/session-log.js)
+        [[ "$action" != remove ]] || remove_checked_path "$path"
         return 0
         ;;
     esac
@@ -462,43 +479,25 @@ validate_managed_path() {
       fail "refusing to remove unowned legacy path: $path"; }
   has_exact_ownership_marker "$marker_path" ||
     fail "refusing to remove unowned legacy path: $path"
-  if [[ -d "$path" && ! -L "$path" ]]; then
-    if [[ "$path" == "$HOME_ROOT/.omp/agent/skills/session-log-omp" &&
-          -d "$path/scripts" && ! -L "$path/scripts" ]]; then
-      scripts_dir="$path/scripts"
-      for child in "$scripts_dir"/* "$scripts_dir"/.[!.]* "$scripts_dir"/..?*; do
-        [[ -e "$child" || -L "$child" ]] || continue
-        legacy_omp_script_is_managed "$child" && continue
-        fail "refusing to remove managed directory containing user files: $scripts_dir"
-      done
-    fi
-    for child in "$path"/* "$path"/.[!.]* "$path"/..?*; do
-      [[ -e "$child" || -L "$child" ]] || continue
-      [[ "$child" == "$marker_path" || "$child" == "$scripts_dir" ]] && continue
+  if [[ ! -d "$path" ]]; then
+    [[ "$action" != remove ]] || remove_known_path "$path"
+    return 0
+  fi
+  for child in "$path"/* "$path"/.[!.]* "$path"/..?*; do
+    [[ -e "$child" || -L "$child" ]] || continue
+    [[ "$child" != "$marker_path" ]] || continue
+    [[ "$child" == "$HOME_ROOT/.omp/agent/skills/session-log-omp/scripts" && -d "$child" && ! -L "$child" ]] ||
       fail "refusing to remove managed directory containing user files: $path"
+    for script in "$child"/* "$child"/.[!.]* "$child"/..?*; do
+      [[ -e "$script" || -L "$script" ]] || continue
+      legacy_omp_script_is_managed "$script" ||
+        fail "refusing to remove managed directory containing user files: $child"
+      [[ "$action" != remove ]] || remove_known_path "$script"
     done
-  fi
-}
-
-# validate_managed_path has proven every file below a managed directory session-log's, so this only
-# removes them; remove_known_path checks each file again, and safe_remove_path refuses a directory
-# that gained a file since.
-remove_managed_path() {
-  local path="$1" marker_path="${2:-$1}" scripts_dir="$1/scripts" child
-  validate_managed_path "$path" "$marker_path"
-  [[ -e "$path" || -L "$path" ]] || return 0
-  if [[ ! -d "$path" || -L "$path" ]]; then
-    remove_known_path "$path"
-    return
-  fi
-  if [[ -d "$scripts_dir" && ! -L "$scripts_dir" ]]; then
-    for child in "$scripts_dir"/* "$scripts_dir"/.[!.]* "$scripts_dir"/..?*; do
-      [[ -e "$child" || -L "$child" ]] || continue
-      remove_known_path "$child"
-    done
-    safe_remove_path "$scripts_dir" ||
-      fail "refusing to remove managed directory containing user files: $scripts_dir"
-  fi
+    [[ "$action" != remove ]] || safe_remove_path "$child" ||
+      fail "refusing to remove managed directory containing user files: $child"
+  done
+  [[ "$action" == remove ]] || return 0
   remove_known_path "$marker_path"
   safe_remove_path "$path" ||
     fail "refusing to remove managed directory containing user files: $path"

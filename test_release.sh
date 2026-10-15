@@ -129,12 +129,15 @@ assert_exits_1 "only VERSION changed"         session_log_version_stale $'skills
 assert_exits_1 "nothing changed"              session_log_version_stale ""
 assert_exits_1 "another skill changed"        session_log_version_stale $'skills/commit/SKILL.md'
 assert_exits_1 "a lookalike directory"        session_log_version_stale $'skills/session-logger/SKILL.md'
-for _file in "${SESSION_LOG_WIRING_FILES[@]}" "$OMP_EXTENSIONS_CHANGE"; do
+for _file in "${SESSION_LOG_WIRING_FILES[@]}" "${JSON_WIRING_FIELDS[@]}"; do
   assert_exits_0 "$_file changed, VERSION not" session_log_version_stale "$_file"
   assert_exits_1 "$_file and VERSION changed"  session_log_version_stale "$_file"$'\nskills/session-log/VERSION'
 done
 assert_exits_1 "a lookalike hook manifest"    session_log_version_stale $'other/hooks/hooks.json'
 assert_exits_1 "package.json changed only"    session_log_version_stale $'package.json'
+for _field in "package.json:.omp.extensions" "package.json:.exports" ".cursor-plugin/plugin.json:.hooks" ".codex-plugin/plugin.json:.hooks"; do
+  assert_eq "guards the wiring field $_field" "1" "$(printf '%s\n' "${JSON_WIRING_FIELDS[@]}" | grep -cxF "$_field")"
+done
 
 # ── assert_session_log_version_bumped ─────────────────────────────────────────
 echo "=== assert_session_log_version_bumped ==="
@@ -146,6 +149,11 @@ write_package_json() {
   printf '{\n  "version": "%s",\n  "omp": {\n    "extensions": [\n      "%s"\n    ]\n  }\n}\n' "$1" "$2" \
     > "$REPO_ROOT/package.json"
 }
+# write_plugin_json <harness> <version> <hooks pointer> → the fixture's .<harness>-plugin/plugin.json
+write_plugin_json() {
+  mkdir -p "$REPO_ROOT/.$1-plugin"
+  printf '{\n  "version": "%s",\n  "hooks": "%s"\n}\n' "$2" "$3" > "$REPO_ROOT/.$1-plugin/plugin.json"
+}
 _orig_root="$REPO_ROOT"
 REPO_ROOT="$(mktemp -d)"
 fixture_git init -q
@@ -155,6 +163,8 @@ printf '1.0.0\n' > "$REPO_ROOT/skills/session-log/VERSION"
 printf 'one\n' > "$REPO_ROOT/skills/session-log/SKILL.md"
 printf '{}\n' > "$REPO_ROOT/hooks/hooks.json"
 write_package_json 1.0.0 ./one.js
+write_plugin_json cursor 1.0.0 ./one.json
+write_plugin_json codex 1.0.0 ./one.json
 fixture_git add -A
 fixture_git commit -q -m release
 fixture_git tag v1.0.0
@@ -180,6 +190,29 @@ assert_exits_0 "only the release version of package.json changed" assert_session
 write_package_json 2.0.0 ./two.js
 fixture_git commit -q -am extension
 assert_exits_1 "omp.extensions changed without a VERSION bump" assert_session_log_version_bumped v1.0.2
+printf '1.0.3\n' > "$REPO_ROOT/skills/session-log/VERSION"
+fixture_git commit -q -am bump
+fixture_git tag v1.0.3
+write_plugin_json cursor 2.0.0 ./one.json
+write_plugin_json codex 2.0.0 ./one.json
+fixture_git commit -q -am release
+assert_exits_0 "only the release version of the plugin manifests changed" assert_session_log_version_bumped v1.0.3
+for _harness in cursor codex; do
+  write_plugin_json "$_harness" 2.0.0 ./two.json
+  fixture_git commit -q -am "$_harness hooks pointer"
+  assert_exits_1 "$_harness plugin.json hooks pointer changed without a VERSION bump" \
+    assert_session_log_version_bumped v1.0.3
+  write_plugin_json "$_harness" 2.0.0 ./one.json
+  fixture_git commit -q -am "restore $_harness hooks pointer"
+done
+# shellcheck disable=SC2016 # the inner script expands its own positional arguments
+_jq_absent=$(bash -c 'source "$1"; REPO_ROOT="$2"; PATH=/nonexistent
+  assert_session_log_version_bumped v1.0.3 2>&1 || echo "exit $?"' _ "$SCRIPT_DIR/release.sh" "$REPO_ROOT")
+assert_eq "fails closed, naming jq, when jq is not installed" \
+  $'Error: jq is required to check the session-log VERSION bump\nexit 1' "$_jq_absent"
+printf '{ not json\n' > "$REPO_ROOT/package.json"
+fixture_git commit -q -am broken
+assert_exits_1 "fails closed when a wiring manifest is not valid JSON" assert_session_log_version_bumped v1.0.3
 discard "$REPO_ROOT"
 REPO_ROOT="$_orig_root"
 

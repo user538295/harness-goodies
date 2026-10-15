@@ -992,10 +992,10 @@ function currentSessionFile(ctx) {
 
 // Older releases linked an extension into the OMP root and seeded a package copy into its skill
 // root; omp loads such an extension beside this one. `repair` removes them in the background, once
-// per process, logging on or off. A successful attempt stamps the fingerprint of this package and
-// the leftovers present, which skips it until either changes, so a copy it keeps is reported once.
-// A failed attempt is reported on stderr and runs again at the next start, and so does one skipped
-// because another session-log command holds the install lock.
+// per process, logging on or off. An attempt stamps the fingerprint of this package and the leftovers
+// present, which skips it until either changes, so a copy it keeps or a failure (reported on stderr;
+// `/session-log repair` shows it) is reported once. Only an attempt skipped because another
+// session-log command holds the install lock leaves no stamp and runs again at the next start.
 const LEGACY_LEFTOVERS = [
 	path.join(agentDir, "extensions", "session-log.js"),
 	path.join(agentDir, "extensions", "session-log-omp.js"),
@@ -1031,6 +1031,7 @@ const stampLegacyCleanup = () => {
 	}
 };
 const reportLegacyCleanupFailure = (detail) => {
+	stampLegacyCleanup();
 	const reason = detail.startsWith(CLI_MESSAGE_PREFIX) ? detail.slice(CLI_MESSAGE_PREFIX.length) : detail;
 	process.stderr.write(`session-log: legacy cleanup failed: ${reason}; /session-log repair shows the details\n`);
 };
@@ -1047,11 +1048,11 @@ function cleanupLegacyLeftovers() {
 		child.unref();
 		Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]).then(([exitCode, stdout, stderr]) => {
 			reportKeptLeftovers(stdout);
+			if (exitCode === INSTALL_LOCK_BUSY_EXIT_CODE) return;
 			if (exitCode === 0) {
 				stampLegacyCleanup();
 				return;
 			}
-			if (exitCode === INSTALL_LOCK_BUSY_EXIT_CODE) return;
 			const lastLine = stderr.split("\n").filter((line) => line.trim()).pop();
 			reportLegacyCleanupFailure(lastLine || `exit status ${exitCode}`);
 		}).catch((error) => reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error)));
@@ -1060,15 +1061,29 @@ function cleanupLegacyLeftovers() {
 	}
 }
 
-// Bound on one /session-log command, as the OpenCode adapter caps its CLI.
+// Bound on one /session-log command, as the OpenCode adapter caps its CLI. The CLI runs in its own
+// process group, so its timeout also ends the helpers it started, which would otherwise hold its
+// output open.
 const CLI_TIMEOUT_MS = 120_000;
-function runUniversalCommand(argumentString, ctx, timeoutMs) {
+async function runUniversalCommand(argumentString, ctx, timeoutMs) {
 	const rawArguments = usageCommandArguments(String(argumentString || "status"), currentSessionFile(ctx));
-	const child = spawnSessionLogCli((command) => Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe", timeout: timeoutMs }), ["--arguments", rawArguments]);
-	if (child.exitedDueToTimeout) throw new Error(`${CLI_MESSAGE_PREFIX}${rawArguments} timed out after ${timeoutMs} ms`);
-	const stdout = new TextDecoder().decode(child.stdout).trimEnd();
-	const stderr = new TextDecoder().decode(child.stderr).trim();
-	if (child.exitCode !== 0) throw new Error(stderr || stdout || `session-log exited with ${child.exitCode}`);
+	const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }), ["--arguments", rawArguments]);
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		try {
+			process.kill(-child.pid, "SIGKILL");
+		} catch (error) {
+			// The process group may already be gone.
+			if (error?.code !== "ESRCH") process.stderr.write(`${CLI_MESSAGE_PREFIX}${error.message}\n`);
+		}
+	}, timeoutMs);
+	const [exitCode, output, errors] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+		.finally(() => clearTimeout(timer));
+	if (timedOut) throw new Error(`${CLI_MESSAGE_PREFIX}${rawArguments} timed out after ${timeoutMs} ms`);
+	const stdout = output.trimEnd();
+	const stderr = errors.trim();
+	if (exitCode !== 0) throw new Error(stderr || stdout || `session-log exited with ${exitCode}`);
 	notify(ctx, stdout);
 }
 
@@ -1106,7 +1121,7 @@ function registerSessionLogCommand(pi, cliTimeoutMs) {
 	pi.registerCommand("session-log", {
 		description: "Manage session prompt logging and usage totals",
 		handler: async (args, ctx) => {
-			try { runUniversalCommand(args, ctx, cliTimeoutMs); }
+			try { await runUniversalCommand(args, ctx, cliTimeoutMs); }
 			catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				notify(ctx, message);

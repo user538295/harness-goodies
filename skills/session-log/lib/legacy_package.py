@@ -19,7 +19,8 @@ session-log's or cannot be read far enough to tell. A copy kept despite a valid 
 neutralized first, and ``neutralized`` precedes the ``kept`` line: every SKILL.md in it that the
 manifest proves unchanged goes, so no harness loads the copy as a skill (Codex discovers SKILL.md
 files at any depth below a user skill root) and its older code can no longer be invoked to
-register its hooks again; when a SKILL.md the manifest lists stays, ``neutralized`` is not printed.
+register its hooks again; when a SKILL.md the manifest lists stays, ``neutralized`` is not printed
+and the ``kept`` reason names it.
 `neutralize` does only that, for a copy a harness must keep because running sessions' hooks still
 run it, and prints ``neutralized`` when it removed anything, or ``kept: <reason>`` when a SKILL.md
 it lists could not be removed.
@@ -235,6 +236,8 @@ def _remove_copy(parent_fd, name):
             failures = []
             # A SKILL.md that stays still loads the copy as a skill, so the copy is not neutralized.
             kept.neutralized = _neutralize(copy_fd, "", assets, failures) and not failures
+            if failures:
+                raise Kept(f"{kept}; {failures[0]}, so it may still be loaded as a skill") from kept
             raise
         try:
             _remove_tree(copy_fd, "", checked)

@@ -75,6 +75,8 @@ const STATE_DIR = path.join(CONFIG_DIR, "session-log");
 const DISRUPTIVE_LEFTOVERS = ["commands/session-log.md", "skills/session-log", "plugins/session-log.js"];
 // What `repair` prints when it found nothing to remove.
 const CLEAN_REPAIR_REPORT = "repair found no duplicate or stale registrations";
+// EX_TEMPFAIL: the CLI exits with it when, and only when, another session-log command holds the install lock.
+const INSTALL_LOCK_BUSY_EXIT_CODE = 75;
 
 // Writes one line to OpenCode's log (its stderr).
 const writeLog = (message) => process.stderr.write(`session-log: ${message}\n`);
@@ -208,6 +210,12 @@ const isNotPrivateOrOwned = (stat, uid) =>
 const differs = (previous, next) => Boolean(previous && next && previous !== next);
 const trimOldest = (collection, max) => {
   while (collection.size > max) collection.delete(collection.keys().next().value);
+};
+// Sets `key` as the most recently used entry of a Map trimOldest bounds.
+const setRecent = (collection, key, value, max) => {
+  collection.delete(key);
+  collection.set(key, value);
+  trimOldest(collection, max);
 };
 const descendantsOf = (sessionID, parentBySession) => {
   const childrenByParent = new Map();
@@ -691,9 +699,34 @@ const readProcessStart = (() => {
   };
 })();
 const processRuntimeFile = () => path.join(STATE_DIR, `runtime.${process.pid}.json`);
+const PROCESS_RUNTIME_PATTERN = /^runtime\.(\d+)\.json$/;
+// Whether no process has `pid`; one this process may not signal (EPERM) is alive.
+const isDeadProcess = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return error?.code === "ESRCH";
+  }
+};
+// An OpenCode process that exits without closing the plugin leaves its per-process marker, so the
+// markers of exited processes go here; runtime.json and the markers of live processes stay.
+const pruneDeadProcessRuntimes = () => {
+  for (const name of fs.readdirSync(STATE_DIR)) {
+    const pid = Number(PROCESS_RUNTIME_PATTERN.exec(name)?.[1]);
+    if (!pid || pid === process.pid || !isDeadProcess(pid)) continue;
+    const marker = path.join(STATE_DIR, name);
+    try {
+      if (fs.lstatSync(marker).isFile()) fs.unlinkSync(marker);
+    } catch (error) {
+      if (error?.code !== "ENOENT") reportError(error);
+    }
+  }
+};
 // The runtime marker `status` reads: this process runs the session-log handlers of this VERSION.
 function markRuntime() {
   ensureDirectory(STATE_DIR);
+  pruneDeadProcessRuntimes();
   const nonce = `${process.pid}.${Date.now()}.${randomBytes(NONCE_BYTES).toString("hex")}`;
   const temporary = path.join(STATE_DIR, `.runtime.${nonce}.tmp`);
   const processTemporary = path.join(STATE_DIR, `.runtime.${nonce}.process.tmp`);
@@ -780,8 +813,7 @@ function createSessionTree(ctx, maxKnownSessions) {
   const parentBySession = new Map(); // session ID → parent session ID, "" for a root
   const deletedSessions = new Set();
   const remember = (sessionID, parentID) => {
-    parentBySession.set(sessionID, validId(parentID) && parentID !== sessionID ? parentID : "");
-    trimOldest(parentBySession, maxKnownSessions);
+    setRecent(parentBySession, sessionID, validId(parentID) && parentID !== sessionID ? parentID : "", maxKnownSessions);
   };
   // Tombstones sessionID and every descendant; returns them.
   const forgetTree = (sessionID) => {
@@ -822,10 +854,7 @@ export function createSessionLog(ctx, { now = Date.now, maxKnownSessions = MAX_K
   const openStepsByMessage = new Map(); // assistant message ID → the step that has started but not ended
   const logFileByRoot = new Map();
   const lastByRoot = new Map();
-  const rememberLogFile = (root, file) => {
-    logFileByRoot.set(root, file);
-    trimOldest(logFileByRoot, maxKnownSessions);
-  };
+  const rememberLogFile = (root, file) => setRecent(logFileByRoot, root, file, maxKnownSessions);
   let queue = Promise.resolve();
   const enqueue = (operation) => {
     queue = queue.then(operation).catch(reportError);
@@ -844,6 +873,7 @@ export function createSessionLog(ctx, { now = Date.now, maxKnownSessions = MAX_K
     if (logFileByRoot.has(root)) {
       const existing = logFileByRoot.get(root);
       assertLogFile(existing, root);
+      rememberLogFile(root, existing);
       return existing;
     }
     const dir = path.join(LOGS_DIR, projectSlug);
@@ -895,8 +925,7 @@ export function createSessionLog(ctx, { now = Date.now, maxKnownSessions = MAX_K
   };
   const switchLine = (root, model, mode) => {
     const previous = lastByRoot.get(root);
-    lastByRoot.set(root, { model, mode });
-    trimOldest(lastByRoot, maxKnownSessions);
+    setRecent(lastByRoot, root, { model, mode }, maxKnownSessions);
     if (!previous) return "";
     const parts = [];
     if (differs(previous.model, model)) parts.push(`model ${previous.model} → ${model}`);
@@ -997,7 +1026,9 @@ export const runSessionLogCli = (argumentsText, { timeoutMs = CLI_TIMEOUT_MS } =
   child.on("close", (code, signal) => {
     clearTimeout(timer);
     if (timedOut) reject(new Error(`session-log: ${argumentsText} timed out after ${timeoutMs} ms`));
-    else if (code !== 0) reject(new Error(output.stderr.trim() || output.stdout.trim() || `session-log: exited with ${code ?? signal}`));
+    else if (code !== 0) {
+      reject(Object.assign(new Error(output.stderr.trim() || output.stdout.trim() || `session-log: exited with ${code ?? signal}`), { exitCode: code }));
+    }
     else resolve(output.stdout.trim());
   });
 });
@@ -1023,10 +1054,10 @@ const cleanupFingerprint = () => [
 
 // Runs `repair`, which removes what older releases left in ~/.config/opencode and is proven
 // session-log's, including a markdown /session-log command that would override this package's. The
-// fingerprint taken after a successful attempt skips it until this package or a disruptive leftover
-// changes, so a leftover it keeps is reported once; a failed attempt, including one another
-// session-log command's install lock skipped, runs again at the next start. Its report or failure
-// goes to OpenCode's log; `on` and `repair` show the user what it did or why it failed.
+// fingerprint taken after an attempt skips it until this package or a disruptive leftover changes,
+// so a leftover it keeps or a failure is reported once; only an attempt another session-log
+// command's install lock skipped runs again at the next start. Its report or failure goes to
+// OpenCode's log; `on` and `repair` show the user what it did or why it failed.
 export async function cleanupLegacyLeftovers() {
   const stamp = path.join(STATE_DIR, "legacy-cleanup.stamp");
   try {
@@ -1039,7 +1070,7 @@ export async function cleanupLegacyLeftovers() {
     if (report && !report.endsWith(CLEAN_REPAIR_REPORT)) writeLog(report);
   } catch (error) {
     reportError(error);
-    return;
+    if (error?.exitCode === INSTALL_LOCK_BUSY_EXIT_CODE) return;
   }
   try {
     ensureFile(stamp);

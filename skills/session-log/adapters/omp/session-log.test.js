@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +24,16 @@ const ADAPTER_PATH = path.join(import.meta.dir, "session-log.js");
 const PRIVATE_FILE_MODE = 0o600;
 const DEDUPE_RECORD_LIMIT = 64;
 
-const temporaryDirectory = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "omp-session-log-")));
+// Every directory a test creates, removed after it.
+const createdDirectories = [];
+const temporaryDirectory = (prefix = "omp-session-log-") => {
+	const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+	createdDirectories.push(directory);
+	return directory;
+};
+afterEach(() => {
+	for (const directory of createdDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
+});
 
 const createLogFile = (directory) => {
 	const file = path.join(directory, "session_test.md");
@@ -120,7 +129,7 @@ await handlers.before_agent_start({ prompt: "isolated prompt" }, { sessionManage
 describe("inline Python", () => {
 	test("never imports a module from the project directory", () => {
 		const home = temporaryDirectory();
-		const project = fs.mkdtempSync(path.join(os.tmpdir(), "session-log-omp-project-"));
+		const project = temporaryDirectory("session-log-omp-project-");
 		for (const module of HIJACKABLE_MODULES) {
 			fs.writeFileSync(path.join(project, `${module}.py`),
 				`open(__file__ + '.imported', 'w').close()\nraise SystemExit('project ${module}.py ran')\n`);
@@ -162,8 +171,8 @@ const FAILED_EXIT_CODE = 1;
 // EX_TEMPFAIL: the CLI's exit status when, and only when, another session-log command holds the install lock.
 const LOCK_BUSY_EXIT_CODE = 75;
 const NON_EXECUTABLE_MODE = 0o644;
-// Short enough for a test, long enough for the stub CLI to start.
-const SHORT_CLI_TIMEOUT_MS = 200;
+// Short enough for a test, long enough for bash to start the stub CLI's first command under load.
+const SHORT_CLI_TIMEOUT_MS = 1000;
 const PACKAGE_REMOVED_MESSAGE = "session-log: the session-log package this omp session loaded is gone (upgraded or uninstalled); restart omp";
 const LOCK_BUSY_ERROR = "session-log: another session-log command is already in progress for omp";
 const BACKGROUND_REPAIR = "background:--entrypoint omp --harness omp repair";
@@ -210,7 +219,7 @@ const linkInstalledPlugin = (home, root) => {
 const extensionOf = (root) => path.join(root, "skills", "session-log", "adapters", "omp", "session-log.js");
 // Loads the extension LOADS times (default once), optionally deletes a directory the way an upgrade deletes the old
 // cache, then runs a command; prints a failed command's message and then what the extension registered, including
-// each background command it started ("background:<CLI arguments>"). With WAIT_FOR_STDERR_MS it stays alive until
+// each background command its loads started ("background:<CLI arguments>"). With WAIT_FOR_STDERR_MS it stays alive until
 // the extension writes to stderr (or that wait ends), so the outcome of a background repair reaches it.
 const LOAD_AND_RUN = String.raw`
 import fs from "node:fs";
@@ -223,9 +232,10 @@ if (process.env.WAIT_FOR_STDERR_MS) {
 	};
 }
 const registrations = [];
+let loading = true;
 const spawn = Bun.spawn;
 Bun.spawn = (command, ...rest) => {
-	registrations.push("background:" + command.slice(1).join(" "));
+	if (loading) registrations.push("background:" + command.slice(1).join(" "));
 	return spawn(command, ...rest);
 };
 const loaded = await import(process.env.EXTENSION);
@@ -236,6 +246,7 @@ const pi = {
 };
 const options = process.env.CLI_TIMEOUT_MS ? { cliTimeoutMs: Number(process.env.CLI_TIMEOUT_MS) } : undefined;
 for (let load = 0; load < Number(process.env.LOADS || 1); load += 1) loaded.default(pi, options);
+loading = false;
 if (process.env.DELETE_BEFORE_COMMAND) fs.rmSync(process.env.DELETE_BEFORE_COMMAND, { recursive: true, force: true });
 if (process.env.COMMAND) {
 	try { await handler(process.env.COMMAND, { ui: { notify() {} } }); }
@@ -285,6 +296,21 @@ const waitForCliCalls = async (home, waitMs = BACKGROUND_WAIT_MS) => {
 const leaveSessionLogOmpExtension = (agent) => {
 	fs.mkdirSync(path.join(agent, "extensions"), { recursive: true });
 	fs.writeFileSync(path.join(agent, "extensions", "session-log-omp.js"), "// universal-session-log: managed\n");
+};
+
+// Whether no process has `pid`.
+const isGone = (pid) => {
+	try {
+		process.kill(pid, 0);
+		return false;
+	} catch (error) {
+		return error.code === "ESRCH";
+	}
+};
+const processEnds = async (pid, waitMs = BACKGROUND_WAIT_MS) => {
+	const deadline = Date.now() + waitMs;
+	while (!isGone(pid) && Date.now() < deadline) await Bun.sleep(POLL_INTERVAL_MS);
+	return isGone(pid);
 };
 
 describe("plugin command", () => {
@@ -343,13 +369,21 @@ describe("plugin command", () => {
 			expect(cliCalls(home)).toBe("");
 		});
 	}
-	test("ends a command whose CLI outlives the timeout and names the timeout", () => {
+	test("ends a command whose CLI outlives the timeout, with the processes it started, and names the timeout", async () => {
 		const home = temporaryDirectory();
 		const plugin = installPlugin(home, "1.0.0");
-		fs.writeFileSync(cliOf(plugin), fs.readFileSync(cliOf(plugin), "utf8").replace(/^exit 0$/m, "sleep 600"));
-		const { stdout } = loadExtension(home, extensionOf(plugin), { COMMAND: "status", CLI_TIMEOUT_MS: String(SHORT_CLI_TIMEOUT_MS) });
-		expect(stdout.split("\n")[0]).toBe(`command failed: session-log: status timed out after ${SHORT_CLI_TIMEOUT_MS} ms`);
-	});
+		const childPidFile = path.join(home, "cli-child");
+		fs.writeFileSync(cliOf(plugin), fs.readFileSync(cliOf(plugin), "utf8").replace(/^(#!.*\n)/, `$1sleep 600 & echo $! > ${shellQuote(childPidFile)}; wait\n`));
+		try {
+			const { stdout } = loadExtension(home, extensionOf(plugin), { COMMAND: "status", CLI_TIMEOUT_MS: String(SHORT_CLI_TIMEOUT_MS) });
+			expect(stdout.split("\n")[0]).toBe(`command failed: session-log: status timed out after ${SHORT_CLI_TIMEOUT_MS} ms`);
+			expect(await processEnds(Number(fs.readFileSync(childPidFile, "utf8")))).toBe(true);
+		} finally {
+			// The test's own child, should the extension have left it running.
+			const pid = fs.existsSync(childPidFile) ? Number(fs.readFileSync(childPidFile, "utf8")) : 0;
+			if (pid && !isGone(pid)) process.kill(pid, "SIGKILL");
+		}
+	}, BACKGROUND_TEST_TIMEOUT_MS);
 });
 
 describe("unsupported OMP root", () => {
@@ -466,6 +500,7 @@ describe("runtime markers at load", () => {
 			fs.chmodSync(stateDir, READ_ONLY_DIRECTORY_MODE);
 			return [file];
 		});
+		fs.chmodSync(path.dirname(marker), PRIVATE_DIRECTORY_MODE);
 		expect(stderr).toContain(`session-log: EACCES: permission denied, unlink '${marker}'\n`);
 		expect(fs.existsSync(marker)).toBe(true);
 	});
@@ -522,12 +557,12 @@ describe("legacy cleanup at load", () => {
 		"reports a failed repair's last error line on stderr": {
 			behaviour: { stderr: ["session-log: first problem", "session-log: boom", ""], exitCode: FAILED_EXIT_CODE },
 			expected: "session-log: legacy cleanup failed: boom; /session-log repair shows the details\n",
-			retried: true,
+			retried: false,
 		},
 		"reports a failure by its exit status, not by its message": {
 			behaviour: { stderr: [LOCK_BUSY_ERROR], exitCode: FAILED_EXIT_CODE },
 			expected: `session-log: legacy cleanup failed: ${LOCK_BUSY_ERROR.slice("session-log: ".length)}; /session-log repair shows the details\n`,
-			retried: true,
+			retried: false,
 		},
 		"reports a package copy the repair kept on stderr": {
 			behaviour: { stdout: ["OMP: removed legacy adapter link /x", KEPT_COPY_REPORT] },
@@ -560,6 +595,17 @@ describe("legacy cleanup at load", () => {
 		expect(fs.existsSync(path.join(agent, "session-log", LEGACY_CLEANUP_STAMP))).toBe(true);
 		fs.symlinkSync(path.join(agent, "elsewhere"), path.join(agent, "extensions", "session-log.js"));
 		expect(backgroundCommands(loadExtension(home, extensionOf(plugin)).stdout)).toEqual([BACKGROUND_REPAIR]);
+	}, BACKGROUND_TEST_TIMEOUT_MS);
+	test("runs a stamped repair again once an upgrade replaced the package", () => {
+		const home = temporaryDirectory();
+		const agent = path.join(home, ".omp", "agent");
+		const loaded = installPlugin(home, "1.0.0", { stdout: [KEPT_COPY_REPORT] });
+		leaveSessionLogOmpExtension(agent);
+		loadExtension(home, extensionOf(loaded), { WAIT_FOR_STDERR_MS: String(BACKGROUND_WAIT_MS) });
+		expect(fs.existsSync(path.join(agent, "session-log", LEGACY_CLEANUP_STAMP))).toBe(true);
+		expect(backgroundCommands(loadExtension(home, extensionOf(loaded)).stdout)).toEqual([]);
+		const upgraded = installPlugin(home, "2.0.0");
+		expect(backgroundCommands(loadExtension(home, extensionOf(upgraded)).stdout)).toEqual([BACKGROUND_REPAIR]);
 	}, BACKGROUND_TEST_TIMEOUT_MS);
 	// The same outcomes from the package's real CLI, so a reworded repair report or a changed lock exit status fails here.
 	test("stays silent when the real CLI finds the install lock held by a live command", () => {
