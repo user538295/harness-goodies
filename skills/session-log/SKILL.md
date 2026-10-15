@@ -4,7 +4,7 @@ description: Manage session prompt logging and usage totals (on / off / status /
 ---
 <!-- universal-session-log: managed -->
 
-This skill supports exactly five host identities: `claude`, `codex`, `cursor`, `opencode`, and `omp`.
+This skill supports exactly five host identities: `claude`, `codex`, `cursor`, `opencode` (OpenCode V2), and `omp`.
 
 Select the identity of the host that loaded this skill from runtime/system context. Never infer it from paths, processes, or environment variables. Set `harness` below to that literal identity. Set `BASE` first to the skill directory announced by the host. Set `arguments` to the exact invocation arguments, or to `status` when none were supplied.
 
@@ -31,6 +31,14 @@ fi
 ```
 
 Keep arguments exact and shell-quote the assignment as one data value; never evaluate invocation text as shell syntax. For example, forward `usage --latest` as both words and preserve quoted values.
+
+## Filesystem permissions and activation
+
+The session-log CLI requires Bash 4+ on `PATH`; stock macOS Bash 3.2 is insufficient.
+
+`on`, `off`, and `repair` write user configuration or state outside the project workspace. `status` and `usage` can also write when repairing an enabled adapter, as described below. If the host sandbox denies access, use that host's permission mechanism for the reported path before retrying. Do not use `sudo` or bypass the sandbox.
+
+When preparing private state fails, the command exits nonzero and reports the operation, target path, and OS reason without a Python traceback. Report the failure; do not say logging is on after a failed command. After a successful `on`, preserve any approval or restart instruction in its output. Confirm active logging with `status` after the host's hooks or handlers have written the runtime marker; an enable flag alone does not confirm activation.
 
 ## What each host reports
 

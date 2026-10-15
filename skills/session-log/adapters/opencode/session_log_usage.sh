@@ -68,7 +68,8 @@ discover_database_name() {
   local candidate latest="" candidate_time latest_time=-1
   for candidate in "$DATA"/opencode-*.db; do
     [ -f "$candidate" ] && [ ! -L "$candidate" ] || continue
-    candidate_time="$(stat -f %m "$candidate" 2>/dev/null || stat -c %Y "$candidate" 2>/dev/null)" || continue
+    candidate_time="$(stat -f %m "$candidate" 2>/dev/null)" ||
+      candidate_time="$(stat -c %Y "$candidate" 2>/dev/null)" || continue
     [[ "$candidate_time" =~ ^[0-9]+$ ]] || continue
     if [ "$candidate_time" -gt "$latest_time" ]; then
       latest="$candidate"

@@ -1,4 +1,10 @@
 #!/bin/bash
+# Discard stdout from a failed BSD stat before trying GNU stat.
+_claude_stat() {
+  local value
+  value=$(stat -f "$1" "$3" 2>/dev/null) || value=$(stat -c "$2" "$3" 2>/dev/null) || return 1
+  printf '%s\n' "$value"
+}
 _CLAUDE_HOME="$(cd "$HOME" && pwd -P)"
 _CLAUDE_SESSION_MAP_DIR="$_CLAUDE_HOME/.claude/session-maps"
 _claude_default_root_selected() {
@@ -24,7 +30,7 @@ _claude_default_root_alias_safe() {
 _claude_enable_signature() {
   local flag="$_CLAUDE_HOME/.claude/prompt-logs/.enabled" size token device inode
   [ -f "$flag" ] && [ ! -L "$flag" ] || return 1
-  size=$(stat -f %z "$flag" 2>/dev/null || stat -c %s "$flag" 2>/dev/null) || return 1
+  size=$(_claude_stat %z %s "$flag") || return 1
   case "$size" in ''|*[!0-9]*) return 1 ;; esac
   if [ "$size" -lt 4096 ]; then
     token=$(cat "$flag") || return 1
@@ -33,8 +39,8 @@ _claude_enable_signature() {
       return 0
     fi
   fi
-  device=$(stat -f %d "$flag" 2>/dev/null || stat -c %d "$flag" 2>/dev/null) || return 1
-  inode=$(stat -f %i "$flag" 2>/dev/null || stat -c %i "$flag" 2>/dev/null) || return 1
+  device=$(_claude_stat %d %d "$flag") || return 1
+  inode=$(_claude_stat %i %i "$flag") || return 1
   printf '%s:%s' "$device" "$inode"
 }
 _CLAUDE_EXPECTED_SIGNATURE=$(_claude_enable_signature 2>/dev/null || true)
@@ -70,8 +76,8 @@ _claude_session_map_path() {
   if [ -e "$dir" ] || [ -L "$dir" ]; then
     [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
     dir_uid=$(id -u 2>/dev/null) || return 1
-    [ "$(stat -f %u "$dir" 2>/dev/null || stat -c %u "$dir" 2>/dev/null)" = "$dir_uid" ] || return 1
-    dir_mode=$(stat -f %Lp "$dir" 2>/dev/null || stat -c %a "$dir" 2>/dev/null) || return 1
+    [ "$(_claude_stat %u %u "$dir")" = "$dir_uid" ] || return 1
+    dir_mode=$(_claude_stat %Lp %a "$dir") || return 1
     case "$dir_mode" in ''|*[!0-7]*) return 1 ;; esac
     [ "$((8#$dir_mode & 0077))" -eq 0 ] || chmod 700 "$dir" || return 1
   fi
@@ -84,11 +90,11 @@ _claude_read_session_file() {
   map_file=$(_claude_session_map_path "$session_id") || return 1
   [ -f "$map_file" ] && [ ! -L "$map_file" ] || return 1
   map_uid=$(id -u 2>/dev/null) || return 1
-  [ "$(stat -f %u "$map_file" 2>/dev/null || stat -c %u "$map_file" 2>/dev/null)" = "$map_uid" ] || return 1
-  map_mode=$(stat -f %Lp "$map_file" 2>/dev/null || stat -c %a "$map_file" 2>/dev/null) || return 1
+  [ "$(_claude_stat %u %u "$map_file")" = "$map_uid" ] || return 1
+  map_mode=$(_claude_stat %Lp %a "$map_file") || return 1
   case "$map_mode" in ''|*[!0-7]*) return 1 ;; esac
   [ "$((8#$map_mode & 0077))" -eq 0 ] || chmod 600 "$map_file" || return 1
-  map_links=$(stat -f %l "$map_file" 2>/dev/null || stat -c %h "$map_file" 2>/dev/null) || return 1
+  map_links=$(_claude_stat %l %h "$map_file") || return 1
   [ "$map_links" = "1" ] || return 1
   IFS= read -r session_file < "$map_file" || return 1
   safe_file=$(_claude_log_file_is_safe "$session_file") || return 1
@@ -121,11 +127,11 @@ _claude_log_file_is_safe() {
     if [ "$current" = "$canonical_file" ]; then
       [ -f "$current" ] || return 1
       current_uid=$(id -u 2>/dev/null) || return 1
-      file_uid=$(stat -f %u "$current" 2>/dev/null || stat -c %u "$current" 2>/dev/null) || return 1
+      file_uid=$(_claude_stat %u %u "$current") || return 1
       [ "$file_uid" = "$current_uid" ] || return 1
-      file_links=$(stat -f %l "$current" 2>/dev/null || stat -c %h "$current" 2>/dev/null) || return 1
+      file_links=$(_claude_stat %l %h "$current") || return 1
       [ "$file_links" = "1" ] || return 1
-      file_mode=$(stat -f %Lp "$current" 2>/dev/null || stat -c %a "$current" 2>/dev/null) || return 1
+      file_mode=$(_claude_stat %Lp %a "$current") || return 1
       case "$file_mode" in ''|*[!0-7]*) return 1 ;; esac
       if [ "$((8#$file_mode & 0077))" -ne 0 ]; then
         chmod 600 "$current" || return 1
@@ -165,11 +171,11 @@ _claude_transcript_file_is_safe() {
   canonical=$(_claude_transcript_path_is_safe "$file") || return 1
   [ -f "$canonical" ] && [ ! -L "$canonical" ] || return 1
   current_uid=$(id -u 2>/dev/null) || return 1
-  file_uid=$(stat -f %u "$canonical" 2>/dev/null || stat -c %u "$canonical" 2>/dev/null) || return 1
+  file_uid=$(_claude_stat %u %u "$canonical") || return 1
   [ "$file_uid" = "$current_uid" ] || return 1
-  file_links=$(stat -f %l "$canonical" 2>/dev/null || stat -c %h "$canonical" 2>/dev/null) || return 1
+  file_links=$(_claude_stat %l %h "$canonical") || return 1
   [ "$file_links" = "1" ] || return 1
-  file_mode=$(stat -f %Lp "$canonical" 2>/dev/null || stat -c %a "$canonical" 2>/dev/null) || return 1
+  file_mode=$(_claude_stat %Lp %a "$canonical") || return 1
   case "$file_mode" in ''|*[!0-7]*) return 1 ;; esac
   if [ "$((8#$file_mode & 0077))" -ne 0 ]; then
     chmod 600 "$canonical" || return 1
@@ -180,8 +186,8 @@ _claude_secure_append() {
   local file="$1" record="$2" kind="${3:-record}" expected_signature="${4:-${_CLAUDE_EXPECTED_SIGNATURE:-}}" expected_dev="" expected_ino=""
   if [ -e "$file" ] || [ -L "$file" ]; then
     [ ! -L "$file" ] || return 1
-    expected_dev=$(stat -f %d "$file" 2>/dev/null || stat -c %d "$file" 2>/dev/null) || return 1
-    expected_ino=$(stat -f %i "$file" 2>/dev/null || stat -c %i "$file" 2>/dev/null) || return 1
+    expected_dev=$(_claude_stat %d %d "$file") || return 1
+    expected_ino=$(_claude_stat %i %i "$file") || return 1
   fi
   if [ "$kind" = "state" ]; then
     printf '%s\n' "$record"
@@ -524,11 +530,11 @@ _claude_state_file_path() {
   [ ! -L "$state_file" ] || return 1
   if [ -e "$state_file" ]; then
     [ -f "$state_file" ] || return 1
-    links=$(stat -f %l "$state_file" 2>/dev/null || stat -c %h "$state_file" 2>/dev/null) || return 1
+    links=$(_claude_stat %l %h "$state_file") || return 1
     [ "$links" = "1" ] || return 1
     uid=$(id -u 2>/dev/null) || return 1
-    [ "$(stat -f %u "$state_file" 2>/dev/null || stat -c %u "$state_file" 2>/dev/null)" = "$uid" ] || return 1
-    mode=$(stat -f %Lp "$state_file" 2>/dev/null || stat -c %a "$state_file" 2>/dev/null) || return 1
+    [ "$(_claude_stat %u %u "$state_file")" = "$uid" ] || return 1
+    mode=$(_claude_stat %Lp %a "$state_file") || return 1
     case "$mode" in ''|*[!0-7]*) return 1 ;; esac
     [ "$((8#$mode & 0077))" -eq 0 ] || chmod 600 "$state_file" || return 1
   fi
@@ -600,7 +606,7 @@ create_session_file() {
     [ ! -L "$map_file" ] || { umask "$old_umask"; return 1; }
     [ -f "$map_file" ] || { umask "$old_umask"; return 1; }
     local map_links
-    map_links=$(stat -f %l "$map_file" 2>/dev/null || stat -c %h "$map_file" 2>/dev/null) || { umask "$old_umask"; return 1; }
+    map_links=$(_claude_stat %l %h "$map_file") || { umask "$old_umask"; return 1; }
     [ "$map_links" = "1" ] || { umask "$old_umask"; return 1; }
     umask "$old_umask"
     return 0
@@ -626,7 +632,7 @@ create_session_file() {
     printf '%s\n' "$session_file" > "$map_file"
   ); then
     if [ -f "$map_file" ] && [ ! -L "$map_file" ]; then
-      [ "$(stat -f %l "$map_file" 2>/dev/null || stat -c %h "$map_file" 2>/dev/null)" = "1" ] || { umask "$old_umask"; return 1; }
+      [ "$(_claude_stat %l %h "$map_file")" = "1" ] || { umask "$old_umask"; return 1; }
       [ ! -L "$session_file" ] && unlink "$session_file" 2>/dev/null || true
       umask "$old_umask"
       return 0

@@ -50,6 +50,32 @@ engine() { # mode file... -> engine stdout
   cat "$@" | jq -n -R -r -f "$ENGINE" --arg mode "$mode" --slurpfile P "$PRICES"
 }
 
+# GNU stat can write filesystem information before rejecting BSD-style arguments.
+# That failed output must never contaminate ownership, mode, or signature checks.
+stat_signature=$(
+  export HOME="$WORKROOT/stat-home"
+  mkdir -p "$HOME/.claude/prompt-logs"
+  printf 'enabled-token\n' > "$HOME/.claude/prompt-logs/.enabled"
+  # shellcheck disable=SC2329  # Called indirectly by the sourced library.
+  stat() {
+    if [ "$1" = -f ]; then
+      printf 'filesystem information from failed BSD invocation\n'
+      return 1
+    fi
+    python3 - "$2" "$3" <<'PY'
+import os
+import sys
+value = os.stat(sys.argv[2])
+print({"%s": value.st_size, "%d": value.st_dev, "%i": value.st_ino,
+       "%u": value.st_uid, "%a": oct(value.st_mode & 0o777)[2:], "%h": value.st_nlink}[sys.argv[1]])
+PY
+  }
+  # shellcheck source=/dev/null  # The library is checked separately.
+  source "$SCRIPTS/prompt_log_lib.sh"
+  _claude_enable_signature
+)
+assert_eq 'failed BSD stat output does not corrupt the enable signature' 'enabled-token' "$stat_signature"
+
 # ---------------------------------------------------------------- fixtures --
 # asst <ts> <id> <model> <effort> <in> <out> <cache_read> <c5m> <c1h> <speed>
 asst() {

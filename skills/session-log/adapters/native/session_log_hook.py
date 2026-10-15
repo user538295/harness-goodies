@@ -95,8 +95,8 @@ def atomic_private_json(path, value, harness):
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
         temporary_stat = os.fstat(descriptor)
-        handle = os.fdopen(descriptor, "w", encoding="utf-8")
-        descriptor = None
+        # Keep the inode alive through replacement and cleanup so a swapped path cannot reuse it.
+        handle = os.fdopen(descriptor, "w", encoding="utf-8", closefd=False)
         with handle:
             json.dump(value, handle, separators=(",", ":"))
             handle.write("\n")
@@ -114,13 +114,13 @@ def atomic_private_json(path, value, harness):
         temporary = None
         os.fsync(parent_fd)
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
         if temporary is not None:
             try:
                 pathsafe.unlink_if_same_file(parent_fd, temporary, temporary_stat)
             except OSError:
                 pass
+        if descriptor is not None:
+            os.close(descriptor)
         os.close(parent_fd)
 
 def append_private(path, text, harness):

@@ -51,6 +51,42 @@ def command_hook(command):
     return {"type": "command", "command": command}
 
 
+class PathsafeCliTests(unittest.TestCase):
+    def test_ensure_directory_creates_private_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory).resolve() / "session-log"
+            result = subprocess.run(
+                [sys.executable, str(REPO / "skills/session-log/lib/pathsafe.py"), "ensure-dir"],
+                env={**os.environ, "SESSION_LOG_DIRECTORY": str(target)},
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(target.is_dir())
+            self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+
+    def test_ensure_directory_permission_denial_reports_path_without_traceback(self):
+        script = """
+import errno, os, runpy, sys
+from unittest.mock import patch
+sys.argv = [sys.argv[1], "ensure-dir"]
+with patch.object(os, "mkdir", side_effect=PermissionError(errno.EPERM, "Operation not permitted", "session-log")):
+    runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory).resolve() / "session-log"
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(REPO / "skills/session-log/lib/pathsafe.py")],
+                env={**os.environ, "SESSION_LOG_DIRECTORY": str(target)},
+                text=True, capture_output=True,
+            )
+            self.assertFalse(target.exists())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn(str(target), result.stderr)
+        self.assertIn("Operation not permitted", result.stderr)
+
+
 def _is_temp_swap_target(source_name, target_name, target_basename):
     return (
         target_name == target_basename
@@ -6145,6 +6181,51 @@ class CursorUsageTests(unittest.TestCase):
             result = self.run_session_log("usage", target, cwd=transcript.parent)
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("Cursor usage accepts only a session ID or --latest", result.stderr)
+
+
+class OpenCodeDatabaseDiscoveryTests(unittest.TestCase):
+    def test_gnu_stat_fallback_selects_newest_database_despite_failed_stdout(self):
+        for dependency in ("bash", "jq", "sqlite3"):
+            if not shutil.which(dependency):
+                self.skipTest(f"{dependency} is required")
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            data = home / ".local/share/opencode"
+            data.mkdir(parents=True)
+            for name in ("older", "newer", "unavailable"):
+                with closing(sqlite3.connect(data / f"opencode-{name}.db")) as database:
+                    database.executescript("""
+                        CREATE TABLE session (id TEXT, parent_id TEXT, time_created INTEGER,
+                                              time_updated INTEGER, title TEXT);
+                        CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER);
+                    """)
+                    database.execute("INSERT INTO session VALUES (?, NULL, 1, 1, ?)", (name, name))
+                    database.commit()
+            tools = home / "bin"
+            tools.mkdir()
+            stat_command = tools / "stat"
+            stat_command.write_text("""#!/bin/bash
+if [ "$1" = -f ]; then
+  printf 'GNU stat filesystem output before failure\\n'
+  exit 1
+fi
+case "$3" in
+  *older.db) printf '100\\n' ;;
+  *newer.db) printf '200\\n' ;;
+  *) printf 'unavailable\\n'; exit 1 ;;
+esac
+""")
+            stat_command.chmod(0o700)
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith(("XDG_", "OPENCODE_"))}
+            environment.update(HOME=str(home), PATH=f"{tools}{os.pathsep}{os.environ['PATH']}")
+            result = subprocess.run(
+                ["bash", str(REPO / "skills/session-log/adapters/opencode/session_log_usage.sh"), "--latest"],
+                env=environment, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            self.assertIn("session: newer", result.stdout)
 
 
 class CursorLatestSessionTests(unittest.TestCase):

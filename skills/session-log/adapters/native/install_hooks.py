@@ -316,8 +316,7 @@ def atomic_write(path, document):
                 raise OSError("hooks file write made no progress")
             offset += written
         os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = None
+        # Keep the inode alive through replacement and cleanup so a swapped path cannot reuse it.
         pathsafe.replace_file_no_replace(
             pathsafe.AtomicReplacement(
                 parent_fd,
@@ -330,13 +329,13 @@ def atomic_write(path, document):
         temporary = None
         os.fsync(parent_fd)
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
         if temporary is not None:
             try:
                 pathsafe.unlink_if_same_file(parent_fd, temporary, temporary_stat)
             except OSError:
                 pass
+        if descriptor is not None:
+            os.close(descriptor)
         os.close(parent_fd)
 
 def invalid_arguments(argv):

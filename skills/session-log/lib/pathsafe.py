@@ -107,6 +107,7 @@ def write_file(path, content):
     parent_fd = open_directory(directory, create=True)
     temporary = None
     temporary_stat = None
+    descriptor = None
     try:
         os.fchmod(parent_fd, PRIVATE_DIR_MODE)
         try:
@@ -131,18 +132,16 @@ def write_file(path, content):
                 continue
         else:
             raise SystemExit(f"cannot create temporary file in: {directory}")
-        try:
-            data = (content + "\n").encode()
-            offset = 0
-            while offset < len(data):
-                written = os.write(descriptor, data[offset:])
-                if written == 0:
-                    raise OSError("private file write made no progress")
-                offset += written
-            os.fchmod(descriptor, PRIVATE_FILE_MODE)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        data = (content + "\n").encode()
+        offset = 0
+        while offset < len(data):
+            written = os.write(descriptor, data[offset:])
+            if written == 0:
+                raise OSError("private file write made no progress")
+            offset += written
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        os.fsync(descriptor)
+        # Keep the inode alive through replacement and cleanup so a swapped path cannot reuse it.
         replace_file_no_replace(
             AtomicReplacement(parent_fd, temporary, name, existing, temporary_stat)
         )
@@ -154,6 +153,8 @@ def write_file(path, content):
                 unlink_if_same_file(parent_fd, temporary, temporary_stat)
             except OSError:
                 pass
+        if descriptor is not None:
+            os.close(descriptor)
         os.close(parent_fd)
 
 
@@ -367,18 +368,28 @@ def main(argv):
     if not argv:
         raise SystemExit("pathsafe: missing operation")
     operation = argv[0]
-    if operation == "ensure-dir":
-        ensure_directory(os.environ["SESSION_LOG_DIRECTORY"])
-    elif operation == "write-file":
-        write_file(os.environ["SESSION_LOG_FILE"], os.environ["SESSION_LOG_CONTENT"])
-    elif operation == "remove":
-        remove_path(os.environ["SESSION_LOG_REMOVE_PATH"])
-    elif operation == "is-untrusted-dir":
-        # Exit status 0 when unlink_if_same_file leaves its files in that directory.
-        untrusted = _is_untrusted_cleanup_directory(os.stat(os.environ["SESSION_LOG_DIRECTORY"]))
-        raise SystemExit(0 if untrusted else 1)
-    else:
+    path_variables = {
+        "ensure-dir": "SESSION_LOG_DIRECTORY",
+        "write-file": "SESSION_LOG_FILE",
+        "remove": "SESSION_LOG_REMOVE_PATH",
+        "is-untrusted-dir": "SESSION_LOG_DIRECTORY",
+    }
+    if operation not in path_variables:
         raise SystemExit(f"pathsafe: unknown operation: {operation}")
+    path = os.environ[path_variables[operation]]
+    try:
+        if operation == "ensure-dir":
+            ensure_directory(path)
+        elif operation == "write-file":
+            write_file(path, os.environ["SESSION_LOG_CONTENT"])
+        elif operation == "remove":
+            remove_path(path)
+        else:
+            # Exit status 0 when unlink_if_same_file leaves its files in that directory.
+            untrusted = _is_untrusted_cleanup_directory(os.stat(path))
+            raise SystemExit(0 if untrusted else 1)
+    except OSError as error:
+        raise SystemExit(f"pathsafe: {operation}: {path}: {error.strerror or error}") from None
 
 
 if __name__ == "__main__":

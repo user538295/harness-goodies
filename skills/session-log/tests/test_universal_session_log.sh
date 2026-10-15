@@ -33,7 +33,7 @@ assert_file() { local label="$1" file="$2"; if [[ -f "$file" ]]; then pass "$lab
 assert_not_file() { local label="$1" file="$2"; if [[ ! -e "$file" && ! -L "$file" ]]; then pass "$label"; else fail "$label (present $file)"; fi; }
 assert_mode() {
   local label="$1" expected="$2" file="$3" actual
-  actual="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null)"
+  actual="$(stat -f '%Lp' "$file" 2>/dev/null)" || actual="$(stat -c '%a' "$file" 2>/dev/null)"
   if [[ "$actual" == "$expected" ]]; then pass "$label"; else fail "$label (expected $expected, got $actual)"; fi
 }
 assert_link() {
