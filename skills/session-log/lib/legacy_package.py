@@ -19,8 +19,10 @@ session-log's or cannot be read far enough to tell. A copy kept despite a valid 
 neutralized first, and ``neutralized`` precedes the ``kept`` line: every SKILL.md in it that the
 manifest proves unchanged goes, so no harness loads the copy as a skill (Codex discovers SKILL.md
 files at any depth below a user skill root) and its older code can no longer be invoked to
-register its hooks again. `neutralize` does only that, for a copy a harness must keep because
-running sessions' hooks still run it, and prints ``neutralized`` when it removed anything.
+register its hooks again; when a SKILL.md the manifest lists stays, ``neutralized`` is not printed.
+`neutralize` does only that, for a copy a harness must keep because running sessions' hooks still
+run it, and prints ``neutralized`` when it removed anything, or ``kept: <reason>`` when a SKILL.md
+it lists could not be removed.
 """
 import errno
 import fnmatch
@@ -155,13 +157,23 @@ def _remove_tree(dir_fd, prefix, checked):
             raise Kept(f"{relative} changed during removal")
 
 
-def _neutralize(dir_fd, prefix, assets):
+def _lists_skill_file(assets, relative):
+    """Whether ``assets`` lists a SKILL.md at ``relative`` or below it ("" is the copy itself)."""
+    return any(asset.rpartition("/")[2] == SKILL_FILE and (not relative or asset == relative
+                                                           or asset.startswith(relative + "/"))
+               for asset in assets)
+
+
+def _neutralize(dir_fd, prefix, assets, failures):
     """Remove every SKILL.md below ``dir_fd`` that ``assets`` proves unchanged, through one-component
-    descriptors only; anything unreadable, changed, or replaced meanwhile stays. Returns whether one went."""
+    descriptors only; anything changed or replaced meanwhile stays. A listed SKILL.md that cannot be
+    read or removed stays too, and its reason is appended to ``failures``. Returns whether one went."""
     removed = False
     try:
         names = sorted(os.listdir(dir_fd))
-    except OSError:
+    except OSError as error:
+        if _lists_skill_file(assets, prefix.rstrip("/")):
+            failures.append(f"cannot read {prefix.rstrip('/') or 'it'}: {error.strerror}")
         return False
     for name in names:
         relative = prefix + name
@@ -170,7 +182,7 @@ def _neutralize(dir_fd, prefix, assets):
             if stat.S_ISDIR(info.st_mode):
                 child_fd = os.open(name, pathsafe.DIR_FLAGS, dir_fd=dir_fd)
                 try:
-                    removed = _neutralize(child_fd, relative + "/", assets) or removed
+                    removed = _neutralize(child_fd, relative + "/", assets, failures) or removed
                 finally:
                     os.close(child_fd)
             elif (name == SKILL_FILE and stat.S_ISREG(info.st_mode) and relative in assets
@@ -178,8 +190,9 @@ def _neutralize(dir_fd, prefix, assets):
                   and _identity(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) == _identity(info)):
                 os.unlink(name, dir_fd=dir_fd)
                 removed = True
-        except OSError:
-            continue
+        except OSError as error:
+            if _lists_skill_file(assets, relative):
+                failures.append(f"cannot {'remove' if relative in assets else 'read'} {relative}: {error.strerror}")
     return removed
 
 
@@ -191,12 +204,18 @@ def _has_ownership_marker(copy_fd):
         return False
 
 
+def _matches_components(path, pattern):
+    """fnmatch per path component, so a ``*`` never spans a ``/``."""
+    names, patterns = path.split("/"), pattern.split("/")
+    return len(names) == len(patterns) and all(map(fnmatch.fnmatchcase, names, patterns))
+
+
 def _recognized_link(destination, home):
     if "/../" in destination + "/" or "/./" in destination + "/":
         return False
     homes = {home.rstrip("/"), os.path.realpath(home)}
     return any(
-        fnmatch.fnmatchcase(destination.rstrip("/"), f"{root}/{pattern}")
+        _matches_components(destination.rstrip("/"), f"{root}/{pattern}")
         for root in homes
         for pattern in LINK_DESTINATIONS
     )
@@ -213,7 +232,9 @@ def _remove_copy(parent_fd, name):
         try:
             checked = _inventory(copy_fd, "", assets)
         except Kept as kept:
-            kept.neutralized = _neutralize(copy_fd, "", assets)
+            failures = []
+            # A SKILL.md that stays still loads the copy as a skill, so the copy is not neutralized.
+            kept.neutralized = _neutralize(copy_fd, "", assets, failures) and not failures
             raise
         try:
             _remove_tree(copy_fd, "", checked)
@@ -279,8 +300,9 @@ def neutralize(path):
     """Remove the manifest-proven SKILL.md files of the seeded copy at ``path`` and keep the rest.
 
     Returns ``neutralized`` when one went, ``kept: <reason>`` when the copy carries session-log's
-    ownership marks but no valid manifest, or an empty string otherwise (absent, a symlink, not
-    session-log's, nothing left to remove, or unreadable before its manifest was read).
+    ownership marks but no valid manifest or a SKILL.md it lists could not be removed, or an empty
+    string otherwise (absent, a symlink, not session-log's, nothing left to remove, or unreadable
+    before its manifest was read).
     """
     directory, name = os.path.split(os.path.abspath(path))
     try:
@@ -298,7 +320,11 @@ def neutralize(path):
             assets = _manifest_assets(copy_fd)
             if assets is None:
                 return f"{RESULT_KEPT_PREFIX}it has no ownership manifest" if _has_ownership_marker(copy_fd) else ""
-            return RESULT_NEUTRALIZED if _neutralize(copy_fd, "", assets) else ""
+            failures = []
+            removed = _neutralize(copy_fd, "", assets, failures)
+            if failures:
+                return f"{RESULT_KEPT_PREFIX}{failures[0]}"
+            return RESULT_NEUTRALIZED if removed else ""
         except Kept as kept:
             return f"{RESULT_KEPT_PREFIX}{kept}"
         finally:

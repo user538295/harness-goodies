@@ -936,7 +936,11 @@ function pruneDeadProcessRuntimes() {
 		const pid = Number(PROCESS_RUNTIME_PATTERN.exec(name)?.[1]);
 		if (!pid || pid === process.pid || !isDeadProcess(pid)) continue;
 		const marker = path.join(stateDir, name);
-		try { if (fs.lstatSync(marker).isFile()) fs.unlinkSync(marker); } catch {}
+		try {
+			if (fs.lstatSync(marker).isFile()) fs.unlinkSync(marker);
+		} catch (error) {
+			if (error?.code !== "ENOENT") process.stderr.write(`${CLI_MESSAGE_PREFIX}${error.message}\n`);
+		}
 	}
 }
 
@@ -988,23 +992,43 @@ function currentSessionFile(ctx) {
 
 // Older releases linked an extension into the OMP root and seeded a package copy into its skill
 // root; omp loads such an extension beside this one. `repair` removes them in the background, once
-// per process, logging on or off; a failed attempt is reported on stderr and runs again at the next
-// start, and so does one skipped because another session-log command holds the install lock.
+// per process, logging on or off. A successful attempt stamps the fingerprint of this package and
+// the leftovers present, which skips it until either changes, so a copy it keeps is reported once.
+// A failed attempt is reported on stderr and runs again at the next start, and so does one skipped
+// because another session-log command holds the install lock.
 const LEGACY_LEFTOVERS = [
 	path.join(agentDir, "extensions", "session-log.js"),
 	path.join(agentDir, "extensions", "session-log-omp.js"),
 	path.join(agentDir, "skills", "session-log-omp"),
 	path.join(agentDir, "skills", "session-log", ".universal-session-log.manifest"),
 ];
+const LEGACY_CLEANUP_STAMP = path.join(stateDir, "legacy-cleanup.stamp");
 const CLI_MESSAGE_PREFIX = "session-log: ";
 const CLI_REPORT_PREFIX = "OMP: ";
 // A repair report that needs the user: a package copy it kept and asks them to move aside.
 const KEPT_REPORT_PREFIX = `${CLI_REPORT_PREFIX}kept `;
-// What acquire_install_lock (lib/adapter_install.sh) fails with while another command holds the lock.
-const INSTALL_LOCK_BUSY_MESSAGE = "another session-log command is already in progress";
+// EX_TEMPFAIL: the CLI exits with it when, and only when, another session-log command holds the install lock.
+const INSTALL_LOCK_BUSY_EXIT_CODE = 75;
 let legacyCleanupStarted = false;
 const pathPresent = (candidate) => {
 	try { return Boolean(fs.lstatSync(candidate)); } catch { return false; }
+};
+const legacyCleanupFingerprint = () => `${[packageRoot, version, ...LEGACY_LEFTOVERS.filter(pathPresent)].join("\n")}\n`;
+const legacyCleanupStamped = () => {
+	try {
+		return fs.lstatSync(LEGACY_CLEANUP_STAMP).isFile() && fs.readFileSync(LEGACY_CLEANUP_STAMP, "utf8") === legacyCleanupFingerprint();
+	} catch (error) {
+		if (error?.code !== "ENOENT") process.stderr.write(`${CLI_MESSAGE_PREFIX}${error.message}\n`);
+		return false;
+	}
+};
+const stampLegacyCleanup = () => {
+	try {
+		ensureFile(LEGACY_CLEANUP_STAMP);
+		fs.writeFileSync(LEGACY_CLEANUP_STAMP, legacyCleanupFingerprint(), { mode: 0o600 });
+	} catch (error) {
+		process.stderr.write(`${CLI_MESSAGE_PREFIX}${error instanceof Error ? error.message : String(error)}\n`);
+	}
 };
 const reportLegacyCleanupFailure = (detail) => {
 	const reason = detail.startsWith(CLI_MESSAGE_PREFIX) ? detail.slice(CLI_MESSAGE_PREFIX.length) : detail;
@@ -1016,16 +1040,19 @@ const reportKeptLeftovers = (stdout) => {
 	}
 };
 function cleanupLegacyLeftovers() {
-	if (legacyCleanupStarted || !LEGACY_LEFTOVERS.some(pathPresent)) return;
+	if (legacyCleanupStarted || !LEGACY_LEFTOVERS.some(pathPresent) || legacyCleanupStamped()) return;
 	legacyCleanupStarted = true;
 	try {
 		const child = spawnSessionLogCli((command) => Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe" }), ["repair"]);
 		child.unref();
 		Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]).then(([exitCode, stdout, stderr]) => {
 			reportKeptLeftovers(stdout);
-			if (exitCode === 0) return;
+			if (exitCode === 0) {
+				stampLegacyCleanup();
+				return;
+			}
+			if (exitCode === INSTALL_LOCK_BUSY_EXIT_CODE) return;
 			const lastLine = stderr.split("\n").filter((line) => line.trim()).pop();
-			if (lastLine?.includes(INSTALL_LOCK_BUSY_MESSAGE)) return;
 			reportLegacyCleanupFailure(lastLine || `exit status ${exitCode}`);
 		}).catch((error) => reportLegacyCleanupFailure(error instanceof Error ? error.message : String(error)));
 	} catch (error) {
@@ -1033,9 +1060,12 @@ function cleanupLegacyLeftovers() {
 	}
 }
 
-function runUniversalCommand(argumentString, ctx) {
+// Bound on one /session-log command, as the OpenCode adapter caps its CLI.
+const CLI_TIMEOUT_MS = 120_000;
+function runUniversalCommand(argumentString, ctx, timeoutMs) {
 	const rawArguments = usageCommandArguments(String(argumentString || "status"), currentSessionFile(ctx));
-	const child = spawnSessionLogCli((command) => Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe" }), ["--arguments", rawArguments]);
+	const child = spawnSessionLogCli((command) => Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe", timeout: timeoutMs }), ["--arguments", rawArguments]);
+	if (child.exitedDueToTimeout) throw new Error(`${CLI_MESSAGE_PREFIX}${rawArguments} timed out after ${timeoutMs} ms`);
 	const stdout = new TextDecoder().decode(child.stdout).trimEnd();
 	const stderr = new TextDecoder().decode(child.stderr).trim();
 	if (child.exitCode !== 0) throw new Error(stderr || stdout || `session-log exited with ${child.exitCode}`);
@@ -1072,11 +1102,11 @@ function composeFinalizeRecord({ state, root, messages, ctx, start, end, previou
 	return { record, model, responseIdentity };
 }
 
-function registerSessionLogCommand(pi) {
+function registerSessionLogCommand(pi, cliTimeoutMs) {
 	pi.registerCommand("session-log", {
 		description: "Manage session prompt logging and usage totals",
 		handler: async (args, ctx) => {
-			try { runUniversalCommand(args, ctx); }
+			try { runUniversalCommand(args, ctx, cliTimeoutMs); }
 			catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				notify(ctx, message);
@@ -1086,22 +1116,31 @@ function registerSessionLogCommand(pi) {
 	});
 }
 
+// Writes the runtime marker; returns whether it could. A throw out of the factory fails omp's plugin
+// install (leaving /session-log unregistered too), and one out of a handler reaches omp.
+function markLoadedOrReport() {
+	try {
+		markLoaded();
+		return true;
+	} catch (error) {
+		process.stderr.write(`${CLI_MESSAGE_PREFIX}${error instanceof Error ? error.message : String(error)}\n`);
+		return false;
+	}
+}
+
 export default function sessionLogOmp(pi, options = {}) {
+	const cliTimeoutMs = options.cliTimeoutMs ?? CLI_TIMEOUT_MS;
 	if (unsupportedRoot) {
-		registerSessionLogCommand(pi);
+		registerSessionLogCommand(pi, cliTimeoutMs);
 		return;
 	}
 	const now = options.now ?? Date.now;
-	// A throwing factory fails omp's plugin install, which would leave /session-log unregistered too.
-	try {
-		markLoaded();
-	} catch (error) {
-		process.stderr.write(`${CLI_MESSAGE_PREFIX}${error instanceof Error ? error.message : String(error)}\n`);
-		registerSessionLogCommand(pi);
+	if (!markLoadedOrReport()) {
+		registerSessionLogCommand(pi, cliTimeoutMs);
 		return;
 	}
 	cleanupLegacyLeftovers();
-	registerSessionLogCommand(pi);
+	registerSessionLogCommand(pi, cliTimeoutMs);
 	const promptStates = new Map();
 	const promptAttempts = new Map();
 	const promptRetryTimers = new Map();
@@ -1238,7 +1277,7 @@ export default function sessionLogOmp(pi, options = {}) {
 	};
 	const discardDisabledSession = forgetSession;
 	pi.on("session_start", () => {
-		markLoaded();
+		markLoadedOrReport();
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		const state = sessionState(ctx);

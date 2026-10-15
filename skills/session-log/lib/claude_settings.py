@@ -23,7 +23,6 @@ and fcntl), so cleaning one up takes WSL.
 import fcntl
 import json
 import os
-import random
 import re
 import shlex
 import stat
@@ -35,7 +34,6 @@ import pathsafe
 NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 FILE_FLAGS = os.O_RDONLY | NOFOLLOW
 BACKUP_ATTEMPTS = 20
-INSTALL_TEMP_ATTEMPTS = 20
 TEMP_ATTEMPTS = 100
 # Always '/'-separated: it is matched inside hook command strings, which use '/' on every platform.
 PLUGIN_HOOK_RELATIVE = "skills/session-log/adapters/claude/claude_hook.sh"
@@ -143,20 +141,6 @@ def _content_version_key(value):
 
 def _backup_file_key(value):
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
-
-
-def _file_metadata_signature(value):
-    return (
-        value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
-        value.st_mode, value.st_nlink, value.st_uid, value.st_gid,
-    )
-
-
-def _identity_after_rename(value):
-    return (
-        value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
-        value.st_mode, value.st_nlink, value.st_uid, value.st_gid,
-    )
 
 
 def _create_temp(parent_fd, options):
@@ -276,26 +260,6 @@ def _filter_managed_hooks(entries, removable):
     return filtered
 
 
-def _load_install_settings(parent_fd, settings_name):
-    metadata = None
-    contents = None
-    try:
-        descriptor = os.open(settings_name, FILE_FLAGS, dir_fd=parent_fd)
-        try:
-            metadata = os.fstat(descriptor)
-            contents = _read_all(descriptor)
-        finally:
-            os.close(descriptor)
-        document = json.loads(contents.decode("utf-8"))
-    except FileNotFoundError:
-        document = {}
-    except (json.JSONDecodeError, OSError) as error:
-        raise SystemExit(f"cannot update Claude settings: {error}")
-    if not isinstance(document, dict):
-        raise SystemExit("cannot update Claude settings: root must be an object")
-    return document, SettingsSnapshot(metadata, contents)
-
-
 def _strip_hooks(hooks, removable):
     """Drop removable hook items, and any entry or event they leave empty."""
     changed = False
@@ -323,33 +287,7 @@ def _remove_managed_hooks(document, removable):
     return changed
 
 
-def _install_snapshot_matches(current_stat, current_contents, snapshot):
-    return (
-        snapshot.metadata is not None
-        and _file_metadata_signature(current_stat)
-        == _file_metadata_signature(snapshot.metadata)
-        and current_contents == snapshot.contents
-    )
-
-
-def _assert_install_unchanged(parent_fd, settings_name, original):
-    try:
-        descriptor = os.open(settings_name, FILE_FLAGS, dir_fd=parent_fd)
-    except FileNotFoundError:
-        if original.metadata is None:
-            return
-        raise SystemExit("Claude settings changed during update; retry installation")
-    try:
-        current_stat = os.fstat(descriptor)
-        current_settings = _read_all(descriptor)
-    finally:
-        os.close(descriptor)
-    if not _install_snapshot_matches(current_stat, current_settings, original):
-        raise SystemExit("Claude settings changed during update; retry installation")
-
-
-CHANGED_UPDATE = "Claude settings changed during update; retry installation"
-CHANGED_MIGRATE = "Claude settings changed during migration; retry installation"
+CHANGED = "Claude settings changed during the legacy cleanup; run repair again"
 
 
 @dataclass
@@ -375,170 +313,18 @@ def _write_settings_document(descriptor, document):
         os.fsync(handle.fileno())
 
 
-def _stage_install_backup(context):
-    state = context.state
-    original = context.snapshot
-    backups = (
-        f".session-log-backup.{os.getpid()}.{random.randrange(1 << 30):08x}.{attempt}"
-        for attempt in range(BACKUP_ATTEMPTS)
-    )
-    state.backup_name = _stage_backup(
-        context.parent_fd,
-        BackupOptions(
-            settings_name=context.settings_name,
-            candidates=backups,
-            exhaust_message="cannot stage Claude settings update",
-        ),
-    )
-    state.backup_active = True
-    backup_stat, backup_settings = _read_named(context.parent_fd, state.backup_name)
-    if (
-        _identity_after_rename(backup_stat) != _identity_after_rename(original.metadata)
-        or backup_settings != original.contents
-    ):
-        if pathsafe.move_no_replace(
-            context.parent_fd,
-            state.backup_name,
-            context.settings_name,
-        ):
-            state.backup_active = False
-        raise SystemExit(CHANGED_UPDATE)
-
-
-def _replace_install_settings(context):
-    state = context.state
-    _stage_install_backup(context)
-    try:
-        os.link(
-            state.temporary_name,
-            context.settings_name,
-            src_dir_fd=context.parent_fd,
-            dst_dir_fd=context.parent_fd,
-            follow_symlinks=False,
-        )
-    except FileExistsError:
-        state.backup_active = not _restore_after_conflict(
-            context.parent_fd,
-            ConflictRestoreOptions(
-                settings_name=context.settings_name,
-                backup_name=state.backup_name,
-                message=CHANGED_UPDATE,
-            ),
-        )
-        raise SystemExit(CHANGED_UPDATE)
-    os.unlink(state.temporary_name, dir_fd=context.parent_fd)
-    state.temporary_name = None
-    os.unlink(state.backup_name, dir_fd=context.parent_fd)
-    state.backup_active = False
-
-
-def _install_new_settings(parent_fd, settings_name, state):
-    try:
-        os.link(
-            state.temporary_name,
-            settings_name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-            follow_symlinks=False,
-        )
-    except FileExistsError:
-        raise SystemExit(CHANGED_UPDATE)
-    os.unlink(state.temporary_name, dir_fd=parent_fd)
-    state.temporary_name = None
-
-
-def _cleanup_install_write(parent_fd, settings_name, state):
-    if state.temporary_name is not None:
-        try:
-            os.unlink(state.temporary_name, dir_fd=parent_fd)
-        except OSError:
-            pass
-    if state.backup_active:
-        try:
-            os.stat(settings_name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            try:
-                if pathsafe.move_no_replace(
-                    parent_fd,
-                    state.backup_name,
-                    settings_name,
-                ):
-                    state.backup_active = False
-            except OSError:
-                pass
-
-
-def _write_install_settings(parent_fd, settings_name, update):
-    document = update.document
-    original = update.snapshot
-    mode = stat.S_IMODE(original.metadata.st_mode) if original.metadata is not None else 0o600
-    _assert_install_unchanged(parent_fd, settings_name, original)
-    temp_candidates = (
-        f".session-log.{os.getpid()}.{random.randrange(1 << 30):08x}" for _ in range(INSTALL_TEMP_ATTEMPTS)
-    )
-    temporary_name, temporary_fd = _create_temp(
-        parent_fd,
-        TemporaryFileOptions(
-            mode=0o600,
-            candidates=temp_candidates,
-            exhaust_message="cannot create temporary Claude settings file",
-        ),
-    )
-    state = SettingsWriteState(temporary_name)
-    try:
-        os.fchmod(temporary_fd, mode & 0o777)
-        _write_settings_document(temporary_fd, document)
-        _assert_install_unchanged(parent_fd, settings_name, original)
-        if original.metadata is None:
-            _install_new_settings(parent_fd, settings_name, state)
-        else:
-            _replace_install_settings(
-                SettingsWriteContext(parent_fd, settings_name, original, state)
-            )
-        os.fsync(parent_fd)
-    finally:
-        _cleanup_install_write(parent_fd, settings_name, state)
-
-
-def _update_settings(edit):
-    """Apply ``edit(document) -> change`` under the settings lock; write only when ``change`` is truthy, and return it."""
-    directory, settings_name = os.path.split(os.environ["SETTINGS_PATH"])
-    parent_fd = pathsafe.open_directory(directory, create=False)
-    try:
-        lock_fd = os.open(settings_name + ".session-log.lock", os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600, dir_fd=parent_fd)
-        try:
-            os.fchmod(lock_fd, 0o600)
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            document, original = _load_install_settings(parent_fd, settings_name)
-            change = edit(document)
-            if change:
-                _write_install_settings(
-                    parent_fd,
-                    settings_name,
-                    SettingsUpdate(document=document, snapshot=original),
-                )
-            return change
-        finally:
-            os.close(lock_fd)
-    finally:
-        os.close(parent_fd)
-
-
 def remove():
     """Drop every session-log registration, and print how many when any were; never registers any."""
-    settings_path = os.environ["SETTINGS_PATH"]
     owned = _owned_hook(os.environ["SESSION_LOG_OWNER_MARKER"])
-    if not os.path.lexists(settings_path):
-        return
 
     def strip(document):
         removed = len(_registrations(document, owned))
         _remove_managed_hooks(document, owned)
         return removed
 
-    removed = _update_settings(strip)
+    removed = _edit_settings(strip)
     if removed:
-        print(f"removed {removed} legacy session-log hook registration(s) from {settings_path}")
+        print(f"removed {removed} legacy session-log hook registration(s) from {os.environ['SETTINGS_PATH']}")
 
 
 def _registrations(document, selected):
@@ -655,32 +441,23 @@ def _content_version_matches(current, snapshot):
     return _content_version_key(current) == _content_version_key(snapshot.metadata)
 
 
-def _migration_file_versions_match(descriptor_stat, path_stat, snapshot):
+def _file_versions_match(descriptor_stat, path_stat, snapshot):
     return (
         _content_version_matches(descriptor_stat, snapshot)
         and _content_version_matches(path_stat, snapshot)
     )
 
 
-def _reverify_unchanged_early(parent_fd, settings_name, snapshot):
-    current_stat = os.fstat(snapshot.descriptor)
-    current_path_stat = os.stat(settings_name, dir_fd=parent_fd, follow_symlinks=False)
-    if not _migration_file_versions_match(current_stat, current_path_stat, snapshot):
-        raise SystemExit(CHANGED_MIGRATE)
-    if _read_fd(snapshot.descriptor) != snapshot.contents:
-        raise SystemExit(CHANGED_MIGRATE)
-
-
-def _verify_migration_snapshot(parent_fd, settings_name, snapshot):
+def _verify_snapshot(parent_fd, settings_name, snapshot):
     final_stat = os.fstat(snapshot.descriptor)
     final_path_stat = os.stat(settings_name, dir_fd=parent_fd, follow_symlinks=False)
-    if not _migration_file_versions_match(final_stat, final_path_stat, snapshot):
-        raise SystemExit(CHANGED_MIGRATE)
+    if not _file_versions_match(final_stat, final_path_stat, snapshot):
+        raise SystemExit(CHANGED)
     if _read_fd(snapshot.descriptor) != snapshot.contents:
-        raise SystemExit(CHANGED_MIGRATE)
+        raise SystemExit(CHANGED)
 
 
-def _stage_migration_backup(context):
+def _stage_settings_backup(context):
     state = context.state
     snapshot = context.snapshot
     backups = (
@@ -692,7 +469,7 @@ def _stage_migration_backup(context):
         BackupOptions(
             settings_name=context.settings_name,
             candidates=backups,
-            exhaust_message="cannot stage Claude settings migration",
+            exhaust_message="cannot stage Claude settings update",
         ),
     )
     state.backup_active = True
@@ -707,13 +484,13 @@ def _stage_migration_backup(context):
             context.settings_name,
         ):
             state.backup_active = False
-        raise SystemExit(CHANGED_MIGRATE)
+        raise SystemExit(CHANGED)
 
 
-def _replace_migrated_settings(context):
+def _replace_settings(context):
     state = context.state
     snapshot = context.snapshot
-    _stage_migration_backup(context)
+    _stage_settings_backup(context)
     try:
         os.link(
             state.temporary_name,
@@ -728,10 +505,10 @@ def _replace_migrated_settings(context):
             ConflictRestoreOptions(
                 settings_name=context.settings_name,
                 backup_name=state.backup_name,
-                message=CHANGED_MIGRATE,
+                message=CHANGED,
             ),
         )
-        raise SystemExit(CHANGED_MIGRATE)
+        raise SystemExit(CHANGED)
     os.unlink(state.temporary_name, dir_fd=context.parent_fd)
     state.temporary_name = None
     backup_stat, backup_settings = _read_named(context.parent_fd, state.backup_name)
@@ -744,16 +521,16 @@ def _replace_migrated_settings(context):
             pathsafe.ConflictRenameOptions(
                 source_name=state.backup_name,
                 prefix=state.backup_name,
-                exhaust_message=CHANGED_MIGRATE,
+                exhaust_message=CHANGED,
             ),
         )
         state.backup_active = False
-        raise SystemExit(CHANGED_MIGRATE)
+        raise SystemExit(CHANGED)
     os.unlink(state.backup_name, dir_fd=context.parent_fd)
     state.backup_active = False
 
 
-def _cleanup_migration_write(parent_fd, settings_name, state):
+def _cleanup_settings_write(parent_fd, settings_name, state):
     if state.temporary_name is not None:
         try:
             os.unlink(state.temporary_name, dir_fd=parent_fd)
@@ -774,12 +551,12 @@ def _cleanup_migration_write(parent_fd, settings_name, state):
                 pass
 
 
-def _write_migrate_settings(parent_fd, settings_name, update):
+def _write_settings(parent_fd, settings_name, update):
     document = update.document
     snapshot = update.snapshot
     mode = stat.S_IMODE(snapshot.metadata.st_mode)
     temp_candidates = (
-        f".session-log-migrate.{os.getpid()}.{attempt}"
+        f".session-log-update.{os.getpid()}.{attempt}"
         for attempt in range(TEMP_ATTEMPTS)
     )
     temporary, temporary_fd = _create_temp(
@@ -794,53 +571,68 @@ def _write_migrate_settings(parent_fd, settings_name, update):
     try:
         os.fchmod(temporary_fd, mode & 0o777)
         _write_settings_document(temporary_fd, document)
-        _verify_migration_snapshot(parent_fd, settings_name, snapshot)
-        _replace_migrated_settings(
+        _verify_snapshot(parent_fd, settings_name, snapshot)
+        _replace_settings(
             SettingsWriteContext(parent_fd, settings_name, snapshot, state)
         )
         os.fsync(parent_fd)
     finally:
-        _cleanup_migration_write(parent_fd, settings_name, state)
+        _cleanup_settings_write(parent_fd, settings_name, state)
 
 
+def _parse_settings(contents):
+    try:
+        document = json.loads(contents.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"cannot update Claude settings: {error}")
+    if not isinstance(document, dict):
+        raise SystemExit("cannot update Claude settings: root must be an object")
+    return document
 
-def migrate():
-    settings_path = os.environ["SETTINGS_PATH"]
-    legacy_scripts_dir = os.environ["CLAUDE_SCRIPTS_DIR"]
-    directory, settings_name = os.path.split(settings_path)
+
+def _edit_settings(edit):
+    """Apply ``edit(document) -> count`` to settings.json under its lock, write it back only when the count
+    is non-zero, and return the count; a missing settings.json counts as nothing to edit."""
+    if not os.path.lexists(os.environ["SETTINGS_PATH"]):
+        return 0
+    directory, settings_name = os.path.split(os.environ["SETTINGS_PATH"])
     parent_fd = pathsafe.open_directory(directory, create=False)
     try:
         lock_fd = os.open(settings_name + ".session-log.lock", os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600, dir_fd=parent_fd)
         try:
             os.fchmod(lock_fd, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            settings_fd = os.open(settings_name, FILE_FLAGS, dir_fd=parent_fd)
+            try:
+                settings_fd = os.open(settings_name, FILE_FLAGS, dir_fd=parent_fd)
+            except FileNotFoundError:
+                return 0
+            except OSError as error:
+                raise SystemExit(f"cannot update Claude settings: {error}")
             try:
                 metadata = os.fstat(settings_fd)
                 if not stat.S_ISREG(metadata.st_mode):
                     raise SystemExit("Claude settings is not a regular file")
                 contents = _read_fd(settings_fd)
                 snapshot = SettingsSnapshot(metadata, contents, settings_fd)
-                try:
-                    document = json.loads(contents.decode("utf-8"))
-                except json.JSONDecodeError as error:
-                    raise SystemExit(f"cannot update Claude settings: {error}")
-                removed = _strip_legacy_hooks(document, legacy_scripts_dir)
-                if not removed:
-                    raise SystemExit(0)
-                _reverify_unchanged_early(parent_fd, settings_name, snapshot)
-                _write_migrate_settings(
-                    parent_fd,
-                    settings_name,
-                    SettingsUpdate(document=document, snapshot=snapshot),
-                )
-                print(f"removed {removed} legacy prompt_log hook registration(s) from {settings_path}")
+                document = _parse_settings(contents)
+                changed = edit(document)
+                if changed:
+                    _verify_snapshot(parent_fd, settings_name, snapshot)
+                    _write_settings(parent_fd, settings_name, SettingsUpdate(document=document, snapshot=snapshot))
+                return changed
             finally:
                 os.close(settings_fd)
         finally:
             os.close(lock_fd)
     finally:
         os.close(parent_fd)
+
+
+def migrate():
+    """Drop the legacy prompt_log hooks, and print how many when any were."""
+    removed = _edit_settings(lambda document: _strip_legacy_hooks(document, os.environ["CLAUDE_SCRIPTS_DIR"]))
+    if removed:
+        print(f"removed {removed} legacy prompt_log hook registration(s) from {os.environ['SETTINGS_PATH']}")
 
 
 def main(argv):

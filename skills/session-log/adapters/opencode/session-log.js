@@ -27,6 +27,7 @@ const CLI_TIMEOUT_MS = 120_000;
 const MAX_APPEND_ATTEMPTS = 3;
 const APPEND_RETRY_DELAY_MS = 250;
 const RESUBSCRIBE_DELAY_MS = 1_000;
+const MS_PER_SECOND = 1_000;
 const UNSAFE_PATH_CODE = "SESSION_LOG_UNSAFE_PATH";
 // Random bytes that keep runtime temporary names unique between instances of one process.
 const NONCE_BYTES = 8;
@@ -681,8 +682,9 @@ const readProcessStart = (() => {
     if (start === undefined) {
       try {
         start = execFileSync("ps", ["-p", String(process.pid), "-o", "lstart="], { encoding: "utf8" }).trim();
-      } catch {
+      } catch (error) {
         start = "";
+        writeLog(`cannot read this OpenCode process's start time, so \`status\` cannot match it: ${error.message}`);
       }
     }
     return start;
@@ -742,7 +744,9 @@ const removeProcessRuntime = () => {
   try {
     const file = processRuntimeFile();
     if (fs.lstatSync(file).isFile()) fs.unlinkSync(file);
-  } catch {}
+  } catch (error) {
+    if (error?.code !== "ENOENT") reportError(error);
+  }
 };
 
 const numeric = (value, fallback = 0) => {
@@ -772,12 +776,12 @@ const stepBody = (texts) => [...texts].sort(([left], [right]) => left - right).m
 
 // The session tree one plugin instance knows: parents from `session.created` or, for a session
 // created before the instance started, from `ctx.session.get`, plus tombstones of deleted trees.
-function createSessionTree(ctx) {
+function createSessionTree(ctx, maxKnownSessions) {
   const parentBySession = new Map(); // session ID → parent session ID, "" for a root
   const deletedSessions = new Set();
   const remember = (sessionID, parentID) => {
     parentBySession.set(sessionID, validId(parentID) && parentID !== sessionID ? parentID : "");
-    trimOldest(parentBySession, MAX_KNOWN_SESSIONS);
+    trimOldest(parentBySession, maxKnownSessions);
   };
   // Tombstones sessionID and every descendant; returns them.
   const forgetTree = (sessionID) => {
@@ -811,13 +815,17 @@ function createSessionTree(ctx) {
 // one queue, which `waitUntilIdle` awaits. Only the root session's prompts are logged; each step of
 // the root logs a response block, each step of a descendant a sub-agent line, both in the root's
 // log file. A step's working time runs from its `session.step.started` to its end event.
-export function createSessionLog(ctx, { now = Date.now } = {}) {
+export function createSessionLog(ctx, { now = Date.now, maxKnownSessions = MAX_KNOWN_SESSIONS } = {}) {
   const projectSlug = String(ctx.location?.directory || process.cwd()).split(path.sep).filter(Boolean)
     .slice(-PROJECT_SLUG_DEPTH).join("-") || "root";
-  const tree = createSessionTree(ctx);
+  const tree = createSessionTree(ctx, maxKnownSessions);
   const openStepsByMessage = new Map(); // assistant message ID → the step that has started but not ended
   const logFileByRoot = new Map();
   const lastByRoot = new Map();
+  const rememberLogFile = (root, file) => {
+    logFileByRoot.set(root, file);
+    trimOldest(logFileByRoot, maxKnownSessions);
+  };
   let queue = Promise.resolve();
   const enqueue = (operation) => {
     queue = queue.then(operation).catch(reportError);
@@ -853,7 +861,7 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
       if (!pathInside(dir, candidate)) continue;
       try {
         assertLogFile(candidate, root);
-        logFileByRoot.set(root, candidate);
+        rememberLogFile(root, candidate);
         return candidate;
       } catch {
         // Ignore stale or malformed candidates and create a fresh managed file.
@@ -864,7 +872,7 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
     const header = `# Prompts — ${new Date().toISOString()}\n\n**Session ID:** ${root}\n**Resume:** \`opencode --session ${root}\`\n\n---\n\n`;
     await secureEnsureFile(file, header);
     assertLogFile(file, root);
-    logFileByRoot.set(root, file);
+    rememberLogFile(root, file);
     return file;
   };
   const isLoggingSuspended = (root, signature) => !enabled() || signature !== enabledSignature() || tree.isDeleted(root);
@@ -888,6 +896,7 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
   const switchLine = (root, model, mode) => {
     const previous = lastByRoot.get(root);
     lastByRoot.set(root, { model, mode });
+    trimOldest(lastByRoot, maxKnownSessions);
     if (!previous) return "";
     const parts = [];
     if (differs(previous.model, model)) parts.push(`model ${previous.model} → ${model}`);
@@ -912,7 +921,7 @@ export function createSessionLog(ctx, { now = Date.now } = {}) {
     const step = openStepsByMessage.get(assistantMessageID);
     if (!step || step.sessionID !== sessionID) return;
     openStepsByMessage.delete(assistantMessageID);
-    const elapsed = (endedAt - step.startedAt) / 1000;
+    const elapsed = (endedAt - step.startedAt) / MS_PER_SECOND;
     const dedupeKey = stableKey("assistant", sessionID, assistantMessageID);
     enqueue(async () => {
       const root = await tree.resolveRoot(sessionID);
@@ -976,7 +985,10 @@ export const runSessionLogCli = (argumentsText, { timeoutMs = CLI_TIMEOUT_MS } =
     timedOut = true;
     try {
       process.kill(-child.pid, "SIGKILL");
-    } catch {}
+    } catch (error) {
+      // The process group may already be gone.
+      if (error?.code !== "ESRCH") reportError(error);
+    }
   }, timeoutMs);
   child.on("error", (error) => {
     clearTimeout(timer);
@@ -1011,19 +1023,23 @@ const cleanupFingerprint = () => [
 
 // Runs `repair`, which removes what older releases left in ~/.config/opencode and is proven
 // session-log's, including a markdown /session-log command that would override this package's. The
-// fingerprint taken after each attempt, successful or not, skips it until this package or a
-// disruptive leftover changes, so a cleanup that cannot succeed does not rerun at every start. Its
-// report or failure goes to OpenCode's log; `on` and `repair` show the user what it did or why it failed.
+// fingerprint taken after a successful attempt skips it until this package or a disruptive leftover
+// changes, so a leftover it keeps is reported once; a failed attempt, including one another
+// session-log command's install lock skipped, runs again at the next start. Its report or failure
+// goes to OpenCode's log; `on` and `repair` show the user what it did or why it failed.
 export async function cleanupLegacyLeftovers() {
   const stamp = path.join(STATE_DIR, "legacy-cleanup.stamp");
   try {
     if (fs.lstatSync(stamp).isFile() && fs.readFileSync(stamp, "utf8") === cleanupFingerprint()) return;
-  } catch {}
+  } catch (error) {
+    if (error?.code !== "ENOENT") reportError(error);
+  }
   try {
     const report = await runSessionLogCli("repair");
     if (report && !report.endsWith(CLEAN_REPAIR_REPORT)) writeLog(report);
   } catch (error) {
     reportError(error);
+    return;
   }
   try {
     ensureFile(stamp);

@@ -60,8 +60,6 @@ declare -rA ADAPTER_SOURCES=(
   [opencode:usage]="adapters/opencode/session_log_usage.sh"
   [omp:extension]="adapters/omp/session-log.js"
   [omp:usage]="adapters/omp/session_log_usage.ts"
-  [cursor:hook]="adapters/native/session_log_hook.py"
-  [codex:hook]="adapters/native/session_log_hook.py"
   [cursor:configurator]="adapters/native/install_hooks.py"
   [codex:configurator]="adapters/native/install_hooks.py"
   [codex:usage]="adapters/codex/session_log_usage.py"
@@ -498,9 +496,11 @@ enable_plugin_hooks() {
   fi
 }
 
-# OMP's `off`: it only removes the enable flag, which enable_flag.py locks on its own, so it skips
-# the install lock the extension's background repair may hold while omp starts.
-disable_omp_logging() {
+# `off` for a plugin-owned harness: it only removes the enable flag (and, but for OMP, the runtime
+# markers), which needs no install lock: enable_flag.py locks the flag on its own. So it never waits
+# for the `repair` a session start may be running under that lock: Claude Code's and Cursor's
+# session-start hooks, the OpenCode plugin's setup, and the OMP extension's background repair.
+disable_plugin_logging() {
   preflight_enable_flag
   validate_state_dir
   set_disabled
@@ -516,7 +516,8 @@ main() {
         enable_plugin_hooks
         return
       fi
-      [[ "$HARNESS" != codex ]] || require_codex_plugin_package
+      # Only Codex gets here: every other harness's plugin owns its hooks.
+      require_codex_plugin_package
       # Legacy cleanup comes before the adapter preflight: it removes standalone adapter
       # copies of earlier releases that sit where the adapter goes.
       preflight_enable_flag
@@ -530,18 +531,15 @@ main() {
       set_enabled
       if runtime_current; then
         printf '%s: on\n' "$HARNESS_LABEL"
-      elif [[ "$HARNESS" == codex ]]; then
-        printf '%s: on — %s\n' "$HARNESS_LABEL" "$CODEX_TRUST_INSTRUCTION"
       else
-        printf '%s: on — restart required\n' "$HARNESS_LABEL"
+        printf '%s: on — %s\n' "$HARNESS_LABEL" "$CODEX_TRUST_INSTRUCTION"
       fi
       release_install_lock
       trap - EXIT
       ;;
     off)
-      # Only OMP runs a repair in the background, so only its `off` must not wait for that lock.
-      if [[ "$HARNESS" == omp ]]; then
-        disable_omp_logging
+      if plugin_owns_hooks; then
+        disable_plugin_logging
         return
       fi
       preflight_off

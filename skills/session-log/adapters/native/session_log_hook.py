@@ -30,6 +30,9 @@ SAFE_ID = re.compile(rf"^[A-Za-z0-9._-]{{1,{MAX_SESSION_ID_LENGTH}}}$")
 TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 TOKENS_SUFFIX = ".tokens.jsonl"
 PROMPT_HEAD_LENGTH = 60
+# Cursor kills a hook after the "timeout" .cursor-plugin/hooks.json gives it (30 s); the session-start
+# cleanup ends well before, so the hook still answers in time.
+REPAIR_TIMEOUT_SECONDS = 20
 
 
 def fail(message):
@@ -335,15 +338,20 @@ def has_legacy_cursor_hooks(root):
 def remove_legacy_cursor_hooks(root):
     """Session start removes the legacy entries, since Cursor runs them beside the plugin's hooks; the
     plugin's hook commands start this script only while logging is on. Best effort: `repair` output
-    is discarded and its failure is ignored; `on` and `repair` report why it failed."""
+    is discarded and its failure is ignored, as `on` and `repair` report why it failed; a cleanup that
+    never started or ran out of time is named on stderr, which Cursor logs, never on stdout, which it
+    reads as the hook's answer."""
     if not has_legacy_cursor_hooks(root):
         return
     session_log = Path(__file__).resolve().parents[2] / "bin" / "session-log"
     try:
         subprocess.run(["bash", str(session_log), "--entrypoint", "cursor", "--harness", "cursor", "repair"],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    except OSError:
-        pass
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                       timeout=REPAIR_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        print(f"session-log: legacy cleanup timed out after {REPAIR_TIMEOUT_SECONDS}s; run repair", file=sys.stderr)
+    except OSError as error:
+        print(f"session-log: cannot start the legacy cleanup: {error}", file=sys.stderr)
 
 
 def main(argv=None):

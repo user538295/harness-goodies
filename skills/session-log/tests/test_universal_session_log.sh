@@ -1379,7 +1379,7 @@ claude_settings.pathsafe._rename_no_replace = create_restore_collision
 try:
     claude_settings.main(["remove"])
 except SystemExit as error:
-    if str(error) != "Claude settings changed during update; retry installation":
+    if str(error) != "Claude settings changed during the legacy cleanup; run repair again":
         raise
 else:
     raise SystemExit("settings removal accepted concurrent target")
@@ -1409,7 +1409,7 @@ original_stat = os.stat
 
 def fail_update_link(source_name, target_name, **options):
     if target_name == os.path.basename(os.environ["SETTINGS_PATH"]) and source_name.startswith(
-        (".session-log.", ".session-log-migrate.")
+        ".session-log-update."
     ):
         raise OSError("injected update link failure")
     return original_link(source_name, target_name, **options)
@@ -1482,7 +1482,9 @@ assert_exact "locking acquire succeeds" "0" "$lk_rc"
 assert_file "locking records owner" "$LK/owner"
 SESSION_LOG_LOCK_PATH="$LK" SESSION_LOG_LOCK_PID="$$" SESSION_LOG_LOCK_START="$LK_START" python3 "$PSLIB/locking.py" acquire
 lk2_rc=$?
-assert_exact "locking blocks while held by a live owner" "1" "$lk2_rc"
+# EX_TEMPFAIL: locking.py's status while another live owner holds the lock.
+LOCK_BUSY_STATUS=75
+assert_exact "locking blocks while held by a live owner" "$LOCK_BUSY_STATUS" "$lk2_rc"
 SESSION_LOG_LOCK_PATH="$LK" SESSION_LOG_LOCK_PID="$$" SESSION_LOG_LOCK_START="$LK_START" python3 "$PSLIB/locking.py" release
 assert_not_file "locking release removes the lock" "$LK"
 mkdir -p "$LK"

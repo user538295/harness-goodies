@@ -11,10 +11,17 @@ let registered;
 const RELOCATING_VARIABLES = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "OPENCODE_CONFIG_DIR"];
 // A child that hangs fails its test instead of the suite.
 const CHILD_TIMEOUT_MS = 30_000;
+const EXECUTABLE_MODE = 0o700;
+// setup starts session-log's startup cleanup (`bash install.sh ... repair`) detached and never
+// awaits it, so a real one could still write below scratchHome while afterAll removes it. This
+// `bash` ends at once; the cleanup itself is tested in the session-log adapter's suite.
+const noOpBashDirectory = path.join(scratchHome, "no-op-bash");
+fs.mkdirSync(noOpBashDirectory);
+fs.writeFileSync(path.join(noOpBashDirectory, "bash"), "#!/bin/sh\nexit 0\n", { mode: EXECUTABLE_MODE });
 const childEnvironment = (pluginPath) => {
   const environment = { ...process.env };
   for (const name of RELOCATING_VARIABLES) delete environment[name];
-  return { ...environment, HOME: scratchHome, OPENCODE_GOODIES_PLUGIN: pluginPath };
+  return { ...environment, HOME: scratchHome, PATH: `${noOpBashDirectory}:${process.env.PATH}`, OPENCODE_GOODIES_PLUGIN: pluginPath };
 };
 
 // The plugin's session-log setup writes below HOME, and Bun reads HOME once at startup, so the

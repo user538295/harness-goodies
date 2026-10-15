@@ -98,11 +98,11 @@ cleanup_fingerprint() {
 }
 
 # Session start runs the legacy cleanup (`repair`), logging on or off. Best effort: it never
-# fails the hook and all output is discarded. A stamp of the fingerprint after each attempt,
-# successful or not, skips it until settings.json, this package, or whether a seeded copy or
-# legacy scripts exist changes, so a cleanup that cannot succeed (say, an edited legacy script)
-# does not rerun at every session start. Restoring an edited file changes none of these: `on`
-# and `repair` run the cleanup then and report why it failed. With no leftover it costs one grep.
+# fails the hook and all output is discarded. A stamp of the fingerprint after a successful run
+# skips it until settings.json, this package, or whether a seeded copy or legacy scripts exist
+# changes. A failed run (say, another command holds the install lock, or an edited legacy script)
+# leaves no stamp, so the next session start tries again; `on` and `repair` report why it failed.
+# With no leftover it costs one grep.
 cleanup_legacy_leftovers() {
   local fingerprint
   legacy_leftovers_present || return 0
@@ -110,7 +110,7 @@ cleanup_legacy_leftovers() {
   if [[ -f "$LEGACY_CLEANUP_STAMP" && ! -L "$LEGACY_CLEANUP_STAMP" && "$(< "$LEGACY_CLEANUP_STAMP")" == "$fingerprint" ]]; then
     return 0
   fi
-  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || true
+  bash "$PACKAGE_ROOT/bin/session-log" --entrypoint claude --harness claude repair || return 0
   # The fingerprint is taken again after the cleanup. If something else changes settings.json
   # in between, that change is stamped without a cleanup; the next change triggers one.
   fingerprint="$(cleanup_fingerprint)" || return 0
@@ -170,10 +170,21 @@ if [[ -n "$session_id" ]]; then
       '{harness:$harness,version:$version,session_id:$session_id,nonce:$nonce,
         loaded_at:$loaded_at,pid:$pid,process_start:$process_start}' > "$target")
   }
+  # The per-process markers of Claude Code processes that are gone: status never counts them.
+  prune_dead_runtime_markers() {
+    local marker pid
+    for marker in "$STATE_DIR"/runtime.*.json; do
+      pid="${marker##*/runtime.}"
+      pid="${pid%.json}"
+      [[ "$pid" =~ ^[1-9][0-9]*$ && -f "$marker" && ! -L "$marker" ]] || continue
+      kill -0 "$pid" 2>/dev/null || unlink "$marker" 2>/dev/null || true
+    done
+  }
   write_runtime_temp "$temp" 2>/dev/null || exit 0
   write_runtime_temp "$process_temp" 2>/dev/null || exit 0
   mv -f "$temp" "$runtime" 2>/dev/null || exit 0
   mv -f "$process_temp" "$process_runtime" 2>/dev/null || exit 0
+  [[ "${1:-}" != session-start ]] || prune_dead_runtime_markers
 else
   :
 fi

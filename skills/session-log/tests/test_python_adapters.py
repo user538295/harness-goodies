@@ -1,5 +1,6 @@
 import importlib.util
 import fcntl
+import fnmatch
 import hashlib
 import io
 import json
@@ -258,9 +259,8 @@ class InstallerHooksTests(unittest.TestCase):
     def test_installer_cli_preserves_unmanaged_hooks(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory).resolve() / "hooks.json"
-            hook = REPO / "skills/session-log/adapters/native/session_log_hook.py"
             config.write_text(json.dumps({"hooks": {"SessionStart": [{"command": "user-hook"}]}}))
-            result = subprocess.run([sys.executable, str(INSTALL_PATH), "install", "codex", str(config), str(hook)], text=True, capture_output=True)
+            result = subprocess.run([sys.executable, str(INSTALL_PATH), "install", "codex", str(config)], text=True, capture_output=True)
             updated = json.loads(config.read_text())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(updated["hooks"]["SessionStart"][0], {"command": "user-hook"})
@@ -270,13 +270,12 @@ class InstallerHooksTests(unittest.TestCase):
     def test_installer_replaces_hooks_registered_from_a_native_windows_path(self):
         installer = load_module(INSTALL_PATH, "install_hooks_windows_path_test")
         windows_hook = r"C:\Users\Jane Doe\.codex\skills\session-log\adapters\native\session_log_hook.py"
-        hook = Path("/stable/skills/session-log/adapters/native/session_log_hook.py")
         document = {"hooks": {}}
         # Codex's current command names no hook, so only a literal legacy entry carries the Windows path.
         document["hooks"] = {event: [legacy_codex_hook_entry(windows_hook, lifecycle)]
                              for event, lifecycle in CODEX_LIFECYCLES.items()}
-        installer.update(document, "codex", hook)
-        self.assertTrue(installer.is_current(document, "codex", hook))
+        installer.update(document, "codex")
+        self.assertTrue(installer.is_current(document, "codex"))
         self.assertEqual(codex_hook_commands_of(document), codex_stable_commands())
         for entries in document["hooks"].values():
             self.assertEqual(len(entries), 1, entries)
@@ -360,9 +359,8 @@ class InstallerHooksTests(unittest.TestCase):
     def test_installer_reports_invalid_utf8_hooks_file_cleanly(self):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory).resolve() / "hooks.json"
-            hook = REPO / "skills/session-log/adapters/native/session_log_hook.py"
             config.write_bytes(b"\xff\xfe{}")
-            result = subprocess.run([sys.executable, str(INSTALL_PATH), "install", "codex", str(config), str(hook)], text=True, capture_output=True)
+            result = subprocess.run([sys.executable, str(INSTALL_PATH), "install", "codex", str(config)], text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("cannot read hooks file", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
@@ -808,6 +806,25 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, f"removed 3 legacy session-log hook registration(s) from {settings_path}\n")
 
+    def test_both_operations_report_unreadable_or_invalid_settings_the_same_way(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory).resolve() / "settings.json"
+            environment = {**os.environ, "SETTINGS_PATH": str(settings_path), "SESSION_LOG_OWNER_MARKER": self.OWNER,
+                           "CLAUDE_SCRIPTS_DIR": str(Path(directory).resolve() / "scripts")}
+            cases = {
+                "unreadable": ("{}", 0, f"cannot update Claude settings: [Errno 13] Permission denied: 'settings.json'"),
+                "an array root": ("[]", PRIVATE_FILE_MODE, "cannot update Claude settings: root must be an object"),
+            }
+            for name, (contents, mode, message) in cases.items():
+                for operation in ("remove", "migrate"):
+                    with self.subTest(name, operation=operation):
+                        settings_path.write_text(contents)
+                        settings_path.chmod(mode)
+                        result = self.cli(environment, operation)
+                        settings_path.chmod(PRIVATE_FILE_MODE)
+                        self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", message + "\n"))
+                        self.assertEqual(settings_path.read_text(), contents)
+
     def test_unknown_operations_are_refused(self):
         environment = {**os.environ, "SETTINGS_PATH": "/nonexistent/settings.json", "SESSION_LOG_OWNER_MARKER": self.OWNER}
         for operation in ("install", "repair", "has-removable", "plugin-enabled", "plugin-hooks-current"):
@@ -1100,9 +1117,16 @@ NATIVE_PACKAGE_ROOTS = {"codex": CODEX_PLUGIN_ROOT_RELATIVE}
 NATIVE_LABELS = {"codex": "Codex"}
 # Settings.json registrations of a seeded copy that is not installed, so every one of them is dead.
 DEAD_REGISTRATIONS = 2
-# State files older releases wrote that nothing reads any more.
 # The adapter state files older Codex, Cursor, OMP, and OpenCode installs wrote; nothing reads them now.
 OBSOLETE_ADAPTER_STATE = ("adapter.version", "adapter.manifest", "desired.version")
+
+
+def seed_obsolete_adapter_state(state_dir):
+    state_dir.mkdir(parents=True, exist_ok=True)
+    for name in OBSOLETE_ADAPTER_STATE:
+        (state_dir / name).write_text("old\n")
+
+
 OBSOLETE_CLAUDE_STATE = ("adapter.version", "adapter.manifest", "desired.version", "plugin-root",
                          "settings-repair.1322337178.stamp")
 # The scripts the pre-plugin Claude Code install copied into ~/.claude/scripts, in cleanup order.
@@ -1112,9 +1136,11 @@ CLAUDE_REPAIR_CLEAN = "Claude Code: repair found no duplicate or stale registrat
 
 
 def harness_environment(home):
+    """The test environment with ``home`` as HOME and without the variables that relocate a harness root, which
+    session-log refuses: the developer's own must not leak in."""
     environment = {key: value for key, value in os.environ.items()
                    if key not in ("CLAUDE_PLUGIN_ROOT", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PI_CODING_AGENT_DIR",
-                                  "OMP_PROMPT_LOG_DIR")}
+                                  "OMP_PROMPT_LOG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "OPENCODE_CONFIG_DIR")}
     return {**environment, "HOME": str(home)}
 
 
@@ -1141,9 +1167,13 @@ def run_session_log(package, home, harness, *arguments):
     )
 
 
+# Where a plugin keeps the session-log package, below its root.
+PACKAGE_SUFFIX = "/skills/session-log"
+
+
 def harness_package(home, subroot):
     """A copy of this repository's session-log package in ``<home>/<subroot>/skills/session-log``."""
-    package = home / subroot / "skills/session-log"
+    package = home / (subroot + PACKAGE_SUFFIX)
     package.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(REPO / "skills/session-log", package)
     return package
@@ -1476,10 +1506,10 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             # The grep gate kept the cleanup from running: it would have created the state directory.
             self.assertFalse((home / ".claude/session-log").exists())
 
-    def native_hooks(self, harness, hook, times):
+    def native_hooks(self, harness, times):
         installer = load_module(INSTALL_PATH, f"install_hooks_repair_{harness}")
         document = {"hooks": {}}
-        installer.update(document, harness, hook)
+        installer.update(document, harness)
         for event, entries in document["hooks"].items():
             document["hooks"][event] = entries * times
         return document
@@ -1489,19 +1519,14 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
                 home = Path(directory).resolve()
                 package = harness_package(home, NATIVE_PACKAGE_ROOTS[harness])
-                hook = package / "adapters/native/session_log_hook.py"
-                document = self.native_hooks(harness, hook, REPEATED_REGISTRATIONS)
+                document = self.native_hooks(harness, REPEATED_REGISTRATIONS)
                 windows_hook = Path(r"C:\Users\Jane Doe\skills\session-log\adapters\native\session_log_hook.py")
                 first_event = next(iter(document["hooks"]))
-                if harness == "codex":
-                    # Codex's current command names no hook, so only a literal legacy entry carries the Windows path.
-                    stale = [legacy_codex_hook_entry(windows_hook, CODEX_LIFECYCLES[first_event])]
-                else:
-                    stale = self.native_hooks(harness, windows_hook, 1)["hooks"][first_event]
-                document["hooks"][first_event] += stale
+                # Codex's current command names no hook, so only a literal legacy entry carries the Windows path.
+                document["hooks"][first_event] += [legacy_codex_hook_entry(windows_hook, CODEX_LIFECYCLES[first_event])]
                 config = home / subroot / "hooks.json"
                 config.write_text(json.dumps(document))
-                expected = self.native_hooks(harness, hook, 1)
+                expected = self.native_hooks(harness, 1)
 
                 first = run_session_log(package, home, harness, "repair")
                 self.assertEqual((first.returncode, first.stderr), (0, ""))
@@ -1683,7 +1708,7 @@ class SessionStartCleanupStampTests(unittest.TestCase):
                 if kind == "symlink":
                     self.assertEqual(target.read_text(), "unrelated")
 
-    def test_failed_cleanup_is_stamped_and_retried_once_settings_change(self):
+    def test_failed_cleanup_is_not_stamped_and_runs_again_at_the_next_session_start(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             package, settings = self.dirty_settings(home)
@@ -1692,15 +1717,11 @@ class SessionStartCleanupStampTests(unittest.TestCase):
             result = run_claude_hook(package, home, "session-start")
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
             self.assertEqual(settings.read_bytes(), original)
-            self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
+            self.assertFalse(os.path.lexists(home / LEGACY_CLEANUP_STAMP_RELATIVE))
 
             shutil.rmtree(home / INSTALL_LOCK_RELATIVE)
-            unchanged = run_claude_hook(package, home, "session-start")
-            self.assertEqual((unchanged.returncode, unchanged.stdout, unchanged.stderr), (0, "", ""))
-            self.assertEqual(settings.read_bytes(), original, "an unchanged settings.json was cleaned again")
-
-            settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, 1)}))
             self.assert_cleaned(package, home, settings)
+            self.assertTrue((home / LEGACY_CLEANUP_STAMP_RELATIVE).is_file())
 
     def test_failed_stamp_write_leaves_no_temporary_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1735,6 +1756,29 @@ class SessionStartCleanupStampTests(unittest.TestCase):
                                      environment={"HOME": str(home), "PATH": str(tools)})
             self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
             self.assertEqual(json.loads(settings.read_text()), {"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}})
+
+
+class ClaudeRuntimeMarkerPruneTests(unittest.TestCase):
+    """Session start drops the per-process runtime markers of Claude Code processes that are gone."""
+
+    def test_session_start_removes_only_the_markers_of_dead_processes(self):
+        if shutil.which("jq") is None:
+            self.skipTest("jq is not installed")
+        with tempfile.TemporaryDirectory() as directory:
+            home, package = enabled_claude_home(directory)
+            state = home / ".claude/session-log"
+            state.mkdir(parents=True)
+            finished = subprocess.run(["sh", "-c", "echo $$"], capture_output=True, text=True, check=True)
+            dead = state / f"runtime.{finished.stdout.strip()}.json"
+            live = state / f"runtime.{os.getpid()}.json"
+            unrelated = state / "runtime.notes.json"
+            for marker in (dead, live, unrelated):
+                marker.write_text('{"harness": "claude"}')
+            result = run_claude_hook(package, home, "session-start", payload=json.dumps({"session_id": "prune"}))
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertFalse(os.path.lexists(dead))
+            self.assertTrue(live.is_file())
+            self.assertTrue(unrelated.is_file())
 
 
 # A hook payload naming a session, so a hook that got past its safety checks would record a runtime marker.
@@ -2124,7 +2168,7 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 package = harness_package(home, NATIVE_PACKAGE_ROOTS[harness])
                 installer = load_module(INSTALL_PATH, f"install_hooks_partial_{harness}")
                 document = {"hooks": {}}
-                installer.update(document, harness, package / "adapters/native/session_log_hook.py")
+                installer.update(document, harness)
                 expected = json.loads(json.dumps(document))
                 removed_event, repeated_event = list(document["hooks"])[:2]
                 del document["hooks"][removed_event]
@@ -2188,18 +2232,6 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 self.assert_refused(run_session_log(package, home, harness, "repair"), target, original)
                 self.assertTrue((home / subroot / name).is_symlink())
 
-    def test_native_repair_refuses_a_missing_hook_asset(self):
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve()
-            # A plugin package is installed, so repair rewrites Codex entries, but the running package lacks its hook.
-            harness_package(home, NATIVE_PACKAGE_ROOTS["codex"])
-            package = harness_package(home, "checkout")
-            config = home / ".codex/hooks.json"
-            config.write_text(json.dumps({"hooks": claude_hooks_registered(package, REPEATED_REGISTRATIONS)}))
-            original = config.read_bytes()
-            (package / "adapters/native/session_log_hook.py").unlink()
-            self.assert_refused(run_session_log(package, home, "codex", "repair"), config, original)
-
     def test_repair_fails_while_another_install_holds_the_lock(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
@@ -2208,9 +2240,42 @@ class RepairCommandEdgeTests(unittest.TestCase):
             settings.write_text(json.dumps({"hooks": claude_hooks_registered(home / SEEDED_RELATIVE, REPEATED_REGISTRATIONS)}))
             original = settings.read_bytes()
             hold_install_lock(home)
+            busy = (LOCK_BUSY_STATUS, "", "session-log: another session-log command is already in progress for claude\n")
             result = run_session_log(package, home, "claude", "repair")
-            self.assert_refused(result, settings, original)
-            self.assertIn("already in progress", result.stderr)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), busy)
+            entrypoint = subprocess.run(["bash", str(package / "install.sh"), "--harness", "claude", "--arguments", "repair"],
+                                        capture_output=True, text=True, env=harness_environment(home),
+                                        timeout=SESSION_LOG_TIMEOUT_SECONDS)
+            self.assertEqual((entrypoint.returncode, entrypoint.stdout, entrypoint.stderr), busy)
+            self.assertEqual(settings.read_bytes(), original)
+
+    def test_codex_on_reports_a_busy_install_lock_with_the_busy_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = harness_package(home, NATIVE_PACKAGE_ROOTS["codex"])
+            hold_install_lock(home, ".codex")
+            result = run_session_log(package, home, "codex", "on")
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (
+                LOCK_BUSY_STATUS, "", "session-log: another session-log command is already in progress for codex\n"))
+            self.assertFalse((home / CODEX_FLAG_RELATIVE).exists())
+
+    def test_a_broken_install_lock_fails_without_the_busy_status_and_says_what_failed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            hold_install_lock(home)
+            owner = home / INSTALL_LOCK_RELATIVE / "owner"
+            owner.chmod(0)
+            result = run_session_log(package, home, "claude", "on")
+            self.assertEqual((result.returncode, result.stdout), (1, ""))
+            self.assertNotIn("another session-log command", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertEqual(result.stderr.splitlines(), [
+                f"session-log: cannot acquire install lock {home / INSTALL_LOCK_RELATIVE}: "
+                f"[Errno 13] Permission denied: 'owner'",
+                f"session-log: cannot acquire install lock: {home / INSTALL_LOCK_RELATIVE}",
+            ])
+            self.assertFalse((home / ".claude/prompt-logs/.enabled").exists())
 
     def test_native_repair_leaves_absent_or_unmanaged_hooks_files_untouched(self):
         for harness, subroot in NATIVE_HARNESSES:
@@ -2228,6 +2293,41 @@ class RepairCommandEdgeTests(unittest.TestCase):
                 unmanaged = run_session_log(package, home, harness, "repair")
                 self.assertEqual((unmanaged.returncode, unmanaged.stdout, unmanaged.stderr), (0, clean, ""))
                 self.assertEqual(config.read_bytes(), original)
+
+
+# The git blobs of the unmarked scripts pre-plugin releases copied into ~/.claude/scripts, one per name in
+# legacy_script_is_tracked (lib/legacy_cleanup.sh), whose sha256 allowlist must keep matching them.
+PRE_PLUGIN_SCRIPT_BLOBS = {
+    "prompt_log_save.sh": "6ab0eebb9b82f70f624306145e3a2dbd1f0a8da5",
+    "prompt_log_new_session.sh": "4b510c64f3016ad9d09f29856ef2416b92ca955e",
+    "prompt_log_stop.sh": "c197bf12096a6fe671e8276c056100af61136c8d",
+    "prompt_log_subagent.sh": "0afb9b5b1b715460d3887dbbf389dc36a456d731",
+    "prompt_log_lib.sh": "823f0f003b2ebaf3e6b0ee6d32e15e1e45cc3748",
+    "prompt_log_usage.sh": "c87b5418cf96ba84205598b550c6cf63f65c3871",
+    "prompt_log_usage.jq": "7233ac08f1a5460b3bcb04854e96d1b9b9397e85",
+    "prompt_log_prices.json": "0672150c609cf20664cb6bdcab95c1ff3e6b5b17",
+}
+
+
+class PrePluginClaudeScriptTests(unittest.TestCase):
+    """`repair` recognizes the unmarked scripts pre-plugin releases installed by their content alone."""
+
+    def test_repair_removes_every_unmarked_script_a_pre_plugin_release_installed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            package = claude_package(home)
+            scripts = home / ".claude/scripts"
+            scripts.mkdir(parents=True)
+            for name in LEGACY_SCRIPT_NAMES:
+                content = subprocess.run(["git", "-C", str(REPO), "cat-file", "blob", PRE_PLUGIN_SCRIPT_BLOBS[name]],
+                                         capture_output=True, check=True).stdout
+                self.assertNotIn(OWNER_MARKER.encode(), content, f"{name} would be recognized by its marker")
+                (scripts / name).write_bytes(content)
+            result = run_session_log(package, home, "claude", "repair")
+            self.assertEqual((result.returncode, result.stderr), (0, ""))
+            self.assertEqual(result.stdout, "".join(f"Claude Code: removed legacy script {scripts / name}\n"
+                                                    for name in LEGACY_SCRIPT_NAMES))
+            self.assertEqual(list(scripts.iterdir()), [])
 
 
 class ClaudeOffTests(unittest.TestCase):
@@ -2250,12 +2350,22 @@ class ClaudeOffTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(self.flag))
         self.assertEqual([path.name for path in state.glob("runtime*.json")], [])
 
-    def test_off_fails_while_another_command_holds_the_install_lock(self):
-        hold_install_lock(self.home)
-        result = run_session_log(self.package, self.home, "claude", "off")
-        self.assertEqual((result.returncode, result.stdout), (1, ""))
-        self.assertIn("another session-log command is already in progress", result.stderr)
-        self.assertTrue(self.flag.is_file())
+    def test_off_succeeds_while_a_session_start_repair_holds_the_install_lock(self):
+        """Every plugin-owned harness may run `repair` at session start, so its `off` never waits for that lock."""
+        packages = {"claude": claude_package, "cursor": lambda home: cursor_plugin_root(home) / "skills/session-log",
+                    "opencode": opencode_package}
+        for harness, make_package in packages.items():
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory).resolve()
+                package = make_package(home)
+                root = home / HARNESS_SUBROOTS[harness]
+                self.assertEqual(run_session_log(package, home, harness, "on").returncode, 0)
+                hold_install_lock(home, HARNESS_SUBROOTS[harness])
+                result = run_session_log(package, home, harness, "off")
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (0, f"{HARNESS_LABELS[harness]}: off\n", ""))
+                self.assertFalse(os.path.lexists(root / "prompt-logs/.enabled"))
+                self.assertTrue((root / "session-log/.install.lock/owner").is_file())
 
 
 LEGACY_PACKAGE_PATH = REPO / "skills/session-log/lib/legacy_package.py"
@@ -2313,9 +2423,12 @@ class PackageVersionMarkerTests(unittest.TestCase):
                 self.assertEqual(self.status_with_live_marker(harness, version), f"{label}: on\n")
 
     def test_a_marker_of_the_seeding_releases_never_counts(self):
-        for harness, label in HARNESS_LABELS.items():
+        not_loaded = {"claude": "Claude Code: on — restart required\n", "codex": f"{CODEX_TRUST_STATUS}\n",
+                      "cursor": CURSOR_HOOKS_NOT_LOADED, "opencode": "OpenCode: on — restart required\n",
+                      "omp": OMP_RESTART_REQUIRED}
+        for harness, status in not_loaded.items():
             with self.subTest(harness=harness):
-                self.assertNotEqual(self.status_with_live_marker(harness, SEEDING_RELEASE_VERSION), f"{label}: on\n")
+                self.assertEqual(self.status_with_live_marker(harness, SEEDING_RELEASE_VERSION), status)
 
 
 class LegacyPackageCopyTests(unittest.TestCase):
@@ -2340,12 +2453,7 @@ class LegacyPackageCopyTests(unittest.TestCase):
         return self.copy
 
     def remove(self, path=None):
-        result = subprocess.run(
-            [sys.executable, str(LEGACY_PACKAGE_PATH), "remove", str(path or self.copy)],
-            capture_output=True, text=True, env=harness_environment(self.home), timeout=LEGACY_PACKAGE_TIMEOUT_SECONDS,
-        )
-        self.assertEqual((result.returncode, result.stderr), (0, ""))
-        return result.stdout
+        return self.run_legacy_package("remove", path)
 
     def run_legacy_package(self, operation, path=None):
         result = subprocess.run(
@@ -2422,6 +2530,27 @@ class LegacyPackageCopyTests(unittest.TestCase):
         self.assertEqual(self.run_legacy_package("neutralize"), "")
         self.assertEqual(self.remove(), "removed\n")
         self.assertFalse(os.path.lexists(copy))
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_neutralize_reports_a_skill_file_it_cannot_remove_instead_of_claiming_it_went(self):
+        copy = self.seeded()
+        copy.chmod(READ_ONLY_DIRECTORY_MODE)
+        self.addCleanup(copy.chmod, PRIVATE_DIRECTORY_MODE)
+        self.assertEqual(self.run_legacy_package("neutralize"), "kept: cannot remove SKILL.md: Permission denied\n")
+        self.assertTrue((copy / "SKILL.md").is_file())
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_a_kept_copy_is_not_reported_neutralized_while_a_proven_skill_file_stays(self):
+        copy = self.seeded()
+        nested = copy / "templates/opencode/SKILL.md"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("an older release's template\n")
+        write_seeded_manifest(copy)
+        (copy / "notes.md").write_text("mine\n")
+        nested.parent.chmod(READ_ONLY_DIRECTORY_MODE)
+        self.addCleanup(nested.parent.chmod, PRIVATE_DIRECTORY_MODE)
+        self.assertEqual(self.remove(), "kept: notes.md is not a file session-log installed\n")
+        self.assertTrue(nested.is_file())
 
     def test_neutralize_leaves_unproven_copies_alone(self):
         self.copy.parent.mkdir(parents=True)
@@ -2591,7 +2720,9 @@ class LegacyPackageCopyTests(unittest.TestCase):
                 self.assertFalse(os.path.lexists(self.copy))
         self.assertEqual((live_target / "SKILL.md").read_text(), "kept\n")
         foreign = (self.home / "elsewhere/session-log",
-                   self.home / ".claude/plugins/cache/x/../../../elsewhere/claude-goodies/1.0.0/skills/session-log")
+                   self.home / ".claude/plugins/cache/x/../../../elsewhere/claude-goodies/1.0.0/skills/session-log",
+                   self.home / ".claude/plugins/cache/x/nested/claude-goodies/1.0.0/skills/session-log",
+                   self.home / ".local/share/universal-session-log/releases/1.0.0/nested/skills/session-log")
         for target in foreign:
             with self.subTest(target=target):
                 self.copy.symlink_to(target)
@@ -2661,6 +2792,7 @@ CODEX_COMMAND_TEMPLATE = (
     r"""SESSION_LOG_OWNER=universal-session-log sh -c 'package=$(ls -d"""
     r""" "$HOME"/.codex/plugins/cache/user538295/codex-goodies/*/skills/session-log"""
     r""" 2>/dev/null | sort -V | tail -1); [ -f "$package/adapters/native/session_log_hook.py" ] || exit 0;"""
+    r""" command -v python3 >/dev/null 2>&1 || exit 0;"""
     r""" exec python3 "$package/adapters/native/session_log_hook.py" codex LIFECYCLE'""")
 # A codex-goodies plugin installed from a marketplace other than user538295.
 OTHER_CODEX_MARKETPLACE_CACHE_RELATIVE = ".codex/plugins/cache/other-marketplace/codex-goodies"
@@ -2743,9 +2875,7 @@ class CodexHomeTestCase(unittest.TestCase):
         self.write_hooks({event: [legacy_codex_entry(package, lifecycle)] for event, lifecycle in CODEX_LIFECYCLES.items()})
 
     def seed_obsolete_state(self):
-        self.state.mkdir(parents=True, exist_ok=True)
-        for name in OBSOLETE_ADAPTER_STATE:
-            (self.state / name).write_text("2.0.0\n")
+        seed_obsolete_adapter_state(self.state)
 
     def assert_no_obsolete_state(self):
         for name in OBSOLETE_ADAPTER_STATE:
@@ -2819,6 +2949,19 @@ class CodexLegacyCleanupTests(CodexHomeTestCase):
                          [neutralized_seeded_copy_report("Codex", self.seeded), kept_seeded_copy_report(self.seeded)])
         self.assertFalse(os.path.lexists(self.seeded / "SKILL.md"))
         self.assertTrue((self.seeded / "adapters/native/session_log_hook.py").is_file())
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory permissions")
+    def test_a_kept_seeded_copy_whose_skill_file_cannot_go_is_named_with_the_reason(self):
+        self.seed_copy()
+        self.write_legacy_hooks(self.seeded)
+        self.seeded.chmod(READ_ONLY_DIRECTORY_MODE)
+        self.addCleanup(self.seeded.chmod, PRIVATE_DIRECTORY_MODE)
+        result = self.run_codex("repair")
+        self.assertEqual(result.stdout.splitlines()[:2], [
+            f"Codex: kept the SKILL.md of legacy package copy {self.seeded}: cannot remove SKILL.md: Permission denied; "
+            "it may still be loaded as a skill",
+            kept_seeded_copy_report(self.seeded)])
+        self.assertTrue((self.seeded / "SKILL.md").is_file())
 
     def test_repair_keeps_the_seeded_copy_while_hooks_json_runs_its_hooks(self):
         """Sessions started earlier keep running the hooks they loaded, so the copy goes only at a later run."""
@@ -3033,6 +3176,17 @@ class CodexStableHookCommandTests(CodexHomeTestCase):
                 result = self.run_hook_command(commands[event][0], json.dumps({"session_id": "gone", "prompt": "x"}))
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
         self.assertEqual(list((self.home / ".codex/prompt-logs").glob("*/session_gone.md")), [])
+
+    def test_the_command_does_nothing_without_python3(self):
+        self.run_codex("on")
+        commands = codex_hook_commands(self.config)
+        tools = link_tools(self.home / "path-without-python3", ("sh", "ls", "sort", "tail"))
+        for event in CODEX_LIFECYCLES:
+            with self.subTest(event=event):
+                result = subprocess.run(["/bin/sh", "-c", commands[event][0]], input=json.dumps({"session_id": "x"}),
+                                        capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_SECONDS,
+                                        env={**harness_environment(self.home), "PATH": str(tools)})
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
     def install_other_marketplace_plugin(self):
         """A codex-goodies package of another marketplace whose hook fails loudly if it ever runs."""
@@ -3281,16 +3435,24 @@ class CursorPluginHooksTests(unittest.TestCase):
     def enable(self):
         self.assertEqual(self.run_cursor("on").returncode, 0)
 
-    def run_plugin_hook(self, event, payload, shell="/bin/sh", plugin_root=None):
-        """Run a plugin hook the way Cursor does: `$SHELL -c` from the plugin root, with CURSOR_PLUGIN_ROOT exported."""
+    def run_plugin_hook(self, event, payload, shell="/bin/sh", plugin_root=None, *, heredoc=False, path=None):
+        """Run a plugin hook the way Cursor does: `$SHELL -c` from the plugin root, with CURSOR_PLUGIN_ROOT exported.
+
+        The workbench writes the payload to stdin; the agent-host daemon (``heredoc``) appends it to the command as a
+        heredoc (see CURSOR_HEREDOC_DELIMITER). ``path`` replaces PATH."""
         plugin_root = str(plugin_root or self.plugin_root)
         command = next(hook["command"] for hook in json.loads(CURSOR_PLUGIN_HOOKS_PATH.read_text())["hooks"][event])
         # Cursor also substitutes a braced ${CURSOR_PLUGIN_ROOT} textually (workbench _executeCommandHookScript);
         # the commands use only the exported variable, so the substitution changes nothing.
+        command = command.replace(CURSOR_PLUGIN_ROOT_PLACEHOLDER, plugin_root)
+        if heredoc:
+            command = f"{command} <<'{CURSOR_HEREDOC_DELIMITER}'\n{json.dumps(payload)}\n{CURSOR_HEREDOC_DELIMITER}"
+        environment = {**harness_environment(self.home), "CURSOR_PLUGIN_ROOT": plugin_root}
+        if path is not None:
+            environment["PATH"] = str(path)
         return subprocess.run(
-            [shell, "-c", command.replace(CURSOR_PLUGIN_ROOT_PLACEHOLDER, plugin_root)],
-            input=json.dumps(payload), capture_output=True, text=True, cwd=self.plugin_root,
-            env={**harness_environment(self.home), "CURSOR_PLUGIN_ROOT": plugin_root},
+            [shell, "-c", command], input="" if heredoc else json.dumps(payload), capture_output=True, text=True,
+            cwd=self.plugin_root, env=environment, timeout=HOOK_TIMEOUT_SECONDS,
         )
 
     def test_plugin_manifest_registers_the_native_hook_for_every_cursor_event(self):
@@ -3298,8 +3460,9 @@ class CursorPluginHooksTests(unittest.TestCase):
         self.assertEqual(manifest["hooks"], "./.cursor-plugin/hooks.json")
         document = json.loads(CURSOR_PLUGIN_HOOKS_PATH.read_text())
         self.assertEqual(document, {"version": 1, "hooks": {
-            event: [{"command": f'[ -f "$HOME/.cursor/prompt-logs/.enabled" ] && [ -f {CURSOR_PLUGIN_HOOK_SCRIPT} ] '
-                                f"&& exec python3 {CURSOR_PLUGIN_HOOK_SCRIPT} cursor {lifecycle}; exit 0",
+            event: [{"command": f'[ ! -f "$HOME/.cursor/prompt-logs/.enabled" ] || [ ! -f {CURSOR_PLUGIN_HOOK_SCRIPT} ] '
+                                f"|| ! command -v python3 >/dev/null 2>&1 "
+                                f"|| exec python3 {CURSOR_PLUGIN_HOOK_SCRIPT} cursor {lifecycle}",
                      "timeout": CURSOR_HOOK_TIMEOUT_SECONDS}]
             for event, lifecycle in CURSOR_EVENT_LIFECYCLES.items()
         }})
@@ -3326,6 +3489,28 @@ class CursorPluginHooksTests(unittest.TestCase):
                 self.assertEqual((runtime["harness"], runtime["session_id"]), ("cursor", "plugin-session"))
                 # The command execs python3, so the hook recorded the shell's parent, this test process, as Cursor.
                 self.assertEqual(self.run_cursor("status").stdout, "Cursor: on\n")
+
+    def test_plugin_hooks_log_the_payload_the_agent_host_daemon_appends_as_a_heredoc(self):
+        payload = {"conversation_id": "plugin-session", "generation_id": "plugin-generation",
+                   "workspace_roots": [str(self.home)], "prompt": "heredoc prompt"}
+        self.enable()
+        for shell in hook_shells(self, ("/bin/sh", "bash", "zsh")):
+            with self.subTest(shell=shell):
+                result = self.run_plugin_hook("beforeSubmitPrompt", payload, shell, heredoc=True)
+                self.assertEqual((result.returncode, result.stdout.strip(), result.stderr), (0, '{"continue":true}', ""))
+                log = next(self.home.glob(".cursor/prompt-logs/*/session_plugin-session.md"))
+                self.assertEqual(log.read_text().count("heredoc prompt"), 1)
+                log.unlink()
+
+    def test_plugin_hooks_exit_silently_without_python3(self):
+        self.enable()
+        empty_path = self.home / "path-without-python3"
+        empty_path.mkdir()
+        for shell in hook_shells(self, ("/bin/sh", "bash", "zsh")):
+            for event in CURSOR_EVENT_LIFECYCLES:
+                with self.subTest(shell=shell, event=event):
+                    result = self.run_plugin_hook(event, {"conversation_id": "plugin-session"}, shell, path=empty_path)
+                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
 
     def test_plugin_hooks_exit_silently_when_the_script_is_missing(self):
         self.enable()
@@ -3435,17 +3620,21 @@ class CursorPluginHooksTests(unittest.TestCase):
                          f"Cursor: removed {len(CURSOR_EVENT_LIFECYCLES)} legacy hook registration(s) from {self.config}\n")
         self.assertEqual(json.loads(self.config.read_text()), {"version": 1, "hooks": {"stop": ["x", CURSOR_FOREIGN_HOOK]}})
 
-    def test_configurator_only_removes_cursor_entries_and_takes_no_hook_path_for_it(self):
+    def test_configurator_only_removes_cursor_entries_and_only_codex_entries_are_installed(self):
         self.config.write_text(json.dumps(build_cursor_legacy_hooks(self.seeded_hook)))
         original = self.config.read_bytes()
         configurator = [sys.executable, str(INSTALL_PATH)]
-        for mode in ("install", "check", "repair", "remove"):
-            with self.subTest(mode=mode):
-                rejected = subprocess.run([*configurator, mode, "cursor", str(self.config), str(HOOK_PATH)],
-                                          capture_output=True, text=True)
+        rejected_calls = {
+            **{f"{mode} cursor": [mode, "cursor", str(self.config)] for mode in ("install", "check", "repair")},
+            "remove codex": ["remove", "codex", str(self.config)],
+            "a trailing hook path": ["remove", "cursor", str(self.config), str(HOOK_PATH)],
+        }
+        for name, arguments in rejected_calls.items():
+            with self.subTest(name):
+                rejected = subprocess.run([*configurator, *arguments], capture_output=True, text=True)
                 self.assertEqual((rejected.returncode, rejected.stdout, rejected.stderr), (1, "", (
-                    "session-log: hooks configurator requires check|install|repair with codex, a config path, and a "
-                    "hook path, or remove with cursor|codex and a config path\n")))
+                    "session-log: hooks configurator requires check|install|repair with codex and a config path, "
+                    "or remove with cursor and a config path\n")))
                 self.assertEqual(self.config.read_bytes(), original)
         removed = subprocess.run([*configurator, "remove", "cursor", str(self.config)], capture_output=True, text=True)
         self.assertEqual((removed.returncode, removed.stderr), (0, ""))
@@ -3495,9 +3684,7 @@ class CursorPluginHooksTests(unittest.TestCase):
 
     def test_repair_failing_on_an_invalid_hooks_file_keeps_the_copy_and_the_state(self):
         seeded = seed_cursor_copy(self.home)
-        self.state_dir.mkdir(parents=True)
-        for name in OBSOLETE_ADAPTER_STATE:
-            (self.state_dir / name).write_text("old\n")
+        self.seed_obsolete_state()
         self.config.write_text("[]")
         result = self.run_cursor("repair")
         self.assertEqual((result.returncode, result.stdout, result.stderr),
@@ -3533,9 +3720,7 @@ class CursorPluginHooksTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "False\n", ""))
 
     def seed_obsolete_state(self):
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        for name in OBSOLETE_ADAPTER_STATE:
-            (self.state_dir / name).write_text("old\n")
+        seed_obsolete_adapter_state(self.state_dir)
 
     def test_session_start_with_logging_on_removes_legacy_registrations_the_seeded_copy_and_obsolete_state(self):
         self.enable()
@@ -3638,9 +3823,7 @@ class CursorPluginHooksTests(unittest.TestCase):
     def test_usage_and_status_never_touch_legacy_registrations(self):
         self.config.write_text(json.dumps(build_cursor_legacy_hooks(self.seeded_hook)))
         seeded = seed_cursor_copy(self.home)
-        self.state_dir.mkdir(parents=True)
-        for name in OBSOLETE_ADAPTER_STATE:
-            (self.state_dir / name).write_text("old\n")
+        self.seed_obsolete_state()
         self.flag.parent.mkdir(parents=True)
         self.flag.write_text("enabled\n")
         original = self.config.read_bytes()
@@ -3669,10 +3852,7 @@ OMP_RESTART_REQUIRED = "OMP: on — restart required\n"
 
 def omp_package(home):
     """The session-log package of an omp-goodies marketplace plugin installed under ``home``."""
-    package = home / OMP_PLUGIN_PACKAGE_RELATIVE
-    package.parent.mkdir(parents=True)
-    shutil.copytree(REPO / "skills/session-log", package)
-    return package
+    return harness_package(home, OMP_PLUGIN_PACKAGE_RELATIVE.removesuffix(PACKAGE_SUFFIX))
 
 
 def omp_seeded_install(home):
@@ -3816,22 +3996,18 @@ class OmpPluginOwnedTests(unittest.TestCase):
         self.assertEqual((on.returncode, on.stdout, on.stderr), (0, OMP_RESTART_REQUIRED, ""))
         self.assertFalse(os.path.lexists(standalone))
 
-    def test_repair_refuses_an_unowned_extension_link_and_changes_nothing(self):
+    def test_repair_keeps_an_unowned_extension_link_and_removes_the_other_leftovers(self):
         seeded, _ = omp_seeded_install(self.home)
         extension = self.home / OMP_EXTENSION_LINK_RELATIVE
         extension.unlink()
         foreign = self.home / "elsewhere/session-log.js"
         extension.symlink_to(foreign)
         result = self.run_omp("repair")
-        self.assertEqual((result.returncode, result.stdout, result.stderr),
-                         (1, "", f"session-log: refusing to remove unowned legacy path: {extension}\n"))
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, (
+            f"OMP: removed legacy adapter link {seeded / OMP_USAGE_LINK}\n"
+            f"OMP: removed legacy package copy {seeded}\n"), ""))
         self.assertEqual(os.readlink(extension), str(foreign))
-        self.assertTrue(os.path.islink(seeded / OMP_USAGE_LINK))
-        self.assertTrue((seeded / SEEDED_MANIFEST).is_file())
-        on = self.run_omp("on")
-        self.assertEqual((on.returncode, on.stderr), (0, ""))
-        self.assertEqual(on.stdout, (f"OMP: legacy cleanup failed: refusing to remove unowned legacy path: {extension}; "
-                                     "fix it, then run repair\n" + OMP_RESTART_REQUIRED))
+        self.assertFalse(os.path.lexists(seeded))
 
     def test_repair_refuses_a_foreign_usage_link_in_the_seeded_copy_and_changes_nothing(self):
         seeded, extension = omp_seeded_install(self.home)
@@ -3871,19 +4047,23 @@ class OmpPluginOwnedTests(unittest.TestCase):
         self.assertTrue(os.path.islink(elsewhere / "session_log_usage.ts"))
         self.assertTrue((seeded / SEEDED_MANIFEST).is_file())
 
-    def test_repair_refuses_an_unmarked_file_at_the_extension_path_and_on_still_enables(self):
+    def assert_cleanup_keeps_an_unmarked_extension_file(self, command, expected_tail):
+        seeded, _ = omp_seeded_install(self.home)
         user_file = self.home / OMP_EXTENSION_LINK_RELATIVE
-        user_file.parent.mkdir(parents=True)
+        user_file.unlink()
         user_file.write_text("// the user's own extension\n")
-        result = self.run_omp("repair")
-        self.assertEqual((result.returncode, result.stdout, result.stderr),
-                         (1, "", f"session-log: refusing to remove unowned legacy path: {user_file}\n"))
+        result = self.run_omp(command)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, (
+            f"OMP: removed legacy adapter link {seeded / OMP_USAGE_LINK}\n"
+            f"OMP: removed legacy package copy {seeded}\n{expected_tail}"), ""))
         self.assertEqual(user_file.read_text(), "// the user's own extension\n")
-        on = self.run_omp("on")
-        self.assertEqual((on.returncode, on.stderr), (0, ""))
-        self.assertEqual(on.stdout, (f"OMP: legacy cleanup failed: refusing to remove unowned legacy path: {user_file}; "
-                                     "fix it, then run repair\n" + OMP_RESTART_REQUIRED))
-        self.assertTrue(user_file.is_file())
+        self.assertFalse(os.path.lexists(seeded))
+
+    def test_repair_keeps_an_unmarked_file_at_the_extension_path_and_removes_the_other_leftovers(self):
+        self.assert_cleanup_keeps_an_unmarked_extension_file("repair", "")
+
+    def test_on_keeps_an_unmarked_file_at_the_extension_path_and_removes_the_other_leftovers(self):
+        self.assert_cleanup_keeps_an_unmarked_extension_file("on", OMP_RESTART_REQUIRED)
 
     def test_repair_keeps_a_seeded_copy_with_a_changed_file_after_removing_the_links(self):
         seeded, extension = omp_seeded_install(self.home)
@@ -3936,10 +4116,7 @@ LEGACY_OPENCODE_COMMAND_TEXT = ("---\ndescription: Manage session prompt logging
 
 def opencode_package(home):
     """The session-log package of the opencode-goodies package OpenCode installed under ``home``."""
-    package = home / OPENCODE_PACKAGE_RELATIVE
-    package.parent.mkdir(parents=True)
-    shutil.copytree(REPO / "skills/session-log", package)
-    return package
+    return harness_package(home, OPENCODE_PACKAGE_RELATIVE.removesuffix(PACKAGE_SUFFIX))
 
 
 class OpenCodePluginOwnershipTests(unittest.TestCase):
@@ -3955,13 +4132,7 @@ class OpenCodePluginOwnershipTests(unittest.TestCase):
         self.package = opencode_package(self.home)
 
     def run_opencode(self, *arguments):
-        # OpenCode refuses relocated roots, so the developer's own XDG/OPENCODE variables must not leak in.
-        environment = {key: value for key, value in harness_environment(self.home).items()
-                       if key not in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "OPENCODE_CONFIG_DIR")}
-        return subprocess.run(
-            ["bash", str(self.package / "bin/session-log"), "--entrypoint", "opencode", "--harness", "opencode", *arguments],
-            capture_output=True, text=True, env=environment,
-        )
+        return run_session_log(self.package, self.home, "opencode", *arguments)
 
     def write_runtime_marker(self):
         state = self.root / "session-log"
@@ -4153,6 +4324,8 @@ class ClaudeHookWithoutPythonTests(unittest.TestCase):
 
 STALE_OWNER_START = "Stale Owner Start"
 ACQUIRER_START = "Acquirer Start"
+# EX_TEMPFAIL: the exit status of locking.py and of every session-log command when, and only when, the lock is busy.
+LOCK_BUSY_STATUS = 75
 
 
 class PackageLockTests(unittest.TestCase):
@@ -4231,7 +4404,7 @@ class PackageLockTests(unittest.TestCase):
         parent = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
         self.addCleanup(os.close, parent)
         fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.assertEqual(self.acquire(), 1)
+        self.assertEqual(self.acquire(), LOCK_BUSY_STATUS)
         self.assertEqual(self.owner_lines(), [str(os.getpid()), STALE_OWNER_START])
 
     def test_acquire_retries_when_holder_releases_after_mkdir_conflict(self):
@@ -4263,7 +4436,116 @@ class PackageLockTests(unittest.TestCase):
 
         with patch.object(os, "open", side_effect=release_then_open):
             status = self.acquire()
-        self.assertEqual(status, 1)
+        self.assertEqual(status, LOCK_BUSY_STATUS)
+
+    def test_acquire_reports_busy_while_a_live_owner_holds_the_lock(self):
+        self.lock.mkdir()
+        (self.lock / "owner").write_text(f"{os.getpid()}\n{process_start(os.getpid())}\n")
+        self.assertEqual(self.acquire(), LOCK_BUSY_STATUS)
+
+    def test_acquire_reports_what_failed_when_the_lock_is_broken_not_busy(self):
+        self.create_lock()
+        (self.lock / "owner").chmod(0)
+        self.addCleanup((self.lock / "owner").chmod, PRIVATE_FILE_MODE)
+        status = self.acquire()
+        self.assertIsInstance(status, str)
+        self.assertRegex(status, rf"^session-log: cannot acquire install lock {re.escape(str(self.lock))}: .*Permission denied")
+
+
+LEGACY_CLEANUP_PATH = REPO / "skills/session-log/lib/legacy_cleanup.sh"
+CLAUDE_HOOK_PATH = REPO / "skills/session-log/adapters/claude/claude_hook.sh"
+OMP_EXTENSION_PATH = REPO / "skills/session-log/adapters/omp/session-log.js"
+OPENCODE_PLUGIN_PATH = REPO / "skills/session-log/adapters/opencode/session-log.js"
+
+
+def bash_function_body(path, name):
+    match = re.search(rf"^{name}\(\) \{{\n(.*?)^\}}", path.read_text(), re.MULTILINE | re.DOTALL)
+    assert match, f"{name} not found in {path}"
+    return match.group(1)
+
+
+def leftover_root(relative):
+    """The leftover a path belongs to: its first two components (skills/session-log/x -> skills/session-log)."""
+    return "/".join(relative.split("/")[:2])
+
+
+def cleanup_leftover_roots(*functions):
+    """The leftovers below the harness root that the named legacy_cleanup.sh functions remove."""
+    roots = set()
+    for name in functions:
+        body = bash_function_body(LEGACY_CLEANUP_PATH, name)
+        relatives = re.findall(r'\$HARNESS_ROOT/([^"\s]+)', body)
+        relatives += re.findall(r"^\s*remove_legacy_opencode_adapter (\S+)", body, re.MULTILINE)
+        roots.update(leftover_root(relative) for relative in relatives)
+    return roots
+
+
+class LegacyCleanupTriggerTests(unittest.TestCase):
+    """The startup triggers that decide whether to run `repair` name the leftovers the cleanup removes."""
+
+    def test_the_omp_trigger_names_every_leftover_the_omp_cleanup_removes(self):
+        array = re.search(r"^const LEGACY_LEFTOVERS = \[(.*?)^\];", OMP_EXTENSION_PATH.read_text(),
+                          re.MULTILINE | re.DOTALL).group(1)
+        triggers = {leftover_root("/".join(re.findall(r'"([^"]+)"', join)))
+                    for join in re.findall(r"path\.join\(agentDir, ([^)]*)\)", array)}
+        self.assertEqual(triggers, cleanup_leftover_roots("legacy_cleanup_omp"))
+
+    def test_the_opencode_trigger_names_only_leftovers_the_opencode_cleanup_removes(self):
+        array = re.search(r"^const DISRUPTIVE_LEFTOVERS = \[(.*?)\];", OPENCODE_PLUGIN_PATH.read_text(),
+                          re.MULTILINE | re.DOTALL).group(1)
+        triggers = {leftover_root(relative) for relative in re.findall(r'"([^"]+)"', array)}
+        self.assertTrue(triggers)
+        self.assertLessEqual(triggers, cleanup_leftover_roots("legacy_cleanup_opencode", "remove_legacy_opencode_command"))
+
+    def test_the_claude_trigger_names_every_leftover_the_claude_cleanup_removes(self):
+        hook = CLAUDE_HOOK_PATH.read_text()
+        seeded = re.search(r'^readonly SEEDED_COPY="\$CLAUDE_ROOT/([^"]+)"', hook, re.MULTILINE).group(1)
+        scripts_glob = re.search(r'^readonly LEGACY_SCRIPTS_GLOB="\$CLAUDE_ROOT/([^"]+)"', hook, re.MULTILINE).group(1)
+        # settings.json registrations have their own gate below.
+        self.assertEqual({seeded, os.path.dirname(scripts_glob)},
+                         cleanup_leftover_roots("legacy_cleanup_claude") - {"settings.json"})
+        self.assertTrue(all(fnmatch.fnmatchcase(f"scripts/{name}", scripts_glob) for name in LEGACY_SCRIPT_NAMES))
+        settings_gate = re.search(r"grep -qE '([^']+)'", hook).group(1)
+        with patch.object(sys, "path", [str(CLAUDE_SETTINGS_PATH.parent), *sys.path]):
+            settings = load_module(CLAUDE_SETTINGS_PATH, "claude_settings_trigger_test")
+        for registration in (settings.PLUGIN_HOOK_RELATIVE, settings._owner_prefix(OWNER_MARKER), *settings.LEGACY_NAMES):
+            with self.subTest(registration):
+                self.assertRegex(registration, settings_gate)
+
+
+class CursorSessionStartCleanupTests(unittest.TestCase):
+    """The Cursor session-start cleanup is bounded by Cursor's hook timeout and says why it never ran."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / ".cursor"
+        self.root.mkdir()
+        (self.root / "hooks.json").write_text(json.dumps(build_cursor_legacy_hooks(
+            Path("/old") / CURSOR_SEEDED_RELATIVE / CURSOR_SEEDED_HOOK_RELATIVE)))
+        self.hook = load_module(HOOK_PATH, "session_log_hook_cleanup_test")
+
+    def remove_legacy_hooks(self, failure):
+        with patch.object(self.hook.subprocess, "run", side_effect=failure) as run, \
+                patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+                patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            self.hook.remove_legacy_cursor_hooks(self.root)
+        return run, stdout.getvalue(), stderr.getvalue()
+
+    def test_the_cleanup_ends_before_cursor_kills_the_hook(self):
+        run, stdout, stderr = self.remove_legacy_hooks(None)
+        self.assertEqual((stdout, stderr), ("", ""))
+        self.assertLess(run.call_args.kwargs["timeout"], CURSOR_HOOK_TIMEOUT_SECONDS)
+
+    def test_a_cleanup_that_times_out_is_reported_on_stderr_only(self):
+        timeout = self.hook.REPAIR_TIMEOUT_SECONDS
+        _, stdout, stderr = self.remove_legacy_hooks(subprocess.TimeoutExpired("bash", timeout))
+        self.assertEqual((stdout, stderr), ("", f"session-log: legacy cleanup timed out after {timeout}s; run repair\n"))
+
+    def test_a_cleanup_that_cannot_start_is_reported_on_stderr_only(self):
+        _, stdout, stderr = self.remove_legacy_hooks(FileNotFoundError(2, "No such file or directory", "bash"))
+        self.assertEqual((stdout, stderr), (
+            "", "session-log: cannot start the legacy cleanup: [Errno 2] No such file or directory: 'bash'\n"))
 
 
 class NativeHookTests(unittest.TestCase):

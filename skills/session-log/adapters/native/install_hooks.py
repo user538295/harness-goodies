@@ -37,22 +37,22 @@ CODEX_MARKETPLACE = "user538295"
 CODEX_OWNER_PREFIX = "SESSION_LOG_OWNER=universal-session-log "
 # The command Codex runs from ~/.codex/hooks.json. It names no package: when the hook runs it picks
 # the highest codex-goodies version with `sort -V` (Codex keeps one version directory per plugin, so
-# that is the version Codex runs) and does nothing once none is installed. Codex trusts a hook by its
-# hooks.json position plus a hash of its handler config (command text, event, matcher, timeout);
-# plugin updates change none of these, so they never ask for a new review. `sh -c` keeps it POSIX
-# whatever the user's $SHELL, which Codex runs it with. The hook's runtime marker records its parent
-# process, which is Codex when every shell in between execs its last command: `sh -c` here, and the
-# user's $SHELL as bash and zsh do (tested); other shells are unverified.
+# that is the version Codex runs) and does nothing once none is installed, or without python3.
+# Codex trusts a hook by its hooks.json position plus a hash of its handler config (command text,
+# event, matcher, timeout); plugin updates change none of these, so they never ask for a new review.
+# `sh -c` keeps it POSIX whatever the user's $SHELL, which Codex runs it with. The hook's runtime
+# marker records its parent process, which is Codex when every shell in between execs its last
+# command: `sh -c` here, and the user's $SHELL as bash and zsh do (tested); other shells are
+# unverified.
 CODEX_COMMAND = (
     CODEX_OWNER_PREFIX + "sh -c 'package=$(ls -d \"$HOME\"/.codex/plugins/cache/" + CODEX_MARKETPLACE
     + "/codex-goodies/*/skills/session-log 2>/dev/null | sort -V | tail -1);"
     " [ -f \"$package/adapters/native/session_log_hook.py\" ] || exit 0;"
+    " command -v python3 >/dev/null 2>&1 || exit 0;"
     " exec python3 \"$package/adapters/native/session_log_hook.py\" codex {lifecycle}'"
 )
-# argv, program name included: mode, harness, config path, and hook path; `remove` takes no hook path.
-HOOK_PATH_INDEX = 4
-ARGUMENT_COUNT = HOOK_PATH_INDEX + 1
-REMOVE_ARGUMENT_COUNT = HOOK_PATH_INDEX
+# argv, program name included: mode, harness, and config path.
+ARGUMENT_COUNT = 4
 
 
 def _events(harness):
@@ -77,12 +77,6 @@ def fail(message):
     raise SystemExit(1)
 
 
-def build_command(harness, hook, lifecycle):
-    if harness == "codex":
-        return CODEX_COMMAND.format(lifecycle=lifecycle)
-    return f"python3 {shlex.quote(str(hook))} {harness} {lifecycle}"
-
-
 def managed_command(value, harness, lifecycle):
     """Whether ``value`` is a session-log command for ``lifecycle``, or one naming a package's hook by path.
 
@@ -105,8 +99,8 @@ def managed_command(value, harness, lifecycle):
     )
 
 
-def expected_codex(harness, hook, lifecycle):
-    return {"hooks": [{"type": "command", "command": build_command(harness, hook, lifecycle)}]}
+def expected_codex(lifecycle):
+    return {"hooks": [{"type": "command", "command": CODEX_COMMAND.format(lifecycle=lifecycle)}]}
 
 
 def is_cursor_managed_entry(entry, harness, lifecycle):
@@ -126,7 +120,7 @@ def is_managed_entry(entry, harness, lifecycle):
     return is_codex_managed_entry(entry, harness, lifecycle)
 
 
-def is_current(document, harness, hook):
+def is_current(document, harness):
     hooks = document.get("hooks")
     if not isinstance(hooks, dict):
         return False
@@ -134,7 +128,7 @@ def is_current(document, harness, hook):
         entries = hooks.get(event)
         if not isinstance(entries, list):
             return False
-        if expected_codex(harness, hook, lifecycle) not in entries:
+        if expected_codex(lifecycle) not in entries:
             return False
     return True
 
@@ -164,27 +158,25 @@ def replace_managed_entries(entries, expected, harness, lifecycle):
             for index, entry in enumerate(entries) if index == slot or index not in managed]
 
 
-def update(document, harness, hook):
+def update(document, harness):
     require_hook_arrays(document, harness)
     hooks = document.setdefault("hooks", {})
     for event, lifecycle in _events(harness):
-        hooks[event] = replace_managed_entries(
-            hooks.get(event, []), expected_codex(harness, hook, lifecycle), harness, lifecycle
-        )
+        hooks[event] = replace_managed_entries(hooks.get(event, []), expected_codex(lifecycle), harness, lifecycle)
 
 
-def managed_entry_counts(document, harness, hook):
+def managed_entry_counts(document, harness):
     """(managed entries found, of which current) — one current entry per event is the clean state."""
     hooks = document.get("hooks", {})
     found = current = 0
     for event, lifecycle in _events(harness):
         managed = [entry for entry in hooks.get(event, []) if is_managed_entry(entry, harness, lifecycle)]
         found += len(managed)
-        current += min(1, managed.count(expected_codex(harness, hook, lifecycle)))
+        current += min(1, managed.count(expected_codex(lifecycle)))
     return found, current
 
 
-def repair(config, harness, hook):
+def repair(config, harness):
     """Leave one current managed entry per event: drop repeated or stale ones and restore missing ones.
 
     A hooks file without any managed entry is never touched: repair registers nothing from scratch.
@@ -193,11 +185,11 @@ def repair(config, harness, hook):
         return
     document = load(config)
     require_hook_arrays(document, harness)
-    found, current = managed_entry_counts(document, harness, hook)
+    found, current = managed_entry_counts(document, harness)
     events = len(_events(harness))
     if found == 0 or found == current == events:
         return
-    update(document, harness, hook)
+    update(document, harness)
     atomic_write(config, document)
     if found > current:
         print(f"removed {found - current} duplicate or stale hook registration(s) from {config}")
@@ -349,31 +341,29 @@ def atomic_write(path, document):
 
 def invalid_arguments(argv):
     """Codex is checked, installed, and repaired; the Cursor plugin registers its own hooks, so Cursor only removes."""
-    if len(argv) == REMOVE_ARGUMENT_COUNT and argv[1] == "remove":
-        return argv[2] not in ("cursor", "codex")
-    return len(argv) != ARGUMENT_COUNT or argv[1] not in ("check", "install", "repair") or argv[2] != "codex"
+    if len(argv) != ARGUMENT_COUNT:
+        return True
+    mode, harness = argv[1:3]
+    return harness != ("cursor" if mode == "remove" else "codex") or mode not in ("check", "install", "repair", "remove")
 
 
 def main(argv=None):
     args = sys.argv if argv is None else [sys.argv[0], *argv]
     if invalid_arguments(args):
-        fail("hooks configurator requires check|install|repair with codex, a config path, and a hook path, "
-             "or remove with cursor|codex and a config path")
-    mode, harness, config_path = args[1:HOOK_PATH_INDEX]
+        fail("hooks configurator requires check|install|repair with codex and a config path, "
+             "or remove with cursor and a config path")
+    mode, harness, config_path = args[1:]
     config = Path(config_path)
     if mode == "remove":
         remove(config, harness)
         return
-    hook = Path(args[HOOK_PATH_INDEX])
-    if not hook.is_file() or hook.is_symlink():
-        fail(f"native lifecycle adapter is missing: {hook}")
     if mode == "repair":
-        repair(config, harness, hook)
+        repair(config, harness)
         return
     document = load(config)
     if mode == "check":
-        raise SystemExit(0 if is_current(document, harness, hook) else 1)
-    update(document, harness, hook)
+        raise SystemExit(0 if is_current(document, harness) else 1)
+    update(document, harness)
     atomic_write(config, document)
 
 

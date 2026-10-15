@@ -27,6 +27,15 @@ assert_exits_1() {
   if ! "$@" 2>/dev/null; then ok "$desc"; else nok "$desc" "exit non-0" "exit 0"; fi
 }
 
+# discard <path>... → moves test leftovers to the trash; without one they stay in the temp directory
+discard() {
+  if command -v trash >/dev/null; then
+    trash "$@"
+  elif [[ -d ~/.Trash ]]; then
+    mv "$@" ~/.Trash/
+  fi
+}
+
 # ── next_version ──────────────────────────────────────────────────────────────
 echo "=== next_version ==="
 assert_eq "patch bump"      "1.0.5"  "$(next_version 1.0.4 false)"
@@ -77,7 +86,7 @@ printf '{\n  "name": "test",\n  "version": "2.3.4"\n}\n' > "$_tmp_json"
 PLUGIN_JSON="$_tmp_json"
 assert_eq "reads version" "2.3.4" "$(current_version)"
 PLUGIN_JSON="$_orig_json"
-rm -f "$_tmp_json"
+discard "$_tmp_json"
 
 # ── write_version ─────────────────────────────────────────────────────────────
 echo "=== write_version ==="
@@ -91,7 +100,7 @@ write_version 3.1.4
 assert_eq "bumps the plugin manifest"  "3.1.4" "$(version_in "$_tmp_a")"
 assert_eq "bumps the catalog entry"    "3.1.4" "$(version_in "$_tmp_b")"
 VERSION_FILES=("${_orig_files[@]}")
-mv "$_tmp_a" "$_tmp_b" ~/.Trash/
+discard "$_tmp_a" "$_tmp_b"
 
 # ── run_update_commands ───────────────────────────────────────────────────────
 echo "=== run_update_commands ==="
@@ -109,7 +118,7 @@ UPDATE_COMMANDS=("true")
 run_update_commands 2 >/dev/null
 assert_eq "waits the given delay first" "true" "$([[ $((SECONDS - _start)) -ge 2 ]] && echo true || echo false)"
 UPDATE_COMMANDS=("${_orig_cmds[@]}")
-mv "$_log" ~/.Trash/
+discard "$_log"
 assert_eq "covers claude, omp, codex, opencode" "4" "$(printf '%s\n' "${UPDATE_COMMANDS[@]}" | grep -cE '^(claude|omp|codex|opencode) ')"
 
 # ── session_log_version_stale ─────────────────────────────────────────────────
@@ -120,30 +129,70 @@ assert_exits_1 "only VERSION changed"         session_log_version_stale $'skills
 assert_exits_1 "nothing changed"              session_log_version_stale ""
 assert_exits_1 "another skill changed"        session_log_version_stale $'skills/commit/SKILL.md'
 assert_exits_1 "a lookalike directory"        session_log_version_stale $'skills/session-logger/SKILL.md'
+for _file in "${SESSION_LOG_WIRING_FILES[@]}" "$OMP_EXTENSIONS_CHANGE"; do
+  assert_exits_0 "$_file changed, VERSION not" session_log_version_stale "$_file"
+  assert_exits_1 "$_file and VERSION changed"  session_log_version_stale "$_file"$'\nskills/session-log/VERSION'
+done
+assert_exits_1 "a lookalike hook manifest"    session_log_version_stale $'other/hooks/hooks.json'
+assert_exits_1 "package.json changed only"    session_log_version_stale $'package.json'
 
 # ── assert_session_log_version_bumped ─────────────────────────────────────────
 echo "=== assert_session_log_version_bumped ==="
+# The fixture repository must not run the developer's commit signing, hooks, or other global settings.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+fixture_git() { git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com "$@"; }
+# write_package_json <version> <omp extension> → the fixture's package.json
+write_package_json() {
+  printf '{\n  "version": "%s",\n  "omp": {\n    "extensions": [\n      "%s"\n    ]\n  }\n}\n' "$1" "$2" \
+    > "$REPO_ROOT/package.json"
+}
 _orig_root="$REPO_ROOT"
 REPO_ROOT="$(mktemp -d)"
-git -C "$REPO_ROOT" init -q
-git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m base
-mkdir -p "$REPO_ROOT/skills/session-log"
+fixture_git init -q
+fixture_git commit -q --allow-empty -m base
+mkdir -p "$REPO_ROOT/skills/session-log" "$REPO_ROOT/hooks"
 printf '1.0.0\n' > "$REPO_ROOT/skills/session-log/VERSION"
 printf 'one\n' > "$REPO_ROOT/skills/session-log/SKILL.md"
-git -C "$REPO_ROOT" add -A
-git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com commit -q -m release
-git -C "$REPO_ROOT" tag v1.0.0
+printf '{}\n' > "$REPO_ROOT/hooks/hooks.json"
+write_package_json 1.0.0 ./one.js
+fixture_git add -A
+fixture_git commit -q -m release
+fixture_git tag v1.0.0
 assert_exits_0 "nothing changed since the tag" assert_session_log_version_bumped v1.0.0
 printf 'two\n' > "$REPO_ROOT/skills/session-log/SKILL.md"
-git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com commit -q -am change
+fixture_git commit -q -am change
 assert_exits_1 "package changed without a VERSION bump" assert_session_log_version_bumped v1.0.0
 assert_eq "names VERSION in the refusal" "1" \
   "$(assert_session_log_version_bumped v1.0.0 2>&1 >/dev/null | grep -c 'skills/session-log/VERSION')"
 printf '1.0.1\n' > "$REPO_ROOT/skills/session-log/VERSION"
-git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com commit -q -am bump
+fixture_git commit -q -am bump
 assert_exits_0 "package changed with a VERSION bump" assert_session_log_version_bumped v1.0.0
-mv "$REPO_ROOT" ~/.Trash/release-guard-test-$$
+fixture_git tag v1.0.1
+printf '{"hooks": {}}\n' > "$REPO_ROOT/hooks/hooks.json"
+fixture_git commit -q -am hooks
+assert_exits_1 "hook manifest changed without a VERSION bump" assert_session_log_version_bumped v1.0.1
+printf '1.0.2\n' > "$REPO_ROOT/skills/session-log/VERSION"
+fixture_git commit -q -am bump
+fixture_git tag v1.0.2
+write_package_json 2.0.0 ./one.js
+fixture_git commit -q -am release
+assert_exits_0 "only the release version of package.json changed" assert_session_log_version_bumped v1.0.2
+write_package_json 2.0.0 ./two.js
+fixture_git commit -q -am extension
+assert_exits_1 "omp.extensions changed without a VERSION bump" assert_session_log_version_bumped v1.0.2
+discard "$REPO_ROOT"
 REPO_ROOT="$_orig_root"
+
+# ── main ──────────────────────────────────────────────────────────────────────
+echo "=== main ==="
+assert_eq "stops on the session-log guard, checked against the last tag" "guard v9.9.9" "$(
+  set -e
+  assert_on_main() { :; }
+  assert_clean_tree() { :; }
+  find_last_valid_tag() { echo v9.9.9; }
+  assert_session_log_version_bumped() { echo "guard $1"; return 1; }
+  main --dry-run 2>/dev/null
+)"
 
 # ── shipped versions agree ────────────────────────────────────────────────────
 echo "=== shipped versions agree ==="

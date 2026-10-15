@@ -13,6 +13,12 @@ const LEGACY_COMMAND_TEXT = "---\ndescription: legacy\n---\n<!-- universal-sessi
 const RELOCATING_VARIABLES = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "OPENCODE_CONFIG_DIR"];
 // A child that hangs (say, waiting on an event that never comes) fails its test instead of the suite.
 const CHILD_TIMEOUT_MS = 30_000;
+// A directory whose entries can be read but not removed or created, and a file nobody may read.
+const READ_ONLY_DIRECTORY_MODE = 0o500;
+const UNREADABLE_FILE_MODE = 0o000;
+const PRIVATE_DIRECTORY_MODE = 0o700;
+const ROOT_UID = 0;
+const runsAsRoot = process.getuid?.() === ROOT_UID;
 
 let home;
 let configDirectory;
@@ -65,7 +71,7 @@ const runPlugin = (source, env = {}, { cwd } = {}) => {
         },
       },
     };
-    const log = sessionLog.createSessionLog(ctx, { now: () => clock });
+    const log = sessionLog.createSessionLog(ctx, { now: () => clock, ...JSON.parse(process.env.SESSION_LOG_OPTIONS || "{}") });
     const event = (type, data, created) => log.onEvent({ id: "evt_fixture", type, data, ...(created === undefined ? {} : { created }) });
     const step = (sessionID, assistantMessageID, options = {}) => {
       const { agent = "build", model = "fixture-model", texts = [], seconds = 0, finish = "stop",
@@ -218,6 +224,18 @@ test("notes a model or agent switch between root steps", () => {
   const log = readProjectLog("fixture-switch");
   expect(log.match(/switched:/g)).toHaveLength(1);
   expect(log).toContain("model: other-model\nswitched: model fixture-model → other-model, agent build → plan\n---\n\n");
+});
+
+test("forgets the oldest root once it knows more roots than its bound", () => {
+  runPlugin(`
+    for (const root of ["ses_first", "ses_second"]) sessions.set(root, undefined);
+    step("ses_first", "msg_first1", { texts: ["one"] });
+    step("ses_second", "msg_second", { texts: ["two"] });
+    step("ses_first", "msg_first2", { texts: ["three"], model: "other-model" });
+  `, { SESSION_LOG_FIXTURE: "fixture/bounded", SESSION_LOG_OPTIONS: JSON.stringify({ maxKnownSessions: 1 }) });
+  const log = readProjectLog("fixture-bounded");
+  expect(log).toContain("three\n");
+  expect(log).not.toContain("switched:");
 });
 
 test("logs a failed step and an ended step without a started event only once", () => {
@@ -407,6 +425,22 @@ test("setup records the runtime marker while logging is on, and a prompt restore
   expect(fs.existsSync(runtime)).toBe(true);
 });
 
+test("setup names a process start time it cannot read", () => {
+  const wrapper = wrapperDirectory("ps", ["exit 1"]);
+  const result = runPlugin("const { cleanup } = await setup(); await cleanup();", { PATH: pathWith(wrapper) });
+  expect(result.stderr).toContain("session-log: cannot read this OpenCode process's start time, so `status` cannot match it:");
+});
+
+test.skipIf(runsAsRoot)("closing names this process's runtime marker it cannot remove", () => {
+  const result = runPlugin(`
+    const { cleanup } = await setup();
+    fs.chmodSync(path.join(process.env.HOME, ".config/opencode/session-log"), ${READ_ONLY_DIRECTORY_MODE});
+    await cleanup();
+  `);
+  fs.chmodSync(stateDirectory, PRIVATE_DIRECTORY_MODE);
+  expect(result.stderr).toMatch(/session-log: EACCES: permission denied, unlink '.*runtime\.[0-9]+\.json'/);
+});
+
 test("setup writes no runtime marker while logging is off", () => {
   fs.unlinkSync(enabledFlag);
   runPlugin("const { cleanup } = await setup(); await cleanup();");
@@ -583,31 +617,29 @@ test("/session-log records no runtime marker once its handlers are gone or never
 });
 
 test("closing the plugin does not wait for a startup cleanup still running", () => {
-  // A repair that would hang well past the child timeout.
-  const wrapper = wrapperDirectory("bash", ["sleep 600"]);
+  const release = path.join(home, "release-repair");
+  // A repair that runs until the plugin has closed: a close that waited for it would never return.
+  const wrapper = wrapperDirectory("bash", [`while [ ! -e "${release}" ]; do sleep 0.05; done`]);
   const result = runPlugin(`
     const { cleanup } = await setup();
-    const started = Date.now();
     await cleanup();
-    process.stdout.write(String((Date.now() - started) / 1000));
-    process.exit(0);
+    fs.writeFileSync(${JSON.stringify(release)}, "");
+    process.stdout.write("closed");
   `, { PATH: pathWith(wrapper) });
-  expect(Number(result.stdout)).toBeLessThan(5);
+  expect(result.stdout).toBe("closed");
 });
 
 test("the CLI's timeout ends the commands it started too", () => {
   // A CLI whose child keeps the output pipes open after the CLI itself is killed.
   const wrapper = wrapperDirectory("bash", ["sleep 600"]);
+  // The CLI's child holds its output open, so the command settles only once the timeout ended that child too.
   const result = runPlugin(`
-    const started = Date.now();
     let failure = "";
     try { await sessionLog.runSessionLogCli("status", { timeoutMs: 200 }); }
     catch (error) { failure = error.message; }
-    process.stdout.write(JSON.stringify({ failure, seconds: (Date.now() - started) / 1000 }));
+    process.stdout.write(failure);
   `, { PATH: pathWith(wrapper) });
-  const { failure, seconds } = JSON.parse(result.stdout);
-  expect(failure).toContain("timed out");
-  expect(seconds).toBeLessThan(10);
+  expect(result.stdout).toBe("session-log: status timed out after 200 ms");
 });
 
 test("/session-log usage without a target reports the session it ran in", () => {
@@ -644,28 +676,41 @@ test("the legacy cleanup runs `repair` again only when the package or a disrupti
   expect(repairs()).toBe(2);
 });
 
-test("a cleanup that cannot remove a leftover is not retried until something changes", () => {
-  const legacyCommand = path.join(configDirectory, "commands", "session-log.md");
+test("a failed cleanup, such as one another session-log command's lock skipped, runs again at the next start", () => {
   const record = path.join(home, "repairs");
-  const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, "echo 'cannot clean' >&2", "exit 1"]);
-  fs.mkdirSync(path.dirname(legacyCommand), { recursive: true });
-  fs.writeFileSync(legacyCommand, LEGACY_COMMAND_TEXT);
+  const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, "echo 'another command is running' >&2", "exit 75"]);
   for (let run = 0; run < 2; run += 1) runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapper) });
-  expect(fs.readFileSync(record, "utf8")).toBe("repair\n");
-  expect(fs.existsSync(legacyCommand)).toBe(true);
+  expect(fs.readFileSync(record, "utf8")).toBe("repair\nrepair\n");
 });
 
-test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run", () => {
-  for (const [lines, expected] of [
-    [["echo 'OpenCode: kept /x/commands/session-log.md: move it aside'"], "session-log: OpenCode: kept /x/commands/session-log.md: move it aside\n"],
-    [["echo 'cannot clean' >&2", "exit 1"], "session-log: cannot clean\n"],
-    [["echo 'OpenCode: repair found no duplicate or stale registrations'"], ""],
+test("the startup cleanup writes repair's report or failure to OpenCode's log, but not a clean run, and stamps only a success", () => {
+  for (const [lines, expected, stamped] of [
+    [["echo 'OpenCode: kept /x/commands/session-log.md: move it aside'"], "session-log: OpenCode: kept /x/commands/session-log.md: move it aside\n", true],
+    [["echo 'cannot clean' >&2", "exit 1"], "session-log: cannot clean\n", false],
+    [["echo 'OpenCode: repair found no duplicate or stale registrations'"], "", true],
   ]) {
     fs.rmSync(stateDirectory, { recursive: true, force: true });
     const result = runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapperDirectory("bash", lines)) });
     expect(result.stderr).toBe(expected);
-    expect(fs.existsSync(path.join(stateDirectory, "legacy-cleanup.stamp"))).toBe(true);
+    expect(fs.existsSync(path.join(stateDirectory, "legacy-cleanup.stamp"))).toBe(stamped);
   }
+});
+
+test("the real CLI's clean repair report stays out of OpenCode's log", () => {
+  const result = runPlugin("await sessionLog.cleanupLegacyLeftovers();");
+  expect(result.stderr).toBe("");
+  expect(fs.existsSync(path.join(stateDirectory, "legacy-cleanup.stamp"))).toBe(true);
+});
+
+test.skipIf(runsAsRoot)("names a cleanup stamp it cannot read, then runs the cleanup", () => {
+  const record = path.join(home, "repairs");
+  fs.mkdirSync(stateDirectory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  const stamp = path.join(stateDirectory, "legacy-cleanup.stamp");
+  fs.writeFileSync(stamp, "", { mode: UNREADABLE_FILE_MODE });
+  const wrapper = wrapperDirectory("bash", [`echo repair >> "${record}"`, "exit 75"]);
+  const result = runPlugin("await sessionLog.cleanupLegacyLeftovers();", { PATH: pathWith(wrapper) });
+  expect(result.stderr).toStartWith(`session-log: EACCES: permission denied, open '${stamp}'\n`);
+  expect(fs.readFileSync(record, "utf8")).toBe("repair\n");
 });
 
 test("failed second runtime rename restores the previous shared runtime record", () => {

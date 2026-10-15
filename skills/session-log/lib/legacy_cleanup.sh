@@ -215,18 +215,26 @@ remove_legacy_opencode_command() {
 # What older releases left in the OMP root: the extension link (or standalone copy) `on` made, the
 # package copy seeded into the skill root with its usage link inside, the adapter state files, and
 # the session-log-omp skill and extension. omp loads a leftover extension beside the plugin's own.
-# Every path is checked before the first removal. Only a seeded copy that is a real directory is
-# entered for its usage link; the package-copy removal handles a symlinked one.
+# Every path is checked before the first removal. A foreign file or link at the extension path
+# stays, as at the OpenCode adapter paths. Only a seeded copy that is a real directory is entered
+# for its usage link; the package-copy removal handles a symlinked one.
 legacy_cleanup_omp() {
   local extension="$HARNESS_ROOT/extensions/session-log.js" seeded="$HARNESS_ROOT/skills/session-log"
-  local usage="$HARNESS_ROOT/skills/session-log/scripts/session_log_usage.ts" has_usage_link=0
+  local usage="$HARNESS_ROOT/skills/session-log/scripts/session_log_usage.ts" has_usage_link=0 has_extension=0
   if [[ ! -L "$seeded" && -L "$usage" ]]; then has_usage_link=1; fi
   validate_state_dir
-  if [[ -L "$extension" ]]; then validate_legacy_omp_link extension "$extension"; else validate_managed_path "$extension"; fi
-  if ((has_usage_link)); then validate_legacy_omp_link usage "$usage"; fi
+  ensure_safe_parent "$extension"
+  if [[ -L "$extension" ]]; then
+    if is_legacy_adapter_link "${ADAPTER_SOURCES[omp:extension]}" "$(readlink "$extension")"; then has_extension=1; fi
+  elif has_exact_ownership_marker "$extension"; then
+    has_extension=1
+  fi
+  if ((has_usage_link)); then validate_legacy_omp_link "$usage"; fi
   validate_managed_path "$HARNESS_ROOT/skills/session-log-omp" "$HARNESS_ROOT/skills/session-log-omp/SKILL.md"
   validate_managed_path "$HARNESS_ROOT/extensions/session-log-omp.js"
-  if [[ -L "$extension" ]]; then remove_legacy_omp_link "$extension"; else remove_managed_path "$extension"; fi
+  if ((has_extension)); then
+    if [[ -L "$extension" ]]; then remove_legacy_omp_link "$extension"; else remove_managed_path "$extension"; fi
+  fi
   if ((has_usage_link)); then remove_legacy_omp_link "$usage"; fi
   remove_managed_path "$HARNESS_ROOT/skills/session-log-omp" "$HARNESS_ROOT/skills/session-log-omp/SKILL.md"
   remove_managed_path "$HARNESS_ROOT/extensions/session-log-omp.js"
@@ -234,17 +242,16 @@ legacy_cleanup_omp() {
   remove_obsolete_state_files "${ADAPTER_OBSOLETE_STATE_FILES[@]/#/"$STATE_DIR"/}"
 }
 
-# Fails unless symlink $2 points at OMP adapter kind $1 where older releases linked it: inside any
+# Fails unless symlink $1 points at the OMP usage adapter where older releases linked it: inside any
 # session-log package (the seeded copy, a plugin cache, another checkout) or the release store.
 validate_legacy_omp_link() {
-  local kind="$1" link="$2" destination
+  local link="$1"
   ensure_safe_parent "$link"
-  destination="$(readlink "$link")"
-  is_legacy_adapter_link "${ADAPTER_SOURCES[omp:$kind]}" "$destination" && return 0
+  is_legacy_adapter_link "${ADAPTER_SOURCES[omp:usage]}" "$(readlink "$link")" && return 0
   fail "refusing to remove unowned legacy path: $link"
 }
 
-# Callers run validate_legacy_omp_link on it first.
+# Callers check the link first.
 remove_legacy_omp_link() {
   remove_checked_path "$1"
   print_repair_report "removed legacy adapter link $1"
@@ -312,11 +319,14 @@ remove_seeded_package() {
 
 # Removes the manifest-proven SKILL.md files of the seeded copy at $1 and keeps the rest, for a
 # copy that running sessions' hooks may still run: no harness loads it as a skill any more, so its
-# older code can no longer be invoked to register its hooks again.
+# older code can no longer be invoked to register its hooks again. A SKILL.md that stays is named.
 neutralize_seeded_package() {
   local target="$1" result
   result="$(python3 "$SESSION_LOG_LIB/legacy_package.py" neutralize "$target")"
-  [[ "$result" != neutralized ]] || report_neutralized_package "$target"
+  case "$result" in
+    neutralized) report_neutralized_package "$target" ;;
+    kept:*) print_repair_report "kept the SKILL.md of legacy package copy $target:${result#kept:}; it may still be loaded as a skill" ;;
+  esac
 }
 
 report_neutralized_package() {
@@ -470,36 +480,28 @@ validate_managed_path() {
   fi
 }
 
+# validate_managed_path has proven every file below a managed directory session-log's, so this only
+# removes them; remove_known_path checks each file again, and safe_remove_path refuses a directory
+# that gained a file since.
 remove_managed_path() {
-  local path="$1" marker_path="${2:-$1}" child scripts_dir=""
+  local path="$1" marker_path="${2:-$1}" scripts_dir="$1/scripts" child
   validate_managed_path "$path" "$marker_path"
   [[ -e "$path" || -L "$path" ]] || return 0
-  if [[ -d "$path" && ! -L "$path" ]]; then
-    if [[ "$path" == "$HOME_ROOT/.omp/agent/skills/session-log-omp" &&
-          -d "$path/scripts" && ! -L "$path/scripts" ]]; then
-      scripts_dir="$path/scripts"
-      for child in "$scripts_dir"/* "$scripts_dir"/.[!.]* "$scripts_dir"/..?*; do
-        [[ -e "$child" || -L "$child" ]] || continue
-        if legacy_omp_script_is_managed "$child"; then
-          remove_known_path "$child"
-          continue
-        fi
-        fail "refusing to remove managed directory containing user files: $scripts_dir"
-      done
-    fi
-    for child in "$path"/* "$path"/.[!.]* "$path"/..?*; do
-      [[ -e "$child" || -L "$child" ]] || continue
-      [[ "$child" == "$marker_path" || "$child" == "$scripts_dir" ]] && continue
-      fail "refusing to remove managed directory containing user files: $path"
-    done
-    [[ -z "$scripts_dir" ]] || safe_remove_path "$scripts_dir" ||
-      fail "refusing to remove managed directory containing user files: $scripts_dir"
-    remove_known_path "$marker_path"
-    safe_remove_path "$path" ||
-      fail "refusing to remove managed directory containing user files: $path"
-  else
+  if [[ ! -d "$path" || -L "$path" ]]; then
     remove_known_path "$path"
+    return
   fi
+  if [[ -d "$scripts_dir" && ! -L "$scripts_dir" ]]; then
+    for child in "$scripts_dir"/* "$scripts_dir"/.[!.]* "$scripts_dir"/..?*; do
+      [[ -e "$child" || -L "$child" ]] || continue
+      remove_known_path "$child"
+    done
+    safe_remove_path "$scripts_dir" ||
+      fail "refusing to remove managed directory containing user files: $scripts_dir"
+  fi
+  remove_known_path "$marker_path"
+  safe_remove_path "$path" ||
+    fail "refusing to remove managed directory containing user files: $path"
 }
 
 legacy_script_is_tracked() {

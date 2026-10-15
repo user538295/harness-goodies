@@ -11,6 +11,12 @@ CODEX_PLUGIN_JSON="$REPO_ROOT/.codex-plugin/plugin.json"
 OPENCODE_PACKAGE_JSON="$REPO_ROOT/package.json"
 # Every file carrying the release version; a release bumps them together.
 VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON" "$CURSOR_PLUGIN_JSON" "$CODEX_PLUGIN_JSON" "$OPENCODE_PACKAGE_JSON")
+# Files outside skills/session-log/ that wire its hooks into a harness. Changing one changes what
+# session-log's VERSION stands for, so it needs a VERSION bump like a change inside the package.
+SESSION_LOG_WIRING_FILES=(hooks/hooks.json .cursor-plugin/hooks.json .codex-plugin/hooks.json .opencode-plugin/index.js)
+# package.json also carries the release version, so only its omp.extensions entry counts as wiring;
+# this name stands for a change of that entry in the changed-path list.
+OMP_EXTENSIONS_CHANGE="package.json:omp.extensions"
 # Seconds to wait after the push so the marketplaces see the new tag before updating.
 UPDATE_DELAY_SECONDS=15
 # Per-harness update commands run after the release (Cursor has no CLI: refresh it in the dashboard).
@@ -47,13 +53,18 @@ filter_valid_tags() {
   echo "$1" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true
 }
 
-# session_log_version_stale <git-diff-name-only output> → 0 when a file under skills/session-log/
-# changed but skills/session-log/VERSION did not; 1 otherwise. Runtime markers carry that VERSION,
-# so a package change without a bump would let markers of the old code count as current.
+# session_log_version_stale <changed paths, one per line> → 0 when a file under skills/session-log/,
+# a SESSION_LOG_WIRING_FILES entry, or OMP_EXTENSIONS_CHANGE changed but skills/session-log/VERSION
+# did not; 1 otherwise. Runtime markers carry that VERSION, so a change without a bump would let
+# markers of the old code count as current.
 session_log_version_stale() {
-  local changed="$1"
-  grep -q '^skills/session-log/' <<< "$changed" || return 1
-  ! grep -qx 'skills/session-log/VERSION' <<< "$changed"
+  local changed="$1" path
+  ! grep -qx 'skills/session-log/VERSION' <<< "$changed" || return 1
+  grep -q '^skills/session-log/' <<< "$changed" && return 0
+  for path in "${SESSION_LOG_WIRING_FILES[@]}" "$OMP_EXTENSIONS_CHANGE"; do
+    grep -qxF "$path" <<< "$changed" && return 0
+  done
+  return 1
 }
 
 # check_on_main <branch-name> → 0 if "main", 1 otherwise
@@ -122,11 +133,21 @@ assert_clean_tree() {
   fi
 }
 
+# omp_extensions_at <revision> → the omp.extensions entry of package.json at that revision, or
+# "null" when the file is missing there
+omp_extensions_at() {
+  git -C "$REPO_ROOT" show "$1:package.json" 2>/dev/null | jq -c '.omp.extensions' || echo null
+}
+
 assert_session_log_version_bumped() {
   local last_tag="$1" changed
-  changed=$(git -C "$REPO_ROOT" diff --name-only "${last_tag}..HEAD" -- skills/session-log)
+  changed=$(git -C "$REPO_ROOT" diff --name-only "${last_tag}..HEAD" -- skills/session-log "${SESSION_LOG_WIRING_FILES[@]}")
+  if [[ "$(omp_extensions_at "$last_tag")" != "$(omp_extensions_at HEAD)" ]]; then
+    changed="${changed:+$changed$'\n'}$OMP_EXTENSIONS_CHANGE"
+  fi
   if session_log_version_stale "$changed"; then
-    echo "Error: skills/session-log changed since $last_tag but skills/session-log/VERSION did not — bump it first" >&2
+    printf 'Error: session-log changed since %s but skills/session-log/VERSION did not — bump it first:\n%s\n' \
+      "$last_tag" "$changed" >&2
     return 1
   fi
 }

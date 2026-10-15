@@ -5,15 +5,14 @@
 # lock, state-directory checks, runtime-marker and repair-report helpers serve every harness.
 #
 # Sourced by bin/session-log right after lib/common.sh. Runs in the same shell,
-# so it shares bin's globals (HARNESS, HARNESS_ROOT, STATE_DIR, INSTALL_LOCK,
-# INSTALL_LOCK_OWNER_START, REPAIR_REPORTED, VERSION, STORE, HOME_ROOT,
-# PACKAGE_ROOT, OWNER_MARKER_VALUE, ...) and the harness descriptor tables declared in bin.
+# so it shares bin's globals (HARNESS, HARNESS_LABEL, HARNESS_ROOT, STATE_DIR, FLAG_FILE,
+# RUNTIME_FILE, INSTALL_LOCK, INSTALL_LOCK_OWNER_START, REPAIR_REPORTED) and its source_for.
 
 native_hooks_current() {
   local config="$HARNESS_ROOT/hooks.json"
   require_command python3
   [[ -f "$config" && ! -L "$config" ]] || return 1
-  python3 "$(source_for configurator)" check "$HARNESS" "$config" "$(source_for hook)"
+  python3 "$(source_for configurator)" check "$HARNESS" "$config"
 }
 
 # The marketplace Codex installs codex-goodies from: the "name" of .agents/plugins/marketplace.json,
@@ -93,7 +92,7 @@ preflight_install_lock() {
   if kill -0 "$owner_pid" 2>/dev/null; then
     actual_start="$(ps -p "$owner_pid" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
     if [[ -n "$actual_start" && "$actual_start" == "$owner_start" ]]; then
-      fail "another session-log command is already in progress for $HARNESS"
+      fail_install_lock_busy
     fi
   fi
   return 0
@@ -101,8 +100,6 @@ preflight_install_lock() {
 
 preflight_native_hooks() {
   local config="$HARNESS_ROOT/hooks.json"
-  [[ -f "$(source_for hook)" && ! -L "$(source_for hook)" ]] ||
-    fail "adapter asset is missing: $(source_for hook)"
   [[ -f "$(source_for configurator)" && ! -L "$(source_for configurator)" ]] ||
     fail "adapter asset is missing: $(source_for configurator)"
   ensure_safe_parent "$config"
@@ -128,6 +125,15 @@ preflight_off() {
   preflight_install_lock
 }
 
+# EX_TEMPFAIL, LOCK_BUSY in lib/locking.py: a session-log command exits with it when, and only
+# when, another live command holds the install lock, so a caller can tell "try later" from a failure.
+readonly INSTALL_LOCK_BUSY=75
+
+fail_install_lock_busy() {
+  printf '%s: another session-log command is already in progress for %s\n' "$SESSION_LOG_LOG_PREFIX" "$HARNESS" >&2
+  exit "$INSTALL_LOCK_BUSY"
+}
+
 # Per-harness install lock on lib/locking.py: the
 # mkdir-owner-reclaim protocol (owner pid + `ps -o lstart=` liveness, stale
 # reclaim after 5s) applied to the per-harness lock path "$INSTALL_LOCK".
@@ -139,12 +145,13 @@ _install_lock_operation() {
 }
 
 acquire_install_lock() {
-  try_acquire_install_lock ||
-    fail "another session-log command is already in progress for $HARNESS"
+  try_acquire_install_lock || fail_install_lock_busy
 }
 
-# acquire_install_lock that returns 1 instead of failing while another live command holds the lock.
+# acquire_install_lock that returns 1 instead of failing while another live command holds the lock;
+# any other failure to take it fails the command.
 try_acquire_install_lock() {
+  local status=0
   validate_state_dir
   ensure_safe_parent "$INSTALL_LOCK/owner"
   [[ ! -L "$INSTALL_LOCK" ]] ||
@@ -155,7 +162,9 @@ try_acquire_install_lock() {
   INSTALL_LOCK_OWNER_START="$(ps -p "$$" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
   [[ -n "$INSTALL_LOCK_OWNER_START" ]] ||
     fail "cannot determine install lock owner"
-  _install_lock_operation acquire
+  _install_lock_operation acquire || status=$?
+  ((status != INSTALL_LOCK_BUSY)) || return 1
+  ((status == 0)) || fail "cannot acquire install lock: $INSTALL_LOCK"
 }
 
 release_install_lock() {
@@ -189,7 +198,7 @@ repair_native_hooks() {
   [[ -e "$config" || -L "$config" ]] || return 0
   require_command python3
   preflight_native_hooks
-  report="$(python3 "$(source_for configurator)" repair "$HARNESS" "$config" "$(source_for hook)")"
+  report="$(python3 "$(source_for configurator)" repair "$HARNESS" "$config")"
   print_repair_report "$report"
 }
 
@@ -209,8 +218,7 @@ repair_registrations() {
 install_adapter() {
   case "$HARNESS" in
     codex)
-      python3 "$(source_for configurator)" install "$HARNESS" \
-        "$HARNESS_ROOT/hooks.json" "$(source_for hook)"
+      python3 "$(source_for configurator)" install "$HARNESS" "$HARNESS_ROOT/hooks.json"
       ;;
   esac
   clear_runtime_markers
