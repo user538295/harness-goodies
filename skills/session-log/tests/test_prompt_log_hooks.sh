@@ -49,7 +49,7 @@ mk_log() { # sid -> creates the session map + an empty log, echoes the log path
 #   tokens 2000+1000+150000+0 = 153000
 # shellcheck disable=SC2016  # \$2\.32 is the literal price in a grep pattern
 EST='est\. used token: input: 2000, output: 1000, cache_create: 150000, cache_read: 0, total_tokens: 153000, price: \$2\.32, model: claude-fable-5, effort: max'
-PROJECT_KEY="$(printf '%s' "$WORKROOT/proj" | sed 's|[/._]|-|g')"
+PROJECT_KEY="$(printf '%s' "$WORKROOT/proj" | sed 's|[^A-Za-z0-9]|-|g')"
 PROJECT_DIR="$HOME/.claude/projects/$PROJECT_KEY"
 mkdir -p "$PROJECT_DIR"
 TRANSCRIPT="$PROJECT_DIR/transcript.jsonl"

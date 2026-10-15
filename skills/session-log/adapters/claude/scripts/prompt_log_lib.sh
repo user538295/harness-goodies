@@ -55,9 +55,10 @@ _claude_display_path() {
 
 
 
-# Path mangling Claude uses for ~/.claude/projects/<key>/<session-id>.jsonl.
+# Path mangling Claude uses for ~/.claude/projects/<key>/<session-id>.jsonl: every character but a letter or
+# a digit becomes "-" (C:\Users\a.b -> C--Users-a-b).
 resolve_project_key() {
-  printf '%s\n' "$1" | sed 's|[/._]|-|g'
+  printf '%s\n' "$1" | sed 's|[^A-Za-z0-9]|-|g'
 }
 _claude_path_components_secure() {
   local current="$1"
