@@ -36,6 +36,13 @@ assert_mode() {
   actual="$(stat -f '%Lp' "$file" 2>/dev/null)" || actual="$(stat -c '%a' "$file" 2>/dev/null)"
   if [[ "$actual" == "$expected" ]]; then pass "$label"; else fail "$label (expected $expected, got $actual)"; fi
 }
+# How Claude Code names ~/.claude/projects/<key> for directory $1, which it knows in its Windows C:\... form
+# under Git Bash.
+project_key() {
+  local path="$1"
+  if command -v cygpath >/dev/null 2>&1; then path="$(cygpath -wl "$path")"; fi
+  printf '%s' "$path" | sed 's|[^A-Za-z0-9]|-|g'
+}
 assert_link() {
   local label="$1" expected="$2" file="$3" actual
   actual="$(readlink "$file" 2>/dev/null || true)"
@@ -921,7 +928,7 @@ set -e
 if [[ "$claude_missing_rc" -ne 0 ]]; then pass "missing Claude transcript fails directly"; else fail "missing Claude transcript fails directly"; fi
 assert_contains "Claude usage names harness on failure" "Claude Code: usage" "$claude_missing"
 
-CLAUDE_KEY="$(printf '%s' "$PWD" | sed 's|[/._]|-|g')"
+CLAUDE_KEY="$(project_key "$PWD")"
 CLAUDE_PROJECT="$TEST_HOME/.claude/projects/$CLAUDE_KEY"
 mkdir -p "$CLAUDE_PROJECT"
 printf '%s\n' '{"type":"user","timestamp":"2026-08-28T10:00:00.000Z","promptSource":"typed","isMeta":false,"message":{"role":"user","content":"hello"}}' > "$CLAUDE_PROJECT/universal.jsonl"

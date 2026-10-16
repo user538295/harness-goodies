@@ -34,6 +34,18 @@ guard_env() {
   [[ -z "$value" ]] || paths_equivalent "$value" "$expected" || fail "$message"
 }
 
+# This shell's process id in the form lib/process_identity.py takes: Git Bash numbers its own processes, so on
+# Windows it is the Windows process id.
+own_process_id() {
+  if [[ -r "/proc/$$/winpid" ]]; then cat "/proc/$$/winpid"; else printf '%s\n' "$$"; fi
+}
+
+# The start time of process $1 (on Windows a Windows process id, as own_process_id gives); nothing when it
+# is gone.
+process_start() {
+  python3 "$SESSION_LOG_LIB/process_identity.py" start "$1"
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing dependency: $1"
 }

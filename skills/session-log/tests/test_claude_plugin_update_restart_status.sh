@@ -47,10 +47,11 @@ WORKROOT="$(mktemp -d)"
 LIVE_SESSION_PIDS=""
 cleanup() {
   local pid
+  # Python's os.kill, as the stand-ins' ids are Windows process ids under Git Bash.
   for pid in $LIVE_SESSION_PIDS; do
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true  # reaps it without bash 3.2's "Terminated" job notice
+    python3 -c 'import os, signal, sys; os.kill(int(sys.argv[1]), signal.SIGTERM)' "$pid" 2>/dev/null || true
   done
+  wait 2>/dev/null || true  # reaps the background sessions without bash 3.2's "Terminated" job notice
   if command -v trash >/dev/null 2>&1; then
     trash "$WORKROOT"
   else
@@ -61,7 +62,7 @@ cleanup() {
 trap cleanup EXIT
 WORKROOT_REAL="$(cd "$WORKROOT" && pwd -P)"
 TEST_HOME=""
-LIVE_SESSION_PID=""
+LIVE_SESSION_MARKER=""
 
 # Each scenario runs in its own fresh HOME.
 new_sandbox() {
@@ -97,13 +98,21 @@ run_skill() {
 
 # Runs the SessionStart hook of session-log copy $1 for session $2 as Claude Code does. Claude
 # Code also exports CLAUDE_PLUGIN_ROOT to a plugin's hook, but claude_hook.sh locates its package
-# from its own path, so the test leaves it unset. The hook's parent process, the calling shell,
-# stands in for the Claude Code session, so its marker stays live while that shell runs.
+# from its own path, so the test leaves it unset. The hook's parent process stands in for the
+# Claude Code session, so its marker stays live while that process runs: the calling shell, or with
+# $3, a Python process that runs the hook and then lives $3 more seconds. Python is no shell, so it
+# stands in on Windows too, where the hook looks past its shells for the Claude Code process (and
+# past the calling shell to a process that outlives the test).
 start_session() {
-  local skill="$1" session_id="$2"
+  local skill="$1" session_id="$2" bash_path
+  local -a parent=()
+  bash_path="$(command -v bash)"
+  if (($# > 2)); then
+    parent=(python3 -c 'import subprocess, sys, time; subprocess.run(sys.argv[2:]); time.sleep(float(sys.argv[1]))' "$3")
+  fi
   jq -n --arg session_id "$session_id" --arg cwd "$PWD" '{session_id: $session_id, cwd: $cwd}' |
     env -u CLAUDE_CONFIG_DIR -u CLAUDE_PLUGIN_ROOT HOME="$TEST_HOME" \
-      bash "$skill/adapters/claude/claude_hook.sh" session-start >/dev/null
+      ${parent[@]+"${parent[@]}"} "$bash_path" "$skill/adapters/claude/claude_hook.sh" session-start >/dev/null
 }
 
 assert_last_session() {
@@ -112,24 +121,28 @@ assert_last_session() {
   [[ "$actual" == "$1" ]] || fail "last runtime marker (expected session: $1; actual: $actual)"
 }
 
-# A session whose Claude Code process has since exited: the hook's parent is a subshell that exits.
+# A session whose Claude Code process has since exited: the hook's parent exits right after it.
 start_exited_session() {
   local pid
-  (start_session "$@")
+  start_session "$@" 0
   assert_last_session "$2"
   pid="$(jq -r .pid "$(state_file runtime.json)")"
-  ! kill -0 "$pid" 2>/dev/null || fail "exited session's process $pid is still running"
+  [[ -z "$(python3 "$REPO/skills/session-log/lib/process_identity.py" start "$pid")" ]] ||
+    fail "exited session's process $pid is still running"
 }
 
-# A session that stays live in its own process (LIVE_SESSION_PID), so its runtime.<pid>.json
-# marker is told apart from that of a session the test shell starts later.
+# A session that stays live in its own process, so its runtime.<pid>.json marker
+# (LIVE_SESSION_MARKER) is told apart from that of a session the test shell starts later.
 start_live_session() {
-  local attempt
-  (start_session "$@"; exec sleep "$LIVE_SESSION_SECONDS") >/dev/null &
-  LIVE_SESSION_PID=$!
-  LIVE_SESSION_PIDS="$LIVE_SESSION_PIDS $LIVE_SESSION_PID"
+  local attempt marker
+  start_session "$@" "$LIVE_SESSION_SECONDS" >/dev/null 2>&1 &
   for ((attempt = 0; attempt < MARKER_POLL_ATTEMPTS; attempt++)); do
-    [[ ! -f "$(state_file "runtime.$LIVE_SESSION_PID.json")" ]] || return 0
+    for marker in "$TEST_HOME/.claude/session-log"/runtime.*.json; do
+      [[ -f "$marker" && "$(jq -r .session_id "$marker")" == "$2" ]] || continue
+      LIVE_SESSION_MARKER="$marker"
+      LIVE_SESSION_PIDS="$LIVE_SESSION_PIDS $(jq -r .pid "$marker")"
+      return 0
+    done
     sleep "$MARKER_POLL_INTERVAL_SECONDS"
   done
   fail "live session $2 wrote no runtime marker"
@@ -150,9 +163,13 @@ assert_on_status() {
   [[ "${actual##*$'\n'}" == "$expected" ]] || fail "$label (expected last line: $expected; actual: $actual)"
 }
 
-# The report a command prints after removing $1 legacy settings.json registrations.
+# The report a command prints after removing $1 legacy settings.json registrations. Python names the
+# file, which Git Bash hands it in its C:/... form.
 legacy_removed_report() {
-  printf 'Claude Code: removed %s legacy session-log hook registration(s) from %s\n' "$1" "$(settings_file)"
+  local settings
+  settings="$(settings_file)"
+  if command -v cygpath >/dev/null 2>&1; then settings="$(cygpath -m "$settings")"; fi
+  printf 'Claude Code: removed %s legacy session-log hook registration(s) from %s\n' "$1" "$settings"
 }
 
 # What older releases left in settings.json: one owned registration per event for the copy
@@ -192,7 +209,8 @@ for directory, _, names in sorted(os.walk(root)):
     for name in sorted(names):
         path = os.path.join(directory, name)
         with open(path, "rb") as handle:
-            lines += [f"asset={os.path.relpath(path, root)}", f"sha256={hashlib.sha256(handle.read()).hexdigest()}"]
+            relative = os.path.relpath(path, root).replace(os.sep, "/")
+            lines += [f"asset={relative}", f"sha256={hashlib.sha256(handle.read()).hexdigest()}"]
 with open(os.path.join(root, manifest), "w", encoding="utf-8") as handle:
     handle.write("\n".join(lines) + "\n")
 PY
@@ -290,7 +308,7 @@ for command in repair on; do
       fail "$label: on output (actual: $actual)"
   fi
   assert_legacy_registrations_removed "$label"
-  [[ -f "$(state_file "runtime.$LIVE_SESSION_PID.json")" ]] || fail "$label: the live session's runtime marker was cleared"
+  [[ -f "$LIVE_SESSION_MARKER" ]] || fail "$label: the live session's runtime marker was cleared"
   assert_status "$label" "$plugin" "$EXPECTED_ON_STATUS"
   printf 'PASS: %s\n' "$label"
 done
@@ -304,7 +322,7 @@ start_live_session "$plugin" "$LIVE_SESSION_ID"
 write_legacy_registrations
 start_session "$plugin" "$RESTARTED_SESSION_ID"
 assert_legacy_registrations_removed "$label"
-[[ -f "$(state_file "runtime.$LIVE_SESSION_PID.json")" ]] || fail "$label: the older live session's runtime marker was cleared"
+[[ -f "$LIVE_SESSION_MARKER" ]] || fail "$label: the older live session's runtime marker was cleared"
 assert_last_session "$RESTARTED_SESSION_ID"
 assert_status "$label" "$plugin" "$EXPECTED_ON_STATUS"
 printf 'PASS: %s\n' "$label"

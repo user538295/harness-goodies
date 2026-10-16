@@ -38,6 +38,7 @@ FLAG_FILE=""
 RUNTIME_FILE=""
 ENABLE_LOCK=""
 INSTALL_LOCK=""
+INSTALL_LOCK_OWNER_PID=""
 INSTALL_LOCK_OWNER_START=""
 REPAIR_REPORTED=0
 
@@ -281,8 +282,7 @@ runtime_current() {
     pid="$(jq -r '.pid // empty' "$candidate" 2>/dev/null)"
     expected_start="$(jq -r '.process_start // empty' "$candidate" 2>/dev/null | sed 's/[[:space:]]*$//')"
     [[ "$pid" =~ ^[1-9][0-9]*$ && -n "$expected_start" ]] || continue
-    kill -0 "$pid" 2>/dev/null || continue
-    actual_start="$(ps -p "$pid" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
+    actual_start="$(process_start "$pid" 2>/dev/null)"
     [[ -n "$actual_start" && "$actual_start" == "$expected_start" ]] || continue
     [[ -n "$(jq -r '.nonce // empty' "$candidate" 2>/dev/null)" ]] || continue
     return 0

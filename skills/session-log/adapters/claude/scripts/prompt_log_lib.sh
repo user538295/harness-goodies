@@ -6,6 +6,8 @@ _claude_stat() {
   printf '%s\n' "$value"
 }
 _CLAUDE_HOME="$(cd "$HOME" && pwd -P)"
+# The package's lib/, whose pathsafe.py and process_identity.py the inline Python below imports.
+_CLAUDE_SESSION_LOG_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../lib" && pwd -P)"
 _CLAUDE_SESSION_MAP_DIR="$_CLAUDE_HOME/.claude/session-maps"
 _claude_default_root_selected() {
   local config_dir="${CLAUDE_CONFIG_DIR:-}"
@@ -55,9 +57,10 @@ _claude_display_path() {
 
 
 
-# Path mangling Claude uses for ~/.claude/projects/<key>/<session-id>.jsonl.
+# Path mangling Claude uses for ~/.claude/projects/<key>/<session-id>.jsonl: every character but a letter or
+# a digit becomes "-" (C:\Users\a.b -> C--Users-a-b).
 resolve_project_key() {
-  printf '%s\n' "$1" | sed 's|[/._]|-|g'
+  printf '%s\n' "$1" | sed 's|[^A-Za-z0-9]|-|g'
 }
 _claude_path_components_secure() {
   local current="$1"
@@ -142,9 +145,21 @@ _claude_log_file_is_safe() {
   done
   printf '%s\n' "$canonical_file"
 }
+# Claude Code on Windows reports paths as C:\...; Git Bash names them /c/..., as cygpath converts.
+_claude_shell_path() {
+  case "$1" in
+    [A-Za-z]:[\\/]*) if command -v cygpath >/dev/null 2>&1; then cygpath -u "$1"; return; fi ;;
+  esac
+  printf '%s\n' "$1"
+}
+# Shell path $1 as Claude Code names it: on Windows its long C:\... form.
+_claude_harness_path() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -wl "$1"; else printf '%s\n' "$1"; fi
+}
 _claude_transcript_path_is_safe() {
-  local file="$1" raw_root="$HOME/.claude/projects" root="$_CLAUDE_HOME/.claude/projects"
+  local file raw_root="$HOME/.claude/projects" root="$_CLAUDE_HOME/.claude/projects"
   local relative component current canonical_file
+  file=$(_claude_shell_path "$1") || return 1
   _claude_default_root_alias_safe || return 1
   case "$file" in
     "$root"/*) canonical_file="$file" ;;
@@ -193,59 +208,35 @@ _claude_secure_append() {
     printf '%s\n' "$record"
   else
     printf '%s\n\n' "$record"
-  fi | SESSION_LOG_ENABLE_LOCK="$_CLAUDE_HOME/.claude/prompt-logs/.enabled.lock" SESSION_LOG_ENABLE_FLAG="$_CLAUDE_HOME/.claude/prompt-logs/.enabled" SESSION_LOG_ENABLE_SIGNATURE="$expected_signature" SESSION_LOG_EXPECTED_DEV="$expected_dev" SESSION_LOG_EXPECTED_INO="$expected_ino" python3 -I -c '
-import fcntl
+  fi | SESSION_LOG_ENABLE_LOCK="$_CLAUDE_HOME/.claude/prompt-logs/.enabled.lock" SESSION_LOG_ENABLE_FLAG="$_CLAUDE_HOME/.claude/prompt-logs/.enabled" SESSION_LOG_ENABLE_SIGNATURE="$expected_signature" SESSION_LOG_EXPECTED_DEV="$expected_dev" SESSION_LOG_EXPECTED_INO="$expected_ino" SESSION_LOG_LIB="$_CLAUDE_SESSION_LOG_LIB" python3 -I -c '
 import json
 import os
 import stat
-import subprocess
 import sys
 import time
+
+if not os.path.isabs(os.environ["SESSION_LOG_LIB"]):
+    raise SystemExit("session-log: package lib directory not found")  # "" would import from the cwd
+sys.path.insert(0, os.environ["SESSION_LOG_LIB"])
+import pathsafe
+import process_identity
 
 file = sys.argv[1]
 payload = sys.stdin.buffer.read()
 directory, name = os.path.split(file)
-directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 file_flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
 enable_lock_path = os.environ["SESSION_LOG_ENABLE_LOCK"]
 enable_flag_path = os.environ["SESSION_LOG_ENABLE_FLAG"]
 expected_enable_signature = os.environ.get("SESSION_LOG_ENABLE_SIGNATURE", "")
 expected_dev = os.environ.get("SESSION_LOG_EXPECTED_DEV", "")
 expected_ino = os.environ.get("SESSION_LOG_EXPECTED_INO", "")
-def open_directory(path):
-    fd = os.open(os.sep, directory_flags)
-    try:
-        for component in path.split(os.sep)[1:]:
-            if not component or component == ".":
-                continue
-            if component == "..":
-                raise RuntimeError("parent traversal")
-            try:
-                next_fd = os.open(component, directory_flags, dir_fd=fd)
-            except FileNotFoundError:
-                os.mkdir(component, 0o700, dir_fd=fd)
-                next_fd = os.open(component, directory_flags, dir_fd=fd)
-            os.close(fd)
-            fd = next_fd
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
-
-def process_start(pid):
-    try:
-        value = subprocess.check_output(
-            ["ps", "-p", str(pid), "-o", "lstart="],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        return value or None
-    except (OSError, subprocess.SubprocessError):
-        return None
+def is_expected_file(info, device, inode):
+    # Git Bash numbers a volume unlike Windows Python does; there the inode (the file index) alone tells.
+    return str(info.st_ino) == inode and (sys.platform == "win32" or str(info.st_dev) == device)
 
 def owner_alive(lock_fd):
     try:
-        descriptor = os.open(".owner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=lock_fd)
+        descriptor = pathsafe.open_at(lock_fd, ".owner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
             raw = os.read(descriptor, 256)
         finally:
@@ -258,10 +249,12 @@ def owner_alive(lock_fd):
     except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
     if isinstance(expected_start, str) and expected_start:
-        actual_start = process_start(pid)
+        actual_start = process_identity.start_time(pid)
         if actual_start is None:
             return None
         return actual_start == expected_start
+    if process_identity.WINDOWS:
+        return None  # os.kill(pid, 0) sends a CTRL_C_EVENT there instead of probing
     try:
         os.kill(pid, 0)
     except OSError as error:
@@ -277,13 +270,13 @@ enable_lock_stat = os.fstat(enable_lock_fd)
 if (
     not stat.S_ISREG(enable_lock_stat.st_mode)
     or enable_lock_stat.st_nlink != 1
-    or enable_lock_stat.st_uid != os.getuid()
+    or not pathsafe.is_owned_by_user(enable_lock_stat)
 ):
     raise RuntimeError("unsafe Claude enable lock")
-os.fchmod(enable_lock_fd, 0o600)
-fcntl.flock(enable_lock_fd, fcntl.LOCK_EX)
+pathsafe.set_file_mode(enable_lock_fd, 0o600)
+pathsafe.lock_file(enable_lock_fd)
 
-parent_fd = open_directory(directory)
+parent_fd = pathsafe.open_directory(directory, create=True)
 lock_name = name + ".lock"
 lock_fd = None
 enable_flag_fd = None
@@ -298,7 +291,7 @@ try:
     if (
         stat.S_ISLNK(enable_flag_stat.st_mode)
         or not stat.S_ISREG(enable_flag_stat.st_mode)
-        or enable_flag_stat.st_uid != os.getuid()
+        or not pathsafe.is_owned_by_user(enable_flag_stat)
     ):
         raise RuntimeError("unsafe Claude enable flag")
     try:
@@ -314,7 +307,7 @@ try:
         or current_flag_stat.st_ino != enable_flag_stat.st_ino
         or not stat.S_ISREG(current_flag_stat.st_mode)
         or current_flag_stat.st_nlink != 1
-        or current_flag_stat.st_uid != os.getuid()
+        or not pathsafe.is_owned_by_user(current_flag_stat)
     ):
         raise SystemExit(0)
     flag_bytes = bytearray()
@@ -324,23 +317,28 @@ try:
             break
         flag_bytes.extend(chunk)
     if len(flag_bytes) >= 4096:
-        current_enable_signature = f"{current_flag_stat.st_dev}:{current_flag_stat.st_ino}"
+        flag_token = ""
     else:
         try:
             flag_token = bytes(flag_bytes).decode("utf-8").rstrip("\n")
         except UnicodeDecodeError:
             raise SystemExit(0)
-        current_enable_signature = flag_token or f"{current_flag_stat.st_dev}:{current_flag_stat.st_ino}"
-    if expected_enable_signature and current_enable_signature != expected_enable_signature:
+    # Without a token the signature is the flag file identity, "<device>:<inode>".
+    signature_device, _, signature_inode = expected_enable_signature.rpartition(":")
+    if expected_enable_signature and (
+        flag_token != expected_enable_signature
+        if flag_token
+        else not is_expected_file(current_flag_stat, signature_device, signature_inode)
+    ):
         raise SystemExit(0)
     while True:
         try:
-            os.mkdir(lock_name, 0o700, dir_fd=parent_fd)
-            lock_fd = os.open(lock_name, directory_flags, dir_fd=parent_fd)
-            owner = os.open(".owner", os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=lock_fd)
+            pathsafe.mkdir_at(parent_fd, lock_name, 0o700)
+            lock_fd = pathsafe.open_child_directory(parent_fd, lock_name)
+            owner = pathsafe.open_at(lock_fd, ".owner", os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
             try:
                 owner_data = {"pid": os.getpid(), "token": token}
-                owner_start = process_start(os.getpid())
+                owner_start = process_identity.start_time(os.getpid())
                 if owner_start:
                     owner_data["start"] = owner_start
                 data = json.dumps(owner_data).encode("utf-8")
@@ -351,53 +349,48 @@ try:
             break
         except FileExistsError:
             if lock_fd is not None:
-                os.close(lock_fd)
+                pathsafe.close_directory(lock_fd)
                 lock_fd = None
             try:
-                lock_fd = os.open(lock_name, directory_flags, dir_fd=parent_fd)
+                lock_fd = pathsafe.open_child_directory(parent_fd, lock_name)
                 state = owner_alive(lock_fd)
-                stale_invalid = state is not True and time.time() - os.fstat(lock_fd).st_mtime >= 5
+                stale_invalid = state is not True and time.time() - pathsafe.stat_directory(lock_fd).st_mtime >= 5
                 if state is True or not stale_invalid:
-                    os.close(lock_fd)
+                    pathsafe.close_directory(lock_fd)
                     lock_fd = None
                     if time.monotonic() >= deadline:
                         raise TimeoutError("Claude append lock timed out")
                     time.sleep(0.01)
                     continue
                 try:
-                    os.unlink(".owner", dir_fd=lock_fd)
+                    pathsafe.unlink_at(lock_fd, ".owner")
                 except FileNotFoundError:
                     pass
-                os.close(lock_fd)
+                pathsafe.close_directory(lock_fd)
                 lock_fd = None
-                os.rmdir(lock_name, dir_fd=parent_fd)
+                pathsafe.rmdir_at(parent_fd, lock_name)
             except (FileNotFoundError, NotADirectoryError):
                 if lock_fd is not None:
-                    os.close(lock_fd)
+                    pathsafe.close_directory(lock_fd)
                     lock_fd = None
             if time.monotonic() >= deadline:
                 raise TimeoutError("Claude append lock timed out")
     if expected_dev and expected_ino:
-        path_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        path_stat = pathsafe.stat_at(parent_fd, name)
         if (
             stat.S_ISLNK(path_stat.st_mode)
             or not stat.S_ISREG(path_stat.st_mode)
-            or str(path_stat.st_dev) != expected_dev
-            or str(path_stat.st_ino) != expected_ino
+            or not is_expected_file(path_stat, expected_dev, expected_ino)
         ):
             raise RuntimeError("Claude log file changed during append")
-    descriptor = os.open(name, file_flags, 0o600, dir_fd=parent_fd)
+    descriptor = pathsafe.open_at(parent_fd, name, file_flags, 0o600)
     current = os.fstat(descriptor)
     if (
         not stat.S_ISREG(current.st_mode)
         or current.st_nlink != 1
-        or current.st_uid != os.getuid()
-        or (current.st_mode & 0o077)
-        or (
-            expected_dev
-            and expected_ino
-            and (str(current.st_dev) != expected_dev or str(current.st_ino) != expected_ino)
-        )
+        or not pathsafe.is_owned_by_user(current)
+        or not pathsafe.has_private_mode(current)
+        or (expected_dev and expected_ino and not is_expected_file(current, expected_dev, expected_ino))
     ):
         raise RuntimeError("unsafe Claude append file")
     before = current.st_size
@@ -419,22 +412,22 @@ finally:
         os.close(descriptor)
     if lock_fd is not None:
         try:
-            owner = os.open(".owner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=lock_fd)
+            owner = pathsafe.open_at(lock_fd, ".owner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
                 data = os.read(owner, 256)
             finally:
                 os.close(owner)
             if json.loads(data.decode("utf-8")).get("token") == token:
-                os.unlink(".owner", dir_fd=lock_fd)
-                os.close(lock_fd)
+                pathsafe.unlink_at(lock_fd, ".owner")
+                pathsafe.close_directory(lock_fd)
                 lock_fd = None
-                os.rmdir(lock_name, dir_fd=parent_fd)
+                pathsafe.rmdir_at(parent_fd, lock_name)
         except (FileNotFoundError, NotADirectoryError, json.JSONDecodeError, OSError):
             pass
         if lock_fd is not None:
-            os.close(lock_fd)
-    os.close(parent_fd)
-    fcntl.flock(enable_lock_fd, fcntl.LOCK_UN)
+            pathsafe.close_directory(lock_fd)
+    pathsafe.close_directory(parent_fd)
+    # Closing the enable lock releases it.
     os.close(enable_lock_fd)
 ' "$file"
 }
@@ -451,31 +444,28 @@ _claude_append_state_record() {
   _claude_secure_append "$file" "$record" state
 }
 _claude_safe_snapshot() {
-  python3 -I -c '
+  SESSION_LOG_LIB="$_CLAUDE_SESSION_LOG_LIB" python3 -I -c '
 import os
 import stat
 import sys
 import tempfile
 
+if not os.path.isabs(os.environ["SESSION_LOG_LIB"]):
+    raise SystemExit("session-log: package lib directory not found")  # "" would import from the cwd
+sys.path.insert(0, os.environ["SESSION_LOG_LIB"])
+import pathsafe
+
 source = sys.argv[1]
 directory, name = os.path.split(source)
-directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 descriptor_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-parent_fd = os.open(os.sep, directory_flags)
+parent_fd = pathsafe.open_directory(directory, create=False)
 descriptor = None
 temporary = None
 try:
-    for component in directory.split(os.sep)[1:]:
-        if not component or component == ".":
-            continue
-        if component == "..":
-            raise RuntimeError("parent traversal")
-        next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
-        os.close(parent_fd)
-        parent_fd = next_fd
-    descriptor = os.open(name, descriptor_flags, dir_fd=parent_fd)
+    descriptor = pathsafe.open_at(parent_fd, name, descriptor_flags)
     current = os.fstat(descriptor)
-    if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 or current.st_uid != os.getuid() or (current.st_mode & 0o077):
+    if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 or not pathsafe.is_owned_by_user(current)
+            or not pathsafe.has_private_mode(current)):
         raise RuntimeError("unsafe Claude transcript")
     data = bytearray()
     while True:
@@ -484,7 +474,7 @@ try:
             break
         data.extend(chunk)
     temporary_fd, temporary = tempfile.mkstemp(prefix="session-log-transcript-")
-    os.fchmod(temporary_fd, 0o600)
+    pathsafe.set_file_mode(temporary_fd, 0o600)
     os.write(temporary_fd, data)
     os.fsync(temporary_fd)
     os.close(temporary_fd)
@@ -500,7 +490,7 @@ except BaseException:
 finally:
     if descriptor is not None:
         os.close(descriptor)
-    os.close(parent_fd)
+    pathsafe.close_directory(parent_fd)
 ' "$1"
 }
 _claude_atomic_state_write() {
@@ -578,9 +568,11 @@ create_session_file() {
   local cwd="$2"
   [[ "$session_id" =~ ^[A-Za-z0-9._-]+$ ]] || return 0
   local old_umask; old_umask=$(umask); umask 077
-  local project_slug
+  local project_slug slug_cwd="$cwd"
+  # A Windows cwd (C:\a\b) uses backslashes, and its drive colon is no file name character there.
+  case "$cwd" in [A-Za-z]:[\\/]*) slug_cwd=$(printf '%s' "$cwd" | tr '\\:' '/-') ;; esac
   # Include parent dir to avoid collisions between same-named projects
-  project_slug=$(echo "$cwd" | sed 's|.*/\([^/]*/[^/]*\)$|\1|' | tr '/' '-')
+  project_slug=$(echo "$slug_cwd" | sed 's|.*/\([^/]*/[^/]*\)$|\1|' | tr '/' '-')
   local prompts_root="$_CLAUDE_HOME/.claude/prompt-logs"
   local prompts_dir="$prompts_root/$project_slug"
   _claude_default_root_alias_safe || { umask "$old_umask"; return 1; }

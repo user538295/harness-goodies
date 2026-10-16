@@ -17,10 +17,8 @@ marker, whatever hook path follows it, so entries written by any older release
 <lifecycle>`` command counts as owned as well, whatever its path: a copy of the
 plugin's own ``${CLAUDE_PLUGIN_ROOT}`` command (never substituted in
 settings.json) or an old install path. A native Windows ``C:\\`` path is
-recognized too, but this module cannot run on native Windows (it needs dir_fd
-and fcntl), so cleaning one up takes WSL.
+recognized too.
 """
-import fcntl
 import json
 import os
 import re
@@ -126,7 +124,7 @@ def _read_fd(fd):
 
 
 def _read_named(parent_fd, name):
-    descriptor = os.open(name, FILE_FLAGS, dir_fd=parent_fd)
+    descriptor = pathsafe.open_at(parent_fd, name, FILE_FLAGS)
     try:
         info = os.fstat(descriptor)
         os.lseek(descriptor, 0, os.SEEK_SET)
@@ -136,7 +134,9 @@ def _read_named(parent_fd, name):
 
 
 def _content_version_key(value):
-    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    # Windows gives st_ctime the change time through os.fstat but the creation time through os.stat.
+    change_time = None if sys.platform == "win32" else value.st_ctime_ns
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, change_time)
 
 
 def _backup_file_key(value):
@@ -146,11 +146,11 @@ def _backup_file_key(value):
 def _create_temp(parent_fd, options):
     for candidate in options.candidates:
         try:
-            fd = os.open(
+            fd = pathsafe.open_at(
+                parent_fd,
                 candidate,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
                 options.mode,
-                dir_fd=parent_fd,
             )
             return candidate, fd
         except FileExistsError:
@@ -334,7 +334,8 @@ def _kept_aside(context, *names):
 
 
 def _write_settings_document(descriptor, document):
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    # newline="\n": Windows text mode would otherwise rewrite settings.json with CRLF line ends.
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(document, handle, indent=2)
         handle.write("\n")
         handle.flush()
@@ -479,7 +480,7 @@ def _file_versions_match(descriptor_stat, path_stat, snapshot):
 def _verify_snapshot(parent_fd, settings_name, snapshot):
     final_stat = os.fstat(snapshot.descriptor)
     try:
-        final_path_stat = os.stat(settings_name, dir_fd=parent_fd, follow_symlinks=False)
+        final_path_stat = pathsafe.stat_at(parent_fd, settings_name)
     except FileNotFoundError:
         raise SystemExit(CHANGED) from None
     if not _file_versions_match(final_stat, final_path_stat, snapshot):
@@ -527,13 +528,7 @@ def _replace_settings(context):
     snapshot = context.snapshot
     _stage_settings_backup(context)
     try:
-        os.link(
-            state.temporary_name,
-            context.settings_name,
-            src_dir_fd=context.parent_fd,
-            dst_dir_fd=context.parent_fd,
-            follow_symlinks=False,
-        )
+        pathsafe.link_at(context.parent_fd, state.temporary_name, context.settings_name)
     except FileExistsError:
         conflict, backup = _restore_after_conflict(
             context.parent_fd,
@@ -548,7 +543,7 @@ def _replace_settings(context):
         if kept:
             raise SystemExit(_kept_aside(context, *kept))
         raise SystemExit(RESTORED if backup == BACKUP_RESTORED else CHANGED)
-    os.unlink(state.temporary_name, dir_fd=context.parent_fd)
+    pathsafe.unlink_at(context.parent_fd, state.temporary_name)
     state.temporary_name = None
     backup_stat, backup_settings = _read_named(context.parent_fd, state.backup_name)
     if (
@@ -565,19 +560,19 @@ def _replace_settings(context):
         )
         state.backup_active = False
         raise SystemExit(_kept_aside(context, conflict))
-    os.unlink(state.backup_name, dir_fd=context.parent_fd)
+    pathsafe.unlink_at(context.parent_fd, state.backup_name)
     state.backup_active = False
 
 
 def _cleanup_settings_write(parent_fd, settings_name, state):
     if state.temporary_name is not None:
         try:
-            os.unlink(state.temporary_name, dir_fd=parent_fd)
+            pathsafe.unlink_at(parent_fd, state.temporary_name)
         except FileNotFoundError:
             pass
     if state.backup_active:
         try:
-            os.stat(settings_name, dir_fd=parent_fd, follow_symlinks=False)
+            pathsafe.stat_at(parent_fd, settings_name)
         except FileNotFoundError:
             try:
                 if pathsafe.move_no_replace(
@@ -608,13 +603,13 @@ def _write_settings(parent_fd, directory, settings_name, update):
     )
     state = SettingsWriteState(temporary)
     try:
-        os.fchmod(temporary_fd, mode & 0o777)
+        pathsafe.set_file_mode(temporary_fd, mode & 0o777)
         _write_settings_document(temporary_fd, document)
         _verify_snapshot(parent_fd, settings_name, snapshot)
         _replace_settings(
             SettingsWriteContext(parent_fd, directory, settings_name, snapshot, state)
         )
-        os.fsync(parent_fd)
+        pathsafe.sync_directory(parent_fd)
     finally:
         _cleanup_settings_write(parent_fd, settings_name, state)
 
@@ -637,12 +632,12 @@ def _edit_settings(edit):
     directory, settings_name = os.path.split(os.environ["SETTINGS_PATH"])
     parent_fd = pathsafe.open_directory(directory, create=False)
     try:
-        lock_fd = os.open(settings_name + ".session-log.lock", os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600, dir_fd=parent_fd)
+        lock_fd = pathsafe.open_at(parent_fd, settings_name + ".session-log.lock", os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600)
         try:
-            os.fchmod(lock_fd, 0o600)
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            pathsafe.set_file_mode(lock_fd, 0o600)
+            pathsafe.lock_file(lock_fd)
             try:
-                settings_fd = os.open(settings_name, FILE_FLAGS, dir_fd=parent_fd)
+                settings_fd = pathsafe.open_at(parent_fd, settings_name, FILE_FLAGS)
             except FileNotFoundError:
                 return 0
             except OSError as error:
@@ -664,7 +659,7 @@ def _edit_settings(edit):
         finally:
             os.close(lock_fd)
     finally:
-        os.close(parent_fd)
+        pathsafe.close_directory(parent_fd)
 
 
 def migrate():

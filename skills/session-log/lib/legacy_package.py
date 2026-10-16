@@ -69,7 +69,7 @@ def _identity(info):
 def _read_regular(dir_fd, name):
     """The contents of regular file ``name``; never follows a symlink or blocks on a FIFO."""
     flags = pathsafe.FILE_FLAGS | getattr(os, "O_NONBLOCK", 0)
-    with os.fdopen(os.open(name, flags, dir_fd=dir_fd), "rb") as handle:
+    with os.fdopen(pathsafe.open_at(dir_fd, name, flags), "rb") as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             raise OSError(errno.EINVAL, "not a regular file", name)
         return handle.read()
@@ -120,13 +120,13 @@ def _inventory(dir_fd, prefix, assets):
     for name in names:
         relative = prefix + name
         try:
-            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            info = pathsafe.stat_at(dir_fd, name)
             if stat.S_ISDIR(info.st_mode):
-                child_fd = os.open(name, pathsafe.DIR_FLAGS, dir_fd=dir_fd)
+                child_fd = pathsafe.open_child_directory(dir_fd, name)
                 try:
                     checked.update(_inventory(child_fd, relative + "/", assets))
                 finally:
-                    os.close(child_fd)
+                    pathsafe.close_directory(child_fd)
                 continue
             if not stat.S_ISREG(info.st_mode):
                 raise Kept(f"{relative} is not a file session-log installed")
@@ -144,16 +144,16 @@ def _remove_tree(dir_fd, prefix, checked):
         relative = prefix + name
         if relative == MANIFEST:
             continue
-        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        info = pathsafe.stat_at(dir_fd, name)
         if stat.S_ISDIR(info.st_mode):
-            child_fd = os.open(name, pathsafe.DIR_FLAGS, dir_fd=dir_fd)
+            child_fd = pathsafe.open_child_directory(dir_fd, name)
             try:
                 _remove_tree(child_fd, relative + "/", checked)
             finally:
-                os.close(child_fd)
-            os.rmdir(name, dir_fd=dir_fd)
+                pathsafe.close_directory(child_fd)
+            pathsafe.rmdir_at(dir_fd, name)
         elif checked.get(relative) == _identity(info):
-            os.unlink(name, dir_fd=dir_fd)
+            pathsafe.unlink_at(dir_fd, name)
         else:
             raise Kept(f"{relative} changed during removal")
 
@@ -179,17 +179,17 @@ def _neutralize(dir_fd, prefix, assets, failures):
     for name in names:
         relative = prefix + name
         try:
-            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            info = pathsafe.stat_at(dir_fd, name)
             if stat.S_ISDIR(info.st_mode):
-                child_fd = os.open(name, pathsafe.DIR_FLAGS, dir_fd=dir_fd)
+                child_fd = pathsafe.open_child_directory(dir_fd, name)
                 try:
                     removed = _neutralize(child_fd, relative + "/", assets, failures) or removed
                 finally:
-                    os.close(child_fd)
+                    pathsafe.close_directory(child_fd)
             elif (name == SKILL_FILE and stat.S_ISREG(info.st_mode) and relative in assets
                   and hashlib.sha256(_read_regular(dir_fd, name)).hexdigest() == assets[relative]
-                  and _identity(os.stat(name, dir_fd=dir_fd, follow_symlinks=False)) == _identity(info)):
-                os.unlink(name, dir_fd=dir_fd)
+                  and _identity(pathsafe.stat_at(dir_fd, name)) == _identity(info)):
+                pathsafe.unlink_at(dir_fd, name)
                 removed = True
         except OSError as error:
             if _lists_skill_file(assets, relative):
@@ -223,7 +223,7 @@ def _recognized_link(destination, home):
 
 
 def _remove_copy(parent_fd, name):
-    copy_fd = os.open(name, pathsafe.DIR_FLAGS, dir_fd=parent_fd)
+    copy_fd = pathsafe.open_child_directory(parent_fd, name)
     try:
         assets = _manifest_assets(copy_fd)
         if assets is None:
@@ -246,15 +246,15 @@ def _remove_copy(parent_fd, name):
             for leftover in sorted(os.listdir(copy_fd)):
                 if leftover != MANIFEST:
                     raise Kept(f"{leftover} changed during removal")
-            if checked.get(MANIFEST) != _identity(os.stat(MANIFEST, dir_fd=copy_fd, follow_symlinks=False)):
+            if checked.get(MANIFEST) != _identity(pathsafe.stat_at(copy_fd, MANIFEST)):
                 raise Kept(f"{MANIFEST} changed during removal")
-            os.unlink(MANIFEST, dir_fd=copy_fd)
+            pathsafe.unlink_at(copy_fd, MANIFEST)
         except OSError as error:
             raise Kept(f"cannot remove {error.filename or name}: {error.strerror}") from error
     finally:
-        os.close(copy_fd)
+        pathsafe.close_directory(copy_fd)
     try:
-        os.rmdir(name, dir_fd=parent_fd)
+        pathsafe.rmdir_at(parent_fd, name)
     except OSError as error:
         raise Kept(f"cannot remove it: {error.strerror}") from error
     return RESULT_REMOVED
@@ -275,12 +275,12 @@ def remove(path, home):
         return ""
     try:
         try:
-            info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            info = pathsafe.stat_at(parent_fd, name)
             if stat.S_ISLNK(info.st_mode):
-                if not _recognized_link(os.readlink(name, dir_fd=parent_fd), home):
+                if not _recognized_link(pathsafe.readlink_at(parent_fd, name), home):
                     return ""
                 try:
-                    os.unlink(name, dir_fd=parent_fd)
+                    pathsafe.unlink_at(parent_fd, name)
                 except OSError as error:
                     raise Kept(f"cannot remove it: {error.strerror}") from error
                 return RESULT_REMOVED_LINK
@@ -292,7 +292,7 @@ def remove(path, home):
         except OSError:
             return ""  # every error after ownership is proven is a Kept
     finally:
-        os.close(parent_fd)
+        pathsafe.close_directory(parent_fd)
 
 
 def _kept_report(kept):
@@ -314,9 +314,9 @@ def neutralize(path):
         return ""
     try:
         try:
-            if not stat.S_ISDIR(os.stat(name, dir_fd=parent_fd, follow_symlinks=False).st_mode):
+            if not stat.S_ISDIR(pathsafe.stat_at(parent_fd, name).st_mode):
                 return ""
-            copy_fd = os.open(name, pathsafe.DIR_FLAGS, dir_fd=parent_fd)
+            copy_fd = pathsafe.open_child_directory(parent_fd, name)
         except OSError:
             return ""
         try:
@@ -331,9 +331,9 @@ def neutralize(path):
         except Kept as kept:
             return f"{RESULT_KEPT_PREFIX}{kept}"
         finally:
-            os.close(copy_fd)
+            pathsafe.close_directory(copy_fd)
     finally:
-        os.close(parent_fd)
+        pathsafe.close_directory(parent_fd)
 
 
 def main(argv):

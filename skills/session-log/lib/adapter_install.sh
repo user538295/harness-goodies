@@ -6,7 +6,7 @@
 #
 # Sourced by bin/session-log right after lib/common.sh. Runs in the same shell,
 # so it shares bin's globals (HARNESS, HARNESS_LABEL, HARNESS_ROOT, STATE_DIR, FLAG_FILE,
-# RUNTIME_FILE, INSTALL_LOCK, INSTALL_LOCK_OWNER_START, REPAIR_REPORTED) and its source_for.
+# RUNTIME_FILE, INSTALL_LOCK, INSTALL_LOCK_OWNER_PID, INSTALL_LOCK_OWNER_START, REPAIR_REPORTED) and its source_for.
 
 native_hooks_current() {
   local config="$HARNESS_ROOT/hooks.json"
@@ -121,12 +121,12 @@ fail_install_lock_busy() {
 }
 
 # Per-harness install lock on lib/locking.py: the
-# mkdir-owner-reclaim protocol (owner pid + `ps -o lstart=` liveness, stale
+# mkdir-owner-reclaim protocol (owner pid + start time liveness, stale
 # reclaim after 5s) applied to the per-harness lock path "$INSTALL_LOCK".
 _install_lock_operation() {
   local mode="$1"
   SESSION_LOG_LOCK_PATH="$INSTALL_LOCK" \
-    SESSION_LOG_LOCK_PID="$$" SESSION_LOG_LOCK_START="$INSTALL_LOCK_OWNER_START" \
+    SESSION_LOG_LOCK_PID="$INSTALL_LOCK_OWNER_PID" SESSION_LOG_LOCK_START="$INSTALL_LOCK_OWNER_START" \
     python3 "$SESSION_LOG_LIB/locking.py" "$mode"
 }
 
@@ -136,7 +136,8 @@ acquire_install_lock() {
   # Refuses a symlinked or non-directory lock: the lock is a component of the owner file's path.
   ensure_safe_parent "$INSTALL_LOCK/owner"
   ensure_private_directory "$STATE_DIR"
-  INSTALL_LOCK_OWNER_START="$(ps -p "$$" -o lstart= 2>/dev/null | sed 's/^ *//; s/[[:space:]]*$//')"
+  INSTALL_LOCK_OWNER_PID="$(own_process_id)"
+  INSTALL_LOCK_OWNER_START="$(process_start "$INSTALL_LOCK_OWNER_PID")"
   [[ -n "$INSTALL_LOCK_OWNER_START" ]] ||
     fail "cannot determine install lock owner"
   _install_lock_operation acquire || status=$?

@@ -76,6 +76,14 @@ PY
 )
 assert_eq 'failed BSD stat output does not corrupt the enable signature' 'enabled-token' "$stat_signature"
 
+# How Claude Code names ~/.claude/projects/<key> for directory $1, which it knows in its Windows C:\... form
+# under Git Bash.
+project_key() {
+  local path="$1"
+  if command -v cygpath >/dev/null 2>&1; then path="$(cygpath -wl "$path")"; fi
+  printf '%s' "$path" | sed 's|[^A-Za-z0-9]|-|g'
+}
+
 # ---------------------------------------------------------------- fixtures --
 # asst <ts> <id> <model> <effort> <in> <out> <cache_read> <c5m> <c1h> <speed>
 asst() {
@@ -91,7 +99,7 @@ usr() {
 
 PROJ_CWD="$WORKROOT/proj"
 mkdir -p "$PROJ_CWD"
-PKEY="$(printf '%s' "$PROJ_CWD" | sed 's|[/._]|-|g')"
+PKEY="$(project_key "$PROJ_CWD")"
 PDIR="$WORKROOT/.claude/projects/$PKEY"
 SID="11111111-2222-3333-4444-555555555555"
 mkdir -p "$PDIR/$SID/subagents/workflows/wf_x"
@@ -430,7 +438,7 @@ latest_session() { # project-cwd -> basename of the transcript --latest picks
 }
 RANK_CWD="$WORKROOT/rank"
 mkdir -p "$RANK_CWD"
-RANK_DIR="$WORKROOT/.claude/projects/$(printf '%s' "$RANK_CWD" | sed 's|[/._]|-|g')"
+RANK_DIR="$WORKROOT/.claude/projects/$(project_key "$RANK_CWD")"
 mkdir -p "$RANK_DIR"
 RANK_A="aaaaaaaa-0000-0000-0000-000000000001"
 RANK_B="bbbbbbbb-0000-0000-0000-000000000002"
@@ -475,16 +483,18 @@ assert_eq "--latest never picks a sub-agent transcript" \
 
 # Single root session: picked, as before.
 SOLO_CWD="$WORKROOT/solo"
-SOLO_DIR="$WORKROOT/.claude/projects/$(printf '%s' "$SOLO_CWD" | sed 's|[/._]|-|g')"
-mkdir -p "$SOLO_CWD" "$SOLO_DIR"
+mkdir -p "$SOLO_CWD"
+SOLO_DIR="$WORKROOT/.claude/projects/$(project_key "$SOLO_CWD")"
+mkdir -p "$SOLO_DIR"
 cp -p "$RANK_DIR/$RANK_B.jsonl" "$SOLO_DIR/"
 assert_eq "--latest picks the only session of a project" \
   "$RANK_B.jsonl" "$(latest_session "$SOLO_CWD")"
 
 # No session has a user prompt: newest mtime wins, as before.
 NOPROMPT_CWD="$WORKROOT/noprompt"
-NOPROMPT_DIR="$WORKROOT/.claude/projects/$(printf '%s' "$NOPROMPT_CWD" | sed 's|[/._]|-|g')"
-mkdir -p "$NOPROMPT_CWD" "$NOPROMPT_DIR"
+mkdir -p "$NOPROMPT_CWD"
+NOPROMPT_DIR="$WORKROOT/.claude/projects/$(project_key "$NOPROMPT_CWD")"
+mkdir -p "$NOPROMPT_DIR"
 cp "$RANK_DIR/$RANK_C.jsonl" "$NOPROMPT_DIR/$RANK_A.jsonl"
 touch -t 202608281250 "$NOPROMPT_DIR/$RANK_A.jsonl"
 cp "$RANK_DIR/$RANK_C.jsonl" "$NOPROMPT_DIR/$RANK_C.jsonl"
@@ -500,8 +510,12 @@ parts_cents="$(grep '^est\. used token:' "$WORKROOT/by_path.txt" | head -10 | su
 total_cents="$(grep '^est\. used token:' "$WORKROOT/by_path.txt" | tail -1 | sum_cents)"
 assert_eq "TOTAL equals the sum of the per-part est-lines" "$parts_cents" "$total_cents"
 
-# --check with ccusage absent from PATH: a note, not a failure.
-check_out="$(cd "$PROJ_CWD" && PATH=/usr/bin:/bin HOME="$WORKROOT" bash "$AGG" "$MAIN" --check 2>&1)"
+# --check with ccusage absent from PATH: a note, not a failure. jq may live outside /usr/bin, beside a
+# ccusage (Homebrew, scoop shims), so only a wrapper of it joins PATH.
+mkdir -p "$WORKROOT/jq-only"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v jq)" > "$WORKROOT/jq-only/jq"
+chmod +x "$WORKROOT/jq-only/jq"
+check_out="$(cd "$PROJ_CWD" && PATH="$WORKROOT/jq-only:/usr/bin:/bin" HOME="$WORKROOT" bash "$AGG" "$MAIN" --check 2>&1)"
 check_rc=$?
 assert_eq "--check exits 0 when ccusage is missing" "0" "$check_rc"
 assert_match "--check prints a skip note when ccusage is missing" \

@@ -9,12 +9,12 @@ Exits TRANSIENT_FAILURE_EXIT_CODE while another live owner holds the lock; any o
 exits 1 with a message naming it.
 """
 import errno
-import fcntl
 import os
 import subprocess
 import sys
 import time
 import pathsafe
+import process_identity
 
 STALE_LOCK_SECONDS = 5
 # EX_TEMPFAIL; adapter_install.sh (TRANSIENT_FAILURE_EXIT_CODE) makes it the exit status of a session-log command too.
@@ -25,11 +25,10 @@ lock_path = os.environ["SESSION_LOG_LOCK_PATH"]
 owner_pid = int(os.environ["SESSION_LOG_LOCK_PID"])
 owner_start = os.environ["SESSION_LOG_LOCK_START"]
 directory, name = os.path.split(lock_path)
-flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 def read_owner(fd):
-    descriptor = os.open("owner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=fd)
+    descriptor = pathsafe.open_at(fd, "owner", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         return os.read(descriptor, 512).decode("utf-8").splitlines()
     finally:
@@ -48,6 +47,9 @@ def owner_alive(lines):
     if not _has_liveness_data(lines):
         return None
     pid = int(lines[0])
+    if process_identity.WINDOWS:
+        # There os.kill(pid, 0) sends a CTRL_C_EVENT instead of probing; the start time alone tells.
+        return process_identity.start_time(pid) == lines[1]
     try:
         os.kill(pid, 0)
     except OSError as error:
@@ -68,13 +70,14 @@ try:
 except OSError as error:
     raise broken(error)
 lock_fd = None
+reclaim_guard = None
 try:
     if mode == "acquire":
         while True:
             try:
-                os.mkdir(name, 0o700, dir_fd=parent_fd)
-                lock_fd = os.open(name, flags, dir_fd=parent_fd)
-                descriptor = os.open("owner", os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=lock_fd)
+                pathsafe.mkdir_at(parent_fd, name, 0o700)
+                lock_fd = pathsafe.open_child_directory(parent_fd, name)
+                descriptor = pathsafe.open_at(lock_fd, "owner", os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
                 try:
                     os.write(descriptor, ("%s\n%s\n" % (owner_pid, owner_start)).encode("utf-8"))
                     os.fsync(descriptor)
@@ -83,16 +86,17 @@ try:
                 break
             except FileExistsError:
                 if lock_fd is not None:
-                    os.close(lock_fd)
+                    pathsafe.close_directory(lock_fd)
                     lock_fd = None
                 # Reclaimers serialize on the parent directory so a lock judged stale cannot be swapped for a
-                # competitor's fresh one before its removal; closing parent_fd at exit releases the guard.
+                # competitor's fresh one before its removal; closing parent_fd (or the guard) at exit releases it.
                 try:
-                    fcntl.flock(parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if reclaim_guard is None:
+                        reclaim_guard = pathsafe.lock_directory(parent_fd)
                 except BlockingIOError:
                     raise SystemExit(TRANSIENT_FAILURE_EXIT_CODE)
                 try:
-                    lock_fd = os.open(name, flags, dir_fd=parent_fd)
+                    lock_fd = pathsafe.open_child_directory(parent_fd, name)
                 except FileNotFoundError:
                     continue
                 try:
@@ -101,30 +105,32 @@ try:
                     lines = []
                 if owner_alive(lines):
                     raise SystemExit(TRANSIENT_FAILURE_EXIT_CODE)
-                age = time.time() - os.fstat(lock_fd).st_mtime
+                age = time.time() - pathsafe.stat_directory(lock_fd).st_mtime
                 if age < STALE_LOCK_SECONDS:
                     raise SystemExit(TRANSIENT_FAILURE_EXIT_CODE)
                 try:
-                    os.unlink("owner", dir_fd=lock_fd)
+                    pathsafe.unlink_at(lock_fd, "owner")
                 except FileNotFoundError:
                     pass
-                os.close(lock_fd)
+                pathsafe.close_directory(lock_fd)
                 lock_fd = None
-                os.rmdir(name, dir_fd=parent_fd)
+                pathsafe.rmdir_at(parent_fd, name)
     else:
         try:
-            lock_fd = os.open(name, flags, dir_fd=parent_fd)
+            lock_fd = pathsafe.open_child_directory(parent_fd, name)
             lines = read_owner(lock_fd)
             if _matches_owner(lines, owner_pid, owner_start):
-                os.unlink("owner", dir_fd=lock_fd)
-                os.close(lock_fd)
+                pathsafe.unlink_at(lock_fd, "owner")
+                pathsafe.close_directory(lock_fd)
                 lock_fd = None
-                os.rmdir(name, dir_fd=parent_fd)
+                pathsafe.rmdir_at(parent_fd, name)
         except (FileNotFoundError, NotADirectoryError):
             pass
 except OSError as error:
     raise broken(error)
 finally:
     if lock_fd is not None:
-        os.close(lock_fd)
-    os.close(parent_fd)
+        pathsafe.close_directory(lock_fd)
+    if reclaim_guard is not None:
+        os.close(reclaim_guard)
+    pathsafe.close_directory(parent_fd)

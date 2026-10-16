@@ -49,7 +49,7 @@ mk_log() { # sid -> creates the session map + an empty log, echoes the log path
 #   tokens 2000+1000+150000+0 = 153000
 # shellcheck disable=SC2016  # \$2\.32 is the literal price in a grep pattern
 EST='est\. used token: input: 2000, output: 1000, cache_create: 150000, cache_read: 0, total_tokens: 153000, price: \$2\.32, model: claude-fable-5, effort: max'
-PROJECT_KEY="$(printf '%s' "$WORKROOT/proj" | sed 's|[/._]|-|g')"
+PROJECT_KEY="$(printf '%s' "$WORKROOT/proj" | sed 's|[^A-Za-z0-9]|-|g')"
 PROJECT_DIR="$HOME/.claude/projects/$PROJECT_KEY"
 mkdir -p "$PROJECT_DIR"
 TRANSCRIPT="$PROJECT_DIR/transcript.jsonl"
@@ -153,7 +153,7 @@ done
 # Normal turn: response block, working time from .pstart, est-line, switch line.
 sid1="bbbbbbbb-0000-0000-0000-000000000001"
 log1="$(mk_log "$sid1")"
-# 13262s = 3h41m02s -> 03:41:02 (the clock may tick once mid-run, hence 0[0-9]).
+# 13262s = 3h41m02s -> 03:41:02; the run itself adds seconds (tens where every hook starts Python, as on Windows).
 pstart1="$(( $(date +%s) - 13262 ))"
 printf '%s\n' "$pstart1" > "$HOME/.claude/session-maps/$sid1.pstart"
 printf '%s\n' "claude-sonnet-4-6 high" > "$HOME/.claude/session-maps/$sid1.last"
@@ -164,7 +164,7 @@ assert_eq "stop.sh writes nothing to stdout" "" "$(cat "$WORKROOT/stop.out")"
 assert_grep "stop.sh writes the response heading" '^### [0-9]{2}:[0-9]{2}:[0-9]{2} response$' "$log1"
 assert_grep "stop.sh writes the response verbatim" '^Done: \*\*all good\*\*$' "$log1"
 assert_grep "stop.sh keeps multi-line responses" '^second line$' "$log1"
-assert_grep "stop.sh computes working time from .pstart" '^working time: 03:41:0[0-9]$' "$log1"
+assert_grep "stop.sh computes working time from .pstart" '^working time: 03:4[12]:[0-9]{2}$' "$log1"
 assert_grep "stop.sh writes the est-line" "^$EST\$" "$log1"
 assert_grep "stop.sh writes the switch line" \
   '^switched: model claude-sonnet-4-6 → claude-fable-5, effort high → max$' "$log1"
@@ -177,7 +177,7 @@ assert_eq "stop.sh rewrites <sid>.last" "claude-fable-5 max" \
   "$(cat "$HOME/.claude/session-maps/$sid1.last")"
 stop_payload "$sid1" "$TRANSCRIPT" | bash "$SCRIPTS/prompt_log_stop.sh" >/dev/null 2>&1
 assert_eq "a continuation stop still times from the prompt" "2" \
-  "$(grep -Ec '^working time: 03:41:0[0-9]$' "$log1")"
+  "$(grep -Ec '^working time: 03:4[12]:[0-9]{2}$' "$log1")"
 
 # Unchanged model+effort -> no switch line.
 sid2="bbbbbbbb-0000-0000-0000-000000000002"
