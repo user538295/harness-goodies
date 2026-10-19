@@ -1,7 +1,7 @@
 ---
 name: double-check
 description: >-
-  Config-driven, read-only review fan-out: runs every item listed in the project's `.double-check.json` — skills/commands, agents, MCP servers, CLI tools, Markdown rule files — on one target and merges all findings into one-line results. Targets: local changes (default), a commit, a commit range, files/folders/globs, or a described file set. Use when the user invokes /double-check or asks to double-check changes or files with all configured reviewers.
+  Config-driven, read-only review fan-out: runs every item listed in the project's `.double-check.json` — skills/commands, agents, MCP servers, CLI tools, Markdown rule files — on one target and merges all findings into one-line results. Targets: local changes (default), a commit, a commit range, files/folders/globs, or a described file set. `/double-check init` only creates the config (or prints its path when it exists). Use when the user invokes /double-check or asks to double-check changes or files with all configured reviewers.
 ---
 
 # /double-check
@@ -14,6 +14,13 @@ Severity rubric, shared by every item:
 - **Major**: significant design flaw, missing requirement, or likely bug
 - **Moderate**: suboptimal but workable
 - **Minor**: style, naming, or nitpick
+
+## `init`
+
+When `$ARGUMENTS` is exactly `init`, resolve the project root (Step 0), then handle `.double-check.json` there and stop — no target, no validation, no review:
+
+- **Missing** → create it with exactly the default config from Step 1 and print `Created <absolute path>`.
+- **Exists** → leave it untouched and print `<absolute path>`.
 
 ## Step 0 — Resolve the target
 

@@ -47,7 +47,7 @@ See `skills/implement/SKILL.md` § NEXT mode, "Step 6: Commit" for the one-task-
 - [**`/iterative-review`**](https://user538295.github.io/harness-goodies/handout/cmd-iterative-review.html) — A review that doesn't stop at finding problems. Reviewers and fix agents loop until clean.
 - [**`/aaa`**](https://user538295.github.io/harness-goodies/handout/skill-aaa.html) — When "looks good to me" isn't enough. Benchmarks an idea against world-class and hands you 3–4 concrete upgrade paths.
 - [**`/clean-code-review`**](https://user538295.github.io/harness-goodies/handout/skill-clean-code-review.html) — Code done, want the deep read. Runs 132 checks across 7 groups (clarity, smells, SOLID, architecture, tests, safety, DDD) — on local changes, staged/unstaged/untracked, a git range, a pull/merge-request link, or specific files.
-- **`/double-check`** — Want every reviewer on one target in one go. Runs every item listed in `.double-check.json` — skills/commands, agents, MCP servers, CLI tools (with optional `args`), Markdown rule files — on local changes, a commit, a range, files/globs, or a described file set, then merges the findings into one line each. Default config: `/da-review`, `/clean-code-review`, `/brooks-review`, `/open-code-review`, markdownlint, shellcheck, `conventions.md`. Read-only.
+- **`/double-check`** — Want every reviewer on one target in one go. Runs every item listed in `.double-check.json` — skills/commands, agents, MCP servers, CLI tools (with optional `args`), Markdown rule files — on local changes, a commit, a range, files/globs, or a described file set, then merges the findings into one line each. Default config: `/da-review`, `/clean-code-review`, `/brooks-review`, `/open-code-review`, markdownlint, shellcheck, `conventions.md`. `/double-check init` creates the default config, or prints its path when it already exists. Read-only.
 - [**`/options`**](https://user538295.github.io/harness-goodies/handout/skill-options.html) — Stuck between approaches. Produces 2–4 genuinely different paths with honest pros/cons, grounded in your actual project files, and a firm recommendation.
 
 Powered by the [`devils-advocate`](https://user538295.github.io/harness-goodies/handout/agentic-workflow-en.html#da) agent — the thing actually doing the attacking. Auto-invoked by both review skills and inside `/implement`.
@@ -76,7 +76,6 @@ One script bundle handles the progress plumbing — [`scripts-plan`](https://use
 ---
 
 ## Install · Update
-
 
 ### Claude Code plugin marketplace
 
@@ -175,7 +174,6 @@ The supported identities are exactly `claude`, `codex`, `cursor`, `opencode`, an
 Only default roots are supported: Claude Code `~/.claude`, Codex `~/.codex`, Cursor `~/.cursor`, OpenCode `~/.config/opencode`, and OMP `~/.omp/agent`. OpenCode also reads native data from `~/.local/share/opencode`; relocated config or data roots fail explicitly. Logging remains off until enabled separately in each harness. In Codex, `status` and `usage` repair a missing or outdated adapter while logging is enabled; the Claude Code, Cursor, OMP, and OpenCode plugins ship theirs, so there is no adapter to repair.
 
 OpenCode and OMP keep per-process runtime records alongside the shared runtime pointer. The adapters bound their in-memory session history; after a process restart, the on-disk logs remain the source of recorded prompts and responses.
-
 
 ---
 
