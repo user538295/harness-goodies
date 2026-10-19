@@ -1,7 +1,7 @@
 ---
 name: double-check
 description: >-
-  Config-driven, read-only review fan-out: runs every item listed in the project's `.double-check.json` — skills/commands, agents, MCP servers, CLI tools, Markdown rule files — on one target and merges all findings into one-line results. Targets: local changes (default), a commit, a commit range, files/folders/globs, or a described file set. `/double-check init` only creates the config (or prints its path when it exists). Use when the user invokes /double-check or asks to double-check changes or files with all configured reviewers.
+  Config-driven, read-only review fan-out: runs every item listed in the project's `.double-check.json` — skills/commands, agents, MCP servers, CLI tools, Markdown rule files — on one target and merges all findings into one-line results. Targets: local changes (default), a commit, a commit range, files/folders/globs, or a described file set. `/double-check init` only creates the config (or prints its path when it exists). `/double-check status` only prints the configured items and their availability. Use when the user invokes /double-check, asks to double-check changes or files with all configured reviewers, or asks which configured reviewers are available.
 ---
 
 # /double-check
@@ -21,6 +21,15 @@ When `$ARGUMENTS` is exactly `init`, resolve the project root (Step 0), then han
 
 - **Missing** → create it with exactly the default config from Step 1 and print `Created <absolute path>`.
 - **Exists** → leave it untouched and print `<absolute path>`.
+
+## `status`
+
+When `$ARGUMENTS` is exactly `status`, show the configured items and their availability, then stop — no target, no review:
+
+1. Resolve the project root (Step 0); skip the target and the file list.
+2. Run Step 1 unchanged.
+3. Run Step 2 without a target: a `tool` is `✅` when `command -v <tool>` succeeds, and no item is checked against a target kind, so the reasons `installed, but there is no <file kind> in the target` and `not applicable: <why>` never appear.
+4. Print the Step 2 block; an item with `args` adds a space and `(args: <args>)` after its name, before any `: <reason>` (`✅ 🛠 eslint (args: --max-warnings 0)`).
 
 ## Step 0 — Resolve the target
 
@@ -86,7 +95,7 @@ An item is `✅` when it exists and can review this target:
 
 `❌` reasons: `not found` · `not installed` · `not connected` · `installed, but there is no <file kind> in the target` · `not applicable: <why>` · `missing dependency <name>`. A missing dependency the item can work without (its documented fallback) leaves the item `✅` and adds `, <item> falls back to <fallback>` to the dependency's line.
 
-Print exactly this block — header, three-space indent, mark, category emoji, name; a `❌` line adds `: <reason>`:
+Print exactly this block to the user as their own message, with no tool call in it, before next step — header, three-space indent, mark, category emoji, name; a `❌` line adds `: <reason>`:
 
 ```text
 Check availability:
