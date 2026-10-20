@@ -16,7 +16,7 @@ class PIDFile:
     def update_heartbeat(self, pid: int, nonce: str) -> None:
         tmp = self._path.with_suffix(".pid.tmp")
         tmp.write_text(self._format_lines(pid, nonce))
-        tmp.rename(self._path)
+        tmp.replace(self._path)
 
     def read(self) -> tuple[int, str, datetime] | None:
         try:

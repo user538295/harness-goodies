@@ -45,7 +45,7 @@ class WatcherLog:
         output = [rotation_line] + tail
         tmp = self._path.with_suffix(".log.tmp")
         tmp.write_text("".join(output))
-        tmp.rename(self._path)
+        tmp.replace(self._path)
 
 
 _POLL_INTERVAL = 30
