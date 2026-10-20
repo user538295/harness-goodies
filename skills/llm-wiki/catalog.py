@@ -20,7 +20,8 @@ from pathlib import Path
 READ_CHUNK_BYTES = 65536
 # Non-blocking so opening a FIFO/device never hangs; the type is then checked
 # on the opened descriptor itself, leaving no check-then-open race window.
-_HASH_OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY
+# Windows has neither flag (nor FIFOs/ttys), so they fall back to 0 there.
+_HASH_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOCTTY", 0)
 
 
 def _hash_file(path: Path) -> str:
@@ -70,7 +71,7 @@ class CatalogStore:
         }
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
-        tmp.rename(path)
+        tmp.replace(path)
 
 
 def _now_iso(clock: Callable[[], datetime]) -> str:

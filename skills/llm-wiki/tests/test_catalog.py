@@ -104,6 +104,7 @@ def test_store_save_creates_parent_dir(tmp_path):
 _FIFO_OPEN_TIMEOUT_SECONDS = 2.0
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
 def test_hash_file_rejects_fifo_swapped_in_after_type_check(tmp_path, monkeypatch):
     # Simulate a regular file swapped for a FIFO between the type check and
     # open(): Path.is_file() reports True, but the path is a FIFO. Hashing must
