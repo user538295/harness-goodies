@@ -6,7 +6,7 @@ description: >-
 
 # /double-check
 
-`$ARGUMENTS` carries the target plus optional per-item parameters (`check src/ and run shellcheck with -S warning`). Read-only: never edit, stage, or commit reviewed files; the only file this skill writes is `.double-check.json`.
+`$ARGUMENTS` carries the target plus optional per-item parameters (`check src/ and run shellcheck with -S warning`). Read-only: never edit, stage, or commit reviewed files; the only project file this skill writes is `.double-check.json`, and the only other change it makes is a self-fix at the blocker gate (Step 2).
 
 Severity rubric, shared by every item:
 
@@ -29,7 +29,7 @@ When `$ARGUMENTS` is exactly `status`, show the configured items and their avail
 1. Resolve the project root (Step 0); skip the target and the file list.
 2. Run Step 1 unchanged.
 3. Run Step 2 without a target: a `tool` is `✅` when `command -v <tool>` succeeds, and no item is checked against a target kind, so the reasons `installed, but there is no <file kind> in the target` and `not applicable: <why>` never appear.
-4. Print the Step 2 block; an item with `args` adds a space and `(args: <args>)` after its name, before any `: <reason>` (`✅ 🛠 eslint (args: --max-warnings 0)`).
+4. Print the Step 2 block; an item with `args` adds a space and `(args: <args>)` after its name, before any `: <reason>` (`✅ 🛠 eslint (args: --max-warnings 0)`). Skip the blocker gate.
 
 ## Step 0 — Resolve the target
 
@@ -92,8 +92,9 @@ An item is `✅` when it exists and can review this target:
 - **tool**: `command -v <tool>` succeeds, and the file list holds files the tool checks (decide from its name, `--help`, and project config; shellcheck also covers extensionless files with a `sh`/`bash` shebang).
 - **md**: the file exists.
 - Every item: its documentation allows this target kind (e.g. a reviewer of git diffs cannot take a described file set or a project without git).
+- Every item: the runtime prerequisites its documentation names hold — credentials, a configured LLM provider, a login, a running service; a skill's prerequisites include those of the CLIs it wraps. Verify with the check the documentation gives, never with an interactive setup command (`/open-code-review` → `ocr llm test` exits 0). No documented check → treat as ready.
 
-`❌` reasons: `not found` · `not installed` · `not connected` · `installed, but there is no <file kind> in the target` · `not applicable: <why>` · `missing dependency <name>`. A missing dependency the item can work without (its documented fallback) leaves the item `✅` and adds `, <item> falls back to <fallback>` to the dependency's line.
+`❌` reasons: `not found` · `not installed` · `not connected` · `not ready: <what is missing>` · `installed, but there is no <file kind> in the target` · `not applicable: <why>` · `missing dependency <name>`. A missing dependency the item can work without (its documented fallback) leaves the item `✅` and adds `, <item> falls back to <fallback>` to the dependency's line.
 
 Print exactly this block to the user as their own message, with no tool call in it, before next step — header, three-space indent, mark, category emoji, name; a `❌` line adds `: <reason>`:
 
@@ -107,7 +108,21 @@ Check availability:
    ❌ #️⃣ conventions.md: not found
 ```
 
-Category emojis: agent 🧠 · skill 💡 · MCP 🔌 · tool 🛠 · md #️⃣. Agents and skills carry a leading `/`; MCP servers, tools, and md files do not. Every later step uses only the `✅` items (dependencies run inside their item, never on their own); no `✅` item → skip.
+Category emojis: agent 🧠 · skill 💡 · MCP 🔌 · tool 🛠 · md #️⃣. Agents and skills carry a leading `/`; MCP servers, tools, and md files do not. Every later step uses only the `✅` items (dependencies run inside their item, never on their own); no `✅` item after the blocker gate → skip.
+
+**Blocker gate** — run before Step 3. A `❌` item or dependency with reason `not found`, `not installed`, `not connected`, `not ready`, or `missing dependency` is a **blocker**; the target-based reasons are not (those items have nothing to check). No blocker → Step 3. Otherwise take each blocker's fix from the item's documentation:
+
+1. **Self-fixable** — a non-interactive command that needs no secret and no choice from the user (installing a documented CLI): run it without asking, recheck the item as in Step 2, and print one line `🔧 <emoji> <name>: <fix command>`. Fixed → the item is `✅`. Still `❌` → it becomes a user blocker with the new reason.
+2. **User blockers** — interactive setup, credentials, logins, or a self-fix that failed. None → Step 3 without stopping. Otherwise print one line per user blocker with its fix, then wait for the user's answer; never ask for a secret in chat:
+
+```text
+Blocked — run the fixes, then answer `retry`, `continue` (review without them), or `stop`:
+   ❌ 💡 /open-code-review: not ready: no LLM provider configured (ocr llm test failed) → run: ocr config provider
+```
+
+- `retry` → rerun Step 2 and this gate.
+- `continue` → Step 3 with the `✅` items only; every user blocker goes to the `Not run` block with its Step 2 reason.
+- `stop` or anything else → stop without reviewing.
 
 ## Step 3 — Review
 
@@ -145,7 +160,7 @@ Example:
 - Sort by severity (Critical first), then path, then line.
 - Before printing, write the lines to a temp file and run `awk 'length > 255' <file>`; shorten every line it prints (bytes overcount multibyte characters, so passing is safe).
 
-Print the sorted lines (no findings → `No findings.`), then, when any item failed at runtime:
+Print the sorted lines (no findings → `No findings.`), then, when any item failed at runtime or was skipped at the blocker gate:
 
 ```text
 Not run:
