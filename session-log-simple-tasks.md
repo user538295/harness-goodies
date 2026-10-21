@@ -227,7 +227,7 @@ flowchart LR
         - #unit_test — `test_safe_id_rejects_dotdot_slash_and_windows_device_names` — 1–128 chars of `[A-Za-z0-9_-]`; stricter than today's `SAFE_ID` in [session_log_hook.py](./skills/session-log/adapters/native/session_log_hook.py)
         - #unit_test — `test_sub_agents_ordered_by_start_then_id` — the fixed row order
         - #unit_test — `test_last_activity_includes_sub_agent_activity` — `lastActivityAt` rule
-- [ ] **BE-2** — StateStore (C6): `.log_enabled` created exclusively holding the on-time, `.sync.json` with unit and session entries, merged by key before each save, empty or corrupt file rebuilt and reported #backend-role
+- [x] **BE-2** — StateStore (C6): `.log_enabled` created exclusively holding the on-time, `.sync.json` with unit and session entries, merged by key before each save, empty or corrupt file rebuilt and reported #backend-role
     - Interface Adapters · 3.0h
     - needs BE-1 · completes C6
     - Tests
