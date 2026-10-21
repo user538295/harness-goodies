@@ -234,7 +234,7 @@ flowchart LR
         - #unit_test — `test_log_enabled_exclusive_create_keeps_existing_on_time` — `on` while on keeps the time
         - #unit_test — `test_unparsable_log_enabled_falls_back_to_file_time` — and reports it
         - #integration_test — `test_corrupt_sync_json_rebuilt_and_reported` — real files in a temp root
-- [ ] **BE-3** — PricingRules and the `PriceBook` port (with `Rates`): `UsageReport` rows per prompt, recorded cost first, cents half-up, `price: unknown` and `≥ $X.XX (incomplete)` rows, TOTAL = sum of shown rows, API-equivalent label for Codex/Cursor #backend-role
+- [x] **BE-3** — PricingRules and the `PriceBook` port (with `Rates`): `UsageReport` rows per prompt, recorded cost first, cents half-up, `price: unknown` and `≥ $X.XX (incomplete)` rows, TOTAL = sum of shown rows, API-equivalent label for Codex/Cursor #backend-role
     - Use Cases · 3.0h
     - needs BE-1 · completes S18, S19, S52
     - Tests

@@ -175,6 +175,8 @@ Only default roots are supported: Claude Code `~/.claude`, Codex `~/.codex`, Cur
 
 OpenCode and OMP keep per-process runtime records alongside the shared runtime pointer. The adapters bound their in-memory session history; after a process restart, the on-disk logs remain the source of recorded prompts and responses.
 
+The Python package's `sessionlog.pricing.PricingRules` builds report data from normalized sessions and an injected `PriceBook`; it is not yet wired into the existing CLI. Recorded costs take precedence over model rates. Rows round half-up to cents, unknown prices remain unknown, mixed rows retain their priced subtotal, and TOTAL sums those rounded row amounts. Codex/Cursor totals carry the API-equivalent flag. Run its unit tests with `python3 -m unittest discover -s skills/session-log/tests -t skills/session-log -p test_pricing.py`.
+
 ---
 
 ## Why this repo has opinions

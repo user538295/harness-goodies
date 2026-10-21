@@ -1,0 +1,140 @@
+"""PricingRules acceptance examples (S18, S19, S52)."""
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from sessionlog.model import Harness, Prompt, RequestUsage, Session, SubAgent
+from sessionlog.pricing import PricingRules, Rates
+
+NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+class Book:
+    def rate_for(self, model_name, fast):
+        if model_name == "known":
+            return Rates(20, 40, 2, 25, 40) if fast else Rates(10, 20, 1, 12.5, 20)
+        if model_name == "second" and not fast:
+            return Rates(3, 7, 0.5, 4, 6)
+        return None
+
+    def problem(self):
+        return None
+
+
+def request(model="known", **changes):
+    values = dict(model_name=model, input_tokens=0, output_tokens=0,
+                  cache_read_tokens=0, cache_write_5m_tokens=0, cache_write_1h_tokens=0)
+    values.update(changes)
+    return RequestUsage(**values)
+
+
+def report(*rows, harness=Harness.CLAUDE, agents=()):
+    return PricingRules(Book()).build(Session(
+        harness=harness, session_id="session", started_at=NOW,
+        prompts=tuple(Prompt(submitted_at=NOW, text="hello", requests=row) for row in rows),
+        sub_agents=agents))
+
+
+class PricingTests(unittest.TestCase):
+    def test_known_model_priced_with_own_cache_read_write_5m_1h_and_fast_rates(self):
+        tokens = dict(input_tokens=1000000, output_tokens=1000000, cache_read_tokens=1000000,
+                      cache_write_5m_tokens=1000000, cache_write_1h_tokens=1000000)
+        result = report((request(**tokens, effort="high"),), (request(**tokens, fast=True),))
+        self.assertEqual([row.price.cents for row in result.prompts], [6350, 12700])
+        self.assertEqual(result.prompts[0].effort, "high")
+        self.assertEqual(result.prompts[1].model_names, "known:fast")
+        self.assertEqual(result.prompts[0].total_tokens, 5000000)
+
+    def test_each_token_class_uses_selected_model_rate(self):
+        fields = ("input_tokens", "output_tokens", "cache_read_tokens",
+                  "cache_write_5m_tokens", "cache_write_1h_tokens")
+        for model, fast, expected in (
+                ("known", False, (1000, 2000, 100, 1250, 2000)),
+                ("known", True, (2000, 4000, 200, 2500, 4000)),
+                ("second", False, (300, 700, 50, 400, 600))):
+            for field, cents in zip(fields, expected):
+                with self.subTest(model=model, fast=fast, token_class=field):
+                    result = report((request(model, fast=fast, **{field: 1000000}),))
+                    self.assertEqual(result.prompts[0].price.cents, cents)
+
+    def test_rounds_after_summing_requests_within_row(self):
+        result = report((request(recorded_cost_usd=0.004), request(recorded_cost_usd=0.004)),)
+        self.assertEqual(result.prompts[0].price.cents, 1)
+        self.assertEqual(result.total.price_cents, 1)
+
+    def test_total_includes_token_classes_and_unique_models_and_efforts(self):
+        agent = SubAgent(agent_id="worker", type="worker", started_at=NOW,
+                         requests=(request("second", output_tokens=7, cache_write_1h_tokens=11, effort="low"),))
+        result = report((request(input_tokens=2, cache_read_tokens=3, cache_write_5m_tokens=5, effort="high"),),
+                        agents=(agent,))
+        self.assertEqual((result.total.input_tokens, result.total.output_tokens,
+                          result.total.cache_read_tokens, result.total.cache_write_tokens), (2, 7, 3, 16))
+        self.assertEqual(result.total.model_names, "known+second")
+        self.assertEqual(result.total.effort, "high+low")
+
+    def test_unknown_model_row_unknown_total_incomplete_never_zero(self):
+        result = report((request("unknown", input_tokens=17),))
+        self.assertEqual(result.prompts[0].price.status, "unknown")
+        self.assertEqual(result.prompts[0].total_tokens, 17)
+        self.assertTrue(result.total.price_incomplete)
+
+    def test_rows_rounded_half_up_mixed_row_incomplete_total_is_sum_of_rows(self):
+        result = report((request(recorded_cost_usd=0.005),),
+                        (request(recorded_cost_usd=0.005), request("unknown")),
+                        (request("unknown"),))
+        self.assertEqual([row.price.cents for row in result.prompts], [1, 1, 0])
+        self.assertEqual([row.price.status for row in result.prompts], ["priced", "partial", "unknown"])
+        self.assertEqual(result.total.price_cents, 2)
+        self.assertTrue(result.total.price_incomplete)
+
+    def test_recorded_cost_including_free_overrides_unknown_model(self):
+        result = report((request("unknown", recorded_cost_usd=0),),
+                        (request(recorded_cost_usd=0.125, input_tokens=1000000),))
+        self.assertEqual([row.price.cents for row in result.prompts], [0, 13])
+        self.assertFalse(result.total.price_incomplete)
+
+    def test_empty_prompt_and_api_equivalent_labels(self):
+        for harness in Harness:
+            result = report((), harness=harness)
+            self.assertEqual(result.total.api_equivalent, harness in (Harness.CODEX, Harness.CURSOR))
+            self.assertEqual(result.prompts[0].working_time, timedelta(0))
+            self.assertEqual(result.prompts[0].price.status, "unknown")
+
+    def test_cursor_total_is_always_labelled_main_only_and_incomplete(self):
+        result = report((request(recorded_cost_usd=0),), harness=Harness.CURSOR)
+        self.assertTrue(result.total.price_incomplete)
+        self.assertEqual(result.total.label, "tokens: main session only — Cursor does not record sub-agent tokens")
+
+    def test_working_time_sums_only_replied_main_prompts(self):
+        prompts = tuple(Prompt(submitted_at=NOW, text="hello", reply_at=NOW + timedelta(seconds=seconds),
+                               working_time=timedelta(seconds=seconds)) for seconds in (5, 7))
+        agent = SubAgent(agent_id="worker", type="worker", started_at=NOW, working_time=timedelta(seconds=100))
+        result = PricingRules(Book()).build(Session(harness=Harness.CLAUDE, session_id="time",
+                                                   started_at=NOW, prompts=prompts, sub_agents=(agent,)))
+        self.assertEqual(result.total.working_time, timedelta(seconds=12))
+
+    def test_prompt_head_collapses_breaks_and_preserves_unicode_boundary(self):
+        prompt = Prompt(submitted_at=NOW, text="a\n\t" + "ő" * 58 + "🙂end")
+        result = PricingRules(Book()).build(Session(harness=Harness.CLAUDE, session_id="head",
+                                                   started_at=NOW, prompts=(prompt,)))
+        self.assertEqual(result.prompts[0].prompt_head, "a " + "ő" * 58)
+
+    def test_row_models_and_efforts_are_sorted_unique_with_fast_marker(self):
+        result = report((request("second", effort="low"), request(effort="high", fast=True),
+                         request(effort="high"), request(effort="high")),)
+        self.assertEqual(result.prompts[0].model_names, "known+known:fast+second")
+        self.assertEqual(result.prompts[0].effort, "high+low")
+
+    def test_nested_agents_count_once_and_missing_cursor_tokens_incomplete(self):
+        child = SubAgent(agent_id="child", type="worker", started_at=NOW,
+                         requests=(request(recorded_cost_usd=0.005, output_tokens=7),))
+        parent = SubAgent(agent_id="parent", type="worker", started_at=NOW,
+                          requests=(request(recorded_cost_usd=0.005, input_tokens=3),), sub_agents=(child,))
+        result = report((request(recorded_cost_usd=0.005, input_tokens=2),), agents=(parent,))
+        self.assertEqual([(a.agent_id, a.depth) for a in result.sub_agents], [("parent", 0), ("child", 1)])
+        self.assertEqual(result.total.total_tokens, 12)
+        self.assertEqual(result.total.price_cents, 3)
+        self.assertEqual(result.total.sub_agent_count, 2)
+        missing = SubAgent(agent_id="missing", type="worker", started_at=NOW, tokens_not_recorded=True)
+        result = report((request(recorded_cost_usd=0),), harness=Harness.CURSOR, agents=(missing,))
+        self.assertTrue(result.total.price_incomplete)
+        self.assertIsNone(result.sub_agents[0].total_tokens)
