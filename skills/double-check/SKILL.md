@@ -96,7 +96,7 @@ An item is `✅` when it exists and can review this target:
 
 `❌` reasons: `not found` · `not installed` · `not connected` · `not ready: <what is missing>` · `installed, but there is no <file kind> in the target` · `not applicable: <why>` · `missing dependency <name>`. A missing dependency the item can work without (its documented fallback) leaves the item `✅` and adds `, <item> falls back to <fallback>` to the dependency's line.
 
-Print exactly this block to the user as their own message, with no tool call in it, before next step — header, three-space indent, mark, category emoji, name; a `❌` line adds `: <reason>`:
+Before any blocker fix or reviewer launch, send the availability block below as a standalone, user-visible, non-final assistant message (in omp, use `commentary`), with no tool call in the message. Do not substitute tool output or defer it to the final summary. After sending it, continue in the same run; wait for the user only when the blocker gate requires an answer. Preserve this format exactly — header, three-space indent, mark, category emoji, name; a `❌` line adds `: <reason>`:
 
 ```text
 Check availability:
