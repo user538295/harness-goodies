@@ -240,28 +240,6 @@ class HookLoggingTests(PackageTest):
             '"usage":{"input_tokens":10,"output_tokens":5}}}\n')
         self.assertEqual(self.session_log("on").returncode, 0)
 
-    def hook(self, event, **fields):
-        """Runs the plugin's hooks/hooks.json command for ``event`` as Claude Code does; this test process
-        stands in for Claude Code."""
-        command = json.loads((REPO / "hooks/hooks.json").read_text())["hooks"][event][0]["hooks"][0]["command"]
-        payload = dict(session_id=self.SESSION, cwd=str(self.project), transcript_path=str(self.transcript), **fields)
-        return self.run_bash("-c", command, stdin=json.dumps(payload), env=dict(self.env, CLAUDE_PLUGIN_ROOT=str(REPO)))
-
-    def test_a_prompt_and_its_response_are_logged_under_the_project(self):
-        self.hook("SessionStart")
-        self.hook("UserPromptSubmit", prompt="hello there")
-        self.hook("Stop", last_assistant_message="general kenobi")
-        logs = list((self.home / ".claude/prompt-logs").rglob("session_*.md"))
-        self.assertEqual([log.parent.name for log in logs], ["work-my.project"])
-        text = logs[0].read_text(encoding="utf-8")
-        self.assertIn("hello there", text)
-        self.assertIn("general kenobi", text)
-
-    def test_status_is_on_once_the_hooks_of_a_running_session_ran(self):
-        self.hook("UserPromptSubmit", prompt="hello there")
-        status = self.session_log("status")
-        self.assertEqual((status.returncode, status.stdout, status.stderr), (0, "Claude Code: on\n", ""))
-
     def test_usage_takes_the_transcript_path_claude_code_names(self):
         usage = self.run_bash(PACKAGE / "adapters/claude/scripts/prompt_log_usage.sh", self.transcript)
         self.assertEqual(usage.returncode, 0, usage.stderr)

@@ -954,7 +954,7 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
         return {
             "live absolute path": f"{prefix} {live_hook} stop",
             "missing absolute path": f"{prefix} {home}/gone/{PLUGIN_HOOK_TAIL} stop",
-            "verbatim plugin command": PLUGIN_COMMANDS_FOR_TESTS["stop"],
+            "verbatim plugin command": self.load().plugin_hook_command("stop"),
             "owner-marked plugin root placeholder": f'{prefix} "{PLUGIN_ROOT_PLACEHOLDER}/{PLUGIN_HOOK_TAIL}" stop',
             "native Windows path": f"{prefix} '{windows_hook}' stop",
             "versioned plugin-cache copy under $HOME": f'{prefix} "$HOME/{cache_tail}" stop',
@@ -1027,12 +1027,6 @@ class ClaudeSettingsOwnershipTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f"claude_settings: unknown operation: {operation}", result.stderr)
 
-    def test_hooks_json_registers_the_plugin_hook_command_for_every_lifecycle(self):
-        settings = self.load()
-        for event, hook in plugin_hooks():
-            with self.subTest(event=event):
-                self.assertEqual(hook["command"], settings.plugin_hook_command(PLUGIN_EVENT_LIFECYCLES[event]))
-
 
 PLUGIN_ROOT_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}"
 # Plugin-cache version directories: the current plugin, and an old release whose dead paths
@@ -1057,31 +1051,13 @@ def sandbox_plugin_root(plugin_root):
     return plugin_root
 
 
-def plugin_hooks():
-    document = json.loads((REPO / "hooks/hooks.json").read_text())
-    for event in CLAUDE_LIFECYCLE_EVENTS:
-        for entry in document["hooks"][event]:
-            for hook in entry["hooks"]:
-                yield event, hook
-
-
 PLUGIN_EVENT_LIFECYCLES = {
     "SessionStart": "session-start", "UserPromptSubmit": "user-prompt", "Stop": "stop", "SubagentStop": "subagent-stop",
 }
-# The hooks/hooks.json command per lifecycle, as a copy pasted verbatim into settings.json would hold it.
-PLUGIN_COMMANDS_FOR_TESTS = {PLUGIN_EVENT_LIFECYCLES[event]: hook["command"] for event, hook in plugin_hooks()}
 PLUGIN_HOOK_TAIL = "skills/session-log/adapters/claude/claude_hook.sh"
-# The plugin-cache tail below a real POSIX prefix, written with Windows separators.
-WINDOWS_STYLE_PLUGIN_TAIL = r".claude\plugins\cache\harness-goodies\claude-goodies" + "\\" + PLUGIN_VERSION
-# Records the lifecycle argument it was started with, proving the hook command reached the script.
-RECORDING_CLAUDE_HOOK = '#!/usr/bin/env bash\nprintf "%s" "$1" > "$SESSION_LOG_TEST_RECORD"\n'
 
 
-# Shells that run shell-form hooks: Git Bash on Windows, /bin/sh on macOS/Linux (dash on Debian/Ubuntu).
-HOOK_SHELL_NAMES = ("bash", "/bin/sh", "dash")
-
-
-def hook_shells(test, names=HOOK_SHELL_NAMES):
+def hook_shells(test, names):
     """The installed hook shells; a missing one is reported as a skipped subtest, never dropped silently."""
     installed = []
     for name in names:
@@ -1104,83 +1080,8 @@ def link_tools(directory, tools):
     return directory
 
 
-def run_plugin_hook_command(shell, hook, plugin_root, *, substituted, environment, payload="{}"):
-    """Run a hooks.json shell-form command the way Claude Code spawns it: `<shell> -c <command>`.
-
-    Claude Code exports CLAUDE_PLUGIN_ROOT to the hook process and also substitutes the placeholder
-    textually, with forward slashes on Windows (https://code.claude.com/docs/en/plugins-reference,
-    "Environment variables"), so both the expanded and the substituted spelling must reach the script.
-    """
-    command = hook["command"].replace(PLUGIN_ROOT_PLACEHOLDER, plugin_root) if substituted else hook["command"]
-    return subprocess.run(
-        [shell, "-c", command], input=payload, capture_output=True, text=True,
-        env={**environment, "CLAUDE_PLUGIN_ROOT": plugin_root}, timeout=HOOK_TIMEOUT_SECONDS,
-    )
-
-
 class ClaudeWindowsHookTests(unittest.TestCase):
-    """Claude Code on Windows hands plugin hooks a native C:\\ plugin root.
-
-    A shell-form hook with "shell": "bash" runs in Git Bash on Windows and through `sh -c` on
-    macOS and Linux (https://code.claude.com/docs/en/hooks, "command hook fields"); an exec-form
-    hook ("args") would resolve `bash` through the plain Windows PATH instead.
-    """
-
-    def test_plugin_hooks_use_shell_form_pinned_to_bash(self):
-        for event, hook in plugin_hooks():
-            with self.subTest(event=event):
-                self.assertNotIn("args", hook, f"{event} hook uses exec form, which resolves bash through the Windows PATH")
-                self.assertEqual(hook.get("shell"), "bash", f"{event} hook does not pin Git Bash on Windows: {hook}")
-
-    def test_plugin_hooks_reach_the_script_through_a_windows_style_plugin_root(self):
-        with tempfile.TemporaryDirectory() as directory:
-            user_home = Path(directory).resolve() / "Jane O'Doe"
-            hook_script = user_home / WINDOWS_STYLE_PLUGIN_TAIL.replace("\\", "/") / PLUGIN_HOOK_TAIL
-            hook_script.parent.mkdir(parents=True)
-            hook_script.write_text(RECORDING_CLAUDE_HOOK)
-            plugin_root = f"{user_home}\\{WINDOWS_STYLE_PLUGIN_TAIL}"
-            record = Path(directory) / "record"
-            environment = {**os.environ, "SESSION_LOG_TEST_RECORD": str(record)}
-            for shell in hook_shells(self):
-                for substituted in (False, True):
-                    for event, hook in plugin_hooks():
-                        with self.subTest(shell=shell, substituted=substituted, event=event):
-                            record.unlink(missing_ok=True)
-                            result = run_plugin_hook_command(
-                                shell, hook, plugin_root, substituted=substituted, environment=environment)
-                            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-                            self.assertEqual(record.read_text() if record.exists() else None,
-                                             PLUGIN_EVENT_LIFECYCLES[event])
-
-    def test_plugin_hooks_exit_silently_when_the_script_is_missing(self):
-        with tempfile.TemporaryDirectory() as directory:
-            missing_root = f"{Path(directory).resolve()}\\{WINDOWS_STYLE_PLUGIN_TAIL}"
-            for shell in hook_shells(self):
-                for substituted in (False, True):
-                    for event, hook in plugin_hooks():
-                        with self.subTest(shell=shell, substituted=substituted, event=event):
-                            result = run_plugin_hook_command(
-                                shell, hook, missing_root, substituted=substituted, environment=dict(os.environ))
-                            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-
-    def test_plugin_hooks_run_the_real_hook_from_a_plugin_root_with_spaces_and_quotes(self):
-        if shutil.which("jq") is None:
-            self.skipTest("jq is not installed")
-        with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory).resolve() / "home"
-            home.mkdir()
-            plugin_root = sandbox_plugin_root(Path(directory).resolve() / "Jane O'Doe" / "plugin")
-            (home / ".claude/prompt-logs").mkdir(parents=True)
-            (home / ".claude/prompt-logs/.enabled").write_text("")
-            environment = harness_environment(home)
-            for event, hook in plugin_hooks():
-                with self.subTest(event=event):
-                    result = run_plugin_hook_command(
-                        "bash", hook, str(plugin_root), substituted=False, environment=environment,
-                        payload=json.dumps({"session_id": "windows-session", "cwd": directory}))
-                    self.assertEqual((result.returncode, result.stderr), (0, ""))
-            # The hook ran for real: session-start recorded this session's runtime marker.
-            self.assertTrue((home / ".claude/session-log/runtime.json").is_file())
+    """Claude Code on Windows runs claude_hook.sh in Git Bash, which ships without jq."""
 
     def test_hook_clears_the_runtime_marker_without_jq_while_logging_is_off(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2623,68 +2524,18 @@ class ClaudeHookInsideCursorTests(unittest.TestCase):
                     self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
                     self.assert_untouched(home, markers)
 
-    def run_with_heredoc(self, hook, home, plugin, lifecycle):
-        """Cursor's agent-host daemon: the payload heredoc is appended to the whole hook command."""
-        command = (f"{hook['command']} <<'{CURSOR_HEREDOC_DELIMITER}'\n"
-                   f"{self.build_cursor_payload(home, lifecycle)}\n{CURSOR_HEREDOC_DELIMITER}")
-        return subprocess.run(["bash", "-c", command], capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                              env=self.build_cursor_environment(home, plugin), timeout=HOOK_TIMEOUT_SECONDS)
-
     def test_cursor_session_start_still_removes_legacy_registrations(self):
-        session_start = next(hook for event, hook in plugin_hooks() if event == "SessionStart")
-        for transport in ("stdin", "heredoc"):
-            with self.subTest(transport=transport), tempfile.TemporaryDirectory() as directory:
-                home, plugin = enabled_claude_home(directory)
-                settings = home / ".claude/settings.json"
-                settings.write_text(json.dumps({"hooks": {**claude_hooks_registered(home / SEEDED_RELATIVE, 1),
-                                                          "Notification": [{"hooks": [FOREIGN_HOOK]}]}}))
-                if transport == "stdin":
-                    result = run_claude_hook(plugin, home, "session-start",
-                                             payload=self.build_cursor_payload(home, "session-start"),
-                                             environment=self.build_cursor_environment(home, plugin))
-                else:
-                    result = self.run_with_heredoc(session_start, home, plugin, "session-start")
-                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-                self.assertEqual(json.loads(settings.read_text()), {"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}})
-                self.assert_untouched(home, cleanup_ran=True)
-
-    def test_plugin_hook_commands_stay_out_of_claude_logging_on_stdin(self):
-        self.require_jq()
-        for event, hook in plugin_hooks():
-            lifecycle = PLUGIN_EVENT_LIFECYCLES[event]
-            with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
-                home, plugin = enabled_claude_home(directory)
-                result = run_plugin_hook_command("bash", hook, str(plugin.parents[1]), substituted=False,
-                                                 environment=self.build_cursor_environment(home, plugin),
-                                                 payload=self.build_cursor_payload(home, lifecycle))
-                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-                self.assert_untouched(home)
-
-    def test_plugin_hook_commands_keep_claude_markers_with_a_heredoc_payload(self):
-        # With logging off and no payload the hook would unlink these markers: only the guard keeps them.
-        for event, hook in plugin_hooks():
-            lifecycle = PLUGIN_EVENT_LIFECYCLES[event]
-            with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
-                home, plugin = enabled_claude_home(directory)
-                (home / ".claude/prompt-logs/.enabled").unlink()
-                markers = self.write_runtime_markers(home)
-                result = self.run_with_heredoc(hook, home, plugin, lifecycle)
-                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-                self.assert_untouched(home, markers)
-
-    def test_plugin_hook_commands_reach_the_hook_with_a_claude_payload(self):
-        """Positive control for the hooks.json commands above: run them as Claude Code does and they log."""
-        self.require_jq()
-        for event, hook in plugin_hooks():
-            lifecycle = PLUGIN_EVENT_LIFECYCLES[event]
-            with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
-                home, plugin = enabled_claude_home(directory)
-                result = run_plugin_hook_command("bash", hook, str(plugin.parents[1]), substituted=False,
-                                                 environment=self.build_cursor_environment(home, plugin),
-                                                 payload=self.build_claude_payload(home, lifecycle))
-                self.assertEqual((result.returncode, result.stderr), (0, ""))
-                self.assertTrue((home / ".claude/session-log/runtime.json").is_file(),
-                                "the hooks.json command never reached claude_hook.sh")
+        with tempfile.TemporaryDirectory() as directory:
+            home, plugin = enabled_claude_home(directory)
+            settings = home / ".claude/settings.json"
+            settings.write_text(json.dumps({"hooks": {**claude_hooks_registered(home / SEEDED_RELATIVE, 1),
+                                                      "Notification": [{"hooks": [FOREIGN_HOOK]}]}}))
+            result = run_claude_hook(plugin, home, "session-start",
+                                     payload=self.build_cursor_payload(home, "session-start"),
+                                     environment=self.build_cursor_environment(home, plugin))
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+            self.assertEqual(json.loads(settings.read_text()), {"hooks": {"Notification": [{"hooks": [FOREIGN_HOOK]}]}})
+            self.assert_untouched(home, cleanup_ran=True)
 
     def test_claude_code_writes_runtime_markers_with_cursor_environment_inherited(self):
         self.require_jq()

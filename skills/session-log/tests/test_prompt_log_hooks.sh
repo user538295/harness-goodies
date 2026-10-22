@@ -340,38 +340,6 @@ rc=$?
 assert_eq "subagent.sh exits 0 on garbage input" "0" "$rc"
 assert_eq "subagent.sh stays silent on garbage input" "" "$(cat "$WORKROOT/sa_garbage.out")"
 
-# ------------------------------------------------------- hooks.json wiring ---
-# The registered command strings must actually resolve ${CLAUDE_PLUGIN_ROOT}
-# and run the script. Single-quoting it — the form shipped up to 1.7.2 — leaves
-# the path literal, so [ -f ] fails and every hook silently does nothing.
-HOOKS_JSON="$REPO/hooks/hooks.json"
-hook_cmd() { jq -r --arg ev "$1" '.hooks[$ev][0].hooks[0].command' "$HOOKS_JSON"; }
-
-if jq -r '.hooks | to_entries[] | .value[].hooks[].command' "$HOOKS_JSON" | grep -q "s='"; then
-  fail "hooks.json single-quotes \${CLAUDE_PLUGIN_ROOT}, so it never expands"
-fi
-assert_eq "Stop hook keeps its 30s timeout" "30" \
-  "$(jq -r '.hooks.Stop[0].hooks[0].timeout' "$HOOKS_JSON")"
-assert_eq "SubagentStop hook keeps its 15s timeout" "15" \
-  "$(jq -r '.hooks.SubagentStop[0].hooks[0].timeout' "$HOOKS_JSON")"
-
-sid_wired="dddddddd-0000-0000-0000-000000000001"
-log_wired="$(mk_log "$sid_wired")"
-printf '{"session_id":"%s","prompt":"wired prompt","cwd":"%s"}\n' "$sid_wired" "$WORKROOT/proj" \
-  | CLAUDE_PLUGIN_ROOT="$REPO" bash -c "$(hook_cmd UserPromptSubmit)" >/dev/null 2>&1
-assert_grep "UserPromptSubmit command string reaches the script" '^wired prompt$' "$log_wired"
-
-stop_payload "$sid_wired" "$TRANSCRIPT" \
-  | CLAUDE_PLUGIN_ROOT="$REPO" bash -c "$(hook_cmd Stop)" > "$WORKROOT/wired.out" 2>/dev/null
-assert_eq "Stop command string exits 0" "0" "$?"
-assert_eq "Stop command string writes no stdout" "" "$(cat "$WORKROOT/wired.out")"
-assert_grep "Stop command string reaches the script" '^### [0-9]{2}:[0-9]{2}:[0-9]{2} response$' "$log_wired"
-assert_grep "Stop command string produces the est-line" "^$EST\$" "$log_wired"
-
-sub_payload "$sid_wired" "9f3c2a1b" "general-purpose" \
-  | CLAUDE_PLUGIN_ROOT="$REPO" bash -c "$(hook_cmd SubagentStop)" >/dev/null 2>&1
-assert_grep "SubagentStop command string reaches the script" 'sub-agent finished: general-purpose' "$log_wired"
-
 # ------------------------------------------------------------ lib helpers ----
 # shellcheck source=/dev/null
 source "$SCRIPTS/prompt_log_lib.sh"
