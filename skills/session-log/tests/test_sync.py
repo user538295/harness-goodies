@@ -10,15 +10,20 @@ from typing import List, Optional
 
 from sessionlog.archive_port import WriteOutcome
 from sessionlog.claude_reader import ClaudeReader
-from sessionlog.model import Harness
+from sessionlog.commands import CommandUseCases, UnreadableItem
+from sessionlog.log_usage_writer import LogUsageWriter
+from sessionlog.model import MAX_ID_LENGTH, Harness
 from sessionlog.pricing import PricingRules
-from sessionlog.reader_port import ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key
+from sessionlog.reader_port import UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import RENDER_VERSION, SyncUseCase
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "claude", "main_session.jsonl")
 PROJECT = "-work-proj"
+SESSION_COUNT = 200
+ARCHIVED_SESSIONS = 3
+FILES_PER_SESSION = 2  # log and usage report
 ON_AT = datetime(2026, 6, 1, tzinfo=timezone.utc)
 NOW = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
 LONG_AGO = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -243,7 +248,9 @@ class SyncProgressTest(SyncTestCase):
         (finished,) = self.state.saved["sessions"]
         unfinished = ({self._key("s1"), self._key("s2")} - {finished}).pop()
         units = {os.path.basename(key): unit["state"] for key, unit in self.state.saved["units"].items()}
-        self.assertEqual(units, {finished[len(self._key("")):] + ".jsonl": "read"})
+        unfinished_unit = unfinished[len(self._key("")):] + ".jsonl"
+        self.assertEqual(units, {finished[len(self._key("")):] + ".jsonl": "read", unfinished_unit: "inactive"})
+        self.assertNotIn("fingerprint", self.state.saved["units"][os.path.join(self.folder, unfinished_unit)])
         self.archive.crash_on_write = None
         self.reader.read_keys.clear()
         self._sync()
@@ -284,6 +291,31 @@ class SyncWriteFailureTest(SyncTestCase):
         self.assertEqual(self.reader.read_keys, [self._key("s1")])
         self.assertEqual(self.state.saved["sessions"][self._key("s1")]["state"], "written")
 
+    def test_rewrite_failing_on_two_syncs_in_a_row_is_retried_and_handed_back_each_time(self):
+        path = self._install_fixture("s1")
+        self._sync()
+        self._append(path, _transcript(NOW))
+        self.archive.failure = WriteOutcome("/logs/s1.md", False, WRITE_FAILURE)
+        for _ in range(2):
+            self.reader.read_keys.clear()
+            outcome = self._sync()
+            self.assertEqual(self.reader.read_keys, [self._key("s1")])
+            self.assertEqual(self.state.saved["sessions"][self._key("s1")]["state"], "skipped")
+            self.assertEqual(list(outcome.unsaved_reports), [self._key("s1")])
+
+    def test_skipped_session_is_rewritten_when_the_on_time_moved_past_its_last_activity(self):
+        path = self._install_fixture("s1")
+        self._sync()
+        self._append(path, _transcript(NOW))
+        self.archive.failure = WriteOutcome("/logs/s1.md", False, WRITE_FAILURE)
+        self._sync()
+        self.assertEqual(self.state.saved["sessions"][self._key("s1")]["state"], "skipped")
+        self.state.flag = OnFlag(NOW + ONE_DAY)  # off, then on again later
+        self.archive.failure = None
+        self._sync()
+        self.assertEqual(self.state.saved["sessions"][self._key("s1")]["state"], "written")
+        self.assertEqual(self.archive.writes[-1][0], "/logs/s1.md")
+
     def test_exception_while_rendering_fails_only_that_session(self):
         self._install_fixture("s1")
         self._install_fixture("s2")
@@ -313,6 +345,19 @@ class SyncUnreadableTest(SyncTestCase):
         self.reader.read_keys.clear()
         self._sync()
         self.assertEqual(self.reader.read_keys, [self._key("broken")])
+
+    def test_session_with_a_persistently_unreadable_unit_is_read_every_sync_but_rewritten_only_when_a_readable_unit_changed(self):
+        main = self._install_fixture("s1")
+        directory = os.path.join(self.folder, "s1", "subagents")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "agent-a1.jsonl"), "wb") as handle:
+            handle.write(b"\xff\xfe\x00bad")
+        self._sync()
+        self._sync()
+        self.assertEqual((self.reader.read_keys, len(self.archive.writes)), ([self._key("s1")] * 2, 1))
+        self._append(main, _transcript(NOW))
+        self._sync()
+        self.assertEqual((len(self.reader.read_keys), len(self.archive.writes)), (3, 2))
 
 
 class SyncBoundaryTest(SyncTestCase):
@@ -369,19 +414,258 @@ class SyncMultiUnitTest(SyncTestCase):
         self.assertEqual(self.state.saved["sessions"][self._key("shared")]["unitCount"], 2)
 
 
+def _agent_transcript(agent: str, start: datetime, end: datetime) -> str:
+    records = (
+        {"type": "user", "isSidechain": True, "agentId": agent, "cwd": "/work/proj", "timestamp": _stamp(start),
+         "message": {"role": "user", "content": "do the task"}},
+        {"type": "assistant", "timestamp": _stamp(end),
+         "message": {"id": "msg_" + agent, "model": "claude-x", "content": [{"type": "text", "text": "done"}],
+                     "usage": {"input_tokens": 1, "output_tokens": 1}}})
+    return "".join(json.dumps(record) + "\n" for record in records)
+
+
+class RealArchiveTestCase(SyncTestCase):
+    """Sync against the real file state store and the real writer under a temporary log root."""
+
+    def setUp(self):
+        super().setUp()
+        self.logs = os.path.join(self.root, "prompt-logs")
+        self.state = FileStateStore(self.logs)
+        self.state.write_on_flag(OnFlag(ON_AT))
+        self.archive = LogUsageWriter(self.logs, lambda moment: moment)
+
+    def _sync(self):
+        self.state = FileStateStore(self.logs)  # one store per run
+        return super()._sync()
+
+    def _install_agent(self, sid, agent, text, modified_at):
+        directory = os.path.join(self.folder, sid, "subagents")
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, "agent-%s.jsonl" % agent)
+        with open(path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.utime(path, (modified_at.timestamp(), modified_at.timestamp()))
+        return path
+
+    def _archived(self):
+        """Every archived file under the log root: relative path -> bytes."""
+        found = {}
+        for folder, _, names in os.walk(self.logs):
+            for name in names:
+                if name.startswith("session_"):
+                    path = os.path.join(folder, name)
+                    with open(path, "rb") as handle:
+                        found[os.path.relpath(path, self.logs)] = handle.read()
+        return found
+
+    def _text_of(self, archived, sid, suffix):
+        names = [name for name in archived if name.endswith("_%s%s" % (sid, suffix))]
+        self.assertEqual(len(names), 1, "archived files of %s: %s" % (sid, sorted(archived)))
+        return archived[names[0]].decode("utf-8")
+
+    def _files_outside_the_log_root(self):
+        found = set()
+        for folder, _, names in os.walk(self.root):
+            if os.path.commonpath((folder, self.logs)) != self.logs:
+                found.update(os.path.join(folder, name) for name in names)
+        return found
+
+
+class SyncOnTimeSessionsTest(RealArchiveTestCase):
+    def test_sessions_before_on_skipped_started_before_but_active_after_archived_whole_second_run_identical(self):
+        after = ON_AT + ONE_DAY
+        self._install("before", _transcript(LONG_AGO), LONG_AGO)
+        self._install("after", _transcript(after), after)
+        self._install("spanning", _transcript(LONG_AGO, after), after)
+        self._install("withagent", _transcript(after), after)
+        self._install_agent("withagent", "old1", _agent_transcript("old1", LONG_AGO, LONG_AGO + timedelta(seconds=5)), LONG_AGO)
+        self.assertFalse(os.path.exists(os.path.join(self.logs, ".sync.json")))
+        self._sync()
+        archived = self._archived()
+        self.assertEqual(len(archived), ARCHIVED_SESSIONS * FILES_PER_SESSION)
+        self.assertNotIn("before", " ".join(archived))
+        self.assertIn("prompt 0", self._text_of(archived, "spanning", ".md"))
+        self.assertIn("prompt 1", self._text_of(archived, "spanning", ".md"))
+        self.assertIn("agent-old1", self._text_of(archived, "withagent", ".usage.txt"))
+        self.assertEqual(self.reader.read_keys, [self._key("after"), self._key("spanning"), self._key("withagent")])
+        main_path = os.path.join(self.folder, "withagent.jsonl")
+        agent_path = os.path.join(self.folder, "withagent", "subagents", "agent-old1.jsonl")
+        self.assertEqual(self.reader.read_unit_keys[self.reader.read_keys.index(self._key("withagent"))], tuple(sorted((main_path, agent_path))))
+        self._sync()
+        self.assertEqual(self._archived(), archived)
+        self.assertEqual(len(self.reader.read_keys), 3)
+        os.unlink(os.path.join(self.logs, ".sync.json"))  # nothing known any more: every active session is rendered again
+        self._sync()
+        self.assertEqual(len(self.reader.read_keys), 6)
+        self.assertEqual(self._archived(), archived)
+
+    def test_session_whose_only_new_activity_is_in_a_subagent_file_is_archived_whole(self):
+        after = ON_AT + ONE_DAY
+        self._install("quietmain", _transcript(LONG_AGO), LONG_AGO)
+        self._install_agent("quietmain", "late1", _agent_transcript("late1", after, after + timedelta(seconds=5)), after)
+        self._sync()
+        archived = self._archived()
+        self.assertIn("prompt 0", self._text_of(archived, "quietmain", ".md"))
+        self.assertIn("agent-late1", self._text_of(archived, "quietmain", ".usage.txt"))
+        self.assertEqual(self.state.load_sync()["sessions"][self._key("quietmain")]["unitCount"], 2)
+
+    def test_archived_session_is_read_again_when_another_subagent_file_appears(self):
+        after = ON_AT + ONE_DAY
+        self._install("withagent", _transcript(after), after)
+        self._install_agent("withagent", "a1", _agent_transcript("a1", after, after + timedelta(seconds=5)), after)
+        self._sync()
+        self.assertNotIn("agent-a2", self._text_of(self._archived(), "withagent", ".usage.txt"))
+        self._install_agent("withagent", "a2", _agent_transcript("a2", after, after + timedelta(seconds=7)), after)
+        self.reader.read_keys.clear()
+        self._sync()
+        self.assertEqual(self.reader.read_keys, [self._key("withagent")])
+        report = self._text_of(self._archived(), "withagent", ".usage.txt")
+        self.assertIn("agent-a2", report)
+        self.assertIn("TOTAL (1 requests, 2 sub-agents)", report)
+        self.assertEqual(self.state.load_sync()["sessions"][self._key("withagent")]["unitCount"], 3)
+
+    def test_subagent_file_touched_after_on_with_only_older_records_is_read_and_nothing_archived(self):
+        self._install("oldrecords", _transcript(LONG_AGO), LONG_AGO)
+        agent = self._install_agent("oldrecords", "o1", _agent_transcript("o1", LONG_AGO, LONG_AGO + timedelta(seconds=5)), NOW)
+        self._sync()
+        self.assertEqual((self.reader.read_keys, self._archived()), ([self._key("oldrecords")], {}))
+        self.assertEqual(self.state.load_sync()["units"][agent]["state"], "inactive")
+
+
+class SyncOneMoreTurnTest(RealArchiveTestCase):
+    def test_claude_file_with_one_more_turn_read_again_and_log_updated(self):
+        self._install("grows", _transcript(NOW), NOW)
+        self._sync()
+        before = self._archived()
+        self.assertNotIn("prompt 1", self._text_of(before, "grows", ".md"))
+        self.assertIn("TOTAL (1 requests, 0 sub-agents)", self._text_of(before, "grows", ".usage.txt"))
+        self._install("grows", _transcript(NOW, NOW + timedelta(minutes=1)), NOW)
+        self.reader.read_keys.clear()
+        self._sync()
+        after = self._archived()
+        self.assertEqual(self.reader.read_keys, [self._key("grows")])
+        self.assertEqual(sorted(after), sorted(before))
+        self.assertIn("prompt 1", self._text_of(after, "grows", ".md"))
+        self.assertIn("TOTAL (2 requests, 0 sub-agents)", self._text_of(after, "grows", ".usage.txt"))
+
+
+class SyncUnreadableSubAgentTest(RealArchiveTestCase):
+    def test_unreadable_subagent_file_is_retried_every_sync_and_its_row_appears_once_it_reads(self):
+        self._install("withagent", _transcript(NOW), NOW)
+        agent = self._install_agent("withagent", "a1", "", NOW)
+        with open(agent, "wb") as handle:
+            handle.write(b"\xff\xfe\x00bad")
+        self._sync()
+        self.assertEqual(self.state.load_sync()["units"][agent]["state"], "unreadable")
+        self.assertEqual(self.state.load_sync()["sessions"][self._key("withagent")]["unitCount"], 1)
+        self.assertNotIn("agent-a1", self._text_of(self._archived(), "withagent", ".usage.txt"))
+        self._sync()
+        self.assertEqual(self.reader.read_keys, [self._key("withagent")] * 2)
+        self._install_agent("withagent", "a1", _agent_transcript("a1", NOW, NOW + timedelta(seconds=5)), NOW)
+        self._sync()
+        self.assertEqual(self.reader.read_keys, [self._key("withagent")] * 3)
+        self.assertEqual(self.state.load_sync()["units"][agent]["state"], "read")
+        self.assertEqual(self.state.load_sync()["sessions"][self._key("withagent")]["unitCount"], 2)
+        self.assertIn("agent-a1", self._text_of(self._archived(), "withagent", ".usage.txt"))
+        self._sync()
+        self.assertEqual(len(self.reader.read_keys), 3)
+
+
+class SyncLearnedOnceTest(SyncTestCase):
+    def test_200_unchanged_sessions_not_read_and_known_units_not_learned_twice(self):
+        paths = [self._install("s%03d" % number, _transcript(NOW), NOW) for number in range(SESSION_COUNT)]
+        self._sync()
+        self.assertEqual((self.reader.session_of_calls, len(self.reader.read_keys), len(self.archive.writes)),
+                         (SESSION_COUNT, SESSION_COUNT, SESSION_COUNT))
+        self._append(paths[7], _transcript(NOW + timedelta(minutes=1)))
+        self._install("new", _transcript(NOW), NOW)
+        self.reader.read_keys.clear()
+        self._sync()
+        self.assertEqual((self.reader.session_of_calls, self.reader.read_keys, len(self.archive.writes)),
+                         (SESSION_COUNT + 1, [self._key("new"), self._key("s007")], SESSION_COUNT + 2))
+        self.assertEqual(self.archive.writes[-1][0], "/logs/s007.md")
+
+    def test_new_unit_session_learned_once_and_kept_when_the_run_is_killed_before_the_first_session_finishes(self):
+        paths = [self._install("s%d" % number, _transcript(NOW), NOW) for number in range(3)]
+        self.archive.crash_on_write = 1
+        with self.assertRaises(KeyboardInterrupt):
+            self._sync()
+        self.assertEqual(self.reader.session_of_calls, 3)
+        for number, path in enumerate(paths):
+            self.assertEqual(self.state.saved["units"][path], {"sessionKey": self._key("s%d" % number), "state": "inactive"})
+        self.archive.crash_on_write = None
+        self._sync()
+        self.assertEqual(self.reader.session_of_calls, 3)
+        self.assertEqual(sorted(self.state.saved["sessions"]), [self._key("s%d" % number) for number in range(3)])
+
+    def test_learned_unit_without_fingerprint_survives_the_file_state_store_between_runs(self):
+        logs = os.path.join(self.root, "prompt-logs")
+        self._install("s0", _transcript(NOW), NOW)
+        self._install("s1", _transcript(NOW), NOW)
+        self.state = FileStateStore(logs)
+        self.state.write_on_flag(OnFlag(ON_AT))
+        self.archive.crash_on_write = 1
+        with self.assertRaises(KeyboardInterrupt):
+            self._sync()
+        self.assertEqual(self.reader.session_of_calls, 2)
+        self.state = FileStateStore(logs)
+        self.archive.crash_on_write = None
+        self._sync()
+        self.assertEqual(self.reader.session_of_calls, 2)
+        self.assertEqual(sorted(self.state.load_sync()["sessions"]), [self._key("s0"), self._key("s1")])
+
+
+class SyncUnsafeIdTest(RealArchiveTestCase):
+    def test_unsafe_session_id_not_archived_status_lists_it_subagent_row_and_tokens_stay(self):
+        unsafe = self._install("a..b", _transcript(NOW), NOW)
+        device = self._install("CON", _transcript(NOW), NOW)
+        orphan = self._install_agent("c..d", "x1", _agent_transcript("x1", NOW, NOW + timedelta(seconds=5)), NOW)
+        self._install("fine", _transcript(NOW), NOW)
+        self._install_agent("fine", "x..y", _agent_transcript("x..y", NOW, NOW + timedelta(seconds=5)), NOW)
+        outside = self._files_outside_the_log_root()
+        state = FileStateStore(self.logs)
+        sync = SyncUseCase(self.reader, self.archive, state, PricingRules(_NoPrices()), lambda: NOW)
+        status = CommandUseCases(sync, self.archive, state, _NoPrices(), lambda: NOW, self.logs).status()
+        self.assertEqual(status.unreadable, (UnreadableItem(device, UNSAFE_ID_REASON), UnreadableItem(unsafe, UNSAFE_ID_REASON),
+                                             UnreadableItem(orphan, UNSAFE_ID_REASON)))
+        self.assertEqual(status.archived_session_count, 1)
+        units = state.load_sync()["units"]
+        self.assertEqual(units[unsafe], {"sessionKey": self._key("a..b"), "state": "unreadable", "reason": UNSAFE_ID_REASON})
+        self.assertEqual(units[orphan], {"sessionKey": self._key("c..d"), "state": "unreadable", "reason": UNSAFE_ID_REASON})
+        self.assertEqual(self.reader.read_keys, [self._key("fine")])
+        self.assertEqual(self._files_outside_the_log_root(), outside)
+        archived = self._archived()
+        self.assertEqual(sorted(name.rsplit("_", 1)[1] for name in archived), ["fine.md", "fine.usage.txt"])
+        report = self._text_of(archived, "fine", ".usage.txt")
+        self.assertIn("agent-x..y", report)
+        self.assertIn("TOTAL (1 requests, 1 sub-agents)", report)
+        self.assertIn("est. used token: input: 2, output: 2, cache_create: 0, cache_read: 0, total_tokens: 4", report)
+        self.reader.read_keys.clear()
+        self._sync()
+        self.assertEqual(self.reader.read_keys, [])
+        self.assertEqual(self.state.load_sync()["units"][unsafe]["reason"], UNSAFE_ID_REASON)
+        self.assertEqual(self.reader.session_of_calls, 5)  # every unit learned once, the unsafe ones included
+
+
 class StubReader:
     """A reader port that returns canned answers for two units of one session."""
 
     def __init__(self, units, session_keys, result):
         self._units, self._session_keys, self._result = units, session_keys, result
+        self.session_of_calls = 0
+        self.read_keys = []
+        self.read_units = []
 
     def scan(self):
         return ScanResult(units=self._units)
 
     def session_of(self, unit):
+        self.session_of_calls += 1
         return self._session_keys[unit.key]
 
     def read(self, session_key, units):
+        self.read_keys.append(session_key)
+        self.read_units.append(tuple(unit.key for unit in units))
         return self._result
 
 
@@ -395,6 +679,38 @@ class SyncReaderAnswersTest(SyncTestCase):
     def test_unit_whose_session_cannot_be_learned_is_recorded_unreadable(self):
         self._run(StubReader((self._unit("a"),), {"a": None}, ReadResult()))
         self.assertEqual(self.state.saved["units"]["a"], {"state": "unreadable", "reason": "session cannot be determined"})
+
+    def test_unit_whose_session_was_not_learned_is_asked_again_and_the_entry_replaced_once_learned(self):
+        keys = {"a": None}
+        reader = StubReader((self._unit("a"),), keys, ReadResult())
+        self._run(reader)
+        keys["a"] = self._key("fx")
+        self._run(reader)
+        self._run(reader)
+        self.assertEqual(reader.read_keys, [self._key("fx")])
+        self.assertEqual(reader.session_of_calls, 2)
+        self.assertEqual(self.state.saved["units"]["a"], {"sessionKey": self._key("fx"), "state": "inactive", "fingerprint": "fp-a"})
+
+    def test_unit_learned_late_with_an_old_modification_time_still_has_its_session_read_again_with_it(self):
+        keys = {"a": self._key("fx"), "b": None}
+        old = SourceUnit(key="b", fingerprint="fp-b", modified_at=LONG_AGO)
+        reader = StubReader((self._unit("a"), old), keys, ReadResult(session=self._session_of_fixture()))
+        self._run(reader)
+        keys["b"] = self._key("fx")
+        self._run(reader)
+        self._run(reader)
+        self.assertEqual(reader.read_units, [("a",), ("a", "b")])
+        self.assertEqual(self.state.saved["sessions"][self._key("fx")]["unitCount"], 2)
+
+    def test_session_keys_with_an_unsafe_root_id_are_unreadable_and_never_read(self):
+        unsafe = {"a": "claude:CON", "b": "claude:" + "a" * (MAX_ID_LENGTH + 1), "c": "claude:", "d": "claude:a/b", "e": "claude:..",
+                  "f": "claude:nul"}
+        reader = StubReader(tuple(self._unit(name) for name in sorted(unsafe)) + (self._unit("ok"),), {**unsafe, "ok": "claude:ok"}, ReadResult())
+        self._run(reader)
+        for name, session_key in unsafe.items():
+            self.assertEqual(self.state.saved["units"][name], {"sessionKey": session_key, "state": "unreadable", "reason": UNSAFE_ID_REASON})
+        self.assertEqual(reader.read_keys, ["claude:ok"])
+        self.assertEqual((self.archive.writes, self.state.saved["sessions"]), ([], {}))
 
     def test_unreadable_unit_of_a_built_session_is_retried_while_its_sibling_is_read(self):
         session = self._session_of_fixture()

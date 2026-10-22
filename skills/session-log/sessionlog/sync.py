@@ -1,19 +1,21 @@
 """Sync use case (C1): archives the sessions of one harness whose sources changed since logging was turned on.
 
-Cheap path first: `scan` gives every unit a fingerprint without opening it. A session none of whose units changed (and that is
-neither skipped nor holding an unreadable unit) is not read, and a changed unit last modified before the on-time cannot hold
-activity since it. A candidate session is read whole from all its units, and when it has activity since the on-time its log and
-report are rewritten whole through `Archive`. Progress is saved after each session (C6), so a killed run loses at most the
-session in progress.
+Cheap path first: `scan` gives every unit a fingerprint without opening it, and the reader names a unit's session once; the
+name is saved before any session is read. A session none of whose units changed (and that is neither skipped nor holding an
+unreadable unit) is not read, and a changed unit last modified before the on-time cannot hold activity since it. A session
+whose id is not a safe id is never read: its units are unreadable with that reason (a reader checks it too, so a session built
+without sync is safe as well). A candidate session is read whole from all its units, and when it has activity since the
+on-time its log and report are rewritten whole through `Archive`. Progress is saved after each session (C6), so a killed
+run loses at most the session in progress.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from .archive_port import Archive
-from .model import Session
+from .model import Session, is_safe_id
 from .pricing import PricingRules
-from .reader_port import SessionReader, SourceUnit
+from .reader_port import UNSAFE_ID_REASON, SessionReader, SourceUnit, root_id_of
 from .state_port import StateStore
 
 RENDER_VERSION = 1
@@ -81,15 +83,22 @@ class SyncUseCase:
         return SyncOutcome(unsaved)
 
     def _learn_and_group(self, state: dict, scan_units: _Units) -> Dict[str, _Units]:
-        """Units per session key, asking the reader only for units without a recorded key; a unit whose session cannot
-        be learned is recorded unreadable in `state` and left out."""
+        """Units per session key, asking the reader only for units without a recorded key. A newly learned key is recorded
+        in `state` at once, so a run killed before its first session finishes does not learn it again. A unit whose session
+        cannot be learned, or whose session id is not a safe id (it would become a path), is recorded unreadable and left out."""
         grouped: Dict[str, List[SourceUnit]] = {}
         for unit in scan_units:
-            known = state["units"].get(unit.key)
-            session_key = (known or {}).get("sessionKey") or self._reader.session_of(unit)
+            known_key = (state["units"].get(unit.key) or {}).get("sessionKey")
+            session_key = known_key or self._reader.session_of(unit)
             if session_key is None:
                 state["units"][unit.key] = {"state": UNIT_UNREADABLE, "reason": UNKNOWN_SESSION_REASON}
+            elif not is_safe_id(root_id_of(session_key)):
+                self._set_unit(state, unit, session_key, UNIT_UNREADABLE, UNSAFE_ID_REASON)
             else:
+                if known_key is None:
+                    # No fingerprint: not examined yet. A unit that could not be learned before keeps its unreadable state, so
+                    # it still triggers the read of its session; any other new unit is read like a new unit.
+                    state["units"].setdefault(unit.key, {"state": UNIT_INACTIVE})["sessionKey"] = session_key
                 grouped.setdefault(session_key, []).append(unit)
         return {session_key: tuple(units) for session_key, units in grouped.items()}
 
@@ -114,7 +123,8 @@ class SyncUseCase:
 
     @staticmethod
     def _set_unit(state: dict, unit: SourceUnit, session_key: str, unit_state: str, reason: Optional[str] = None) -> None:
-        """A fingerprint is kept only for units that need no retry; an unreadable unit is read again on the next sync."""
+        """A fingerprint is kept only for units that need no retry; an unreadable unit is read again on the next sync. A unit
+        entry without a fingerprint (just learned, or unreadable) counts as changed, so it is read like a new unit."""
         entry = {"sessionKey": session_key, "state": unit_state}
         if unit_state != UNIT_UNREADABLE:
             entry["fingerprint"] = unit.fingerprint
@@ -137,14 +147,17 @@ class SyncUseCase:
                 self._set_unit(state, unit, session_key, unit_state, reason)
 
     def _archive_session(self, state: dict, session_key: str, units: _Units, on_at: datetime) -> Optional[str]:
-        """Reads the session whole and archives it when it has activity since the on-time; returns the report text
-        that could not be saved, if any."""
+        """Reads the session whole and archives it when it has activity since the on-time, or when its last rewrite was
+        skipped (it is archived already, so a later on-time does not excuse the missing rewrite); returns the report
+        text that could not be saved, if any."""
         result = self._reader.read(session_key, units)
         failed = {source.path: source.reason for source in result.unreadable}
         session = result.session
+        entry = state["sessions"].get(session_key)
+        skipped = entry is not None and entry["state"] == SESSION_SKIPPED
         if session is None and failed:
             self._mark(state, session_key, units, UNIT_UNREADABLE, result.unreadable[0].reason, failed)
-        elif session is None or session.last_activity_at < on_at:
+        elif session is None or (session.last_activity_at < on_at and not skipped):
             self._mark(state, session_key, units, UNIT_INACTIVE, failed=failed)
         else:
             return self._write_session(state, session_key, units, session, failed)
@@ -161,9 +174,20 @@ class SyncUseCase:
             return _Publication(log_path, report_text, _reason(error))
         return _Publication(log_path, report_text, None if outcome.written else outcome.reason)
 
+    def _already_written(self, state: dict, existing: Optional[dict], units: _Units, failed: Dict[str, str]) -> bool:
+        """Whether the files already hold what a rewrite would publish: written by this render version from as many units,
+        and every unit that read now still has the fingerprint of that write. A session read only to retry a unit that
+        stays unreadable is therefore not written again."""
+        readable = [unit for unit in units if unit.key not in failed]
+        return (existing is not None and existing["state"] == SESSION_WRITTEN and existing["renderVersion"] == RENDER_VERSION
+                and existing["unitCount"] == len(readable) and not any(self._changed(state, unit) for unit in readable))
+
     def _write_session(self, state: dict, session_key: str, units: _Units, session: Session,
                        failed: Dict[str, str]) -> Optional[str]:
         existing = state["sessions"].get(session_key)
+        if self._already_written(state, existing, units, failed):
+            self._mark(state, session_key, units, UNIT_READ, failed=failed)
+            return None
         log_path, report_text, failure = self._publish(session, existing["logPath"] if existing is not None else None)
         if failure is None:
             built_from = sum(unit.key not in failed for unit in units)

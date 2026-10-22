@@ -355,7 +355,7 @@ flowchart LR
         - #integration_test — `test_claude_report_equals_golden_file_byte_for_byte_and_total_equals_sum_of_rows` — S63, expected values recomputed with the new `prices.json`
 
 ### Phase 4 · Pick up new turns and survive concurrent syncs
-- [ ] **BE-14** — Sync correctness: a new unit's session learned once and kept, activity decided by record times, sessions read whole from all units incl. sub-agent files older than the on-time, sub-agent activity counts, unreadable units and skipped sessions retried every sync, session ids failing `SafeId` not archived (sub-agent keeps its row) #backend-role
+- [x] **BE-14** — Sync correctness: a new unit's session learned once and kept, activity decided by record times, sessions read whole from all units incl. sub-agent files older than the on-time, sub-agent activity counts, unreadable units and skipped sessions retried every sync, session ids failing `SafeId` not archived (sub-agent keeps its row) #backend-role
     - Use Cases · 4.0h
     - needs BE-7, BE-12 · completes S13, S14, S46, S47
     - Tests

@@ -18,6 +18,11 @@ def build_session_key(harness: Harness, root_id: str) -> str:
     return "%s:%s" % (harness.value, root_id)
 
 
+def root_id_of(session_key: str) -> str:
+    """The root id part of a session key built by `build_session_key`; empty for a text without `:`."""
+    return session_key.partition(":")[2]
+
+
 @dataclass(frozen=True)
 class SourceUnit:
     """One source a session is built from. `key` identifies it between scans. `fingerprint` is stable while the source
@@ -33,7 +38,8 @@ class SourceUnit:
 @dataclass(frozen=True)
 class UnreadableSource:
     """A source the reader could not use; `reason` is a short text recorded for status. When the failure concerns a unit
-    handed to `read`, `path` equals that unit's `key`: sync retries exactly the units it names."""
+    handed to `read`, `path` equals that unit's `key`: sync marks the units it names unreadable and retries them on every
+    sync (every unit of the session when none could be built)."""
 
     harness: Harness
     path: str
@@ -69,9 +75,12 @@ class SessionReader(Protocol):
         ...
 
     def session_of(self, unit: SourceUnit) -> Optional[str]:
-        """The session key `<harness>:<root id>` the unit belongs to; None when it cannot be learned now."""
+        """The session key `<harness>:<root id>` the unit belongs to; None when it cannot be learned now. The key is
+        returned even when its root id is not a safe id: sync lists such a unit unreadable ("unsafe id") and never reads it."""
         ...
 
     def read(self, session_key: str, units: Tuple[SourceUnit, ...]) -> ReadResult:
-        """Builds the whole session from all its units. Never raises for file-system or format errors."""
+        """Builds the whole session from all its units, which sync has already grouped by session: `read` must not learn
+        a unit's session from its content again (sync counts `session_of` calls: a unit is learned once). Never raises
+        for file-system or format errors."""
         ...
