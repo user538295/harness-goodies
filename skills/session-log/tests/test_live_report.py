@@ -16,7 +16,7 @@ from sessionlog.state_port import OnFlag
 from sessionlog.sync import SyncUseCase
 from sessionlog.usage_target import UsageTargetResolver
 from tests.test_session_log import LONG_AGO, ON_FLAG, PRICED_MODEL, REPORT_SUFFIX, SYNC_LOCK, SYNC_STATE, SandboxCase
-from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, NoLeftovers, _NoPrices
+from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, NoLeftovers, NoProbe, _NoPrices
 from tests.test_usage_target import BEFORE_ON, EMPTY_PROJECT, OTHER_PROJECT, PROJECT, UsageTargetTestCase, _report
 
 AFTER_ALL_ACTIVITY = "2100-01-01T00:00:00+00:00"  # an on-time after the sandbox transcripts: they are never archived
@@ -148,7 +148,7 @@ class LatestInStoreTest(UsageTargetTestCase):
         pricing = PricingRules(_NoPrices())
         commands = CommandUseCases(SyncUseCase(reader, self.archive, self.state, pricing, lambda: NOW),
                                    UsageTargetResolver(reader, ntpath), self.archive, self.state, pricing, lambda: NOW,
-                                   self.log_root, NoLeftovers())
+                                   self.log_root, NoLeftovers(), NoProbe())
         self.assertEqual(commands.usage_latest("c:\\work\\proj\\src").report_text, _report("win"))
 
     def test_an_archived_session_without_a_project_folder_is_never_a_live_report_of_the_store_fallback(self):
@@ -172,7 +172,7 @@ class LatestInStoreTest(UsageTargetTestCase):
         pricing = PricingRules(_NoPrices())
         commands = CommandUseCases(SyncUseCase(reader, self.archive, self.state, pricing, lambda: NOW),
                                    UsageTargetResolver(reader), self.archive, self.state, pricing, lambda: NOW, self.log_root,
-                                   NoLeftovers())
+                                   NoLeftovers(), NoProbe())
         self.assertEqual(commands.usage_latest(PROJECT).report_text, _report("valid"))
 
     def _two_projects_nested_in_work(self):

@@ -12,12 +12,13 @@ from sessionlog.claude_reader import ClaudeReader
 from sessionlog.command_error import CommandError
 from sessionlog.commands import CommandUseCases, OffResult, OnResult, UnreadableItem
 from sessionlog.pricing import PricingRules
+from sessionlog.probe_port import ProbeResult
 from sessionlog.reader_port import ScanResult
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import SyncOutcome, SyncUseCase
 from sessionlog.usage_target import UsageTargetResolver
-from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, FakeArchive, NoLeftovers, _NoPrices, _transcript
+from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, FakeArchive, NoLeftovers, NoProbe, _NoPrices, _transcript
 
 CWD = "/work/proj"
 FAILED_FILE = "/logs/x.md"
@@ -39,6 +40,16 @@ class ReportKeepingArchive(FakeArchive):
 
     def read_report(self, log_path):
         return self.reports.get(log_path)
+
+
+class CountingProbe:
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    def check(self):
+        self.calls += 1
+        return self.result
 
 
 class SpySync:
@@ -75,7 +86,7 @@ class CommandTestCase(unittest.TestCase):
                                         lambda: self.clock))
         self.commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state,
                                         PricingRules(self.prices),
-                                        lambda: self.clock, self.log_root, NoLeftovers())
+                                        lambda: self.clock, self.log_root, NoLeftovers(), NoProbe())
 
     def _install(self, sid, *prompt_times):
         path = os.path.join(self.folder, sid + ".jsonl")
@@ -141,6 +152,20 @@ class OnOffTest(CommandTestCase):
         self.assertEqual(self.archive.writes, [])
         self.assertIsNone(self.state.read_on_flag())
 
+    def test_on_and_status_carry_the_probe_result_and_off_and_usage_never_probe(self):
+        failed = ProbeResult(ok=False, fix="install it")
+        probe = CountingProbe(failed)
+        commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state, PricingRules(self.prices),
+                                   lambda: self.clock, self.log_root, NoLeftovers(), probe)
+        self.assertEqual(commands.on().probe, failed)
+        self.assertEqual(commands.status().probe, failed)
+        self.assertEqual(probe.calls, 2)
+        self._install("a", ON_AT + ONE_DAY)
+        commands.usage_latest(CWD)
+        commands.off()
+        self.assertEqual(probe.calls, 2)
+        self.assertIsNone(self.commands.on().probe)  # a probe that is not due leaves the field unset
+
     def test_on_syncs_after_it_wrote_the_flag(self):
         self._install("running", NOW + ONE_DAY)
         self.commands.on()
@@ -157,7 +182,7 @@ class OnOffTest(CommandTestCase):
             def sync(self):
                 return SyncOutcome()
 
-        commands = CommandUseCases(NoSync(), None, None, RacedState(), None, lambda: NOW, self.log_root, NoLeftovers())
+        commands = CommandUseCases(NoSync(), None, None, RacedState(), None, lambda: NOW, self.log_root, NoLeftovers(), NoProbe())
         self.assertEqual(commands.on(), OnResult(False, earlier, self.log_root))
 
     def test_off_syncs_before_it_turns_off_so_a_late_session_is_archived(self):
@@ -174,7 +199,7 @@ class OnOffTest(CommandTestCase):
                 raise OSError("read-only")
 
         commands = CommandUseCases(Failing(), None, self.archive, self.state, PricingRules(self.prices), lambda: NOW,
-                                   self.log_root, NoLeftovers())
+                                   self.log_root, NoLeftovers(), NoProbe())
         with self.assertRaises(OSError):
             commands.off()
         self.assertIsNone(self.state.read_on_flag())
@@ -336,7 +361,7 @@ class LatestRankingTest(unittest.TestCase):
 
         sessions = {"claude:" + name: self._entry(name, *values) for name, values in entries.items()}
         commands = CommandUseCases(None, UsageTargetResolver(EmptyStore(), path_module), Archive(), MemoryFlagState(sessions),
-                                   None, lambda: NOW, "/logs", NoLeftovers())
+                                   None, lambda: NOW, "/logs", NoLeftovers(), NoProbe())
         return commands.usage_latest(cwd).report_text
 
     def test_prompt_beats_later_activity_without_prompt_and_orphans_never_win(self):

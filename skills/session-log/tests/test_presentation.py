@@ -2,8 +2,9 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from sessionlog.commands import OffResult, OnResult, ProbeResult, StatusResult, UnreadableItem, UsageResult
+from sessionlog.commands import OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
 from sessionlog.leftover_port import Leftover
+from sessionlog.probe_port import ProbeResult
 from sessionlog.presentation import LEFTOVERS_HEADING as LEFTOVERS, PROBE_FAILED, render_off, render_on, render_status, render_usage
 
 ON_AT = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)

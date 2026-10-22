@@ -14,18 +14,11 @@ from .command_error import CommandError
 from .leftover_port import Leftover, LeftoverScanner
 from .model import Session
 from .pricing import PricingRules
+from .probe_port import ProbeResult, PythonProbe
 from .reader_port import root_id_of
 from .state_port import OnFlag, StateStore, parse_timestamp
 from .sync import SESSION_SKIPPED, UNIT_UNREADABLE, SyncOutcome, SyncUseCase
 from .usage_target import ResolvedSession, UsageTargetResolver
-
-
-@dataclass(frozen=True)
-class ProbeResult:
-    """Windows only: whether `python3` runs Python 3.14 or newer; `fix` is set when it does not."""
-
-    ok: bool
-    fix: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -77,10 +70,12 @@ class CommandUseCases:
 
     `sync` and `state` must share one `StateStore` instance: its `sync_reset` tells `status` that the sync rebuilt a corrupt file.
     `targets` must read the same store as `sync`. `pricing` must be the one `sync` uses, so a live report equals the saved one.
-    `leftover_scan` finds the old-release leftovers of the invoked harness; `on` and `status` report them, nothing deletes them."""
+    `leftover_scan` finds the old-release leftovers of the invoked harness; `on` and `status` report them, nothing deletes them.
+    `python_probe` checks `python3` on Windows (None elsewhere); `on` and `status` report its result."""
 
     def __init__(self, sync: SyncUseCase, targets: UsageTargetResolver, archive: Archive, state: StateStore,
-                 pricing: PricingRules, now: Callable[[], datetime], log_root: str, leftover_scan: LeftoverScanner) -> None:
+                 pricing: PricingRules, now: Callable[[], datetime], log_root: str, leftover_scan: LeftoverScanner,
+                 python_probe: PythonProbe) -> None:
         self._sync = sync
         self._targets = targets
         self._archive = archive
@@ -89,6 +84,7 @@ class CommandUseCases:
         self._now = now
         self._log_root = log_root
         self._leftover_scan = leftover_scan
+        self._python_probe = python_probe
 
     def on(self) -> OnResult:
         flag = self._state.read_on_flag()
@@ -98,7 +94,7 @@ class CommandUseCases:
             self._state.write_on_flag(fresh)
             flag = self._state.read_on_flag() or fresh  # a concurrent `on` keeps the time it wrote
         self._sync.sync()
-        return OnResult(already_on, flag.on_at, self._log_root, self._leftover_scan.scan())
+        return OnResult(already_on, flag.on_at, self._log_root, self._leftover_scan.scan(), self._python_probe.check())
 
     def off(self) -> OffResult:
         if self._state.read_on_flag() is None:
@@ -124,7 +120,8 @@ class CommandUseCases:
             unreadable=self._unreadable(state),
             price_file_problem=self._pricing.problem(),
             sync_state_reset=self._state.sync_reset,
-            leftovers=self._leftover_scan.scan())
+            leftovers=self._leftover_scan.scan(),
+            probe=self._python_probe.check())
 
     def usage_latest(self, cwd: str) -> UsageResult:
         """`usage` and `usage --latest`: the report of the root session of the project of `cwd` with the newest prompt; the

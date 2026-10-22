@@ -17,7 +17,7 @@ from sessionlog.state_port import OnFlag
 from sessionlog.sync import RENDER_VERSION, SyncUseCase
 from sessionlog.usage_target import UsageTargetResolver
 from tests.test_log_usage_writer import SHIFT_AT, Shifting
-from tests.test_sync import (FILES_PER_SESSION, NOW, ON_AT, ONE_DAY, PROJECT, CountingReader, NoLeftovers,
+from tests.test_sync import (FILES_PER_SESSION, NOW, ON_AT, ONE_DAY, PROJECT, CountingReader, NoLeftovers, NoProbe,
                              RealArchiveTestCase, _agent_transcript, _NoPrices, _transcript)
 
 CWD = "/work/proj"
@@ -156,7 +156,7 @@ class SafetyTestCase(RealArchiveTestCase):
         archive = LogUsageWriter(self.logs, lambda moment: moment)
         sync = SyncUseCase(self.reader, archive, state, PricingRules(_NoPrices()), lambda: NOW)
         return CommandUseCases(sync, UsageTargetResolver(self.reader), archive, state, PricingRules(_NoPrices()), lambda: NOW,
-                               self.logs, NoLeftovers())
+                               self.logs, NoLeftovers(), NoProbe())
 
     def _saved(self):
         return FileStateStore(self.logs).load_sync()

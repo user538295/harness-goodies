@@ -43,10 +43,12 @@ class RuntimeFailure(Exception):
 
 
 class Environment(object):
-    """Everything a run takes from the machine; each argument defaults to the real thing and is a test injection point."""
+    """Everything a run takes from the machine; each argument defaults to the real thing and is a test injection point.
+    `run_probe` stays None until `_compose`, because the package that holds the real runner is not importable before the
+    version check."""
 
     def __init__(self, stdout=None, stderr=None, version_info=None, platform=None, home=None, get_cwd=None, now=None,
-                 to_local=None, path_module=None):
+                 to_local=None, path_module=None, run_probe=None):
         self.stdout = sys.stdout if stdout is None else stdout
         self.stderr = sys.stderr if stderr is None else stderr
         self.version_info = sys.version_info if version_info is None else version_info
@@ -56,6 +58,7 @@ class Environment(object):
         self.now = (lambda: datetime.now().astimezone()) if now is None else now
         self.to_local = (lambda moment: moment.astimezone()) if to_local is None else to_local
         self.path_module = os.path if path_module is None else path_module
+        self.run_probe = run_probe
 
 
 def _error_text(message):
@@ -121,10 +124,10 @@ def _home_folder(environment):
 
 
 class _Composition(object):
-    """The adapters of one run, the sync use case, the usage target resolver and the leftover scan; command use cases are built
-    over them only for a command."""
+    """The adapters of one run, the sync use case, the usage target resolver, the leftover scan and the Python probe; command use
+    cases are built over them only for a command."""
 
-    def __init__(self, sync, targets, archive, state, pricing, log_root, leftover_scan):
+    def __init__(self, sync, targets, archive, state, pricing, log_root, leftover_scan, python_probe):
         self.sync = sync
         self.targets = targets
         self.archive = archive
@@ -132,6 +135,7 @@ class _Composition(object):
         self.pricing = pricing
         self.log_root = log_root
         self.leftover_scan = leftover_scan
+        self.python_probe = python_probe
 
 
 def _compose(harness, environment):
@@ -142,6 +146,7 @@ def _compose(harness, environment):
     from sessionlog.model import Harness
     from sessionlog.price_file import PriceFile
     from sessionlog.pricing import PricingRules
+    from sessionlog.python_probe import PythonProbeRunner, run_command
     from sessionlog.state import FileStateStore
     from sessionlog.sync import SyncUseCase
     from sessionlog.usage_target import UsageTargetResolver
@@ -157,8 +162,9 @@ def _compose(harness, environment):
     pricing = PricingRules(price_book)
     sync = SyncUseCase(reader, archive, state, pricing, environment.now)
     state.migrate_enabled()
+    probe = PythonProbeRunner(environment.platform, run_command if environment.run_probe is None else environment.run_probe)
     return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, pricing, log_root,
-                        LeftoverScan(Harness(harness), root))
+                        LeftoverScan(Harness(harness), root), probe)
 
 
 def _run(harness, command, target, environment):
@@ -169,7 +175,8 @@ def _run(harness, command, target, environment):
 
     composition = _compose(harness, environment)
     use_cases = CommandUseCases(composition.sync, composition.targets, composition.archive, composition.state,
-                                composition.pricing, environment.now, composition.log_root, composition.leftover_scan)
+                                composition.pricing, environment.now, composition.log_root, composition.leftover_scan,
+                                composition.python_probe)
     handlers = {
         "on": lambda: presentation.render_on(use_cases.on()),
         "off": lambda: presentation.render_off(use_cases.off()),

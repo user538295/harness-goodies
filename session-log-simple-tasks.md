@@ -435,7 +435,7 @@ flowchart LR
         - #unit_test — `test_leftover_list_is_per_harness_for_the_invoked_harness_only` — one reader per run
 
 ### Phase 8 · Get an exact fix when Python is missing or too old
-- [ ] **BE-23** — Python probe runner: on Windows `on` and `status` run `python3 -c` (version ≥ 3.9) through the injected runner and platform; any failure prints the exact fix; no probe elsewhere #backend-role
+- [x] **BE-23** — Python probe runner: on Windows `on` and `status` run `python3 -c` (version ≥ 3.9) through the injected runner and platform; any failure prints the exact fix; no probe elsewhere #backend-role
     - Interface Adapters · 2.0h
     - needs BE-8 · completes S24
     - Tests

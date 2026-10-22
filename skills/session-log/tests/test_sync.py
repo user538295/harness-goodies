@@ -54,6 +54,13 @@ class NoLeftovers:
         return ()
 
 
+class NoProbe:
+    """A Python probe that is never due (any platform but Windows)."""
+
+    def check(self):
+        return None
+
+
 class _NoPrices:
     def rate_for(self, model_name, fast):
         return None
@@ -634,7 +641,7 @@ class SyncUnsafeIdTest(RealArchiveTestCase):
         state = FileStateStore(self.logs)
         sync = SyncUseCase(self.reader, self.archive, state, PricingRules(_NoPrices()), lambda: NOW)
         status = CommandUseCases(sync, UsageTargetResolver(self.reader), self.archive, state, PricingRules(_NoPrices()), lambda: NOW,
-                                 self.logs, NoLeftovers()).status()
+                                 self.logs, NoLeftovers(), NoProbe()).status()
         self.assertEqual(status.unreadable, (UnreadableItem(device, UNSAFE_ID_REASON), UnreadableItem(unsafe, UNSAFE_ID_REASON),
                                              UnreadableItem(orphan, UNSAFE_ID_REASON)))
         self.assertEqual(status.archived_session_count, 1)

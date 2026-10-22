@@ -22,7 +22,7 @@ from sessionlog.state import FileStateStore
 from sessionlog.sync import SyncUseCase
 from sessionlog.usage_target import UsageTargetResolver
 from tests.test_commands import ReportKeepingArchive
-from tests.test_sync import NOW, NoLeftovers, _NoPrices
+from tests.test_sync import NOW, NoLeftovers, NoProbe, _NoPrices
 
 MOVE_ASIDE = "move it aside"
 REMOVE_HOOK_ENTRIES = "remove its old session-log hook entries"
@@ -182,7 +182,7 @@ class EveryKindTests(SandboxCase):
         reader = ClaudeReader(root)  # the reader is irrelevant to the scan; an empty store is enough
         pricing = PricingRules(_NoPrices())
         return CommandUseCases(SyncUseCase(reader, archive, state, pricing, lambda: NOW),
-                               UsageTargetResolver(reader), archive, state, pricing, lambda: NOW, log_root, scan)
+                               UsageTargetResolver(reader), archive, state, pricing, lambda: NOW, log_root, scan, NoProbe())
 
     def test_each_leftover_kind_reported_with_fix_unrelated_entry_and_inert_files_not_and_nothing_deleted(self):
         for harness in Harness:

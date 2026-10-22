@@ -6,12 +6,13 @@ except a `UsageResult`, whose report text is returned unchanged.
 from datetime import datetime
 from typing import List, Optional, Sequence
 
-from .commands import OffResult, OnResult, ProbeResult, StatusResult, UnreadableItem, UsageResult
+from .commands import OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
 from .leftover_port import Leftover
+from .probe_port import MINIMUM_TEXT, ProbeResult
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
 LEFTOVERS_HEADING = "Old-release leftovers (not deleted):"
-PROBE_FAILED = "python3 does not run Python 3.14 or newer"
+PROBE_FAILED = "python3 does not run Python %s or newer" % MINIMUM_TEXT
 UNREADABLE_HEADING = "Unreadable or skipped items:"
 
 
