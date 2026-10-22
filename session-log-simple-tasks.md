@@ -332,7 +332,7 @@ flowchart LR
         - #manual_test — Read [SKILL.md](./skills/session-log/SKILL.md) and README OpenCode lines before release 1 ships — S66
 
 ### Phase 3 · See every Claude prompt, sub-agent and token counted once
-- [ ] **BE-11** — ClaudeReader prompt and usage rules (Q16): `typed`/`queued`/`sdk`/`suggestion_accepted`, `bridge-session`, `queued_command` attachments, slash-command heads with tags stripped, `<task-notification>` and `<synthetic>` skipped, Haiku effort not recorded, streamed copies counted once, interrupted turn, fast vs standard, legacy `cache_creation_input_tokens`, unknown record types and bad lines skipped, unparsable file unreadable #backend-role
+- [x] **BE-11** — ClaudeReader prompt and usage rules (Q16): `typed`/`queued`/`sdk`/`suggestion_accepted`, `bridge-session`, `queued_command` attachments, slash-command heads with tags stripped, `<task-notification>` and `<synthetic>` skipped, Haiku effort not recorded, streamed copies counted once, interrupted turn, fast vs standard, legacy `cache_creation_input_tokens`, unknown record types and bad lines skipped, unparsable file unreadable #backend-role
     - Interface Adapters · 4.0h
     - needs BE-3, BE-6 · completes S16, S40, S41
     - Tests

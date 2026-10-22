@@ -10,6 +10,7 @@ UNSAFE_ID_REASON = "unsafe id"
 CANNOT_BE_OPENED_REASON = "cannot be opened"
 CANNOT_BE_DECODED_REASON = "cannot be decoded"
 CANNOT_BE_LISTED_REASON = "cannot be listed"
+CANNOT_BE_PARSED_REASON = "cannot be parsed"
 
 
 def build_session_key(harness: Harness, root_id: str) -> str:

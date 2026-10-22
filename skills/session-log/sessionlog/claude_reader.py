@@ -4,10 +4,10 @@ import os
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Tuple, TypeVar, Union
 
-from .claude_transcript import json_objects, parse_main_session
+from .claude_transcript import parse_main_session
 from .model import Harness, Session, is_safe_id
-from .reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, UNSAFE_ID_REASON,
-                          ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key)
+from .reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON,
+                          UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key)
 
 _SESSION_FILE_SUFFIX = ".jsonl"
 _PROJECTS_DIR = "projects"
@@ -94,11 +94,13 @@ class ClaudeReader:
             return ReadResult(unreadable=(_unreadable(path, UNSAFE_ID_REASON),))
         try:
             with open(path, encoding=_FILE_ENCODING) as handle:
-                transcript = parse_main_session(json_objects(handle))
+                transcript = parse_main_session(handle)
         except UnicodeDecodeError:
             return ReadResult(unreadable=(_unreadable(path, CANNOT_BE_DECODED_REASON),))
         except OSError:
             return ReadResult(unreadable=(_unreadable(path, CANNOT_BE_OPENED_REASON),))
+        if transcript.unparsable:
+            return ReadResult(unreadable=(_unreadable(path, CANNOT_BE_PARSED_REASON),))
         if transcript.started_at is None:
             return ReadResult()
         return ReadResult(session=Session(

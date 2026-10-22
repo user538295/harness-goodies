@@ -1,10 +1,11 @@
-"""Pure parsing of a Claude Code main-session transcript (already split into JSON records) into prompts; no file access."""
+"""Pure parsing of a Claude Code main-session transcript (its JSON lines) into prompts; no file access."""
 import json
 import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union
+from enum import Enum, auto
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from .model import Prompt, RequestUsage
 
@@ -12,7 +13,17 @@ Record = Dict[str, Any]
 
 _USER = "user"
 _ASSISTANT = "assistant"
+_ATTACHMENT = "attachment"
+_BRIDGE_SESSION = "bridge-session"
+_QUEUED_COMMAND = "queued_command"
+_QUEUED_PROMPT_MODE = "prompt"
 _PROMPT_SOURCES = frozenset({"typed", "queued", "sdk", "suggestion_accepted"})
+_COMMAND_HEADS = ("<command-name>", "<command-message>")
+_NOT_A_PROMPT_HEADS = ("<local-command-", "<bash-", "[Request interrupted by user", "Another Claude session sent a message:")
+_INJECTED_HEAD = "<task-notification>"
+_SYNTHETIC_MODEL = "<synthetic>"
+_TAG = re.compile(r"<[^>]*>")
+_WHITESPACE = re.compile(r"\s+")
 _TEXT_BLOCK = "text"
 _REPLY_PARAGRAPH_SEPARATOR = "\n\n"
 _PROMPT_TEXT_SEPARATOR = "\n"
@@ -25,11 +36,13 @@ _MessageKey = Union[str, int]
 
 @dataclass(frozen=True)
 class Transcript:
-    """`started_at` and `project_dir` are taken from records of any type."""
+    """`started_at` and `project_dir` are taken from records of any type.
+    `unparsable`: the text has lines, none of them a JSON object."""
 
     started_at: Optional[datetime]
     project_dir: Optional[str]
     prompts: Tuple[Prompt, ...]
+    unparsable: bool
 
 
 def _token_count(value: Any) -> int:
@@ -73,8 +86,7 @@ def _message_of(record: Record) -> Record:
     return message if isinstance(message, dict) else {}
 
 
-def _text_blocks(record: Record) -> Tuple[str, ...]:
-    content = _message_of(record).get("content")
+def _texts_of(content: Any) -> Tuple[str, ...]:
     if isinstance(content, str):
         texts = [content]
     else:
@@ -83,10 +95,78 @@ def _text_blocks(record: Record) -> Tuple[str, ...]:
     return tuple(text for text in texts if isinstance(text, str) and text.strip())
 
 
-def _opens_prompt(record: Record) -> bool:
+def _text_blocks(record: Record) -> Tuple[str, ...]:
+    return _texts_of(_message_of(record).get("content"))
+
+
+class _Kind(Enum):
+    """How sure a prompt is: a REAL one always counts, a REMOTE one (a plain user entry) only in a Remote Control
+    session, a COMMAND one only when an assistant reply follows it."""
+
+    REAL = auto()
+    REMOTE = auto()
+    COMMAND = auto()
+
+
+@dataclass(frozen=True)
+class _Opening:
+    kind: _Kind
+    text: str
+
+
+def _without_tags(text: str) -> str:
+    return _WHITESPACE.sub(" ", _TAG.sub(" ", text)).strip()
+
+
+def _user_opening(record: Record) -> Optional[_Opening]:
+    """`promptSource` is one of the prompt sources (a real prompt), absent or null (a plain entry), or anything else
+    (not a prompt). A plain entry is a slash command by its tags; else a remote prompt unless it only reports local
+    output, a shell command, an interrupt or a message from another Claude session."""
     source = record.get("promptSource")
-    return (record.get("type") == _USER and record.get("isMeta") is not True
-            and isinstance(source, str) and source in _PROMPT_SOURCES)
+    texts = _text_blocks(record)
+    text = _PROMPT_TEXT_SEPARATOR.join(texts)
+    if isinstance(source, str) and source in _PROMPT_SOURCES:
+        return _Opening(_Kind.REAL, text)
+    if source is not None:
+        return None
+    if text.startswith(_COMMAND_HEADS):
+        return _Opening(_Kind.COMMAND, _without_tags(text))
+    if not texts or text.startswith(_NOT_A_PROMPT_HEADS):
+        return None
+    return _Opening(_Kind.REMOTE, text)
+
+
+def _queued_opening(record: Record) -> Optional[_Opening]:
+    attachment = record.get("attachment")
+    if not isinstance(attachment, dict) or attachment.get("type") != _QUEUED_COMMAND:
+        return None
+    if attachment.get("commandMode") != _QUEUED_PROMPT_MODE or attachment.get("isMeta") is True:
+        return None
+    return _Opening(_Kind.REAL, _PROMPT_TEXT_SEPARATOR.join(_texts_of(attachment.get("prompt"))))
+
+
+def _opening_of(record: Record) -> Optional[_Opening]:
+    """The prompt a record opens, or None. A `<task-notification>` that Claude Code injects is never a prompt."""
+    record_type = record.get("type")
+    if record_type == _ATTACHMENT:
+        opening = _queued_opening(record)
+    elif record_type == _USER and record.get("isMeta") is not True:
+        opening = _user_opening(record)
+    else:
+        return None
+    return None if opening is None or opening.text.startswith(_INJECTED_HEAD) else opening
+
+
+def _is_synthetic(record: Record) -> bool:
+    return _message_of(record).get("model") == _SYNTHETIC_MODEL
+
+
+def _cache_writes(usage: Record) -> Tuple[int, int]:
+    """The 5m and 1h cache-write tokens; without the split object the legacy total counts as 5m."""
+    split = usage.get("cache_creation")
+    if isinstance(split, dict):
+        return _token_count(split.get("ephemeral_5m_input_tokens")), _token_count(split.get("ephemeral_1h_input_tokens"))
+    return _token_count(usage.get("cache_creation_input_tokens")), 0
 
 
 def _request_of(record: Record) -> Optional[RequestUsage]:
@@ -94,16 +174,15 @@ def _request_of(record: Record) -> Optional[RequestUsage]:
     usage = message.get("usage")
     if not isinstance(usage, dict):
         return None
-    cache = usage.get("cache_creation")
-    cache = cache if isinstance(cache, dict) else {}
+    written_5m, written_1h = _cache_writes(usage)
     model, effort = message.get("model"), record.get("effort")
     return RequestUsage(
         model_name=model if isinstance(model, str) else "",
         input_tokens=_token_count(usage.get("input_tokens")),
         output_tokens=_token_count(usage.get("output_tokens")),
         cache_read_tokens=_token_count(usage.get("cache_read_input_tokens")),
-        cache_write_5m_tokens=_token_count(cache.get("ephemeral_5m_input_tokens")),
-        cache_write_1h_tokens=_token_count(cache.get("ephemeral_1h_input_tokens")),
+        cache_write_5m_tokens=written_5m,
+        cache_write_1h_tokens=written_1h,
         effort=effort if isinstance(effort, str) else None,
         fast=usage.get("speed") == _FAST_SPEED,
     )
@@ -138,15 +217,24 @@ class _Turn:
     """A prompt and the assistant entries up to the next prompt. One request per message id, the last copy wins.
     A prompt without a valid timestamp still collects its entries but is dropped when finished."""
 
-    def __init__(self, submitted_at: Optional[datetime], text: str) -> None:
+    def __init__(self, submitted_at: Optional[datetime], opening: _Opening, keep_replies: bool) -> None:
+        self.kind = opening.kind
         self._submitted_at = submitted_at
-        self._text = text
+        self._text = opening.text
+        self._keep_replies = keep_replies
         self._requests: Dict[_MessageKey, RequestUsage] = {}
         self._texts: Dict[_MessageKey, List[str]] = {}
         self._latest_reply: Optional[datetime] = None
         self._last_key: Optional[_MessageKey] = None
+        self._kept_replies: List[_Reply] = []
+
+    @property
+    def has_reply(self) -> bool:
+        return self._last_key is not None
 
     def add(self, reply: _Reply) -> None:
+        if self._keep_replies:
+            self._kept_replies.append(reply)
         if reply.request is not None:
             self._requests[reply.message_key] = reply.request
         collected = self._texts.setdefault(reply.message_key, [])
@@ -155,6 +243,17 @@ class _Turn:
                 collected.append(text)
         self._latest_reply = _latest(self._latest_reply, reply.moment)
         self._last_key = reply.message_key
+
+    def is_prompt(self, remote_control: bool) -> bool:
+        """A REMOTE turn counts only in a Remote Control session, a COMMAND turn only when a reply followed it."""
+        if self.kind is _Kind.COMMAND:
+            return self.has_reply
+        return self.kind is _Kind.REAL or remote_control
+
+    def hand_replies_to(self, holder: "_Turn") -> None:
+        """A turn that proved not to be a prompt (it kept its replies for this) gives them to the turn before it."""
+        for reply in self._kept_replies:
+            holder.add(reply)
 
     def finish(self) -> Optional[Prompt]:
         if self._submitted_at is None:
@@ -170,28 +269,66 @@ class _Turn:
         )
 
 
-def json_objects(lines: Iterable[str]) -> Iterator[Tuple[int, Record]]:
-    """Numbered JSON-object lines; every other line (torn, blank, not an object, too deeply nested) is skipped."""
-    for line_number, line in enumerate(lines):
-        try:
-            record = json.loads(line)
-        except (ValueError, RecursionError):
-            continue
-        if isinstance(record, dict):
-            yield line_number, record
+def _decode(line: str) -> Optional[Record]:
+    try:
+        record = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    return record if isinstance(record, dict) else None
 
 
-def parse_main_session(records: Iterable[Tuple[int, Record]]) -> Transcript:
-    """The numbered records of one main session folded into prompts; assistant records before the first prompt are ignored."""
-    started_at, project_dir = None, None
-    turns: List[_Turn] = []
-    for line_number, record in records:
+class _Folder:
+    """Folds the lines of one session into turns: assistant entries go to the latest turn, a bridge-session record
+    switches the session to Remote Control."""
+
+    def __init__(self) -> None:
+        self._started_at: Optional[datetime] = None
+        self._project_dir: Optional[str] = None
+        self._remote_control = False
+        self._saw_text = self._saw_record = False
+        self._turns: List[_Turn] = []
+
+    def add_line(self, line_number: int, line: str) -> None:
+        if not line.strip():
+            return
+        self._saw_text = True
+        record = _decode(line)
+        if record is not None:
+            self._saw_record = True
+            self._add_record(line_number, record)
+
+    def _add_record(self, line_number: int, record: Record) -> None:
         moment = _moment(record)
-        started_at = _earliest(started_at, moment)
-        project_dir = project_dir or _cwd(record)
-        if _opens_prompt(record):
-            turns.append(_Turn(moment, _PROMPT_TEXT_SEPARATOR.join(_text_blocks(record))))
-        elif turns and record.get("type") == _ASSISTANT:
-            turns[-1].add(_Reply(_message_key(record, line_number), _request_of(record), _text_blocks(record), moment))
-    finished = (turn.finish() for turn in turns)
-    return Transcript(started_at, project_dir, tuple(prompt for prompt in finished if prompt))
+        self._started_at = _earliest(self._started_at, moment)
+        self._project_dir = self._project_dir or _cwd(record)
+        self._remote_control = self._remote_control or record.get("type") == _BRIDGE_SESSION
+        opening = _opening_of(record)
+        if opening is not None:
+            self._turns.append(_Turn(moment, opening, keep_replies=opening.kind is _Kind.REMOTE))
+        elif self._turns and record.get("type") == _ASSISTANT and not _is_synthetic(record):
+            self._turns[-1].add(_Reply(_message_key(record, line_number), _request_of(record), _text_blocks(record), moment))
+
+    def _prompts(self) -> Tuple[Prompt, ...]:
+        """A plain user entry outside a Remote Control session is no prompt and hands its replies to the turn before
+        (this consumes the turns); a command is a prompt only when a reply followed it; a turn without a valid time is
+        dropped."""
+        holders: List[_Turn] = []
+        for turn in self._turns:
+            if turn.kind is not _Kind.REMOTE or self._remote_control:
+                holders.append(turn)
+            elif holders:
+                turn.hand_replies_to(holders[-1])
+        finished = (turn.finish() for turn in holders if turn.is_prompt(self._remote_control))
+        return tuple(prompt for prompt in finished if prompt is not None)
+
+    def transcript(self) -> Transcript:
+        return Transcript(self._started_at, self._project_dir, self._prompts(), unparsable=self._saw_text and not self._saw_record)
+
+
+def parse_main_session(lines: Iterable[str]) -> Transcript:
+    """The lines of one main session folded into prompts; every line that is not a JSON object (torn, blank, too deeply
+    nested) is skipped, and so is every assistant record before the first prompt or from `<synthetic>`."""
+    folder = _Folder()
+    for line_number, line in enumerate(lines):
+        folder.add_line(line_number, line)
+    return folder.transcript()
