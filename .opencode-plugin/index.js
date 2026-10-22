@@ -1,5 +1,5 @@
-// OpenCode V2 package plugin: registers this repository's skills and agents, and session-log's
-// `/session-log` command and logging handlers. OpenCode loads one server entrypoint per package.
+// OpenCode V2 package plugin: registers this repository's skills and agents only. It registers no
+// command and starts no session-log handler.
 // Installed with `opencode plugin add github:user538295/harness-goodies`.
 import fs from "node:fs";
 import path from "node:path";
@@ -31,7 +31,7 @@ const loadSkills = () =>
     .filter(({ file }) => fs.existsSync(file))
     .map(({ id, file }) => {
       const { data, body } = readMarkdown(file);
-      return { id, name: data.name ?? id, description: data.description, location: file, content: body };
+      return { id, name: data.name ?? id, description: data.description, path: file, content: body };
     });
 
 const loadAgents = () =>
@@ -59,14 +59,5 @@ export default {
         });
       }
     });
-
-    // A session-log failure, even while loading its module, must not cost the skills and agents
-    // registered above.
-    try {
-      const { setupSessionLog } = await import("../skills/session-log/adapters/opencode/session-log.js");
-      return await setupSessionLog(ctx);
-    } catch (error) {
-      process.stderr.write(`session-log: ${error?.message || error}\n`);
-    }
   },
 };

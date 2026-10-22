@@ -311,7 +311,7 @@ flowchart LR
         - #e2e_test — `test_usage_no_argument_equals_latest_and_equals_saved_usage_txt` — S4
 
 ### Phase 2 · Load the OpenCode plugin on OpenCode 2.0.4+ *(release 1: ships first and on its own from `main`; needs only K1)*
-- [ ] **BE-10** — Release 1 plugin fix: [index.js](./.opencode-plugin/index.js) `:34` sends `path`, the session-log import `:63-70` removed, header `:1-3` updated; `skills/session-log/VERSION` bumped (the [release.sh](./release.sh) guard `:16,198` requires it); [index.test.js](./.opencode-plugin/index.test.js) `:75` name, `:79` and `:92` `.location` → `.path`, `:90-96` expects no plugin command, `:98-101` and `:110-130` deleted, no-op `bash` (`:14-20,24`) becomes a recording stub that must stay unused #backend-role
+- [x] **BE-10** — Release 1 plugin fix: [index.js](./.opencode-plugin/index.js) `:34` sends `path`, the session-log import `:63-70` removed, header `:1-3` updated; `skills/session-log/VERSION` bumped (the [release.sh](./release.sh) guard `:16,198` requires it); [index.test.js](./.opencode-plugin/index.test.js) `:75` name, `:79` and `:92` `.location` → `.path`, `:90-96` expects no plugin command, `:98-101` and `:110-130` deleted, no-op `bash` (`:14-20,24`) becomes a recording stub that must stay unused #backend-role
     - Frameworks & Drivers · 3.0h
     - needs K1 · completes S27
     - Tests
