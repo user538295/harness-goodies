@@ -388,7 +388,7 @@ flowchart LR
         - #unit_test — `test_malformed_hook_argv_unknown_harness_or_event_exit_0_nothing_written_or_printed` — S36
         - #unit_test — `test_exception_inside_hook_exits_0_with_no_output` — S55, hook half
         - #integration_test — `test_claude_session_start_hook_syncs_and_prints_nothing` — sandbox `HOME`
-- [ ] **BE-18** — ClaudeHooksConfig: replace [hooks.json](./hooks/hooks.json) (four shell-form events, `startup` matcher) with one SessionStart in exec form `python3` with a one-line `-c` guard that exits 0 when the script is missing, no matcher, `async: true`, `timeout` 30 #backend-role
+- [x] **BE-18** — ClaudeHooksConfig: replace [hooks.json](./hooks/hooks.json) (four shell-form events, `startup` matcher) with one SessionStart in exec form `python3` with a one-line `-c` guard that exits 0 when the script is missing, no matcher, `async: true`, `timeout` 30 #backend-role
     - Frameworks & Drivers · 2.0h
     - needs BE-17 · completes S57
     - Tests

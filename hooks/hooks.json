@@ -2,47 +2,21 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "s=\"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\"; case $s in *\\\\*) s=$(printf '%s\\n' \"$s\" | tr '\\\\' /);; esac; [ -f \"$s\" ] && exec bash \"$s\" session-start; exit 0",
-            "shell": "bash"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "s=\"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\"; case $s in *\\\\*) s=$(printf '%s\\n' \"$s\" | tr '\\\\' /);; esac; [ -f \"$s\" ] && exec bash \"$s\" user-prompt; exit 0",
-            "shell": "bash"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "s=\"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\"; case $s in *\\\\*) s=$(printf '%s\\n' \"$s\" | tr '\\\\' /);; esac; [ -f \"$s\" ] && exec bash \"$s\" stop; exit 0",
-            "shell": "bash",
+            "command": "python3",
+            "args": [
+              "-I",
+              "-c",
+              "import os,subprocess,sys; p=sys.argv[1]; os.path.isfile(p) and subprocess.call([sys.executable,p]+sys.argv[2:])",
+              "${CLAUDE_PLUGIN_ROOT}/skills/session-log/session_log.py",
+              "hook",
+              "claude",
+              "SessionStart"
+            ],
+            "async": true,
             "timeout": 30
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "s=\"${CLAUDE_PLUGIN_ROOT}/skills/session-log/adapters/claude/claude_hook.sh\"; case $s in *\\\\*) s=$(printf '%s\\n' \"$s\" | tr '\\\\' /);; esac; [ -f \"$s\" ] && exec bash \"$s\" subagent-stop; exit 0",
-            "shell": "bash",
-            "timeout": 15
           }
         ]
       }
