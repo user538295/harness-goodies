@@ -31,7 +31,8 @@ class SourceUnit:
 
 @dataclass(frozen=True)
 class UnreadableSource:
-    """A source the reader could not use; `reason` is a short text recorded for status."""
+    """A source the reader could not use; `reason` is a short text recorded for status. When the failure concerns a unit
+    handed to `read`, `path` equals that unit's `key`: sync retries exactly the units it names."""
 
     harness: Harness
     path: str

@@ -264,7 +264,7 @@ flowchart LR
         - #unit_test — `test_claude_scan_lists_units_with_changing_fingerprint` — fingerprint moves with the file
         - #unit_test — `test_claude_session_id_and_cwd_from_path_and_records` — `sessionOf` once
         - #integration_test — `test_claude_reader_reads_session_tree_from_text_fixture` — prompt, reply, usage
-- [ ] **BE-7** — Sync use case (C1): scan, compare fingerprints, read only changed sessions with activity since the on-time, archive whole, rewrite log and report through `Archive`, save progress after each session #backend-role
+- [x] **BE-7** — Sync use case (C1): scan, compare fingerprints, read only changed sessions with activity since the on-time, archive whole, rewrite log and report through `Archive`, save progress after each session #backend-role
     - Use Cases · 4.0h
     - needs BE-2, BE-3, BE-5, BE-6 · completes C1
     - Tests
