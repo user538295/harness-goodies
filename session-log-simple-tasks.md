@@ -394,7 +394,7 @@ flowchart LR
     - Tests
         - #unit_test — `test_claude_hooks_json_has_one_sessionstart_exec_form_guard_before_script_no_matcher_async_timeout_30` — S57, Claude part
         - #integration_test — `test_guard_exits_0_silently_when_script_missing` — run the args array without a shell
-- [ ] **T-3** — Claude SessionStart hook: e2e in a sandbox `HOME` and a real Claude Code run with a large backlog #tester-role
+- [x] **T-3** — Claude SessionStart hook: e2e in a sandbox `HOME` and a real Claude Code run with a large backlog #tester-role
     - — · 4.0h
     - needs T-1, BE-18 · completes S23, S2
     - Tests

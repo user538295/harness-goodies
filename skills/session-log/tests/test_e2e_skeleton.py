@@ -67,6 +67,9 @@ SUBPROCESS_TIMEOUT = 60
 SUBPROCESS_ENV_NAMES = ("PATH",)
 TEST_TIME_ZONE = "XXX-5:30"  # POSIX form: UTC+5:30, no tzdata needed
 TEST_ZONE_OFFSET = "+0530"
+# a hostile console: the entry must print and write UTF-8 regardless (S54)
+HOSTILE_CONSOLE_ENV = {"TZ": TEST_TIME_ZONE, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0", "LC_ALL": "C", "LANG": "C",
+                       "PYTHONDONTWRITEBYTECODE": "1"}
 UNREADABLE_HEADING = "Unreadable or skipped items:"
 UNDECODABLE_REASON = "cannot be decoded"
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
@@ -128,9 +131,7 @@ class SkeletonCase(unittest.TestCase):
     def run_command(self, *arguments):
         env = {name: os.environ[name] for name in SUBPROCESS_ENV_NAMES if name in os.environ}
         env["PATH"] = self.stub_dir + os.pathsep + env.get("PATH", "")
-        # a hostile console: the entry must print and write UTF-8 regardless (S54)
-        env.update(HOME=self.home, TZ=TEST_TIME_ZONE, PYTHONIOENCODING="cp1252", PYTHONUTF8="0", LC_ALL="C", LANG="C",
-                   PYTHONDONTWRITEBYTECODE="1")
+        env.update(HOSTILE_CONSOLE_ENV, HOME=self.home)
         result = subprocess.run([sys.executable, str(ENTRY), "claude"] + list(arguments), env=env, cwd=self.project,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 timeout=SUBPROCESS_TIMEOUT)
