@@ -1,9 +1,11 @@
-"""Entry script of the session-log skill: `session_log.py <harness> on|off|status|usage [--latest|<id>]`.
+"""Entry script of the session-log skill: `session_log.py <harness> on|off|status|usage [--latest|<id>]` and the hook entry
+`session_log.py hook <harness> <event>`.
 
 This file must parse on Python 3.4, so a Python that is too old gets a clear message instead of a SyntaxError: it uses no
 f-strings, no variable annotations and no other newer syntax, and it imports the `sessionlog` package only after the
 version check. It is the composition root (every adapter is built here) and the controller (argv, exit codes, every
-`session-log:` text on stderr). Exit codes: 0 ok, 1 runtime error, 2 bad arguments; never a traceback.
+`session-log:` text on stderr). Exit codes: 0 ok, 1 runtime error, 2 bad arguments; never a traceback. A hook is not a
+command: it is told apart before any argument parsing, always exits 0 and never prints.
 """
 import os
 import sys
@@ -118,9 +120,19 @@ def _home_folder(environment):
     return home
 
 
+class _Composition(object):
+    """The adapters of one run and the sync use case over them; command use cases are built over them only for a command."""
+
+    def __init__(self, sync, archive, state, price_book, log_root):
+        self.sync = sync
+        self.archive = archive
+        self.state = state
+        self.price_book = price_book
+        self.log_root = log_root
+
+
 def _compose(harness, environment):
-    """Builds every adapter of one run, then the use cases over them."""
-    from sessionlog.commands import CommandUseCases
+    """Builds every adapter of one run, then the sync use case over them."""
     from sessionlog.log_usage_writer import LogUsageWriter
     from sessionlog.price_file import PriceFile
     from sessionlog.pricing import PricingRules
@@ -135,15 +147,17 @@ def _compose(harness, environment):
     archive = LogUsageWriter(log_root, environment.to_local, path_module)
     state = FileStateStore(log_root)
     sync = SyncUseCase(_build_reader(harness, root), archive, state, PricingRules(price_book), environment.now)
-    return CommandUseCases(sync, archive, state, price_book, environment.now, log_root, path_module)
+    return _Composition(sync, archive, state, price_book, log_root)
 
 
 def _run(harness, command, target, environment):
     """Returns (code, stdout text, stderr text) of one parsed command."""
     from sessionlog import presentation
-    from sessionlog.commands import CommandError
+    from sessionlog.commands import CommandError, CommandUseCases
 
-    use_cases = _compose(harness, environment)
+    composition = _compose(harness, environment)
+    use_cases = CommandUseCases(composition.sync, composition.archive, composition.state, composition.price_book,
+                                environment.now, composition.log_root, environment.path_module)
     handlers = {
         "on": lambda: presentation.render_on(use_cases.on()),
         "off": lambda: presentation.render_off(use_cases.off()),
@@ -176,12 +190,41 @@ def _execute(argv, environment):
         return EXIT_RUNTIME_ERROR, "", _error_text("internal error: " + (name + ": " + detail if detail else name))
 
 
+def _sync_at_session_start(harness, environment):
+    """Syncs the harness's store within the hook budget. The hook input is not needed, so stdin is never read: a hook run
+    with an inherited, open stdin must not wait on it."""
+    from sessionlog.sync import HOOK_SYNC_BUDGET_SECONDS
+
+    _compose(harness, environment).sync.sync(HOOK_SYNC_BUDGET_SECONDS)
+
+
+HOOK_HANDLERS = {("claude", "SessionStart"): _sync_at_session_start}
+
+
+def _run_hook(arguments, environment):
+    """Runs the hook named by `<harness> <event>` and always returns EXIT_OK without printing: a malformed argv, an unknown
+    harness or event and any failure (even an interrupt) end silently, because a hook must never block or fail the harness."""
+    try:
+        handler = HOOK_HANDLERS.get(tuple(arguments))
+        if handler is not None:
+            handler(arguments[0], environment)
+    except BaseException:  # nothing a hook does may reach the harness
+        pass
+    return EXIT_OK
+
+
 def _silence_stream(stream):
     """Points the stream's descriptor at the null device so the interpreter's exit flush cannot fail again."""
     try:
-        os.dup2(os.open(os.devnull, os.O_WRONLY), stream.fileno())
+        null_descriptor = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    try:
+        os.dup2(null_descriptor, stream.fileno())
     except (OSError, ValueError, AttributeError):
         pass
+    finally:
+        os.close(null_descriptor)
 
 
 def _emit(stream, text):
@@ -201,14 +244,17 @@ def _ensure_skill_dir_importable():
 
 
 def main(argv, environment=None):
-    """Runs one command and returns the exit code."""
+    """Runs one command or hook and returns the exit code."""
     environment = Environment() if environment is None else environment
+    is_hook = argv[:1] == [HOOK_ARGUMENT]
     if tuple(environment.version_info[:2]) < MINIMUM_PYTHON:
-        if argv[:1] == [HOOK_ARGUMENT]:
+        if is_hook:
             return EXIT_OK  # a hook never speaks; an old Python records nothing
         _emit(environment.stderr, _version_text(environment.version_info, environment.platform))
         return EXIT_RUNTIME_ERROR
     _ensure_skill_dir_importable()
+    if is_hook:
+        return _run_hook(argv[1:], environment)
     code, out_text, err_text = _execute(argv, environment)
     if out_text and not _emit(environment.stdout, out_text) and code == EXIT_OK:
         code = EXIT_RUNTIME_ERROR

@@ -381,7 +381,7 @@ flowchart LR
         - #unit_test — `test_prices_json_sha256_pinned_to_render_version_fails_until_raised` — S65
 
 ### Phase 5 · Sync Claude sessions automatically at session start
-- [ ] **BE-17** — Hook entry `session_log.py hook claude SessionStart`: takes raw stdin bytes, checked before argument parsing, always exit 0, prints nothing, 20 s sync budget, silent on exceptions and on a malformed argv, unknown harness or unknown event #backend-role
+- [x] **BE-17** — Hook entry `session_log.py hook claude SessionStart`: takes raw stdin bytes, checked before argument parsing, always exit 0, prints nothing, 20 s sync budget, silent on exceptions and on a malformed argv, unknown harness or unknown event #backend-role
     - Frameworks & Drivers · 3.0h
     - needs BE-9, BE-16 · completes S36, S55
     - Tests

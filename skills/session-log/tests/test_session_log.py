@@ -1,5 +1,6 @@
-"""Entry script (C1): argument and exit-code contract, Python version gate (S55), UTF-8 output (S54) and the 3.4-parseable syntax."""
+"""Entry script (C1): argument and exit-code contract, hook entry (BE-17), Python version gate (S55), UTF-8 output (S54) and the 3.4-parseable syntax."""
 import ast
+import contextlib
 import io
 import json
 import os
@@ -10,11 +11,12 @@ import sys
 import tempfile
 import tokenize
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 import session_log
+from sessionlog.sync import HOOK_SYNC_BUDGET_SECONDS
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 ENTRY = SKILL_DIR / "session_log.py"
@@ -22,6 +24,14 @@ CLAUDE_FOLDER = ".claude"
 LOG_FOLDER = "prompt-logs"
 ON_FLAG = ".log_enabled"
 SYNC_LOCK = ".sync.lock"
+SYNC_STATE = ".sync.json"
+LOG_SUFFIX = ".md"
+REPORT_SUFFIX = ".usage.txt"
+BEYOND_BUDGET_SECONDS = HOOK_SYNC_BUDGET_SECONDS + 5
+SUBPROCESS_TIMEOUT_SECONDS = 60
+RELATIVE_HOME = "relative/home"
+OTHER_CLAUDE_EVENTS = ("Stop", "SubagentStop", "UserPromptSubmit", "SessionEnd", "PreCompact", "PreToolUse")
+CLAUDE_HOOK_PAYLOAD = b'\xef\xbb\xbf{"hook_event_name": "SessionStart", "source": "startup"}\xff\xfe'
 OLD_PYTHON = (3, 4, 10)
 PROMPT_AT = "2099-06-01T10:00:00.000Z"
 REPLY_AT = "2099-06-01T10:00:01.000Z"
@@ -71,9 +81,9 @@ class SandboxCase(unittest.TestCase):
     def home_entries(self):
         return sorted(os.listdir(self.home))
 
-    def write_transcript(self, cwd=CWD, model=UNPRICED_MODEL):
+    def write_transcript(self, cwd=CWD, model=UNPRICED_MODEL, session="abc123"):
         project = os.path.join(self.claude, "projects", "-work-proj")
-        os.makedirs(project)
+        os.makedirs(project, exist_ok=True)
         records = [
             {"type": "user", "promptSource": "typed", "cwd": cwd, "timestamp": PROMPT_AT,
              "message": {"role": "user", "content": UNICODE_PROMPT}},
@@ -81,7 +91,7 @@ class SandboxCase(unittest.TestCase):
              "message": {"id": "m0", "model": model, "content": [{"type": "text", "text": "reply"}],
                          "usage": {"input_tokens": 1000, "output_tokens": 1000}}},
         ]
-        with open(os.path.join(project, "abc123.jsonl"), "w", encoding="utf-8", newline="\n") as stream:
+        with open(os.path.join(project, session + ".jsonl"), "w", encoding="utf-8", newline="\n") as stream:
             stream.write("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records))
 
     def turn_logging_on(self):
@@ -236,6 +246,15 @@ class RuntimeErrorTests(SandboxCase):
         code = session_log.main(["claude", "bogus"], self.environment(io.StringIO(), BrokenPipe()))
         self.assertEqual(2, code)
 
+    def test_silencing_a_broken_stream_closes_the_null_device_descriptor_it_opened(self):
+        null_descriptor = 1234
+        stream = mock.Mock()
+        stream.fileno.return_value = 7
+        with mock.patch("os.open", return_value=null_descriptor), mock.patch("os.dup2") as dup2, mock.patch("os.close") as close:
+            session_log._silence_stream(stream)
+        dup2.assert_called_once_with(null_descriptor, 7)
+        close.assert_called_once_with(null_descriptor)
+
 
 class CommandTests(SandboxCase):
     def test_on_prints_the_log_folder_and_creates_the_on_flag(self):
@@ -368,6 +387,7 @@ class VersionGateTests(SandboxCase):
     def test_old_python_hook_is_silent_with_exit_0(self):
         code, stdout, stderr = self.run_main(["hook", "claude", "SessionStart"], version_info=OLD_PYTHON, platform="linux")
         self.assertEqual((0, "", ""), (code, stdout, stderr))
+        self.assertEqual([], self.home_entries())
 
     def test_old_python_with_empty_argv_or_only_a_command_still_gets_the_version_message(self):
         for argv in ([], ["on"]):
@@ -384,6 +404,212 @@ class VersionGateTests(SandboxCase):
     def test_found_version_shows_major_and_minor_only(self):
         _, _, stderr = self.run_main(["claude", "on"], version_info=(3, 13, 7), platform="linux")
         self.assertEqual("session-log: Python 3.14+ required (found 3.13)", stderr.splitlines()[0])
+
+
+class HookTests(SandboxCase):
+    """`session_log.py hook claude SessionStart` (BE-17): a hook never speaks, never fails and never waits on stdin."""
+
+    def run_hook(self, arguments, **kwargs):
+        return self.run_main(["hook"] + arguments, **kwargs)
+
+    def archived_files(self, suffix):
+        return [name for _, _, names in os.walk(self.log_root) for name in names if name.endswith(suffix)]
+
+    def archived_logs(self):
+        return self.archived_files(LOG_SUFFIX)
+
+    def seed_ready_store(self):
+        """A transcript and an on-flag older than it: a hook that syncs this store archives one session."""
+        self.write_transcript()
+        self.turn_logging_on_long_ago()
+
+    def use_relative_home(self):
+        """Moves the ready store under `<sandbox>/relative/home` and the working directory to the sandbox, so a hook that
+        accepted the relative home `relative/home` would find and sync it."""
+        self.claude = os.path.join(self.home, "relative", "home", CLAUDE_FOLDER)
+        self.log_root = os.path.join(self.claude, LOG_FOLDER)
+        self.seed_ready_store()
+        previous = os.getcwd()
+        os.chdir(self.home)
+        self.addCleanup(os.chdir, previous)
+
+    def run_hook_process(self, arguments=("claude", "SessionStart"), script=ENTRY, env=None, cwd=None, payload=None):
+        """Runs the hook as a real process, stdin empty or `payload`; returns (exit code, real stdout bytes, real stderr bytes)."""
+        stdin = {"input": payload} if payload is not None else {"stdin": subprocess.DEVNULL}
+        result = subprocess.run([sys.executable, str(script), "hook"] + list(arguments), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=SUBPROCESS_TIMEOUT_SECONDS, env=self.hook_process_env() if env is None else env, cwd=cwd, **stdin)
+        return result.returncode, result.stdout, result.stderr
+
+    def snapshot(self):
+        """Every path under the sandbox home with its bytes (None for a folder)."""
+        found = {}
+        for folder, folders, names in os.walk(self.home):
+            found.update({os.path.join(folder, name): None for name in folders})
+            for name in names:
+                with open(os.path.join(folder, name), "rb") as stream:
+                    found[os.path.join(folder, name)] = stream.read()
+        return found
+
+    def hook_process_env(self, **overrides):
+        env = {name: os.environ[name] for name in SUBPROCESS_ENV_NAMES if name in os.environ}
+        env["HOME"] = env["USERPROFILE"] = self.home
+        env.update(overrides)
+        return env
+
+    def run_hook_process_with_open_stdin(self):
+        """Runs the hook with a stdin pipe that is never written or closed: a hook that waits on it times out and fails.
+        Returns (exit code, real stdout bytes, real stderr bytes)."""
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            process = subprocess.Popen([sys.executable, str(ENTRY), "hook", "claude", "SessionStart"], stdin=subprocess.PIPE,
+                                       stdout=out, stderr=err, env=self.hook_process_env())
+            try:
+                process.wait(timeout=SUBPROCESS_TIMEOUT_SECONDS)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                process.stdin.close()
+            out.seek(0)
+            err.seek(0)
+            return process.returncode, out.read(), err.read()
+
+    def test_malformed_hook_argv_unknown_harness_or_event_exit_0_nothing_written_or_printed(self):
+        malformed = ([], ["claude"], ["claude", "SessionStart", "extra"], ["claude", "SessionStart", "--x"], ["cursor", "SessionStart"],
+                     ["bogus", "SessionStart"], ["Claude", "SessionStart"], ["claude", "bogus"], ["claude", "sessionstart"],
+                     ["claude", "SessionStart "], ["claude", ""], ["", ""], ["--help"], ["claude", "on"], ["hook", "claude", "SessionStart"]
+                     ) + tuple(["claude", event] for event in OTHER_CLAUDE_EVENTS)
+        self.write_transcript()
+        self.turn_logging_on_long_ago()
+        before = self.snapshot()
+        for arguments in malformed:
+            with self.subTest(arguments=arguments):
+                self.assertEqual((0, "", ""), self.run_hook(arguments))
+                self.assertEqual(before, self.snapshot())
+
+    def test_malformed_hook_argv_with_no_logging_writes_nothing_at_all(self):
+        self.assertEqual((0, "", ""), self.run_hook(["bogus"]))
+        self.assertEqual([], self.home_entries())
+
+    def test_hook_word_is_a_hook_only_as_the_first_argument(self):
+        code, stdout, stderr = self.run_main(["claude", "hook", "SessionStart"])
+        self.assertEqual((2, ""), (code, stdout))
+        self.assertTrue(stderr.startswith("session-log: unknown command 'hook'"), stderr)
+
+    def test_exception_inside_hook_exits_0_with_no_output(self):
+        self.write_transcript()
+        self.turn_logging_on_long_ago()
+        for failure in (RuntimeError("boom"), OSError("disk"), KeyboardInterrupt(), SystemExit(2), MemoryError()):
+            with self.subTest(failure=type(failure).__name__):
+                with mock.patch("sessionlog.sync.SyncUseCase.sync", side_effect=failure) as sync:
+                    self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"]))
+                sync.assert_called_once()
+
+    def test_relative_home_inside_hook_is_refused_before_any_sync(self):
+        self.use_relative_home()
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"], home=RELATIVE_HOME))
+        self.assertEqual([], self.archived_logs())
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"], home=os.path.join(self.home, "relative", "home")))
+        self.assertEqual(1, len(self.archived_logs()))  # the same store is synced once its home is absolute
+
+    def test_hook_on_a_home_that_never_enabled_logging_creates_nothing(self):
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"]))
+        self.assertEqual([], self.home_entries())
+
+    def test_hook_under_python_3_13_writes_nothing_and_under_3_14_syncs(self):
+        self.seed_ready_store()
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"], version_info=(3, 13, 7)))
+        self.assertEqual([], self.archived_logs())
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"], version_info=(3, 14, 0)))
+        self.assertEqual(1, len(self.archived_logs()))
+
+    def test_prompt_logs_that_is_a_file_inside_hook_exits_0_with_no_output(self):
+        os.makedirs(self.claude)
+        with open(self.log_root, "w", encoding="utf-8") as stream:
+            stream.write("not a folder")
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"]))
+
+    def test_claude_session_start_hook_syncs_and_prints_nothing(self):
+        self.write_transcript()
+        self.turn_logging_on_long_ago()
+        self.assertEqual([], self.archived_logs())
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"]))
+        self.assertEqual(1, len(self.archived_logs()))
+        self.assertTrue(os.path.isfile(os.path.join(self.log_root, SYNC_STATE)))
+        self.assertEqual(1, len(self.archived_files(REPORT_SUFFIX)))
+        after_first = self.snapshot()
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"]))
+        self.assertEqual(after_first, self.snapshot())
+
+    def test_hook_while_logging_is_off_writes_nothing(self):
+        self.write_transcript()
+        before = self.snapshot()
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"]))
+        self.assertEqual(before, self.snapshot())
+
+    def test_hook_sync_runs_under_the_20_second_hook_budget(self):
+        self.write_transcript()
+        self.turn_logging_on_long_ago()
+        with mock.patch("sessionlog.sync.SyncUseCase.sync") as sync:
+            self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"]))
+        sync.assert_called_once_with(HOOK_SYNC_BUDGET_SECONDS)
+        self.assertEqual(20.0, HOOK_SYNC_BUDGET_SECONDS)
+
+    def test_hook_stops_starting_sessions_after_the_budget_and_the_next_hook_continues(self):
+        self.write_transcript(session="first")
+        self.write_transcript(session="second")
+        self.turn_logging_on_long_ago()
+        # The clock jumps past the budget as soon as one session is archived.
+        clock = lambda: FIXED_NOW + timedelta(seconds=BEYOND_BUDGET_SECONDS if self.archived_logs() else 0)
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"], now=clock))
+        self.assertEqual(1, len(self.archived_logs()))
+        self.assertEqual((0, "", ""), self.run_hook(["claude", "SessionStart"], now=clock))
+        self.assertEqual(2, len(self.archived_logs()))
+
+    def test_hook_leaves_the_injected_streams_untouched_on_sync_success_and_failure(self):
+        self.write_transcript()
+        self.turn_logging_on_long_ago()
+        for failure in (None, RuntimeError("boom")):
+            with self.subTest(failure=failure):
+                stdout, stderr = mock.Mock(), mock.Mock()
+                with mock.patch("sessionlog.sync.SyncUseCase.sync", side_effect=failure) if failure else contextlib.nullcontext():
+                    code = session_log.main(["hook", "claude", "SessionStart"], self.environment(stdout, stderr))
+                self.assertEqual(0, code)
+                self.assertEqual([], stdout.method_calls + stderr.method_calls)
+
+    def test_real_hook_process_syncs_and_stays_silent_while_stdin_stays_open_and_never_written(self):
+        self.write_transcript()
+        self.turn_logging_on_long_ago()
+        returncode, stdout, stderr = self.run_hook_process_with_open_stdin()
+        self.assertEqual((0, b"", b""), (returncode, stdout, stderr))
+        self.assertEqual(1, len(self.archived_logs()))
+
+    def test_real_hook_process_whose_sync_fails_exits_0_with_empty_real_stdout_and_stderr(self):
+        os.makedirs(self.claude)
+        with open(self.log_root, "w", encoding="utf-8") as stream:
+            stream.write("not a folder")
+        self.assertEqual((0, b"", b""), self.run_hook_process_with_open_stdin())
+
+    def test_real_hook_process_ignores_the_claude_json_payload_even_with_a_bom_and_invalid_bytes(self):
+        self.seed_ready_store()
+        self.assertEqual((0, b"", b""), self.run_hook_process(payload=CLAUDE_HOOK_PAYLOAD))
+        self.assertEqual(1, len(self.archived_logs()))
+
+    def test_real_hook_process_with_a_relative_home_syncs_nothing_and_stays_silent(self):
+        self.use_relative_home()
+        env = self.hook_process_env(HOME=RELATIVE_HOME, USERPROFILE=RELATIVE_HOME)
+        self.assertEqual((0, b"", b""), self.run_hook_process(env=env, cwd=self.home))
+        self.assertEqual([], self.archived_logs())
+
+    def test_real_hook_process_without_the_package_beside_it_exits_0_with_empty_real_stdout_and_stderr(self):
+        lonely = os.path.join(self.home, "lonely")
+        os.makedirs(lonely)
+        shutil.copy(str(ENTRY), lonely)
+        self.seed_ready_store()
+        self.assertEqual((0, b"", b""), self.run_hook_process(script=os.path.join(lonely, ENTRY.name)))
+        self.assertEqual([], self.archived_logs())
+
+    def test_real_hook_process_with_a_malformed_argv_exits_0_with_empty_real_stdout_and_stderr(self):
+        self.assertEqual((0, b"", b""), self.run_hook_process(arguments=("bogus",)))
 
 
 class EntryFileSyntaxTests(unittest.TestCase):
@@ -465,6 +691,11 @@ class SubprocessTests(SandboxCase):
 
     def test_old_python_never_imports_the_package(self):
         call = ("session_log.main(['claude', 'on'], session_log.Environment("
+                "version_info=(3, 4, 0), stderr=io.StringIO(), stdout=io.StringIO(), home=%r))" % self.home)
+        self.assertEqual("False", self.import_state_after(call))
+
+    def test_old_python_hook_never_imports_the_package(self):
+        call = ("session_log.main(['hook', 'claude', 'SessionStart'], session_log.Environment("
                 "version_info=(3, 4, 0), stderr=io.StringIO(), stdout=io.StringIO(), home=%r))" % self.home)
         self.assertEqual("False", self.import_state_after(call))
 
