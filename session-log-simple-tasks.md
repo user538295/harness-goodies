@@ -340,7 +340,7 @@ flowchart LR
         - #unit_test — `test_streamed_copies_count_once_with_last_copy_interrupted_turn_counted_fast_uses_fast_rates` — S41
         - #unit_test — `test_corrupt_and_truncated_lines_skipped_next_record_kept_working_time_ends_at_last_output` — S41
         - #unit_test — `test_unknown_record_types_skipped_silently_only_unparsable_file_listed` — S16
-- [ ] **BE-12** — ClaudeReader sub-agents: `<sid>/subagents/**/agent-*.jsonl` (nested and workflow) with `agent-*.meta.json` type, id, start time, parent, unit count; log has header, `## <time>` prompts, `### <time> response` replies, no tool calls #backend-role
+- [x] **BE-12** — ClaudeReader sub-agents: `<sid>/subagents/**/agent-*.jsonl` (nested and workflow) with `agent-*.meta.json` type, id, start time, parent, unit count; log has header, `## <time>` prompts, `### <time> response` replies, no tool calls #backend-role
     - Interface Adapters · 4.0h
     - needs BE-11 · completes S6
     - Tests

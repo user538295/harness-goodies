@@ -1,16 +1,21 @@
-"""Pure parsing of a Claude Code main-session transcript (its JSON lines) into prompts; no file access."""
+"""Pure parsing of a Claude Code main-session transcript (its JSON lines) into prompts, and of a sub-agent transcript into
+one run; no file access."""
 import json
 import math
 import re
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple, TypeVar, Union
 
 from .model import Prompt, RequestUsage
 
+_F = TypeVar("_F", bound="_RecordFolder")
+
 Record = Dict[str, Any]
 
+TRANSCRIPT_SUFFIX = ".jsonl"
 _USER = "user"
 _ASSISTANT = "assistant"
 _ATTACHMENT = "attachment"
@@ -36,12 +41,14 @@ _MessageKey = Union[str, int]
 
 @dataclass(frozen=True)
 class Transcript:
-    """`started_at` and `project_dir` are taken from records of any type.
+    """`started_at` and `project_dir` are taken from records of any type. `message_ids` are the ids of the assistant
+    messages whose requests the prompts count.
     `unparsable`: the text has lines, none of them a JSON object."""
 
     started_at: Optional[datetime]
     project_dir: Optional[str]
     prompts: Tuple[Prompt, ...]
+    message_ids: FrozenSet[str]
     unparsable: bool
 
 
@@ -232,6 +239,11 @@ class _Turn:
     def has_reply(self) -> bool:
         return self._last_key is not None
 
+    @property
+    def message_ids(self) -> List[str]:
+        """The ids of the messages whose requests this turn counts."""
+        return [key for key in self._requests if isinstance(key, str)]
+
     def add(self, reply: _Reply) -> None:
         if self._keep_replies:
             self._kept_replies.append(reply)
@@ -277,16 +289,12 @@ def _decode(line: str) -> Optional[Record]:
     return record if isinstance(record, dict) else None
 
 
-class _Folder:
-    """Folds the lines of one session into turns: assistant entries go to the latest turn, a bridge-session record
-    switches the session to Remote Control."""
+class _RecordFolder(ABC):
+    """Feeds the JSON object of every line to `_add_record`; a line that is blank or not a JSON object is skipped."""
 
     def __init__(self) -> None:
-        self._started_at: Optional[datetime] = None
-        self._project_dir: Optional[str] = None
-        self._remote_control = False
-        self._saw_text = self._saw_record = False
-        self._turns: List[_Turn] = []
+        self._saw_text = False
+        self._saw_record = False
 
     def add_line(self, line_number: int, line: str) -> None:
         if not line.strip():
@@ -296,6 +304,32 @@ class _Folder:
         if record is not None:
             self._saw_record = True
             self._add_record(line_number, record)
+
+    @abstractmethod
+    def _add_record(self, line_number: int, record: Record) -> None:
+        ...
+
+    @property
+    def _unparsable(self) -> bool:
+        return self._saw_text and not self._saw_record
+
+
+def _fold(folder: _F, lines: Iterable[str]) -> _F:
+    for line_number, line in enumerate(lines):
+        folder.add_line(line_number, line)
+    return folder
+
+
+class _Folder(_RecordFolder):
+    """Folds the lines of one session into turns: assistant entries go to the latest turn, a bridge-session record
+    switches the session to Remote Control."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._started_at: Optional[datetime] = None
+        self._project_dir: Optional[str] = None
+        self._remote_control = False
+        self._turns: List[_Turn] = []
 
     def _add_record(self, line_number: int, record: Record) -> None:
         moment = _moment(record)
@@ -308,27 +342,79 @@ class _Folder:
         elif self._turns and record.get("type") == _ASSISTANT and not _is_synthetic(record):
             self._turns[-1].add(_Reply(_message_key(record, line_number), _request_of(record), _text_blocks(record), moment))
 
-    def _prompts(self) -> Tuple[Prompt, ...]:
+    def _counted_turns(self) -> List[_Turn]:
         """A plain user entry outside a Remote Control session is no prompt and hands its replies to the turn before
-        (this consumes the turns); a command is a prompt only when a reply followed it; a turn without a valid time is
-        dropped."""
+        (this consumes the turns); a command is a prompt only when a reply followed it."""
         holders: List[_Turn] = []
         for turn in self._turns:
             if turn.kind is not _Kind.REMOTE or self._remote_control:
                 holders.append(turn)
             elif holders:
                 turn.hand_replies_to(holders[-1])
-        finished = (turn.finish() for turn in holders if turn.is_prompt(self._remote_control))
-        return tuple(prompt for prompt in finished if prompt is not None)
+        return [turn for turn in holders if turn.is_prompt(self._remote_control)]
 
     def transcript(self) -> Transcript:
-        return Transcript(self._started_at, self._project_dir, self._prompts(), unparsable=self._saw_text and not self._saw_record)
+        """A turn without a valid time is dropped, and so are its requests."""
+        finished = [(turn, turn.finish()) for turn in self._counted_turns()]
+        kept = [(turn, prompt) for turn, prompt in finished if prompt is not None]
+        message_ids = frozenset(message_id for turn, _ in kept for message_id in turn.message_ids)
+        return Transcript(self._started_at, self._project_dir, tuple(prompt for _, prompt in kept), message_ids,
+                          unparsable=self._unparsable)
 
 
 def parse_main_session(lines: Iterable[str]) -> Transcript:
     """The lines of one main session folded into prompts; every line that is not a JSON object (torn, blank, too deeply
     nested) is skipped, and so is every assistant record before the first prompt or from `<synthetic>`."""
-    folder = _Folder()
-    for line_number, line in enumerate(lines):
-        folder.add_line(line_number, line)
-    return folder.transcript()
+    return _fold(_Folder(), lines).transcript()
+
+
+@dataclass(frozen=True)
+class MessageRequest:
+    """One request and the id of the message it came from (see `Transcript.message_ids`); None when the record carries no
+    such id (a request recognised only by its line is never the same request as one in another file)."""
+
+    message_id: Optional[str]
+    usage: RequestUsage
+
+
+@dataclass(frozen=True)
+class SubAgentTranscript:
+    """`started_at` is the earliest timestamp of any record, in UTC; `working_time` runs from it to the last assistant
+    output (0 without any); `requests` are the assistant messages in order of first appearance, a streamed message once
+    with its last copy. `unparsable`: the text has lines, none of them a JSON object."""
+
+    started_at: Optional[datetime]
+    working_time: timedelta
+    requests: Tuple[MessageRequest, ...]
+    unparsable: bool
+
+
+class _SubAgentFolder(_RecordFolder):
+    """A sub-agent transcript has no prompt markers, so every assistant entry that is not `<synthetic>` belongs to the run."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._started_at: Optional[datetime] = None
+        self._last_output: Optional[datetime] = None
+        self._requests: Dict[_MessageKey, RequestUsage] = {}
+
+    def _add_record(self, line_number: int, record: Record) -> None:
+        moment = _moment(record)
+        self._started_at = _earliest(self._started_at, moment)
+        if record.get("type") != _ASSISTANT or _is_synthetic(record):
+            return
+        self._last_output = _latest(self._last_output, moment)
+        request = _request_of(record)
+        if request is not None:
+            self._requests[_message_key(record, line_number)] = request
+
+    def transcript(self) -> SubAgentTranscript:
+        started_at = self._started_at.astimezone(timezone.utc) if self._started_at else None
+        working_time = self._last_output - started_at if self._last_output else timedelta(0)
+        requests = tuple(MessageRequest(key if isinstance(key, str) else None, request) for key, request in self._requests.items())
+        return SubAgentTranscript(started_at, working_time, requests, unparsable=self._unparsable)
+
+
+def parse_sub_agent_session(lines: Iterable[str]) -> SubAgentTranscript:
+    """The lines of one sub-agent transcript folded into one run; bad lines are skipped as in `parse_main_session`."""
+    return _fold(_SubAgentFolder(), lines).transcript()
