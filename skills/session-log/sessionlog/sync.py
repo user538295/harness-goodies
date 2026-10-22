@@ -43,7 +43,7 @@ from .archive_port import Archive
 from .model import Session, is_safe_id
 from .pricing import PricingRules
 from .reader_port import UNSAFE_ID_REASON, SessionReader, SourceUnit, root_id_of
-from .state_port import StateStore
+from .state_port import StateStore, recorded_session_key
 
 # Raised by every change that alters log or report text for the same source (readers, model, PricingRules, writer,
 # prices.json); `test_render_version` pins the sha256 of prices.json to it.
@@ -138,7 +138,7 @@ class SyncUseCase:
         cannot be learned, or whose session id is not a safe id (it would become a path), is recorded unreadable and left out."""
         grouped: Dict[str, List[SourceUnit]] = {}
         for unit in scan_units:
-            known_key = (state["units"].get(unit.key) or {}).get("sessionKey")
+            known_key = recorded_session_key(state, unit.key)
             session_key = known_key or self._reader.session_of(unit)
             if session_key is None:
                 state["units"][unit.key] = {"state": UNIT_UNREADABLE, "reason": UNKNOWN_SESSION_REASON}

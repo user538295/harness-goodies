@@ -121,10 +121,12 @@ def _home_folder(environment):
 
 
 class _Composition(object):
-    """The adapters of one run and the sync use case over them; command use cases are built over them only for a command."""
+    """The adapters of one run, the sync use case and the usage target resolver; command use cases are built over them only
+    for a command."""
 
-    def __init__(self, sync, archive, state, price_book, log_root):
+    def __init__(self, sync, targets, archive, state, price_book, log_root):
         self.sync = sync
+        self.targets = targets
         self.archive = archive
         self.state = state
         self.price_book = price_book
@@ -132,12 +134,13 @@ class _Composition(object):
 
 
 def _compose(harness, environment):
-    """Builds every adapter of one run, then the sync use case over them."""
+    """Builds every adapter of one run, the sync use case and the usage target resolver over them."""
     from sessionlog.log_usage_writer import LogUsageWriter
     from sessionlog.price_file import PriceFile
     from sessionlog.pricing import PricingRules
     from sessionlog.state import FileStateStore
     from sessionlog.sync import SyncUseCase
+    from sessionlog.usage_target import UsageTargetResolver
     from pathlib import Path
 
     path_module = environment.path_module
@@ -146,23 +149,26 @@ def _compose(harness, environment):
     price_book = PriceFile(Path(PRICE_FILE_PATH))
     archive = LogUsageWriter(log_root, environment.to_local, path_module)
     state = FileStateStore(log_root)
-    sync = SyncUseCase(_build_reader(harness, root), archive, state, PricingRules(price_book), environment.now)
-    return _Composition(sync, archive, state, price_book, log_root)
+    reader = _build_reader(harness, root)
+    sync = SyncUseCase(reader, archive, state, PricingRules(price_book), environment.now)
+    return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, price_book, log_root)
 
 
 def _run(harness, command, target, environment):
     """Returns (code, stdout text, stderr text) of one parsed command."""
     from sessionlog import presentation
-    from sessionlog.commands import CommandError, CommandUseCases
+    from sessionlog.command_error import CommandError
+    from sessionlog.commands import CommandUseCases
 
     composition = _compose(harness, environment)
-    use_cases = CommandUseCases(composition.sync, composition.archive, composition.state, composition.price_book,
-                                environment.now, composition.log_root, environment.path_module)
+    use_cases = CommandUseCases(composition.sync, composition.targets, composition.archive, composition.state,
+                                composition.price_book, environment.now, composition.log_root)
     handlers = {
         "on": lambda: presentation.render_on(use_cases.on()),
         "off": lambda: presentation.render_off(use_cases.off()),
         "status": lambda: presentation.render_status(use_cases.status()),
-        "usage": lambda: presentation.render_usage(use_cases.usage(environment.get_cwd(), target)),
+        "usage": lambda: presentation.render_usage(
+            use_cases.usage_latest(environment.get_cwd()) if target is None else use_cases.usage_of(target)),
     }
     try:
         return EXIT_OK, handlers[command](), ""

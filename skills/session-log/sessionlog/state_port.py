@@ -4,6 +4,16 @@ from datetime import datetime
 from typing import Optional, Protocol
 
 
+def parse_timestamp(value: str) -> datetime:
+    """A time as `.sync.json` holds it: ISO 8601, `Z` accepted for UTC."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def recorded_session_key(state: dict, unit_key: str) -> Optional[str]:
+    """The session key `.sync.json` records for the source unit; None for a unit sync has not learned yet."""
+    return (state["units"].get(unit_key) or {}).get("sessionKey")
+
+
 @dataclass(frozen=True)
 class OnFlag:
     on_at: datetime

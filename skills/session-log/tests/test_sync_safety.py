@@ -15,6 +15,7 @@ from sessionlog.reader_port import CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_RE
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import RENDER_VERSION, SyncUseCase
+from sessionlog.usage_target import UsageTargetResolver
 from tests.test_log_usage_writer import SHIFT_AT, Shifting
 from tests.test_sync import (FILES_PER_SESSION, NOW, ON_AT, ONE_DAY, PROJECT, CountingReader, RealArchiveTestCase,
                              _agent_transcript, _NoPrices, _transcript)
@@ -154,7 +155,7 @@ class SafetyTestCase(RealArchiveTestCase):
         state = FileStateStore(self.logs)
         archive = LogUsageWriter(self.logs, lambda moment: moment)
         sync = SyncUseCase(self.reader, archive, state, PricingRules(_NoPrices()), lambda: NOW)
-        return CommandUseCases(sync, archive, state, _NoPrices(), lambda: NOW, self.logs)
+        return CommandUseCases(sync, UsageTargetResolver(self.reader), archive, state, _NoPrices(), lambda: NOW, self.logs)
 
     def _saved(self):
         return FileStateStore(self.logs).load_sync()
@@ -286,7 +287,7 @@ class PartlyGoneTest(SafetyTestCase):
                 self.assertEqual((entry["state"], entry["reason"], entry["unitCount"], entry["logPath"]),
                                  ("skipped", PARTLY_GONE, UNITS_WITH_AGENT, partial_log))
                 self.assertEqual(commands.status().unreadable, (UnreadableItem(partial_log, PARTLY_GONE),))
-                self.assertEqual(commands.usage(CWD).report_text, partial_report)
+                self.assertEqual(commands.usage_latest(CWD).report_text, partial_report)
         return files
 
     def test_counted_subagent_file_present_but_unreadable_withholds_the_rewrite_and_a_valid_file_rewrites_it(self):
@@ -331,7 +332,7 @@ class FailedReplaceTest(SafetyTestCase):
             outcome = self._sync()
             reason = self._entry("s1")["reason"]
             status = commands.status().unreadable
-            printed = commands.usage(CWD).report_text
+            printed = commands.usage_latest(CWD).report_text
         self.assertEqual(_temp_files(self.logs), [])
         self.assertEqual(self._entry("s1")["state"], "skipped")
         return outcome.unsaved_reports[self._key("s1")], reason, status, printed

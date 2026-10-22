@@ -18,6 +18,7 @@ from sessionlog.reader_port import UNSAFE_ID_REASON, ReadResult, ScanResult, Sou
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import RENDER_VERSION, SyncUseCase
+from sessionlog.usage_target import UsageTargetResolver
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "claude", "main_session.jsonl")
 PROJECT = "-work-proj"
@@ -625,7 +626,8 @@ class SyncUnsafeIdTest(RealArchiveTestCase):
         outside = self._files_outside_the_log_root()
         state = FileStateStore(self.logs)
         sync = SyncUseCase(self.reader, self.archive, state, PricingRules(_NoPrices()), lambda: NOW)
-        status = CommandUseCases(sync, self.archive, state, _NoPrices(), lambda: NOW, self.logs).status()
+        status = CommandUseCases(sync, UsageTargetResolver(self.reader), self.archive, state, _NoPrices(), lambda: NOW,
+                                 self.logs).status()
         self.assertEqual(status.unreadable, (UnreadableItem(device, UNSAFE_ID_REASON), UnreadableItem(unsafe, UNSAFE_ID_REASON),
                                              UnreadableItem(orphan, UNSAFE_ID_REASON)))
         self.assertEqual(status.archived_session_count, 1)

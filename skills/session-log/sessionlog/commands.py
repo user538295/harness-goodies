@@ -3,22 +3,17 @@
 While logging is on, every command syncs first (`off` syncs once, then turns off). While off, no command syncs.
 Failures a user must hear about are raised as `CommandError`; the entry prints them as `session-log: <msg>`.
 """
-import functools
-import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from .archive_port import Archive
+from .command_error import CommandError
 from .pricing import PriceBook
-from .state_port import OnFlag, StateStore
+from .reader_port import root_id_of
+from .state_port import OnFlag, StateStore, parse_timestamp
 from .sync import SESSION_SKIPPED, UNIT_UNREADABLE, SyncOutcome, SyncUseCase
-
-LATEST = "latest"
-
-
-class CommandError(Exception):
-    """A runtime error with its facts; the entry prints it and exits 1."""
+from .usage_target import UsageTargetResolver
 
 
 @dataclass(frozen=True)
@@ -81,24 +76,21 @@ class UsageResult:
     report_text: str
 
 
-def _timestamp(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
 class CommandUseCases:
-    """`now` returns a timezone-aware datetime; `path_module` is `os.path` (tests pass `ntpath`).
+    """`now` returns a timezone-aware datetime.
 
-    `sync` and `state` must share one `StateStore` instance: its `sync_reset` tells `status` that the sync rebuilt a corrupt file."""
+    `sync` and `state` must share one `StateStore` instance: its `sync_reset` tells `status` that the sync rebuilt a corrupt file.
+    `targets` must read the same store as `sync`."""
 
-    def __init__(self, sync: SyncUseCase, archive: Archive, state: StateStore, price_book: PriceBook,
-                 now: Callable[[], datetime], log_root: str, path_module=os.path) -> None:
+    def __init__(self, sync: SyncUseCase, targets: UsageTargetResolver, archive: Archive, state: StateStore,
+                 price_book: PriceBook, now: Callable[[], datetime], log_root: str) -> None:
         self._sync = sync
+        self._targets = targets
         self._archive = archive
         self._state = state
         self._price_book = price_book
         self._now = now
         self._log_root = log_root
-        self._path = path_module
 
     def on(self) -> OnResult:
         flag = self._state.read_on_flag()
@@ -129,25 +121,34 @@ class CommandUseCases:
             on_at=flag.on_at if flag else None,
             on_at_from_file_time=bool(flag and flag.from_file_time),
             log_root=self._log_root,
-            last_sync_at=_timestamp(last_sync_at) if last_sync_at else None,
+            last_sync_at=parse_timestamp(last_sync_at) if last_sync_at else None,
             archived_session_count=len(state["sessions"]),
             unreadable=self._unreadable(state),
             price_file_problem=self._price_book.problem(),
             sync_state_reset=self._state.sync_reset)
 
-    def usage(self, cwd: str, target: Optional[str] = None) -> UsageResult:
-        """The report of the root session of the project of `cwd` with the newest prompt; no target and `latest` are the same."""
-        if target not in (None, LATEST):
-            raise CommandError("usage target %r is not supported" % target)
+    def usage_latest(self, cwd: str) -> UsageResult:
+        """`usage` and `usage --latest`: the report of the root session of the project of `cwd` with the newest prompt."""
+        return self._usage(lambda state: self._targets.latest(state, cwd))
+
+    def usage_of(self, target: str) -> UsageResult:
+        """`usage <id>`: the report of the session `target` names, matched exactly, else as a unique prefix, over archived and
+        store sessions together. The word `latest` is such an id, never the flag."""
+        return self._usage(lambda state: self._targets.by_id(state, target))
+
+    def _usage(self, resolve: Callable[[dict], str]) -> UsageResult:
         outcome = self._sync_while_on()
         state = self._state.load_sync()
-        session_key = self._latest_session_key(state["sessions"], cwd)
+        session_key = resolve(state)
         report_text = outcome.unsaved_reports.get(session_key)
         if report_text is None:
-            log_path = state["sessions"][session_key]["logPath"]
-            report_text = self._archive.read_report(log_path)
+            entry = state["sessions"].get(session_key)
+            if entry is None:
+                raise CommandError("session %s has no saved report: it was never archived" % root_id_of(session_key))
+            report_text = self._archive.read_report(entry["logPath"])
             if report_text is None:
-                raise CommandError("the saved report of session %s beside %s cannot be read" % (session_key, log_path))
+                raise CommandError("the saved report of session %s beside %s cannot be read"
+                                   % (root_id_of(session_key), entry["logPath"]))
         return UsageResult(report_text)
 
     def _sync_while_on(self) -> SyncOutcome:
@@ -163,38 +164,3 @@ class CommandUseCases:
             if entry["state"] == SESSION_SKIPPED:
                 items.append(UnreadableItem(entry["logPath"], entry.get("reason", "")))
         return tuple(items)
-
-    def _real_or_same(self, folder: str) -> str:
-        """`realpath`, or the folder itself when it cannot be resolved (a recorded cwd may hold any text)."""
-        try:
-            return self._path.realpath(folder)
-        except (OSError, ValueError):
-            return folder
-
-    def _project_sessions(self, sessions: Dict[str, dict], cwd: str) -> Dict[str, dict]:
-        """The root sessions recorded in `cwd`; when none, those of its nearest parent folder that has any.
-        Folders match under `normcase`, or both after `realpath` (looked up once per distinct folder)."""
-        roots = {key: entry for key, entry in sessions.items() if not entry["orphan"] and "projectDir" in entry}
-        real_of = functools.lru_cache(maxsize=None)(self._real_or_same)
-        normcase = self._path.normcase
-        folder = cwd
-        while True:
-            folder_normal, folder_real = normcase(folder), real_of(folder)
-            found = {key: entry for key, entry in roots.items()
-                     if normcase(entry["projectDir"]) == folder_normal or real_of(entry["projectDir"]) == folder_real}
-            parent = self._path.dirname(folder)
-            if found or parent == folder:
-                return found
-            folder = parent
-
-    def _latest_session_key(self, sessions: Dict[str, dict], cwd: str) -> str:
-        candidates = self._project_sessions(sessions, cwd)
-        if not candidates:
-            raise CommandError("no archived session for this project (%s)" % cwd)
-
-        def rank(item: Tuple[str, dict]) -> Tuple[bool, datetime, str]:
-            key, entry = item
-            prompt_at = entry.get("lastPromptAt")  # a session without a prompt ranks below every session with one
-            return (prompt_at is not None, _timestamp(prompt_at or entry["lastActivityAt"]), key)
-
-        return max(candidates.items(), key=rank)[0]

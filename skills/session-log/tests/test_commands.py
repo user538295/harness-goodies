@@ -9,11 +9,13 @@ from typing import Dict, Optional
 
 from sessionlog.archive_port import WriteOutcome
 from sessionlog.claude_reader import ClaudeReader
-from sessionlog.commands import CommandError, CommandUseCases, OffResult, OnResult, UnreadableItem
+from sessionlog.command_error import CommandError
+from sessionlog.commands import CommandUseCases, OffResult, OnResult, UnreadableItem
 from sessionlog.pricing import PricingRules
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import SyncOutcome, SyncUseCase
+from sessionlog.usage_target import UsageTargetResolver
 from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, FakeArchive, _NoPrices, _transcript
 
 CWD = "/work/proj"
@@ -67,9 +69,11 @@ class CommandTestCase(unittest.TestCase):
         self.state = FileStateStore(self.log_root)
         self.archive = ReportKeepingArchive()
         self.prices = _Prices()
-        self.sync = SpySync(SyncUseCase(ClaudeReader(self.root), self.archive, self.state, PricingRules(self.prices),
+        self.reader = ClaudeReader(self.root)
+        self.sync = SpySync(SyncUseCase(self.reader, self.archive, self.state, PricingRules(self.prices),
                                         lambda: self.clock))
-        self.commands = CommandUseCases(self.sync, self.archive, self.state, self.prices, lambda: self.clock, self.log_root)
+        self.commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state, self.prices,
+                                        lambda: self.clock, self.log_root)
 
     def _install(self, sid, *prompt_times):
         path = os.path.join(self.folder, sid + ".jsonl")
@@ -151,7 +155,7 @@ class OnOffTest(CommandTestCase):
             def sync(self):
                 return SyncOutcome()
 
-        commands = CommandUseCases(NoSync(), None, RacedState(), None, lambda: NOW, self.log_root)
+        commands = CommandUseCases(NoSync(), None, None, RacedState(), None, lambda: NOW, self.log_root)
         self.assertEqual(commands.on(), OnResult(False, earlier, self.log_root))
 
     def test_off_syncs_before_it_turns_off_so_a_late_session_is_archived(self):
@@ -167,7 +171,7 @@ class OnOffTest(CommandTestCase):
             def sync(self):
                 raise OSError("read-only")
 
-        commands = CommandUseCases(Failing(), self.archive, self.state, self.prices, lambda: NOW, self.log_root)
+        commands = CommandUseCases(Failing(), None, self.archive, self.state, self.prices, lambda: NOW, self.log_root)
         with self.assertRaises(OSError):
             commands.off()
         self.assertIsNone(self.state.read_on_flag())
@@ -179,7 +183,7 @@ class OnOffTest(CommandTestCase):
         self.assertEqual((on.already_on, on.on_at), (True, ON_AT))  # the file time is kept; the file is not rewritten
         with open(flag_path, encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "not a time")
-        self.assertEqual(self.commands.usage(CWD).report_text, "report running (1 requests)")  # state rebuilt by the sync
+        self.assertEqual(self.commands.usage_latest(CWD).report_text, "report running (1 requests)")  # state rebuilt by the sync
         self.assertEqual(self.commands.off(), OffResult(False, self.log_root))
         self.assertFalse(os.path.exists(flag_path))
 
@@ -196,7 +200,7 @@ class OnOffTest(CommandTestCase):
         self._install("late", ON_AT + ONE_DAY)
         self.commands.status()
         with self.assertRaises(CommandError):
-            self.commands.usage(CWD)
+            self.commands.usage_latest(CWD)
         self.assertEqual(self.sync.calls, 0)
         self.assertEqual(self.archive.writes, [])
         self.assertFalse(os.path.exists(os.path.join(self.log_root, ".sync.json")))
@@ -269,23 +273,23 @@ class UsageTest(CommandTestCase):
         self._enable()
         self._two_sessions()
         expected = "report newer (1 requests)"
-        self.assertEqual(self.commands.usage(CWD).report_text, expected)
-        self.assertEqual(self.commands.usage(CWD, "latest").report_text, expected)
+        self.assertEqual(self.commands.usage_latest(CWD).report_text, expected)
+        self.assertEqual(self.commands.usage_of("newer").report_text, expected)
         self.assertEqual(self.archive.reports["/logs/newer.md"], expected)
 
     def test_usage_from_a_subfolder_uses_the_nearest_parent_project(self):
         self._enable()
         self._two_sessions()
-        self.assertEqual(self.commands.usage(CWD + "/src/deep").report_text, "report newer (1 requests)")
+        self.assertEqual(self.commands.usage_latest(CWD + "/src/deep").report_text, "report newer (1 requests)")
         with self.assertRaisesRegex(CommandError, "/work/other"):
-            self.commands.usage("/work/other")
+            self.commands.usage_latest("/work/other")
 
     def test_usage_while_off_prints_report_saved_at_last_sync_without_syncing(self):
         self._enable()
         self._two_sessions()
         self.commands.off()
         calls = self.sync.calls
-        self.assertEqual(self.commands.usage(CWD).report_text, "report newer (1 requests)")
+        self.assertEqual(self.commands.usage_latest(CWD).report_text, "report newer (1 requests)")
         self.assertEqual(self.sync.calls, calls)
 
     def test_usage_prints_the_report_a_failed_write_could_not_save(self):
@@ -295,7 +299,7 @@ class UsageTest(CommandTestCase):
         self.archive.failure = WriteOutcome(FAILED_FILE, False, WRITE_FAILURE)
         path = self._install("first", ON_AT + ONE_DAY, ON_AT + 3 * ONE_DAY)
         os.utime(path, (NOW.timestamp() + 5, NOW.timestamp() + 5))
-        self.assertEqual(self.commands.usage(CWD).report_text, "report first (2 requests)")
+        self.assertEqual(self.commands.usage_latest(CWD).report_text, "report first (2 requests)")
 
     def test_usage_names_the_log_when_its_saved_report_cannot_be_read(self):
         self._enable()
@@ -303,14 +307,7 @@ class UsageTest(CommandTestCase):
         self.commands.status()
         self.archive.reports.clear()
         with self.assertRaisesRegex(CommandError, "/logs/first.md"):
-            self.commands.usage(CWD)
-
-    def test_unsupported_target_is_a_command_error_before_any_ranking(self):
-        self._enable()
-        self._two_sessions()
-        with self.assertRaisesRegex(CommandError, "abc"):
-            self.commands.usage(CWD, "abc")
-        self.assertEqual(self.sync.calls, 0)
+            self.commands.usage_latest(CWD)
 
 
 class LatestRankingTest(unittest.TestCase):
@@ -332,8 +329,9 @@ class LatestRankingTest(unittest.TestCase):
                 return log_path
 
         sessions = {"claude:" + name: self._entry(name, *values) for name, values in entries.items()}
-        commands = CommandUseCases(None, Archive(), MemoryFlagState(sessions), None, lambda: NOW, "/logs", path_module)
-        return commands.usage(cwd).report_text
+        commands = CommandUseCases(None, UsageTargetResolver(None, path_module), Archive(), MemoryFlagState(sessions), None,
+                                   lambda: NOW, "/logs")
+        return commands.usage_latest(cwd).report_text
 
     def test_prompt_beats_later_activity_without_prompt_and_orphans_never_win(self):
         entries = {

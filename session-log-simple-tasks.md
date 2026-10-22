@@ -404,7 +404,7 @@ flowchart LR
         - #manual_test — `python3` missing: the session continues, Claude may show a non-blocking hook error — S23
 
 ### Phase 6 · Show usage for a chosen or never-archived session
-- [ ] **BE-19** — `usage` target resolution: no argument = `--latest`; project = cwd else nearest parent folder with sessions (symlinked cwd matches); ranking from `.sync.json` only (newest prompt, no-prompt sessions below, newest activity if none, sub-agents and orphans never win); `<id>` exact else unique prefix over archived and store sessions; unknown, ambiguous and empty project exit 1; ports of `test_prompt_log_usage.sh` `:423-503,524-527`, Codex `--latest` ([test_python_adapters.py](./skills/session-log/tests/test_python_adapters.py) `:229-250`), Cursor subfolder `:6119-6125`, OMP id targets #backend-role
+- [x] **BE-19** — `usage` target resolution: no argument = `--latest`; project = cwd else nearest parent folder with sessions (symlinked cwd matches); ranking from `.sync.json` only (newest prompt, no-prompt sessions below, newest activity if none, sub-agents and orphans never win); `<id>` exact else unique prefix over archived and store sessions; unknown, ambiguous and empty project exit 1; ports of `test_prompt_log_usage.sh` `:423-503,524-527`, Codex `--latest` ([test_python_adapters.py](./skills/session-log/tests/test_python_adapters.py) `:229-250`), Cursor subfolder `:6119-6125`, OMP id targets #backend-role
     - Use Cases · 4.0h
     - needs BE-8, BE-15 · completes S37
     - Tests
