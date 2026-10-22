@@ -24,6 +24,7 @@ agents/devils-advocate.md
 
 # --- skills (each shipped skill ships its whole directory) ---
 skills/aaa/
+skills/app-store-review/
 skills/bugfix/
 skills/clean-code-review/
 skills/commit/
