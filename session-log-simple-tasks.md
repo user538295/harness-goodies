@@ -322,7 +322,7 @@ flowchart LR
     - Presentation · 2.0h
     - needs K1 · completes S66
     - Tests
-- [ ] **T-2** — Release 1 gate: scripted isolated `opencode serve` plus a real OpenCode ≥ 2.0.4 run, and the S66 wording read-through, before release 1 ships #tester-role
+- [x] **T-2** — Release 1 gate: scripted isolated `opencode serve` plus a real OpenCode ≥ 2.0.4 run, and the S66 wording read-through, before release 1 ships #tester-role
     - — · 3.0h
     - needs BE-10, FE-3 · completes S27, S66
     - Tests
