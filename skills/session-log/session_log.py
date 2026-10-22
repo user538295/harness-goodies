@@ -134,7 +134,8 @@ class _Composition(object):
 
 
 def _compose(harness, environment):
-    """Builds every adapter of one run, the sync use case and the usage target resolver over them."""
+    """Builds every adapter of one run, the sync use case and the usage target resolver over them, and ends by converting an old
+    release's `.enabled` flag, so what a command or the hook reads afterwards is the converted state."""
     from sessionlog.log_usage_writer import LogUsageWriter
     from sessionlog.price_file import PriceFile
     from sessionlog.pricing import PricingRules
@@ -148,10 +149,11 @@ def _compose(harness, environment):
     log_root = path_module.join(root, LOG_FOLDER_NAME)
     price_book = PriceFile(Path(PRICE_FILE_PATH))
     archive = LogUsageWriter(log_root, environment.to_local, path_module)
-    state = FileStateStore(log_root)
+    state = FileStateStore(log_root, environment.now)
     reader = _build_reader(harness, root)
     pricing = PricingRules(price_book)
     sync = SyncUseCase(reader, archive, state, pricing, environment.now)
+    state.migrate_enabled()
     return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, pricing, log_root)
 
 

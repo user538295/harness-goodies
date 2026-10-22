@@ -2,7 +2,7 @@
 
 Sync documents use the contract's JSON field names. Each store tracks the last loaded snapshot to detect competing writes; create one store per sync run.
 The persistent .sync.lock serializes re-read/merge/replace across processes and is released by the OS on exit. sync_reset stays true for the run after rebuilding corrupt state.
-Legacy-flag migration belongs to the separate command/hook migration task. Flag fallback is reported by OnFlag.from_file_time; reading never repairs the flag.
+`migrate_enabled` converts an old release's `.enabled` flag; commands and hooks run it before they read the flag, which stays a pure read. Flag fallback is reported by OnFlag.from_file_time; reading never repairs the flag.
 """
 import copy
 import json
@@ -11,11 +11,16 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from stat import S_ISREG
+from typing import Callable, Optional
 
 from .state_port import OnFlag
 
 MAX_INT32 = 2**31 - 1
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
 
 
 def _empty_state():
@@ -87,12 +92,29 @@ def _sync_lock(root):
 
 
 class FileStateStore:
-    """Exclusive on flag and replace-based, key-merged sync state."""
+    """Exclusive on flag (with the one-time `.enabled` conversion) and replace-based, key-merged sync state."""
 
-    def __init__(self, root):
+    def __init__(self, root, now: Callable[[], datetime] = _utc_now):
+        """`now` returns a timezone-aware datetime: the on-time of a migrated flag."""
         self.root = Path(root)
         self.sync_reset = False
         self._baseline = _empty_state()
+        self._now = now
+
+    def migrate_enabled(self) -> None:
+        """`.enabled` -> `.log_enabled`, once and for good. Only a regular file counts, not a directory, a FIFO or a link: that is
+        what an old release created, and a link is never followed. The conversion is `write_on_flag`'s exclusive create (a
+        `.log_enabled` that already exists, and its on-time, win), then the removal of `.enabled`, which another run may have
+        done first. A failed creation leaves `.enabled` in place, so logging is never switched off; a failed removal raises with
+        the new flag in place: an `.enabled` that stays keeps the old release's hooks logging beside the new sync."""
+        legacy = self.root / '.enabled'
+        try:
+            if not S_ISREG(legacy.lstat().st_mode):
+                return
+        except FileNotFoundError:
+            return
+        self.write_on_flag(OnFlag(self._now()))
+        legacy.unlink(missing_ok=True)
 
     def read_on_flag(self) -> Optional[OnFlag]:
         try:

@@ -420,7 +420,7 @@ flowchart LR
         - #integration_test — `test_unreadable_source_exits_1_and_symlinked_harness_root_still_fails` — S68
 
 ### Phase 7 · Upgrade from the old release without losing logging
-- [ ] **BE-21** — `.enabled` → `.log_enabled` migration in every command and hook after the root checks and before the `.log_enabled` check: exclusive create (on-time = now), then `.enabled` removal that tolerates it being gone; `.log_enabled` wins when both exist #backend-role
+- [x] **BE-21** — `.enabled` → `.log_enabled` migration in every command and hook after the root checks and before the `.log_enabled` check: exclusive create (on-time = now), then `.enabled` removal that tolerates it being gone; `.log_enabled` wins when both exist #backend-role
     - Interface Adapters · 3.0h
     - needs BE-9, BE-17 · completes S32, S49
     - Tests

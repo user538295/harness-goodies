@@ -13,6 +13,13 @@ from unittest.mock import patch
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 
+CONCURRENT_ROUNDS = 50
+RACE_WAIT_SECONDS = 5
+RESULT_WAIT_SECONDS = 10
+MOMENT = datetime(2026, 3, 4, tzinfo=timezone.utc)
+EARLIER_MOMENT = datetime(2026, 1, 1, tzinfo=timezone.utc)
+LATER_MOMENT = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
 
 class StateTests(unittest.TestCase):
     def setUp(self):
@@ -37,6 +44,137 @@ class StateTests(unittest.TestCase):
         self.assertEqual(self.store.read_on_flag().on_at.timestamp(), 1000)
         self.assertTrue(self.store.read_on_flag().from_file_time)
         self.assertEqual(flag.read_text(), 'broken')
+
+    def test_migrate_enabled_creates_log_enabled_with_the_injected_time_then_removes_enabled(self):
+        (self.root / '.enabled').write_text('old flag')
+        FileStateStore(self.root, lambda: MOMENT).migrate_enabled()
+        self.assertFalse((self.root / '.enabled').exists())
+        self.assertEqual((self.root / '.log_enabled').read_text(), MOMENT.isoformat() + '\n')
+        self.assertEqual(self.store.read_on_flag(), OnFlag(MOMENT))
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ['.log_enabled'])
+
+    def test_migrate_enabled_keeps_an_existing_log_enabled_byte_for_byte_and_still_removes_enabled(self):
+        for content in ('2020-01-01T00:00:00+00:00\n', 'broken'):
+            with self.subTest(content=content):
+                (self.root / '.log_enabled').write_text(content)
+                (self.root / '.enabled').write_text('old flag')
+                FileStateStore(self.root, lambda: MOMENT).migrate_enabled()
+                self.assertEqual((self.root / '.log_enabled').read_text(), content)
+                self.assertFalse((self.root / '.enabled').exists())
+
+    def test_migrate_enabled_without_enabled_writes_nothing_and_never_asks_the_clock(self):
+        def clock():
+            raise AssertionError('the clock is for a migration that happens')
+
+        missing = self.root / 'not-created'
+        FileStateStore(missing, clock).migrate_enabled()
+        self.assertFalse(missing.exists())
+        self.store.write_on_flag(OnFlag(EARLIER_MOMENT))
+        before = (self.root / '.log_enabled').stat()
+        FileStateStore(self.root, clock).migrate_enabled()
+        after = (self.root / '.log_enabled').stat()
+        self.assertEqual((before.st_mtime_ns, before.st_size), (after.st_mtime_ns, after.st_size))
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ['.log_enabled'])
+
+    def test_migrate_enabled_tolerates_enabled_removed_by_another_run_meanwhile(self):
+        (self.root / '.enabled').write_text('old flag')
+
+        def clock():  # another run removes `.enabled` after this run saw it and before this run removes it
+            (self.root / '.enabled').unlink()
+            return MOMENT
+
+        FileStateStore(self.root, clock).migrate_enabled()
+        self.assertEqual(self.store.read_on_flag(), OnFlag(MOMENT))
+
+    def test_migrate_enabled_keeps_the_log_enabled_another_run_created_meanwhile(self):
+        (self.root / '.enabled').write_text('old flag')
+
+        def clock():  # another run converts after this run saw `.enabled`: its flag exists before this run creates its own
+            FileStateStore(self.root, lambda: EARLIER_MOMENT).migrate_enabled()
+            return MOMENT
+
+        FileStateStore(self.root, clock).migrate_enabled()
+        self.assertEqual(self.store.read_on_flag(), OnFlag(EARLIER_MOMENT))
+        self.assertEqual((self.root / '.log_enabled').read_text(), EARLIER_MOMENT.isoformat() + '\n')
+        self.assertFalse((self.root / '.enabled').exists())
+
+    def test_migrate_enabled_raises_when_enabled_stays_but_the_log_enabled_is_created_first(self):
+        (self.root / '.enabled').write_text('old flag')
+        with patch.object(Path, 'unlink', side_effect=PermissionError('denied')):
+            with self.assertRaises(PermissionError):
+                FileStateStore(self.root, lambda: MOMENT).migrate_enabled()
+        self.assertEqual(self.store.read_on_flag(), OnFlag(MOMENT))  # the old flag is only ever removed after the new one exists
+        self.assertTrue((self.root / '.enabled').exists())
+
+    def test_migrate_enabled_keeps_enabled_when_the_log_enabled_cannot_be_created(self):
+        (self.root / '.enabled').write_text('old flag')
+        with patch.object(FileStateStore, 'write_on_flag', side_effect=PermissionError('denied')):
+            with self.assertRaises(PermissionError):
+                FileStateStore(self.root, lambda: MOMENT).migrate_enabled()
+        self.assertTrue((self.root / '.enabled').exists())  # logging is never switched off by a failed conversion
+        self.assertIsNone(self.store.read_on_flag())
+
+    def test_migrate_enabled_ignores_an_enabled_that_is_not_a_regular_file(self):
+        """A directory, a FIFO or a link is not what an old release created: nothing is converted, followed or removed. The link
+        and FIFO kinds need POSIX."""
+        def clock():
+            raise AssertionError('nothing to convert')
+
+        legacy = self.root / '.enabled'
+        target = self.root / 'target'
+        target.write_text('old flag')
+        makers = {'directory': legacy.mkdir}
+        if os.name == 'posix':
+            makers['link to a file'] = lambda: legacy.symlink_to(target)
+            makers['dangling link'] = lambda: legacy.symlink_to('no-such-target')
+            makers['FIFO'] = lambda: os.mkfifo(legacy)
+        for kind, make in makers.items():
+            with self.subTest(kind=kind):
+                make()
+                try:
+                    FileStateStore(self.root, clock).migrate_enabled()
+                    self.assertTrue(os.path.lexists(legacy))
+                    self.assertIsNone(self.store.read_on_flag())
+                    self.assertEqual(target.read_text(), 'old flag')
+                finally:
+                    if legacy.is_dir() and not legacy.is_symlink():
+                        legacy.rmdir()
+                    else:
+                        legacy.unlink()
+
+    def test_migrate_enabled_without_an_injected_clock_uses_the_current_time(self):
+        (self.root / '.enabled').write_text('old flag')
+        before = datetime.now(timezone.utc)
+        FileStateStore(self.root).migrate_enabled()
+        after = datetime.now(timezone.utc)
+        flag = self.store.read_on_flag()
+        self.assertFalse(flag.from_file_time)
+        self.assertTrue(before <= flag.on_at <= after, flag)
+
+    def test_concurrent_migrations_create_one_log_enabled_and_none_fails(self):
+        barrier = threading.Barrier(2)
+
+        def clock(moment):
+            def now():  # both runs have seen `.enabled` before either one creates `.log_enabled`
+                barrier.wait(timeout=RACE_WAIT_SECONDS)
+                return moment
+            return now
+
+        def migrate(moment):
+            FileStateStore(self.root, clock(moment)).migrate_enabled()
+
+        with patch.object(FileStateStore, 'write_on_flag', autospec=True, side_effect=FileStateStore.write_on_flag) as create, \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            for _ in range(CONCURRENT_ROUNDS):
+                (self.root / '.log_enabled').unlink(missing_ok=True)
+                (self.root / '.enabled').write_text('old flag')
+                for result in [pool.submit(migrate, moment) for moment in (EARLIER_MOMENT, LATER_MOMENT)]:
+                    result.result(timeout=RESULT_WAIT_SECONDS)  # raises what the run raised
+                self.assertFalse((self.root / '.enabled').exists())
+                self.assertIn((self.root / '.log_enabled').read_text(),
+                              (EARLIER_MOMENT.isoformat() + '\n', LATER_MOMENT.isoformat() + '\n'))
+                self.assertEqual(sorted(path.name for path in self.root.iterdir()), ['.log_enabled'])
+        self.assertEqual(2 * CONCURRENT_ROUNDS, create.call_count)  # in every round both runs tried to create the flag
 
     def test_corrupt_sync_json_rebuilt_and_reported(self):
         for content in ('', '{', '{}', '{"units": [], "sessions": {}}',
