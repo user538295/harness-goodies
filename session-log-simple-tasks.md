@@ -363,7 +363,7 @@ flowchart LR
         - #integration_test — `test_claude_file_with_one_more_turn_read_again_and_log_updated` — S14, Claude part
         - #integration_test — `test_200_unchanged_sessions_not_read_and_known_units_not_learned_twice` — S47, `sessionOf` count through an injected counter
         - #integration_test — `test_unsafe_session_id_not_archived_status_lists_it_subagent_row_and_tokens_stay` — S46
-- [ ] **BE-15** — Sync rewrite safety: unique temp names per run, merge-by-key `.sync.json` saves that drop a changed unit's fingerprint, failed `.sync.json` replace keeps the old file and no temp, failed `os.replace` skips and reports (and hands the unsaved report text back for `usage`), partly gone source never rewritten and named "source partly gone (N of M units)", old-format logs never touched, log path kept so a changed start or cwd or a `TZ` change makes no duplicate #backend-role
+- [x] **BE-15** — Sync rewrite safety: unique temp names per run, merge-by-key `.sync.json` saves that drop a changed unit's fingerprint, failed `.sync.json` replace keeps the old file and no temp, failed `os.replace` skips and reports (and hands the unsaved report text back for `usage`), partly gone source never rewritten and named "source partly gone (N of M units)", old-format logs never touched, log path kept so a changed start or cwd or a `TZ` change makes no duplicate #backend-role
     - Use Cases · 4.0h
     - needs BE-14 · completes S15, S17, S33, S48, S61
     - Tests

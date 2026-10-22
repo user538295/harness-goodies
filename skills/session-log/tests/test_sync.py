@@ -265,7 +265,7 @@ class SyncWriteFailureTest(SyncTestCase):
         outcome = self._sync()
         self.assertEqual(self.state.saved["sessions"], {})
         unit = self.state.saved["units"][path]
-        self.assertEqual((unit["state"], unit["reason"]), ("unreadable", WRITE_FAILURE))
+        self.assertEqual((unit["state"], unit["reason"]), ("unreadable", "/logs/s1.usage.txt: " + WRITE_FAILURE))
         self.assertNotIn("fingerprint", unit)
         self.assertEqual(outcome.unsaved_reports, {self._key("s1"): "report s1 (3 requests)"})
         self.archive.failure = None

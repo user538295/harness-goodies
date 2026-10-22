@@ -17,6 +17,7 @@ from sessionlog.sync import SyncOutcome, SyncUseCase
 from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, FakeArchive, _NoPrices, _transcript
 
 CWD = "/work/proj"
+FAILED_FILE = "/logs/x.md"
 PRICE_PROBLEM = "prices.json is unreadable"
 
 
@@ -221,7 +222,7 @@ class StatusTest(CommandTestCase):
         self.assertEqual(rebuilt.price_file_problem, PRICE_PROBLEM)
         self.assertEqual((rebuilt.archived_session_count, rebuilt.unreadable), (1, ()))
 
-        self.archive.failure = WriteOutcome("/logs/x.md", False, WRITE_FAILURE)
+        self.archive.failure = WriteOutcome(FAILED_FILE, False, WRITE_FAILURE)
         self._append(path_a)
         path_b = self._install("b", ON_AT + ONE_DAY)
         self.clock = NOW + ONE_DAY
@@ -230,7 +231,8 @@ class StatusTest(CommandTestCase):
 
         self.assertEqual(status.last_sync_at, NOW + ONE_DAY)
         self.assertEqual(status.archived_session_count, 1)
-        self.assertEqual(status.unreadable, (UnreadableItem(path_b, WRITE_FAILURE), UnreadableItem("/logs/a.md", WRITE_FAILURE)))
+        failed = "%s: %s" % (FAILED_FILE, WRITE_FAILURE)  # the failed file is named with the reason
+        self.assertEqual(status.unreadable, (UnreadableItem(path_b, failed), UnreadableItem("/logs/a.md", failed)))
         self.assertEqual(status.log_root, self.log_root)
 
     def test_status_without_problems_has_no_optional_fields(self):
@@ -290,7 +292,7 @@ class UsageTest(CommandTestCase):
         self._enable()
         self._install("first", ON_AT + ONE_DAY)
         self.commands.status()  # first session is archived and saved
-        self.archive.failure = WriteOutcome("/logs/x.md", False, WRITE_FAILURE)
+        self.archive.failure = WriteOutcome(FAILED_FILE, False, WRITE_FAILURE)
         path = self._install("first", ON_AT + ONE_DAY, ON_AT + 3 * ONE_DAY)
         os.utime(path, (NOW.timestamp() + 5, NOW.timestamp() + 5))
         self.assertEqual(self.commands.usage(CWD).report_text, "report first (2 requests)")

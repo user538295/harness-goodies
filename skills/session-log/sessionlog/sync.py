@@ -7,6 +7,19 @@ whose id is not a safe id is never read: its units are unreadable with that reas
 without sync is safe as well). A candidate session is read whole from all its units, and when it has activity since the
 on-time its log and report are rewritten whole through `Archive`. Progress is saved after each session (C6), so a killed
 run loses at most the session in progress.
+
+Partly gone: a rewrite never replaces the files of an archived session with a report built from fewer units than the last
+write counted. Its entry changes only in `state` and `reason` (skipped, "source partly gone (N of M units)", N being the
+units available); its files stay. Fewer units present than counted means units are gone, which is detected without reading
+the session; a counted unit that is present but unreadable is detected after the read. The label is the plan's wording for
+the two cases above. Skipped sessions are candidates on every sync, so the session is rewritten once its units are back;
+in the first case this costs no read. The check compares unit counts, as C6 defines them: a deleted unit replaced by a new
+one is not noticed. A scan that could not list a folder makes its units look gone and withholds the same way; the next
+complete scan heals it (the label is transiently off, nothing is dropped). A skipped session whose sources are all gone is
+not retried and stays listed: nothing can heal it and its files are stale.
+
+Retiring: an unreadable unit that left a complete scan can never be retried, so it is recorded inactive and no longer
+listed; with an incomplete scan (a folder that could not be listed) no unit is retired.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +38,7 @@ UNIT_UNREADABLE = "unreadable"
 SESSION_WRITTEN = "written"
 SESSION_SKIPPED = "skipped"
 UNKNOWN_SESSION_REASON = "session cannot be determined"
+PARTLY_GONE_REASON = "source partly gone (%d of %d units)"
 
 _Units = Tuple[SourceUnit, ...]
 
@@ -37,7 +51,8 @@ class SyncOutcome:
 
 
 class _Publication(NamedTuple):
-    """`failure` is None when the files were written; `report_text` is None when rendering failed."""
+    """`failure` is None when the files were written; `report_text` is None when rendering failed. `log_path` is set whenever
+    `failure` is None."""
 
     log_path: Optional[str]
     report_text: Optional[str]
@@ -60,7 +75,11 @@ class SyncUseCase:
         self._now = now
 
     def sync(self) -> SyncOutcome:
-        """Does nothing while logging is off."""
+        """Does nothing while logging is off. A save of `.sync.json` that fails raises its OSError: `usage` ranks the sessions
+        from that file, so a state that cannot be saved cannot serve it either. The old file is kept with no temp file, the
+        files of the sessions written meanwhile stay, and the next sync redoes the work lost with the save; a session
+        written whose entry was not saved gets its log path computed again then (a lost `.sync.json` can give a session a
+        second log)."""
         flag = self._state.read_on_flag()
         if flag is None:
             return SyncOutcome()
@@ -73,6 +92,10 @@ class SyncUseCase:
                 candidates.append((session_key, units))
             else:
                 self._mark_changed_inactive(state, session_key, units)
+        # An unlistable folder makes live units look gone, so nothing is retired then.
+        if not scan.unreadable:
+            # Before the first save on purpose: retiring needs no read.
+            self._retire_vanished_unreadable_units(state, scan.units)
         self._save(state)
         unsaved: Dict[str, str] = {}
         for session_key, units in candidates:
@@ -101,6 +124,16 @@ class SyncUseCase:
                     state["units"].setdefault(unit.key, {"state": UNIT_INACTIVE})["sessionKey"] = session_key
                 grouped.setdefault(session_key, []).append(unit)
         return {session_key: tuple(units) for session_key, units in grouped.items()}
+
+    @staticmethod
+    def _retire_vanished_unreadable_units(state: dict, scan_units: _Units) -> None:
+        """A unit recorded unreadable that is not in the scan any more is recorded inactive, keeping its session key. Units
+        in any other state are left alone: a scan gap must not lose their fingerprints and keys."""
+        scanned = {unit.key for unit in scan_units}
+        for key, entry in state["units"].items():
+            if entry["state"] == UNIT_UNREADABLE and key not in scanned:
+                entry.pop("reason", None)
+                entry["state"] = UNIT_INACTIVE
 
     @staticmethod
     def _changed(state: dict, unit: SourceUnit) -> bool:
@@ -149,11 +182,14 @@ class SyncUseCase:
     def _archive_session(self, state: dict, session_key: str, units: _Units, on_at: datetime) -> Optional[str]:
         """Reads the session whole and archives it when it has activity since the on-time, or when its last rewrite was
         skipped (it is archived already, so a later on-time does not excuse the missing rewrite); returns the report
-        text that could not be saved, if any."""
+        text that could not be saved, if any. Fewer units present than the last write counted are gone: the rewrite is
+        withheld without a read, and no unit is marked, so unreadable ones stay listed and retried."""
+        entry = state["sessions"].get(session_key)
+        if self._withhold_if_partly_gone(entry, len(units)):
+            return None
         result = self._reader.read(session_key, units)
         failed = {source.path: source.reason for source in result.unreadable}
         session = result.session
-        entry = state["sessions"].get(session_key)
         skipped = entry is not None and entry["state"] == SESSION_SKIPPED
         if session is None and failed:
             self._mark(state, session_key, units, UNIT_UNREADABLE, result.unreadable[0].reason, failed)
@@ -163,7 +199,27 @@ class SyncUseCase:
             return self._write_session(state, session_key, units, session, failed)
         return None
 
+    @staticmethod
+    def _skip_rewrite(entry: dict, reason: str, unit_count: Optional[int] = None) -> None:
+        """The entry becomes skipped with `reason` and is retried on every sync; its files stay. A failed write passes the
+        number of units it built from: the writer replaces the log and the report one by one, so either may already hold
+        rows of the new read and `unitCount` must not drop below it (it never shrinks)."""
+        entry.update(state=SESSION_SKIPPED, reason=reason)
+        if unit_count is not None:
+            entry["unitCount"] = max(entry["unitCount"], unit_count)
+
+    def _withhold_if_partly_gone(self, entry: Optional[dict], available: int) -> bool:
+        """Skips the rewrite of an archived session that has fewer units available than its last write counted; `available`
+        is the number of units present before the read, or readable after it. Returns whether it did."""
+        if entry is None or available >= entry["unitCount"]:
+            return False
+        self._skip_rewrite(entry, PARTLY_GONE_REASON % (available, entry["unitCount"]))
+        return True
+
     def _publish(self, session: Session, known_log_path: Optional[str]) -> _Publication:
+        """A failed write is named by its reason. The failed file is put before it unless it is the `logPath` of the session's
+        existing entry (`known_log_path`): `status` shows that path with the reason (`CommandUseCases._unreadable`). A first
+        write has no entry, so status shows the source file and the failed log is named as well."""
         log_path = report_text = None
         try:
             log_path = known_log_path or self._archive.new_log_path(session)
@@ -172,7 +228,10 @@ class SyncUseCase:
             outcome = self._archive.write(log_path, log_text, report_text)
         except Exception as error:
             return _Publication(log_path, report_text, _reason(error))
-        return _Publication(log_path, report_text, None if outcome.written else outcome.reason)
+        if outcome.written:
+            return _Publication(log_path, report_text, None)
+        failure = outcome.reason if outcome.path == known_log_path else "%s: %s" % (outcome.path, outcome.reason)
+        return _Publication(log_path, report_text, failure)
 
     def _already_written(self, state: dict, existing: Optional[dict], units: _Units, failed: Dict[str, str]) -> bool:
         """Whether the files already hold what a rewrite would publish: written by this render version from as many units,
@@ -184,18 +243,25 @@ class SyncUseCase:
 
     def _write_session(self, state: dict, session_key: str, units: _Units, session: Session,
                        failed: Dict[str, str]) -> Optional[str]:
+        """Decides in this order: withhold the rewrite when the session is partly gone; skip it when the files already hold
+        what it would publish; otherwise publish. A success records the entry from the `built_from` readable units. A failure
+        of an archived session skips the rewrite (`unitCount` grows to `built_from`); a failure of a first write leaves the
+        units unreadable with the reason. Returns the report text that could not be saved, if any."""
         existing = state["sessions"].get(session_key)
+        built_from = sum(unit.key not in failed for unit in units)
+        if self._withhold_if_partly_gone(existing, built_from):  # a counted unit is present but unreadable
+            self._mark(state, session_key, units, UNIT_READ, failed=failed)
+            return None
         if self._already_written(state, existing, units, failed):
             self._mark(state, session_key, units, UNIT_READ, failed=failed)
             return None
         log_path, report_text, failure = self._publish(session, existing["logPath"] if existing is not None else None)
         if failure is None:
-            built_from = sum(unit.key not in failed for unit in units)
             state["sessions"][session_key] = self._session_entry(session, log_path, built_from)
             self._mark(state, session_key, units, UNIT_READ, failed=failed)
             return None
         if existing is not None:
-            existing.update(state=SESSION_SKIPPED, reason=failure)
+            self._skip_rewrite(existing, failure, built_from)
             self._mark(state, session_key, units, UNIT_READ, failed=failed)
         else:
             self._mark(state, session_key, units, UNIT_UNREADABLE, failure, failed)
