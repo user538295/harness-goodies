@@ -249,7 +249,7 @@ flowchart LR
         - #unit_test — `test_missing_malformed_or_duplicate_prefix_file_makes_every_price_unknown_and_names_problem` — command still exit 0
         - #unit_test — `test_fast_request_without_fast_rates_unknown_unsplit_cache_write_uses_5m` — plus Codex/Cursor cache-write tokens
         - #unit_test — `test_shipped_prices_json_valid_with_source_and_as_of` — every entry
-- [ ] **BE-5** — LogUsageWriter implementing `Archive` (C3): log path `<slug>/session_<UTC ts>_<id>.md` and report beside it, slug rules through the injected path module, log and report rendered from the C2 `Session`, local times with UTC offset, UTF-8 + LF, unique temp + `os.replace`, stale temps older than 1 hour removed #backend-role
+- [x] **BE-5** — LogUsageWriter implementing `Archive` (C3): log path `<slug>/session_<UTC ts>_<id>.md` and report beside it, slug rules through the injected path module, log and report rendered from the C2 `Session`, local times with UTC offset, UTF-8 + LF, unique temp + `os.replace`, stale temps older than 1 hour removed #backend-role
     - Interface Adapters · 4.0h
     - needs BE-1, BE-3 · completes C3, S38, S53
     - Tests
