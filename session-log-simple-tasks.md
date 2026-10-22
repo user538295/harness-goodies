@@ -278,7 +278,7 @@ flowchart LR
         - #integration_test — `test_on_off_semantics_on_keeps_time_off_syncs_once_off_while_off_noop` — S49
         - #integration_test — `test_status_reports_counts_unreadable_and_state_reset` — corrupt `.sync.json` and unparsable `.log_enabled` (S49)
         - #integration_test — `test_usage_latest_prints_saved_report_text` — no argument equals `--latest`
-- [ ] **FE-1** — Presentation module: render `OnResult`, `OffResult`, every `StatusResult` field and `UsageResult` text on stdout (pure result → text, no I/O); the fixed wording is chosen here and pinned by the S67 tests #frontend-role
+- [x] **FE-1** — Presentation module: render `OnResult`, `OffResult`, every `StatusResult` field and `UsageResult` text on stdout (pure result → text, no I/O); the fixed wording is chosen here and pinned by the S67 tests #frontend-role
     - Presentation · 3.0h
     - needs K1 · completes S67
     - Tests
