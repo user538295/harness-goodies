@@ -293,7 +293,7 @@ flowchart LR
         - #unit_test — `test_skill_md_has_no_repair_no_install_sh_no_managed_marker` — static text
         - #integration_test — `test_locator_prints_newest_copy_holding_session_log_py_skipping_seeded_and_neutralized` — `mkpackage` builds [SKILL.md](./skills/session-log/SKILL.md) + stub `session_log.py`; old seeded copy (SKILL.md + `install.sh`) loses to the plugin cache (S60)
         - #integration_test — `test_locator_not_found_prints_error_with_session_log_home_hint` — Q26
-- [ ] **BE-9** — Entry script `session_log.py`: parses on Python 3.4 and checks ≥ 3.9 before importing `sessionlog/`; stdout and stderr UTF-8; argv with its own `session-log:` texts, exit 0/1/2, no traceback; composition root builds the Claude reader, Archive, StateStore, PriceBook, injected clock, platform, path module; dispatches one use case and prints via the presentation module #backend-role
+- [x] **BE-9** — Entry script `session_log.py`: parses on Python 3.4 and checks ≥ 3.9 before importing `sessionlog/`; stdout and stderr UTF-8; argv with its own `session-log:` texts, exit 0/1/2, no traceback; composition root builds the Claude reader, Archive, StateStore, PriceBook, injected clock, platform, path module; dispatches one use case and prints via the presentation module #backend-role
     - Frameworks & Drivers · 4.0h
     - needs BE-4, BE-8, FE-1 · completes C1, S5, S36, S54
     - Tests
