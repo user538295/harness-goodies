@@ -271,7 +271,7 @@ flowchart LR
         - #integration_test — `test_sync_archives_session_active_since_on_and_skips_older` — fakes for ports, real fixture
         - #integration_test — `test_unchanged_fingerprint_session_not_read_again` — cost does not grow
         - #integration_test — `test_progress_saved_after_each_session` — kill mid-run keeps finished sessions
-- [ ] **BE-8** — Command use cases `on`, `off`, `status`, `usage` (latest saved report ranked by newest prompt from `.sync.json`) returning `OnResult`, `OffResult`, `StatusResult`, `UsageResult`; `on` while on keeps the on-time; `off` syncs once then turns off; `off` while off does nothing; while off no command syncs #backend-role
+- [x] **BE-8** — Command use cases `on`, `off`, `status`, `usage` (latest saved report ranked by newest prompt from `.sync.json`) returning `OnResult`, `OffResult`, `StatusResult`, `UsageResult`; `on` while on keeps the on-time; `off` syncs once then turns off; `off` while off does nothing; while off no command syncs #backend-role
     - Use Cases · 4.0h
     - needs BE-7 · completes C1, S49
     - Tests
