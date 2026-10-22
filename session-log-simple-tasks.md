@@ -257,7 +257,7 @@ flowchart LR
         - #unit_test — `test_prompt_head_first_60_chars_newlines_tabs_one_space_no_split_multibyte` — S53, ports `test_prompt_log_usage.sh` `:116,139,385-389`
         - #unit_test — `test_times_render_local_with_utc_offset_zero_offset_plain_utc` — `UTC+2`, `UTC-5`, `UTC+5:30`, `UTC`
         - #integration_test — `test_write_goes_through_unique_temp_then_replace_stale_temp_removed_fresh_kept` — UTF-8, LF line ends
-- [ ] **BE-6** — ClaudeReader, main session: `scan` with fingerprints, `sessionOf` from the path (`~/.claude/projects/<cwd with non-alnum → '-'>/<sid>.jsonl`), prompt, final reply and per-message usage, built from fixtures cut by the dev (text only, anonymized, Q21), ported from the builders in `test_prompt_log_usage.sh` `:88-190` #backend-role
+- [x] **BE-6** — ClaudeReader, main session: `scan` with fingerprints, `sessionOf` from the path (`~/.claude/projects/<cwd with non-alnum → '-'>/<sid>.jsonl`), prompt, final reply and per-message usage, built from fixtures cut by the dev (text only, anonymized, Q21), ported from the builders in `test_prompt_log_usage.sh` `:88-190` #backend-role
     - Interface Adapters · 4.0h
     - needs BE-1 · completes C2
     - Tests
