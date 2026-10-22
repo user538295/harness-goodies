@@ -22,7 +22,7 @@ from sessionlog.sync import SyncUseCase
 from sessionlog.usage_target import MAX_LISTED_MATCHES, UsageTargetResolver
 from tests.test_commands import ReportKeepingArchive
 from tests.test_session_log import SandboxCase
-from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, _NoPrices, _stamp
+from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, NoLeftovers, _NoPrices, _stamp
 
 PROJECT = "/work/proj"
 OTHER_PROJECT = "/work/other"
@@ -73,7 +73,7 @@ class UsageTargetTestCase(unittest.TestCase):
         self.sync = _CountingSync(SyncUseCase(self.reader, self.archive, self.state, PricingRules(_NoPrices()), lambda: NOW))
         self.commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state,
                                         PricingRules(_NoPrices()),
-                                        lambda: NOW, self.log_root)
+                                        lambda: NOW, self.log_root, NoLeftovers())
 
     def _install(self, session_id: str, cwd: str = PROJECT, prompts=(), activity=None, modified=NOW):
         """A main session file: one typed prompt per time in `prompts`, each answered a second later, and an extra reply at

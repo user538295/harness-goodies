@@ -121,22 +121,25 @@ def _home_folder(environment):
 
 
 class _Composition(object):
-    """The adapters of one run, the sync use case and the usage target resolver; command use cases are built over them only
-    for a command."""
+    """The adapters of one run, the sync use case, the usage target resolver and the leftover scan; command use cases are built
+    over them only for a command."""
 
-    def __init__(self, sync, targets, archive, state, pricing, log_root):
+    def __init__(self, sync, targets, archive, state, pricing, log_root, leftover_scan):
         self.sync = sync
         self.targets = targets
         self.archive = archive
         self.state = state
         self.pricing = pricing
         self.log_root = log_root
+        self.leftover_scan = leftover_scan
 
 
 def _compose(harness, environment):
     """Builds every adapter of one run, the sync use case and the usage target resolver over them, and ends by converting an old
     release's `.enabled` flag, so what a command or the hook reads afterwards is the converted state."""
+    from sessionlog.leftover_scan import LeftoverScan
     from sessionlog.log_usage_writer import LogUsageWriter
+    from sessionlog.model import Harness
     from sessionlog.price_file import PriceFile
     from sessionlog.pricing import PricingRules
     from sessionlog.state import FileStateStore
@@ -154,7 +157,8 @@ def _compose(harness, environment):
     pricing = PricingRules(price_book)
     sync = SyncUseCase(reader, archive, state, pricing, environment.now)
     state.migrate_enabled()
-    return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, pricing, log_root)
+    return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, pricing, log_root,
+                        LeftoverScan(Harness(harness), root))
 
 
 def _run(harness, command, target, environment):
@@ -165,7 +169,7 @@ def _run(harness, command, target, environment):
 
     composition = _compose(harness, environment)
     use_cases = CommandUseCases(composition.sync, composition.targets, composition.archive, composition.state,
-                                composition.pricing, environment.now, composition.log_root)
+                                composition.pricing, environment.now, composition.log_root, composition.leftover_scan)
     handlers = {
         "on": lambda: presentation.render_on(use_cases.on()),
         "off": lambda: presentation.render_off(use_cases.off()),

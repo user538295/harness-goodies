@@ -47,6 +47,13 @@ def _transcript(*prompt_times: datetime) -> str:
     return "".join(json.dumps(record) + "\n" for record in records)
 
 
+class NoLeftovers:
+    """A leftover scan that finds nothing."""
+
+    def scan(self):
+        return ()
+
+
 class _NoPrices:
     def rate_for(self, model_name, fast):
         return None
@@ -627,7 +634,7 @@ class SyncUnsafeIdTest(RealArchiveTestCase):
         state = FileStateStore(self.logs)
         sync = SyncUseCase(self.reader, self.archive, state, PricingRules(_NoPrices()), lambda: NOW)
         status = CommandUseCases(sync, UsageTargetResolver(self.reader), self.archive, state, PricingRules(_NoPrices()), lambda: NOW,
-                                 self.logs).status()
+                                 self.logs, NoLeftovers()).status()
         self.assertEqual(status.unreadable, (UnreadableItem(device, UNSAFE_ID_REASON), UnreadableItem(unsafe, UNSAFE_ID_REASON),
                                              UnreadableItem(orphan, UNSAFE_ID_REASON)))
         self.assertEqual(status.archived_session_count, 1)

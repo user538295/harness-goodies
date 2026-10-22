@@ -427,7 +427,7 @@ flowchart LR
         - #integration_test — `test_old_enabled_converted_before_on_check_same_run_proceeds_as_on` — S32
         - #integration_test — `test_two_hooks_at_once_create_one_log_enabled_on_time_kept_neither_fails` — S32
         - #integration_test — `test_both_flags_present_log_enabled_wins_enabled_removed` — S49
-- [ ] **BE-22** — Leftover scan module (the closed C1 list: old hook entries in `~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.cursor/hooks.json`; `~/.claude/scripts/prompt_log_*`; seeded `skills/session-log` copies; OpenCode and OMP plugin, command, script and extension files; old `<harness root>/session-log/`; `~/.claude/session-maps/`) reported by `on` and `status` with a one-line fix, nothing deleted; recognizers ported from `lib/legacy_cleanup.sh` and `lib/claude_settings.py` #backend-role
+- [x] **BE-22** — Leftover scan module (the closed C1 list: old hook entries in `~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.cursor/hooks.json`; `~/.claude/scripts/prompt_log_*`; seeded `skills/session-log` copies; OpenCode and OMP plugin, command, script and extension files; old `<harness root>/session-log/`; `~/.claude/session-maps/`) reported by `on` and `status` with a one-line fix, nothing deleted; recognizers ported from `lib/legacy_cleanup.sh` and `lib/claude_settings.py` #backend-role
     - Interface Adapters · 4.0h
     - needs BE-8 · completes S26
     - Tests

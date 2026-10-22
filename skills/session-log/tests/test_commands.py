@@ -17,7 +17,7 @@ from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import SyncOutcome, SyncUseCase
 from sessionlog.usage_target import UsageTargetResolver
-from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, FakeArchive, _NoPrices, _transcript
+from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, FakeArchive, NoLeftovers, _NoPrices, _transcript
 
 CWD = "/work/proj"
 FAILED_FILE = "/logs/x.md"
@@ -75,7 +75,7 @@ class CommandTestCase(unittest.TestCase):
                                         lambda: self.clock))
         self.commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state,
                                         PricingRules(self.prices),
-                                        lambda: self.clock, self.log_root)
+                                        lambda: self.clock, self.log_root, NoLeftovers())
 
     def _install(self, sid, *prompt_times):
         path = os.path.join(self.folder, sid + ".jsonl")
@@ -157,7 +157,7 @@ class OnOffTest(CommandTestCase):
             def sync(self):
                 return SyncOutcome()
 
-        commands = CommandUseCases(NoSync(), None, None, RacedState(), None, lambda: NOW, self.log_root)
+        commands = CommandUseCases(NoSync(), None, None, RacedState(), None, lambda: NOW, self.log_root, NoLeftovers())
         self.assertEqual(commands.on(), OnResult(False, earlier, self.log_root))
 
     def test_off_syncs_before_it_turns_off_so_a_late_session_is_archived(self):
@@ -174,7 +174,7 @@ class OnOffTest(CommandTestCase):
                 raise OSError("read-only")
 
         commands = CommandUseCases(Failing(), None, self.archive, self.state, PricingRules(self.prices), lambda: NOW,
-                                   self.log_root)
+                                   self.log_root, NoLeftovers())
         with self.assertRaises(OSError):
             commands.off()
         self.assertIsNone(self.state.read_on_flag())
@@ -336,7 +336,7 @@ class LatestRankingTest(unittest.TestCase):
 
         sessions = {"claude:" + name: self._entry(name, *values) for name, values in entries.items()}
         commands = CommandUseCases(None, UsageTargetResolver(EmptyStore(), path_module), Archive(), MemoryFlagState(sessions),
-                                   None, lambda: NOW, "/logs")
+                                   None, lambda: NOW, "/logs", NoLeftovers())
         return commands.usage_latest(cwd).report_text
 
     def test_prompt_beats_later_activity_without_prompt_and_orphans_never_win(self):

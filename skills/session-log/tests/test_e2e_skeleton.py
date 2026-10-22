@@ -231,6 +231,18 @@ class OnTests(SkeletonCase):
         self.assertEqual({ACTIVE_SESSION}, set(self.saved_logs()))  # ... and neither the old nor the stale one
         self.assertIn(PROMPT_TEXT, self.saved_logs()[ACTIVE_SESSION])
 
+    def test_on_and_status_name_an_old_release_leftover_with_its_fix_and_delete_nothing(self):
+        old_script = os.path.join(self.claude, "scripts", "prompt_log_save.sh")
+        os.makedirs(os.path.dirname(old_script))
+        with open(old_script, "w", encoding="utf-8") as handle:
+            handle.write("old")
+        expected = "  %s: move it aside" % old_script
+
+        for command in ("on", "status"):
+            lines = self.run_ok(command).splitlines()
+            self.assertEqual(["Old-release leftovers (not deleted):", expected], lines[-2:], command)
+        self.assertTrue(os.path.exists(old_script))
+
 
 class OffTests(SkeletonCase):
     def test_off_syncs_once_deletes_log_enabled_keeps_logs_and_nothing_syncs_after(self):

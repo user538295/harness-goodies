@@ -6,7 +6,8 @@ except a `UsageResult`, whose report text is returned unchanged.
 from datetime import datetime
 from typing import List, Optional, Sequence
 
-from .commands import Leftover, OffResult, OnResult, ProbeResult, StatusResult, UnreadableItem, UsageResult
+from .commands import OffResult, OnResult, ProbeResult, StatusResult, UnreadableItem, UsageResult
+from .leftover_port import Leftover
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
 LEFTOVERS_HEADING = "Old-release leftovers (not deleted):"
