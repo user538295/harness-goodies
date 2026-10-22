@@ -241,7 +241,7 @@ flowchart LR
         - #unit_test — `test_known_model_priced_with_own_cache_read_write_5m_1h_and_fast_rates` — effort shown, rate unchanged (S19)
         - #unit_test — `test_unknown_model_row_unknown_total_incomplete_never_zero` — S18
         - #unit_test — `test_rows_rounded_half_up_mixed_row_incomplete_total_is_sum_of_rows` — S52, ports `test_prompt_log_usage.sh` `:505-511`
-- [ ] **BE-4** — PriceFile loader implementing `PriceBook`, and the shipped `prices.json` (`prefixes`, `in`, `out`, `cache_read`, `cache_write_5m`, `cache_write_1h`, optional `fast`, `source`, `as_of`); rates and `source` taken from the official pricing pages the brief's F6 names (Claude, Codex, Cursor) #backend-role
+- [x] **BE-4** — PriceFile loader implementing `PriceBook`, and the shipped `prices.json` (`prefixes`, `in`, `out`, `cache_read`, `cache_write_5m`, `cache_write_1h`, optional `fast`, `source`, `as_of`); rates and `source` taken from the official pricing pages the brief's F6 names (Claude, Codex, Cursor) #backend-role
     - Interface Adapters · 2.0h
     - needs BE-3 · completes C4, S51
     - Tests
