@@ -441,7 +441,7 @@ flowchart LR
     - Tests
         - #unit_test — `test_probe_failure_of_any_cause_on_windows_returns_fix_and_stand_in_exit_code_irrelevant` — S24, Q2
         - #unit_test — `test_probe_not_run_on_macos_or_linux` — S1
-- [ ] **T-4** — Entry file on the oldest Python: command and hook on `python:3.4-slim` (the harness must be `sh`) #tester-role
+- [x] **T-4** — Entry file on the oldest Python: command and hook on `python:3.4-slim` (the harness must be `sh`) #tester-role
     - — · 2.0h
     - needs BE-9, BE-17 · completes S55
     - Tests
