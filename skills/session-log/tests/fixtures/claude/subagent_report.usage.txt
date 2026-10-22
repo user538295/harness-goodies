@@ -1,0 +1,24 @@
+session: 0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+harness: claude
+project: /work/proj
+times: UTC
+
+1. 10:00:01 (working time 00:00:04) "ask one"
+est. used token: input: 1100000, output: 150000, cache_create: 300000, cache_read: 1000000, total_tokens: 2550000, price: $11.00, model: claude-opus-5-5+claude-opus-5-5:fast, effort: high+max
+2. 10:00:20 (working time 00:00:02) "ask two"
+est. used token: input: 500000, output: 10000, cache_create: 0, cache_read: 0, total_tokens: 510000, price: $1.10, model: claude-sonnet-5-5, effort: -
+3. 10:00:40 (working time 00:00:00) "ask three"
+est. used token: input: 0, output: 0, cache_create: 0, cache_read: 0, total_tokens: 0, price: $0.00, model: -, effort: -
+
+sub-agent: general-purpose (agent-a1), working time: 00:00:02
+est. used token: input: 200000, output: 100000, cache_create: 0, cache_read: 0, total_tokens: 300000, price: $0.70, model: claude-haiku-4-5, effort: -
+sub-agent: Explore (agent-a2), working time: 00:00:01
+est. used token: input: 100000, output: 20000, cache_create: 0, cache_read: 150000, total_tokens: 270000, price: $0.42, model: claude-sonnet-5-5, effort: -
+sub-agent: Plan (agent-b1), working time: 00:00:04
+est. used token: input: 10000, output: 1000, cache_create: 0, cache_read: 0, total_tokens: 11000, price: $0.02, model: claude-haiku-4-5, effort: -
+sub-agent: workflow-step (agent-w1), working time: 00:00:01
+est. used token: input: 100000, output: 10000, cache_create: 0, cache_read: 0, total_tokens: 110000, price: $1.20, model: claude-opus-5-5:fast, effort: low
+
+TOTAL (3 requests, 4 sub-agents)
+working time: 00:00:06
+est. used token: input: 2010000, output: 291000, cache_create: 300000, cache_read: 1150000, total_tokens: 3751000, price: $14.44, model: claude-haiku-4-5+claude-opus-5-5+claude-opus-5-5:fast+claude-sonnet-5-5, effort: high+low+max

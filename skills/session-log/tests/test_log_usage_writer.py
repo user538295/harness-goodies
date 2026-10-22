@@ -53,7 +53,8 @@ def row(head="h", at=START, working=timedelta(0), price=None):
 
 
 def report_of(*rows, project="/p"):
-    total = Total(total_tokens=0, price_cents=0, price_incomplete=False, api_equivalent=False, working_time=timedelta(0),
+    total = Total(total_tokens=0, price_cents=0, price_incomplete=False, api_equivalent=False,
+                  working_time=timedelta(seconds=sum(int(each.working_time.total_seconds()) for each in rows)),
                   request_count=len(rows), sub_agent_count=0, input_tokens=0, output_tokens=0, cache_read_tokens=0,
                   cache_write_tokens=0, model_names="m", effort=None)
     return UsageReport(harness=Harness.CLAUDE, session_id="abc", project_dir=project, prompts=tuple(rows),
@@ -199,10 +200,10 @@ class RenderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             writer().render_report(report_of(row(price=Price(5, "bogus"))))
 
-    def test_total_working_time_is_the_sum_of_the_displayed_whole_second_rows(self):
-        text = writer().render_report(report_of(row(working=timedelta(seconds=1.6)), row(working=timedelta(seconds=1.6))))
-        self.assertEqual(text.count("(working time 00:00:01)"), 2)
-        self.assertIn("\nworking time: 00:00:02\n", text)
+    def test_total_working_time_line_renders_the_total_as_given(self):
+        text = writer().render_report(report_of(row(working=timedelta(seconds=3725))))
+        self.assertEqual(text.count("(working time 01:02:05)"), 1)
+        self.assertIn("\nworking time: 01:02:05\n", text)
 
     def test_negative_cents_put_the_sign_before_the_dollar(self):
         priced = writer().render_report(report_of(row(price=Price(-195, PRICED))))

@@ -346,7 +346,7 @@ flowchart LR
     - Tests
         - #unit_test — `test_nested_and_workflow_subagents_attach_to_session_with_type_from_meta` — S6
         - #integration_test — `test_claude_log_has_header_prompts_and_final_replies_no_tool_calls_and_no_helpers_line` — S6
-- [ ] **BE-13** — PricingRules and report rendering for sub-agents: nested sub-agent rows ordered by start then id, TOTAL tokens and price = main + every sub-agent, working time = main per-prompt times only, `TOTAL (N requests, M sub-agents)`, models sorted, unique, joined `+`, `:fast` marks #backend-role
+- [x] **BE-13** — PricingRules and report rendering for sub-agents: nested sub-agent rows ordered by start then id, TOTAL tokens and price = main + every sub-agent, working time = main per-prompt times only, `TOTAL (N requests, M sub-agents)`, models sorted, unique, joined `+`, `:fast` marks #backend-role
     - Use Cases · 3.0h
     - needs BE-5, BE-12 · completes S20, S63
     - Tests

@@ -173,7 +173,7 @@ class LogUsageWriter:
         total = report.total
         status = PARTIAL if total.price_incomplete else PRICED
         lines += ["", "TOTAL (%d requests, %d sub-agents)" % (total.request_count, total.sub_agent_count),
-                  "working time: %s" % _clock_text(sum(_whole_seconds(row.working_time) for row in report.prompts))]
+                  "working time: %s" % _duration(total.working_time)]
         if total.label:
             lines.append(_single_line(total.label))
         lines.append(_estimate(total, _price(Price(total.price_cents, status), api)))

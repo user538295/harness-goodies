@@ -1,4 +1,4 @@
-"""PricingRules acceptance examples (S18, S19, S52)."""
+"""PricingRules acceptance examples (S18, S19, S20, S52)."""
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -97,7 +97,15 @@ class PricingTests(unittest.TestCase):
             result = report((), harness=harness)
             self.assertEqual(result.total.api_equivalent, harness in (Harness.CODEX, Harness.CURSOR))
             self.assertEqual(result.prompts[0].working_time, timedelta(0))
-            self.assertEqual(result.prompts[0].price.status, "unknown")
+
+    def test_row_without_requests_is_zero_priced_and_keeps_total_complete_unlike_unknown_model(self):
+        agent = SubAgent(agent_id="idle", type="worker", started_at=NOW)
+        result = report((request(recorded_cost_usd=0.25),), (), agents=(agent,))
+        for row in (result.prompts[1], result.sub_agents[0]):
+            self.assertEqual((row.price.cents, row.price.status, row.total_tokens), (0, "priced", 0))
+        self.assertEqual(result.total.price_cents, 25)
+        self.assertFalse(result.total.price_incomplete)
+        self.assertTrue(report((request("unknown"),), agents=(agent,)).total.price_incomplete)
 
     def test_cursor_total_is_always_labelled_main_only_and_incomplete(self):
         result = report((request(recorded_cost_usd=0),), harness=Harness.CURSOR)
@@ -138,3 +146,57 @@ class PricingTests(unittest.TestCase):
         result = report((request(recorded_cost_usd=0),), harness=Harness.CURSOR, agents=(missing,))
         self.assertTrue(result.total.price_incomplete)
         self.assertIsNone(result.sub_agents[0].total_tokens)
+
+    def test_total_includes_every_subagent_and_working_time_is_main_only(self):
+        child = SubAgent(agent_id="child", type="worker", started_at=NOW, working_time=timedelta(seconds=50),
+                         requests=(request(recorded_cost_usd=0.005, output_tokens=7),))
+        parent = SubAgent(agent_id="parent", type="worker", started_at=NOW, working_time=timedelta(seconds=100),
+                          requests=(request(recorded_cost_usd=0.005, input_tokens=3),), sub_agents=(child,))
+        prompt = Prompt(submitted_at=NOW, text="hello", reply_at=NOW + timedelta(seconds=4),
+                        working_time=timedelta(seconds=4), requests=(request(recorded_cost_usd=0.005, input_tokens=2),))
+        result = PricingRules(Book()).build(Session(harness=Harness.CLAUDE, session_id="total", started_at=NOW,
+                                                   prompts=(prompt,), sub_agents=(parent,)))
+        rows = (*result.prompts, *result.sub_agents)
+        self.assertEqual([row.price.cents for row in rows], [1, 1, 1])
+        self.assertEqual((result.total.total_tokens, result.total.price_cents, result.total.request_count,
+                          result.total.sub_agent_count), (12, 3, 1, 2))
+        self.assertEqual(result.total.working_time, timedelta(seconds=4))
+        self.assertFalse(result.total.price_incomplete)
+
+    def test_total_working_time_is_the_sum_of_the_whole_seconds_shown_on_main_rows(self):
+        prompts = tuple(Prompt(submitted_at=NOW, text="hello", reply_at=NOW + timedelta(seconds=5),
+                               working_time=timedelta(seconds=4.9)) for _ in range(2))
+        result = PricingRules(Book()).build(Session(harness=Harness.CLAUDE, session_id="whole", started_at=NOW,
+                                                   prompts=prompts))
+        self.assertEqual([row.working_time for row in result.prompts], [timedelta(seconds=4)] * 2)
+        self.assertEqual(result.total.working_time, timedelta(seconds=8))
+
+    def test_unreplied_prompt_has_zero_working_time_whatever_its_recorded_time(self):
+        prompt = Prompt(submitted_at=NOW, text="hello", working_time=timedelta(seconds=9))
+        result = PricingRules(Book()).build(Session(harness=Harness.CLAUDE, session_id="open", started_at=NOW, prompts=(prompt,)))
+        self.assertEqual((result.prompts[0].working_time, result.total.working_time), (timedelta(0), timedelta(0)))
+
+    def test_fraction_below_half_a_cent_rounds_down_and_missing_tokens_make_the_agent_row_incomplete(self):
+        self.assertEqual(report((request(recorded_cost_usd=0.004),)).prompts[0].price.cents, 0)
+        for requests, status in (((), "unknown"), ((request(recorded_cost_usd=0.125),), "partial")):
+            agent = SubAgent(agent_id="missing", type="worker", started_at=NOW, requests=requests, tokens_not_recorded=True)
+            self.assertEqual(report(agents=(agent,)).sub_agents[0].price.status, status)
+
+    def test_unknown_model_subagent_marks_total_incomplete_while_cents_still_sum(self):
+        agent = SubAgent(agent_id="new-model", type="worker", started_at=NOW,
+                         requests=(request("unknown", input_tokens=5), request(recorded_cost_usd=0.5)))
+        result = report((request(recorded_cost_usd=0.25),), agents=(agent,))
+        self.assertEqual((result.sub_agents[0].price.status, result.sub_agents[0].price.cents), ("partial", 50))
+        self.assertEqual((result.total.price_cents, result.total.price_incomplete), (75, True))
+
+    def test_subagent_rows_with_same_start_ordered_by_id_at_each_level(self):
+        def agent(agent_id, started=NOW, children=()):
+            return SubAgent(agent_id=agent_id, type="worker", started_at=started, sub_agents=children)
+
+        later = NOW + timedelta(seconds=1)
+        result = report(agents=(
+            agent("agent-c", children=(agent("agent-y", later), agent("agent-z"), agent("agent-x"))),
+            agent("agent-late", later), agent("agent-b"), agent("agent-a", later)))
+        self.assertEqual([(row.agent_id, row.depth) for row in result.sub_agents], [
+            ("agent-b", 0), ("agent-c", 0), ("agent-x", 1), ("agent-z", 1), ("agent-y", 1),
+            ("agent-a", 0), ("agent-late", 0)])

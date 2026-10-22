@@ -15,6 +15,10 @@ PARTIAL = "partial"
 UNKNOWN = "unknown"
 
 
+def _whole_seconds(span: timedelta) -> timedelta:
+    return timedelta(seconds=max(0, int(span.total_seconds())))
+
+
 def _prompt_head(text: str) -> str:
     return re.sub(r"[\r\n\t]+", " ", text)[:PROMPT_HEAD_LENGTH]
 
@@ -85,7 +89,7 @@ class SubAgentRow(Usage):
 
 @dataclass(frozen=True)
 class Total:
-    """Sum of displayed row cents and tokens; main durations only, explicit incomplete/API flags."""
+    """Sum of displayed row cents and tokens; main durations only, in the whole seconds the rows show; explicit incomplete/API flags."""
 
     total_tokens: int
     price_cents: int
@@ -141,12 +145,12 @@ class PricingRules:
             if cost is not None:
                 known += 1
                 amount += cost
-        if not known:
-            status = UNKNOWN
-        elif known == len(requests) and not missing:
+        if known == len(requests) and not missing:
             status = PRICED
-        else:
+        elif known:
             status = PARTIAL
+        else:
+            status = UNKNOWN
         input_tokens = sum(r.input_tokens for r in requests)
         output_tokens = sum(r.output_tokens for r in requests)
         cache_read = sum(r.cache_read_tokens for r in requests)
@@ -162,7 +166,7 @@ class PricingRules:
         """Prefer recorded costs; round each row once, then sum rows without repricing."""
         prompts = tuple(PromptRow(
             **self._usage(prompt.requests), at=prompt.submitted_at,
-            working_time=(prompt.working_time or timedelta(0)) if prompt.reply_at is not None else timedelta(0),
+            working_time=_whole_seconds(prompt.working_time or timedelta(0)) if prompt.reply_at is not None else timedelta(0),
             prompt_head=_prompt_head(prompt.text)) for prompt in session.prompts)
         agents = []
 
