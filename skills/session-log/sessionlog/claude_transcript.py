@@ -1,6 +1,5 @@
 """Pure parsing of a Claude Code main-session transcript (its JSON lines) into prompts, and of a sub-agent transcript into
 one run; no file access."""
-import json
 import math
 import re
 from abc import ABC, abstractmethod
@@ -9,11 +8,10 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple, TypeVar, Union
 
+from .json_records import Record, decode_record, parse_moment
 from .model import Prompt, RequestUsage
 
 _F = TypeVar("_F", bound="_RecordFolder")
-
-Record = Dict[str, Any]
 
 TRANSCRIPT_SUFFIX = ".jsonl"
 _USER = "user"
@@ -70,17 +68,7 @@ def _token_count(value: Any) -> int:
 
 
 def _moment(record: Record) -> Optional[datetime]:
-    try:
-        moment = datetime.fromisoformat(record.get("timestamp"))
-    except (TypeError, ValueError):
-        return None
-    if moment.utcoffset() is None:
-        return None
-    try:
-        moment.astimezone(timezone.utc)
-    except OverflowError:
-        return None
-    return moment
+    return parse_moment(record.get("timestamp"))
 
 
 def _cwd(record: Record) -> Optional[str]:
@@ -281,14 +269,6 @@ class _Turn:
         )
 
 
-def _decode(line: str) -> Optional[Record]:
-    try:
-        record = json.loads(line)
-    except (ValueError, RecursionError):
-        return None
-    return record if isinstance(record, dict) else None
-
-
 class _RecordFolder(ABC):
     """Feeds the JSON object of every line to `_add_record`; a line that is blank or not a JSON object is skipped."""
 
@@ -300,7 +280,7 @@ class _RecordFolder(ABC):
         if not line.strip():
             return
         self._saw_text = True
-        record = _decode(line)
+        record = decode_record(line)
         if record is not None:
             self._saw_record = True
             self._add_record(line_number, record)

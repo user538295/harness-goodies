@@ -21,7 +21,7 @@ HOOK_ARGUMENT = "hook"
 LATEST_FLAG = "--latest"
 OPTION_PREFIX = "--"
 COMMANDS = ("on", "off", "status", "usage")
-SUPPORTED_HARNESS_ROOTS = {"claude": ".claude"}
+SUPPORTED_HARNESS_ROOTS = {"claude": ".claude", "codex": ".codex"}
 LOG_FOLDER_NAME = "prompt-logs"
 PRICE_FILE_NAME = "prices.json"
 SKILL_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -111,6 +111,9 @@ def _build_reader(harness, root):
     if harness == "claude":
         from sessionlog.claude_reader import ClaudeReader
         return ClaudeReader(root)
+    if harness == "codex":
+        from sessionlog.codex_reader import CodexReader
+        return CodexReader(root)
     raise RuntimeFailure("no reader for harness '%s'" % harness)
 
 

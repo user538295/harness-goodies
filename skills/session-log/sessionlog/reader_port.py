@@ -26,9 +26,9 @@ def root_id_of(session_key: str) -> str:
 @dataclass(frozen=True)
 class SourceUnit:
     """One source a session is built from. `key` identifies it between scans. `fingerprint` is stable while the source
-    is unchanged and changes whenever its content may have changed; it is derived without reading content (files:
-    size and mtime_ns; other harnesses: their own cheap signal). `modified_at` (timezone-aware) is the sync's
-    pre-filter: a unit last modified before the on-time has no activity since."""
+    is unchanged and changes whenever its content may have changed; it is derived without reading content (Claude files:
+    size and mtime_ns; Codex files: mtime_ns alone, which compression keeps; other harnesses: their own cheap signal).
+    `modified_at` (timezone-aware) is the sync's pre-filter: a unit last modified before the on-time has no activity since."""
 
     key: str
     fingerprint: str

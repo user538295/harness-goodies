@@ -3,28 +3,19 @@ sub-agent files under `<root>/projects/<project>/<sid>/subagents/**/agent-*.json
 unreadable sources; `claude_transcript` parses what is inside and `claude_subagents` nests the agents."""
 import os
 from dataclasses import replace
-from datetime import datetime, timezone
-from typing import Callable, Iterable, List, Optional, Protocol, Tuple, TypeVar, Union
+from typing import List, Optional, Tuple, Union
 
 from .claude_subagents import ReadSubAgent, SubAgentMeta, is_agent_file_name, meta_path_of, nest_sub_agents, parse_meta
 from .claude_transcript import TRANSCRIPT_SUFFIX, parse_main_session, parse_sub_agent_session
 from .model import Harness, Session, is_safe_id
-from .reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON,
-                          UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key)
+from .reader_port import UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key
+from .store_files import FILE_ENCODING, StoreFiles
 
 _PROJECTS_DIR = "projects"
 _SUBAGENTS_DIR = "subagents"
-_FILE_ENCODING = "utf-8-sig"
 _SUB_AGENT_PLACE_LENGTH = 4  # <project>/<sid>/subagents/<agent file or folder>, below the projects folder
 _SUBAGENTS_DIR_INDEX = 2
 
-
-class _Parsed(Protocol):
-    unparsable: bool
-
-
-_T = TypeVar("_T")
-_P = TypeVar("_P", bound=_Parsed)
 _Found = Union[SourceUnit, UnreadableSource]
 _Owner = Tuple[str, str]  # (project folder name, session id) of the session folder a sub-agent file sits in
 
@@ -33,40 +24,12 @@ def _stem(path: str) -> str:
     return os.path.basename(path)[: -len(TRANSCRIPT_SUFFIX)]
 
 
-def _unreadable(path: str, reason: str) -> UnreadableSource:
-    return UnreadableSource(Harness.CLAUDE, path, reason)
-
-
-def _examine(path: str, query: Callable[[], _T]) -> Union[_T, UnreadableSource, None]:
-    """The result of a directory query; None when the entry vanished, an unreadable source for any other OSError."""
-    try:
-        return query()
-    except FileNotFoundError:
-        return None
-    except OSError:
-        return _unreadable(path, CANNOT_BE_LISTED_REASON)
-
-
-def _list_dir(path: str) -> Union[List[os.DirEntry], UnreadableSource]:
-    listing = _examine(path, lambda: list(os.scandir(path)))
-    return [] if listing is None else listing
+_FILES = StoreFiles(Harness.CLAUDE)
 
 
 def _source_of(entry: os.DirEntry) -> Optional[_Found]:
     """The unit of a session or sub-agent file; None for a directory or a file that vanished meanwhile."""
-    file_stat = _examine(entry.path, lambda: entry.stat() if entry.is_file() else None)
-    if file_stat is None or isinstance(file_stat, UnreadableSource):
-        return file_stat
-    try:
-        modified_at = datetime.fromtimestamp(file_stat.st_mtime, timezone.utc)
-    except (OverflowError, OSError, ValueError):
-        return None
-    return SourceUnit(key=entry.path, fingerprint="%d:%d" % (file_stat.st_size, file_stat.st_mtime_ns), modified_at=modified_at)
-
-
-def _is_real_dir(entry: os.DirEntry) -> Union[bool, UnreadableSource, None]:
-    """Whether the entry is a directory itself, never a link or junction to one, so no folder tree is walked twice or in a loop."""
-    return _examine(entry.path, lambda: entry.is_dir(follow_symlinks=False) and not entry.is_junction())
+    return _FILES.regular_file_unit(entry, entry.path, lambda file_stat: "%d:%d" % (file_stat.st_size, file_stat.st_mtime_ns))
 
 
 def _meta_fingerprint(agent_path: str) -> str:
@@ -90,7 +53,7 @@ def _sub_agent_entry(entry: os.DirEntry) -> Tuple[Optional[_Found], bool]:
     """What an entry of a `subagents` tree is: (its unit or unreadable source, whether it is a folder to walk into)."""
     if is_agent_file_name(entry.name):
         return _sub_agent_unit(entry), False
-    is_dir = _is_real_dir(entry)
+    is_dir = _FILES.is_real_dir(entry)
     return (is_dir, False) if isinstance(is_dir, UnreadableSource) else (None, bool(is_dir))
 
 
@@ -102,7 +65,7 @@ def _sub_agent_sources(subagents_dir: str) -> List[_Found]:
     found: List[_Found] = []
     pending = [subagents_dir]
     while pending:
-        listing = _list_dir(pending.pop())
+        listing = _FILES.list_dir(pending.pop())
         if isinstance(listing, UnreadableSource):
             found.append(listing)
             continue
@@ -120,32 +83,20 @@ def _entry_sources(entry: os.DirEntry) -> List[_Found]:
     if entry.name.endswith(TRANSCRIPT_SUFFIX):
         source = _source_of(entry)
         return [source] if source else []
-    is_dir = _is_real_dir(entry)
+    is_dir = _FILES.is_real_dir(entry)
     if isinstance(is_dir, UnreadableSource):
         return [is_dir]
     return _sub_agent_sources(os.path.join(entry.path, _SUBAGENTS_DIR)) if is_dir else []
 
 
 def _project_sources(project: os.DirEntry) -> List[_Found]:
-    is_dir = _examine(project.path, project.is_dir)
+    is_dir = _FILES.examine(project.path, project.is_dir)
     if isinstance(is_dir, UnreadableSource):
         return [is_dir]
-    listing = _list_dir(project.path) if is_dir else []
+    listing = _FILES.list_dir(project.path) if is_dir else []
     if isinstance(listing, UnreadableSource):
         return [listing]
     return [found for entry in listing for found in _entry_sources(entry)]
-
-
-def _parse_file(path: str, parse: Callable[[Iterable[str]], _P]) -> Union[_P, UnreadableSource]:
-    """What `parse` makes of the file's lines, or the unreadable source the file is."""
-    try:
-        with open(path, encoding=_FILE_ENCODING) as handle:
-            parsed = parse(handle)
-    except UnicodeDecodeError:
-        return _unreadable(path, CANNOT_BE_DECODED_REASON)
-    except OSError:
-        return _unreadable(path, CANNOT_BE_OPENED_REASON)
-    return _unreadable(path, CANNOT_BE_PARSED_REASON) if parsed.unparsable else parsed
 
 
 def _read_meta(agent_path: str) -> SubAgentMeta:
@@ -155,7 +106,7 @@ def _read_meta(agent_path: str) -> SubAgentMeta:
     if not os.path.isfile(meta_path):
         return SubAgentMeta()
     try:
-        with open(meta_path, encoding=_FILE_ENCODING) as handle:
+        with open(meta_path, encoding=FILE_ENCODING) as handle:
             return parse_meta(handle.read())
     except (OSError, UnicodeDecodeError):
         return SubAgentMeta()
@@ -163,7 +114,7 @@ def _read_meta(agent_path: str) -> SubAgentMeta:
 
 def _read_sub_agent(unit: SourceUnit) -> Union[ReadSubAgent, UnreadableSource]:
     """An agent whose records carry no time but whose requests count starts when its file was last changed."""
-    transcript = _parse_file(unit.key, parse_sub_agent_session)
+    transcript = _FILES.parse_file(unit.key, parse_sub_agent_session)
     if isinstance(transcript, UnreadableSource):
         return transcript
     started_at = transcript.started_at or (unit.modified_at if transcript.requests else None)
@@ -189,7 +140,7 @@ class ClaudeReader:
         self._projects = os.path.join(root, _PROJECTS_DIR)
 
     def scan(self) -> ScanResult:
-        projects = _list_dir(self._projects)
+        projects = _FILES.list_dir(self._projects)
         if isinstance(projects, UnreadableSource):
             return ScanResult(unreadable=(projects,))
         found = [source for project in projects for source in _project_sources(project)]
@@ -220,8 +171,8 @@ class ClaudeReader:
         path = max(mains, key=lambda unit: (unit.modified_at, unit.key)).key
         session_id = _stem(path)
         if not is_safe_id(session_id):
-            return ReadResult(unreadable=(_unreadable(path, UNSAFE_ID_REASON),))
-        transcript = _parse_file(path, parse_main_session)
+            return ReadResult(unreadable=(_FILES.unreadable(path, UNSAFE_ID_REASON),))
+        transcript = _FILES.parse_file(path, parse_main_session)
         if isinstance(transcript, UnreadableSource):
             return ReadResult(unreadable=(transcript,))
         if transcript.started_at is None:

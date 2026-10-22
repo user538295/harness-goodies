@@ -449,7 +449,7 @@ flowchart LR
         - #e2e_test — `test_python34_hook_exits_0_silently` — S55
 
 ### Phase 9 · Log Codex sessions, compressed rollouts and sub-agents
-- [ ] **BE-24** — CodexReader core (built with the ordered `ZstdDecoder` list): rollouts under `sessions/` and `archived_sessions/` (`.jsonl`, `.jsonl.zst`), keys drop `.zst`, `sessionOf` from the rollout's first line, prompts only from `UserMessage` items or old `user_message` events, uncached input = `input_tokens` − `cached_input_tokens`, `cache_write_input_tokens` as cache write, requests from `token_usage_record` else growth of `total_token_usage`, `last_token_usage` never summed; wired into the composition root #backend-role
+- [x] **BE-24** — CodexReader core (built with the ordered `ZstdDecoder` list): rollouts under `sessions/` and `archived_sessions/` (`.jsonl`, `.jsonl.zst`), keys drop `.zst`, `sessionOf` from the rollout's first line, prompts only from `UserMessage` items or old `user_message` events, uncached input = `input_tokens` − `cached_input_tokens`, `cache_write_input_tokens` as cache write, requests from `token_usage_record` else growth of `total_token_usage`, `last_token_usage` never summed; wired into the composition root #backend-role
     - Interface Adapters · 4.0h
     - needs BE-9, BE-14 · completes S7
     - Tests
