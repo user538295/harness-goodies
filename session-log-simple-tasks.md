@@ -301,7 +301,7 @@ flowchart LR
         - #unit_test — `test_bad_arguments_exit_2_without_argparse_usage_and_runtime_error_exits_1` — S36
         - #unit_test — `test_injected_old_python_prints_requirement_exit_1_and_exception_gives_internal_error_not_traceback` — S55, command half
         - #integration_test — `test_cp1252_subprocess_stdout_is_utf8_and_files_are_utf8_lf` — S54, report with `≥` and `ő`
-- [ ] **T-1** — E2E of the skeleton in a sandbox `HOME`: `on`, `off`, `status`, `usage` for Claude on macOS and in `python:3.9-slim`; the Docker run commands live with the tests #tester-role
+- [x] **T-1** — E2E of the skeleton in a sandbox `HOME`: `on`, `off`, `status`, `usage` for Claude on macOS and in `python:3.9-slim`; the Docker run commands live with the tests #tester-role
     - — · 3.0h
     - needs BE-9, FE-2 · completes S1, S2, S3, S4
     - Tests
