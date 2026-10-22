@@ -1,12 +1,12 @@
 """Sync use case (C1): archives the sessions of one harness whose sources changed since logging was turned on.
 
 Cheap path first: `scan` gives every unit a fingerprint without opening it, and the reader names a unit's session once; the
-name is saved before any session is read. A session none of whose units changed (and that is neither skipped nor holding an
-unreadable unit) is not read, and a changed unit last modified before the on-time cannot hold activity since it. A session
-whose id is not a safe id is never read: its units are unreadable with that reason (a reader checks it too, so a session built
-without sync is safe as well). A candidate session is read whole from all its units, and when it has activity since the
-on-time its log and report are rewritten whole through `Archive`. Progress is saved after each session (C6), so a killed
-run loses at most the session in progress.
+name is saved before any session is read. A session none of whose units changed (and that is neither skipped, owed a
+render-version rewrite, nor holding an unreadable unit) is not read, and a changed unit last modified before the on-time
+cannot hold activity since it. A session whose id is not a safe id is never read: its units are unreadable with that reason
+(a reader checks it too, so a session built without sync is safe as well). A candidate session is read whole from all its
+units, and when it has activity since the on-time its log and report are rewritten whole through `Archive`. Progress is
+saved after each session (C6), so a killed run loses at most the session in progress.
 
 Partly gone: a rewrite never replaces the files of an archived session with a report built from fewer units than the last
 write counted. Its entry changes only in `state` and `reason` (skipped, "source partly gone (N of M units)", N being the
@@ -20,6 +20,20 @@ not retried and stays listed: nothing can heal it and its files are stale.
 
 Retiring: an unreadable unit that left a complete scan can never be retried, so it is recorded inactive and no longer
 listed; with an incomplete scan (a folder that could not be listed) no unit is retired.
+
+Render version: each session entry records the `RENDER_VERSION` of the installed copy that wrote its files. A session whose
+entry has a lower version is a candidate on every sync until it is rewritten, whatever its units did, and is rewritten even
+when its last activity is older than a later on-time (like a skipped rewrite, it is owed); the rewrite stamps the current
+version, so each session is rewritten once per raise, and a stopped sync resumes with the rest. Sessions that wait only for
+that rewrite come after every other candidate, so a backlog never delays new turns. An entry with a higher
+version (written by a newer installed copy on the same log root) is never rewritten for its version; a session read for
+another reason is not rewritten when its files already hold the same or a newer version, built from as many units, with no
+unit changed. A session whose source is gone has no units and is never a candidate; one with fewer units than its last write
+counted is withheld as above. A session that reads as no session and has nothing unreadable (its file was emptied) keeps its
+old version, so it costs one read per sync like a skipped one; new activity rewrites it.
+
+Budget: a sync given `budget_seconds` starts no new session once that much time has passed on `now` since the sync began;
+the session in progress finishes, and what was learned and written is already saved. The next sync continues.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -31,7 +45,10 @@ from .pricing import PricingRules
 from .reader_port import UNSAFE_ID_REASON, SessionReader, SourceUnit, root_id_of
 from .state_port import StateStore
 
+# Raised by every change that alters log or report text for the same source (readers, model, PricingRules, writer,
+# prices.json); `test_render_version` pins the sha256 of prices.json to it.
 RENDER_VERSION = 1
+HOOK_SYNC_BUDGET_SECONDS = 20.0  # below the 30 s hook timeouts; the hook entry passes it to `sync`
 UNIT_READ = "read"
 UNIT_INACTIVE = "inactive"
 UNIT_UNREADABLE = "unreadable"
@@ -74,12 +91,14 @@ class SyncUseCase:
         self._pricing = pricing
         self._now = now
 
-    def sync(self) -> SyncOutcome:
-        """Does nothing while logging is off. A save of `.sync.json` that fails raises its OSError: `usage` ranks the sessions
-        from that file, so a state that cannot be saved cannot serve it either. The old file is kept with no temp file, the
-        files of the sessions written meanwhile stay, and the next sync redoes the work lost with the save; a session
-        written whose entry was not saved gets its log path computed again then (a lost `.sync.json` can give a session a
-        second log)."""
+    def sync(self, budget_seconds: Optional[float] = None) -> SyncOutcome:
+        """Does nothing while logging is off. With `budget_seconds`, no new session is started once that much time has
+        passed since the sync began (a hook sync); the next sync continues with the rest. A save of `.sync.json` that fails
+        raises its OSError: `usage` ranks the sessions from that file, so a state that cannot be saved cannot serve it
+        either. The old file is kept with no temp file, the files of the sessions written meanwhile stay, and the next sync
+        redoes the work lost with the save; a session written whose entry was not saved gets its log path computed again
+        then (a lost `.sync.json` can give a session a second log)."""
+        started_at = self._now()
         flag = self._state.read_on_flag()
         if flag is None:
             return SyncOutcome()
@@ -87,23 +106,31 @@ class SyncUseCase:
         state = self._state.load_sync()
         scan = self._reader.scan()
         candidates: List[Tuple[str, _Units]] = []
+        version_only: List[Tuple[str, _Units]] = []  # waiting only for the render-version rewrite: after the rest
         for session_key, units in sorted(self._learn_and_group(state, scan.units).items()):  # sorted: a fixed order
-            if self._must_read(state, session_key, units, on_at):
-                candidates.append((session_key, units))
-            else:
+            if not self._must_read(state, session_key, units, on_at):
                 self._mark_changed_inactive(state, session_key, units)
+            elif self._is_owed_only_for_version(state, state["sessions"].get(session_key), units, on_at):
+                version_only.append((session_key, units))
+            else:
+                candidates.append((session_key, units))
         # An unlistable folder makes live units look gone, so nothing is retired then.
         if not scan.unreadable:
             # Before the first save on purpose: retiring needs no read.
             self._retire_vanished_unreadable_units(state, scan.units)
         self._save(state)
         unsaved: Dict[str, str] = {}
-        for session_key, units in candidates:
+        for session_key, units in candidates + version_only:
+            if self._budget_spent(started_at, budget_seconds):
+                break
             report_text = self._archive_session(state, session_key, units, on_at)
             if report_text is not None:
                 unsaved[session_key] = report_text
             self._save(state)
         return SyncOutcome(unsaved)
+
+    def _budget_spent(self, started_at: datetime, budget_seconds: Optional[float]) -> bool:
+        return budget_seconds is not None and (self._now() - started_at).total_seconds() >= budget_seconds
 
     def _learn_and_group(self, state: dict, scan_units: _Units) -> Dict[str, _Units]:
         """Units per session key, asking the reader only for units without a recorded key. A newly learned key is recorded
@@ -148,9 +175,19 @@ class SyncUseCase:
     def _may_hold_new_activity(self, state: dict, unit: SourceUnit, on_at: datetime) -> bool:
         return self._unit_unreadable(state, unit) or (self._changed(state, unit) and unit.modified_at >= on_at)
 
+    @staticmethod
+    def _is_rewrite_owed(entry: Optional[dict]) -> bool:
+        """An archived session whose last rewrite was skipped, or whose files were written by an older render version, is
+        owed a rewrite whatever its units did and whatever the on-time is now."""
+        return entry is not None and (entry["state"] == SESSION_SKIPPED or entry["renderVersion"] < RENDER_VERSION)
+
+    def _is_owed_only_for_version(self, state: dict, entry: Optional[dict], units: _Units, on_at: datetime) -> bool:
+        """A written session whose files are older than `RENDER_VERSION` and none of whose units may hold new activity."""
+        return (entry is not None and entry["state"] == SESSION_WRITTEN and entry["renderVersion"] < RENDER_VERSION
+                and not any(self._may_hold_new_activity(state, unit, on_at) for unit in units))
+
     def _must_read(self, state: dict, session_key: str, units: _Units, on_at: datetime) -> bool:
-        entry = state["sessions"].get(session_key)
-        if entry is not None and entry["state"] == SESSION_SKIPPED:
+        if self._is_rewrite_owed(state["sessions"].get(session_key)):
             return True
         return any(self._may_hold_new_activity(state, unit, on_at) for unit in units)
 
@@ -180,8 +217,8 @@ class SyncUseCase:
                 self._set_unit(state, unit, session_key, unit_state, reason)
 
     def _archive_session(self, state: dict, session_key: str, units: _Units, on_at: datetime) -> Optional[str]:
-        """Reads the session whole and archives it when it has activity since the on-time, or when its last rewrite was
-        skipped (it is archived already, so a later on-time does not excuse the missing rewrite); returns the report
+        """Reads the session whole and archives it when it has activity since the on-time, or when a rewrite is owed to
+        it (it is archived already, so a later on-time does not excuse the missing rewrite); returns the report
         text that could not be saved, if any. Fewer units present than the last write counted are gone: the rewrite is
         withheld without a read, and no unit is marked, so unreadable ones stay listed and retried."""
         entry = state["sessions"].get(session_key)
@@ -190,10 +227,10 @@ class SyncUseCase:
         result = self._reader.read(session_key, units)
         failed = {source.path: source.reason for source in result.unreadable}
         session = result.session
-        skipped = entry is not None and entry["state"] == SESSION_SKIPPED
+        rewrite_owed = self._is_rewrite_owed(entry)
         if session is None and failed:
             self._mark(state, session_key, units, UNIT_UNREADABLE, result.unreadable[0].reason, failed)
-        elif session is None or (session.last_activity_at < on_at and not skipped):
+        elif session is None or (session.last_activity_at < on_at and not rewrite_owed):
             self._mark(state, session_key, units, UNIT_INACTIVE, failed=failed)
         else:
             return self._write_session(state, session_key, units, session, failed)
@@ -234,11 +271,11 @@ class SyncUseCase:
         return _Publication(log_path, report_text, failure)
 
     def _already_written(self, state: dict, existing: Optional[dict], units: _Units, failed: Dict[str, str]) -> bool:
-        """Whether the files already hold what a rewrite would publish: written by this render version from as many units,
-        and every unit that read now still has the fingerprint of that write. A session read only to retry a unit that
-        stays unreadable is therefore not written again."""
+        """Whether the files already hold what a rewrite would publish: written by this render version or a newer one from
+        as many units, and every unit that read now still has the fingerprint of that write. A session read only to retry
+        a unit that stays unreadable is therefore not written again, and an older copy does not undo a newer one's write."""
         readable = [unit for unit in units if unit.key not in failed]
-        return (existing is not None and existing["state"] == SESSION_WRITTEN and existing["renderVersion"] == RENDER_VERSION
+        return (existing is not None and existing["state"] == SESSION_WRITTEN and existing["renderVersion"] >= RENDER_VERSION
                 and existing["unitCount"] == len(readable) and not any(self._changed(state, unit) for unit in readable))
 
     def _write_session(self, state: dict, session_key: str, units: _Units, session: Session,

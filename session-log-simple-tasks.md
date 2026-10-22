@@ -372,7 +372,7 @@ flowchart LR
         - #integration_test — `test_deleted_source_and_old_format_logs_byte_identical_and_partly_gone_session_not_rewritten` — S15
         - #unit_test — `test_os_replace_raising_skips_file_removes_temp_and_reports_path_and_reason` — S33 POSIX half
         - #integration_test — `test_log_path_reused_name_stays_utc_offsets_plus2_minus5_plus530_dst_row_gets_own_offset_tz_change_rewrites_nothing` — S61
-- [ ] **BE-16** — Render-version rewrite and 20 s budget: `RENDER_VERSION` kept per session entry, every archived session rewritten once after a raise, a stopped sync resumes, a copy with an older version rewrites nothing for its version, a rewrite is never built from fewer units than the entry's count; hook budget stops new sessions after 20 s #backend-role
+- [x] **BE-16** — Render-version rewrite and 20 s budget: `RENDER_VERSION` kept per session entry, every archived session rewritten once after a raise, a stopped sync resumes, a copy with an older version rewrites nothing for its version, a rewrite is never built from fewer units than the entry's count; hook budget stops new sessions after 20 s #backend-role
     - Use Cases · 3.0h
     - needs BE-4, BE-15 · completes S65, S47
     - Tests

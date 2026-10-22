@@ -250,7 +250,9 @@ class PartlyGoneTest(SafetyTestCase):
         new_names = sorted(os.path.basename(name) for name in files if name not in protected)  # `active`: a separate new log
         self.assertEqual(new_names, ["session_%s_active%s" % (ACTIVE_LOG_STAMP, suffix) for suffix in (LOG_SUFFIX, REPORT_SUFFIX)])
         self.assertNotIn(self._key("partial"), self.reader.read_keys)  # withheld without a read, every time
-        self.assertEqual(self.reader.read_keys.count(self._key("active")), 1)
+        self.assertEqual(self.reader.read_keys.count(self._key("active")), 2)  # new in the first pass, rewritten for the raise
+        self.assertEqual(self._entry("active")["renderVersion"], RENDER_VERSION + 1)
+        self.assertEqual(self._entry("partial")["renderVersion"], RENDER_VERSION)  # a rewrite from fewer units is never built
         self._agent_file("partial")
         self._sync()
         entry = self._entry("partial")
@@ -271,9 +273,9 @@ class PartlyGoneTest(SafetyTestCase):
         return planted
 
     def _syncs_through_a_render_version_raise(self, protected, partial_log, partial_report):
-        """One plain sync pass and one after a render-version raise (S15 names both). Until BE-16 adds the version rewrite the
-        raise changes nothing for any session; for `partial` the pre-read guard returns before `_already_written` is asked.
-        The pass stays so that BE-16 makes it bite."""
+        """One plain sync pass and one after a render-version raise (S15 names both). The raise rewrites `active` for its
+        version; `partial` is withheld by the pre-read guard before `_already_written` is asked, so it stays at the old
+        version, and `gone` has no units and is never a candidate."""
         commands = self._commands()
         for render_version in (RENDER_VERSION, RENDER_VERSION + 1):
             with patch("sessionlog.sync.RENDER_VERSION", render_version):
