@@ -20,7 +20,8 @@ class WriteOutcome:
 class Archive(Protocol):
     """Production wiring of the adapter: `to_local=lambda d: d.astimezone()`, `clock` returns epoch seconds, `pid` is a
     callable. `render_*` may raise on programming errors (unknown price status, a `to_local` failure or a naive
-    result); callers treat that as a failure of that one session."""
+    result); sync treats that as a failure of that one session, but `usage` renders a live report too, where such a raise
+    ends the command as an internal error."""
 
     def new_log_path(self, session: Session) -> str:
         """The log path of a session without a state entry; deterministic and performs no I/O; called once per

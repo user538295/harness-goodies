@@ -132,7 +132,7 @@ class ArgumentTests(SandboxCase):
         code, stdout, stderr = self.run_main(["claude", "usage"])
         self.assertEqual(1, code)
         self.assertEqual("", stdout)
-        self.assertEqual("session-log: no archived session for this project (%s)\n" % CWD, stderr)
+        self.assertEqual("session-log: no session for this project (%s)\n" % CWD, stderr)
 
     def test_prompt_logs_that_is_a_file_exits_1_with_one_session_log_line(self):
         os.makedirs(self.claude)

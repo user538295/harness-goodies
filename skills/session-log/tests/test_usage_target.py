@@ -30,7 +30,6 @@ EMPTY_PROJECT = "/work/empty"
 FOLDER = "-work"
 ONE_SECOND = timedelta(seconds=1)
 BEFORE_ON = ON_AT - ONE_DAY
-NO_SAVED_REPORT = "no saved report"
 
 
 def _report(session_id: str, requests: int = 1) -> str:
@@ -72,7 +71,8 @@ class UsageTargetTestCase(unittest.TestCase):
         self.archive = ReportKeepingArchive()
         self.reader = ClaudeReader(self.root)
         self.sync = _CountingSync(SyncUseCase(self.reader, self.archive, self.state, PricingRules(_NoPrices()), lambda: NOW))
-        self.commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state, _NoPrices(),
+        self.commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state,
+                                        PricingRules(_NoPrices()),
                                         lambda: NOW, self.log_root)
 
     def _install(self, session_id: str, cwd: str = PROJECT, prompts=(), activity=None, modified=NOW):
@@ -124,6 +124,17 @@ class UsageTargetTestCase(unittest.TestCase):
     def _text(self, target: Optional[str] = None, cwd: str = PROJECT) -> str:
         usage = self.commands.usage_latest(cwd) if target is None else self.commands.usage_of(target)
         return usage.report_text
+
+    def _count_renders(self) -> list:
+        """Wraps the archive's renderer: each rendering gets a distinct ` #<call number>` suffix and is counted in the list."""
+        renders = []
+        render = self.archive.render_report
+
+        def counted(report):
+            renders.append(report)
+            return "%s #%d" % (render(report), len(renders))
+        self.archive.render_report = counted
+        return renders
 
 
 class LatestSessionTest(UsageTargetTestCase):
@@ -273,32 +284,30 @@ class IdTargetTest(UsageTargetTestCase):
         self._install("abc", prompts=[ON_AT + ONE_DAY])
         self._install("ab", prompts=[BEFORE_ON], modified=BEFORE_ON)
         self._turn_on_and_sync()
-        with self.assertRaisesRegex(CommandError, "session ab has " + NO_SAVED_REPORT) as exact:  # not "ambiguous"
-            self._text("ab")
-        self.assertNotIn("matches", str(exact.exception))
+        self.assertEqual(self._text("ab"), _report("ab"))  # not "ambiguous"
 
-    def test_a_unique_session_that_was_never_archived_has_no_saved_report(self):
+    def test_a_unique_store_session_that_was_never_archived_is_reported_live(self):
         self._install("abc", prompts=[ON_AT + ONE_DAY])
         self._install("zzz", prompts=[BEFORE_ON], modified=BEFORE_ON)
         self._turn_on_and_sync()
-        with self.assertRaisesRegex(CommandError, "zzz.*" + NO_SAVED_REPORT):
-            self._text("zz")
+        self.assertEqual(self._text("zz"), _report("zzz"))
+        self.assertEqual(set(self.state.load_sync()["sessions"]), {"claude:abc"})  # and archives nothing
 
-    def test_a_session_new_while_logging_is_off_is_learned_from_the_reader(self):
+    def test_a_session_new_while_logging_is_off_is_learned_from_the_reader_and_reported_live(self):
         self._install("abc", prompts=[ON_AT + ONE_DAY])
         self._turn_on_and_sync()
         self.state.delete_on_flag()
         self._install("newcomer", prompts=[NOW])  # no unit entry in .sync.json
-        with self.assertRaisesRegex(CommandError, "newcomer.*" + NO_SAVED_REPORT):
-            self._text("new")
+        self.assertEqual(self._text("new"), _report("newcomer"))
         self.assertEqual(self.sync.calls, 0)
 
     def test_a_session_whose_first_write_failed_prints_the_report_it_could_not_save(self):
         self.state.write_on_flag(OnFlag(ON_AT))
         self.archive.failure = WriteOutcome("/logs/x.md", False, WRITE_FAILURE)
         self._install("first", prompts=[ON_AT + ONE_DAY])
-        self.assertEqual(self._text("fir"), _report("first"))
-        self.assertEqual(self.archive.reports, {})
+        renders = self._count_renders()
+        self.assertEqual(self._text("fir"), _report("first") + " #1")  # the text the sync rendered, not a second rendering
+        self.assertEqual((len(renders), self.archive.reports), (1, {}))
 
     def test_a_session_with_an_unsafe_id_is_not_matchable(self):
         self._install("abc", prompts=[ON_AT + ONE_DAY])
@@ -335,8 +344,7 @@ class IdTargetTest(UsageTargetTestCase):
             with self.assertRaisesRegex(CommandError, "/store/locked: " + CANNOT_BE_LISTED_REASON):
                 self._text(target)
         self.assertEqual(self._text("abc"), _report("abc"))  # exact archived: decided without the store
-        with self.assertRaisesRegex(CommandError, "session zzz has " + NO_SAVED_REPORT):  # exact in the store: decided there
-            self._text("zzz")
+        self.assertEqual(self._text("zzz"), _report("zzz"))  # exact in the store: decided there, reported live
 
     def test_an_empty_id_is_refused_and_never_matches_every_session(self):
         self._install("abc", prompts=[ON_AT + ONE_DAY])
@@ -392,7 +400,7 @@ class EntryTest(SandboxCase):
         self.turn_logging_on()
         code, stdout, stderr = self.run_main(["claude", "usage"], get_cwd=lambda: EMPTY_PROJECT)
         self.assertEqual((1, ""), (code, stdout))
-        self.assertEqual("session-log: no archived session for this project (%s)\n" % EMPTY_PROJECT, stderr)
+        self.assertEqual("session-log: no session for this project (%s)\n" % EMPTY_PROJECT, stderr)
 
     def test_entry_usage_while_off_prints_the_saved_report_and_a_target_needs_no_cwd(self):
         self.write_transcript(session="abc123")

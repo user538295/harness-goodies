@@ -626,7 +626,7 @@ class SyncUnsafeIdTest(RealArchiveTestCase):
         outside = self._files_outside_the_log_root()
         state = FileStateStore(self.logs)
         sync = SyncUseCase(self.reader, self.archive, state, PricingRules(_NoPrices()), lambda: NOW)
-        status = CommandUseCases(sync, UsageTargetResolver(self.reader), self.archive, state, _NoPrices(), lambda: NOW,
+        status = CommandUseCases(sync, UsageTargetResolver(self.reader), self.archive, state, PricingRules(_NoPrices()), lambda: NOW,
                                  self.logs).status()
         self.assertEqual(status.unreadable, (UnreadableItem(device, UNSAFE_ID_REASON), UnreadableItem(unsafe, UNSAFE_ID_REASON),
                                              UnreadableItem(orphan, UNSAFE_ID_REASON)))

@@ -155,7 +155,8 @@ class SafetyTestCase(RealArchiveTestCase):
         state = FileStateStore(self.logs)
         archive = LogUsageWriter(self.logs, lambda moment: moment)
         sync = SyncUseCase(self.reader, archive, state, PricingRules(_NoPrices()), lambda: NOW)
-        return CommandUseCases(sync, UsageTargetResolver(self.reader), archive, state, _NoPrices(), lambda: NOW, self.logs)
+        return CommandUseCases(sync, UsageTargetResolver(self.reader), archive, state, PricingRules(_NoPrices()), lambda: NOW,
+                               self.logs)
 
     def _saved(self):
         return FileStateStore(self.logs).load_sync()

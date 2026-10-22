@@ -124,12 +124,12 @@ class _Composition(object):
     """The adapters of one run, the sync use case and the usage target resolver; command use cases are built over them only
     for a command."""
 
-    def __init__(self, sync, targets, archive, state, price_book, log_root):
+    def __init__(self, sync, targets, archive, state, pricing, log_root):
         self.sync = sync
         self.targets = targets
         self.archive = archive
         self.state = state
-        self.price_book = price_book
+        self.pricing = pricing
         self.log_root = log_root
 
 
@@ -150,8 +150,9 @@ def _compose(harness, environment):
     archive = LogUsageWriter(log_root, environment.to_local, path_module)
     state = FileStateStore(log_root)
     reader = _build_reader(harness, root)
-    sync = SyncUseCase(reader, archive, state, PricingRules(price_book), environment.now)
-    return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, price_book, log_root)
+    pricing = PricingRules(price_book)
+    sync = SyncUseCase(reader, archive, state, pricing, environment.now)
+    return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, pricing, log_root)
 
 
 def _run(harness, command, target, environment):
@@ -162,7 +163,7 @@ def _run(harness, command, target, environment):
 
     composition = _compose(harness, environment)
     use_cases = CommandUseCases(composition.sync, composition.targets, composition.archive, composition.state,
-                                composition.price_book, environment.now, composition.log_root)
+                                composition.pricing, environment.now, composition.log_root)
     handlers = {
         "on": lambda: presentation.render_on(use_cases.on()),
         "off": lambda: presentation.render_off(use_cases.off()),

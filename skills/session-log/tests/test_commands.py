@@ -12,6 +12,7 @@ from sessionlog.claude_reader import ClaudeReader
 from sessionlog.command_error import CommandError
 from sessionlog.commands import CommandUseCases, OffResult, OnResult, UnreadableItem
 from sessionlog.pricing import PricingRules
+from sessionlog.reader_port import ScanResult
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import SyncOutcome, SyncUseCase
@@ -72,7 +73,8 @@ class CommandTestCase(unittest.TestCase):
         self.reader = ClaudeReader(self.root)
         self.sync = SpySync(SyncUseCase(self.reader, self.archive, self.state, PricingRules(self.prices),
                                         lambda: self.clock))
-        self.commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state, self.prices,
+        self.commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state,
+                                        PricingRules(self.prices),
                                         lambda: self.clock, self.log_root)
 
     def _install(self, sid, *prompt_times):
@@ -171,7 +173,8 @@ class OnOffTest(CommandTestCase):
             def sync(self):
                 raise OSError("read-only")
 
-        commands = CommandUseCases(Failing(), None, self.archive, self.state, self.prices, lambda: NOW, self.log_root)
+        commands = CommandUseCases(Failing(), None, self.archive, self.state, PricingRules(self.prices), lambda: NOW,
+                                   self.log_root)
         with self.assertRaises(OSError):
             commands.off()
         self.assertIsNone(self.state.read_on_flag())
@@ -199,8 +202,7 @@ class OnOffTest(CommandTestCase):
     def test_status_and_usage_do_not_sync_while_off(self):
         self._install("late", ON_AT + ONE_DAY)
         self.commands.status()
-        with self.assertRaises(CommandError):
-            self.commands.usage_latest(CWD)
+        self.assertEqual(self.commands.usage_latest(CWD).report_text, "report late (1 requests)")  # live, not saved
         self.assertEqual(self.sync.calls, 0)
         self.assertEqual(self.archive.writes, [])
         self.assertFalse(os.path.exists(os.path.join(self.log_root, ".sync.json")))
@@ -281,7 +283,7 @@ class UsageTest(CommandTestCase):
         self._enable()
         self._two_sessions()
         self.assertEqual(self.commands.usage_latest(CWD + "/src/deep").report_text, "report newer (1 requests)")
-        with self.assertRaisesRegex(CommandError, "/work/other"):
+        with self.assertRaisesRegex(CommandError, "no session for this project \\(/work/other\\)"):
             self.commands.usage_latest("/work/other")
 
     def test_usage_while_off_prints_report_saved_at_last_sync_without_syncing(self):
@@ -324,13 +326,17 @@ class LatestRankingTest(unittest.TestCase):
         return entry
 
     def _usage(self, entries, cwd, path_module=os.path):
+        class EmptyStore:
+            def scan(self):
+                return ScanResult()
+
         class Archive:
             def read_report(self, log_path):
                 return log_path
 
         sessions = {"claude:" + name: self._entry(name, *values) for name, values in entries.items()}
-        commands = CommandUseCases(None, UsageTargetResolver(None, path_module), Archive(), MemoryFlagState(sessions), None,
-                                   lambda: NOW, "/logs")
+        commands = CommandUseCases(None, UsageTargetResolver(EmptyStore(), path_module), Archive(), MemoryFlagState(sessions),
+                                   None, lambda: NOW, "/logs")
         return commands.usage_latest(cwd).report_text
 
     def test_prompt_beats_later_activity_without_prompt_and_orphans_never_win(self):
@@ -384,7 +390,7 @@ class LatestRankingTest(unittest.TestCase):
         self.assertEqual(self._usage(entries, CWD), "/logs/fine.md")
 
     def test_no_session_for_the_project_raises(self):
-        with self.assertRaises(CommandError):
+        with self.assertRaisesRegex(CommandError, "no session for this project \\(%s\\)" % CWD):
             self._usage({"nowhere": (None, ON_AT, ON_AT)}, CWD)
 
 

@@ -1,6 +1,8 @@
 """Command use cases (C1): `on`, `off`, `status` and `usage` return data; the presentation module renders it.
 
 While logging is on, every command syncs first (`off` syncs once, then turns off). While off, no command syncs.
+`usage` prints the saved report of an archived session; a session that was never archived gets the same report computed live
+from the store (read, priced and rendered as a sync would) and never saved.
 Failures a user must hear about are raised as `CommandError`; the entry prints them as `session-log: <msg>`.
 """
 from dataclasses import dataclass
@@ -9,11 +11,12 @@ from typing import Callable, List, Optional, Tuple
 
 from .archive_port import Archive
 from .command_error import CommandError
-from .pricing import PriceBook
+from .model import Session
+from .pricing import PricingRules
 from .reader_port import root_id_of
 from .state_port import OnFlag, StateStore, parse_timestamp
 from .sync import SESSION_SKIPPED, UNIT_UNREADABLE, SyncOutcome, SyncUseCase
-from .usage_target import UsageTargetResolver
+from .usage_target import ResolvedSession, UsageTargetResolver
 
 
 @dataclass(frozen=True)
@@ -71,7 +74,7 @@ class StatusResult:
 
 @dataclass(frozen=True)
 class UsageResult:
-    """`report_text` is exactly the report text of the session."""
+    """`report_text` is exactly the report text of the session, saved or computed live."""
 
     report_text: str
 
@@ -80,15 +83,15 @@ class CommandUseCases:
     """`now` returns a timezone-aware datetime.
 
     `sync` and `state` must share one `StateStore` instance: its `sync_reset` tells `status` that the sync rebuilt a corrupt file.
-    `targets` must read the same store as `sync`."""
+    `targets` must read the same store as `sync`. `pricing` must be the one `sync` uses, so a live report equals the saved one."""
 
     def __init__(self, sync: SyncUseCase, targets: UsageTargetResolver, archive: Archive, state: StateStore,
-                 price_book: PriceBook, now: Callable[[], datetime], log_root: str) -> None:
+                 pricing: PricingRules, now: Callable[[], datetime], log_root: str) -> None:
         self._sync = sync
         self._targets = targets
         self._archive = archive
         self._state = state
-        self._price_book = price_book
+        self._pricing = pricing
         self._now = now
         self._log_root = log_root
 
@@ -124,11 +127,12 @@ class CommandUseCases:
             last_sync_at=parse_timestamp(last_sync_at) if last_sync_at else None,
             archived_session_count=len(state["sessions"]),
             unreadable=self._unreadable(state),
-            price_file_problem=self._price_book.problem(),
+            price_file_problem=self._pricing.problem(),
             sync_state_reset=self._state.sync_reset)
 
     def usage_latest(self, cwd: str) -> UsageResult:
-        """`usage` and `usage --latest`: the report of the root session of the project of `cwd` with the newest prompt."""
+        """`usage` and `usage --latest`: the report of the root session of the project of `cwd` with the newest prompt; the
+        store is read only when the project has no archived session."""
         return self._usage(lambda state: self._targets.latest(state, cwd))
 
     def usage_of(self, target: str) -> UsageResult:
@@ -136,20 +140,28 @@ class CommandUseCases:
         store sessions together. The word `latest` is such an id, never the flag."""
         return self._usage(lambda state: self._targets.by_id(state, target))
 
-    def _usage(self, resolve: Callable[[dict], str]) -> UsageResult:
+    def _usage(self, resolve: Callable[[dict], ResolvedSession]) -> UsageResult:
         outcome = self._sync_while_on()
         state = self._state.load_sync()
-        session_key = resolve(state)
-        report_text = outcome.unsaved_reports.get(session_key)
+        resolved = resolve(state)
+        report_text = outcome.unsaved_reports.get(resolved.session_key)
         if report_text is None:
-            entry = state["sessions"].get(session_key)
-            if entry is None:
-                raise CommandError("session %s has no saved report: it was never archived" % root_id_of(session_key))
-            report_text = self._archive.read_report(entry["logPath"])
-            if report_text is None:
-                raise CommandError("the saved report of session %s beside %s cannot be read"
-                                   % (root_id_of(session_key), entry["logPath"]))
+            if resolved.session is None:
+                report_text = self._saved_report(resolved.session_key, state["sessions"][resolved.session_key])
+            else:
+                report_text = self._live_report(resolved.session)
         return UsageResult(report_text)
+
+    def _saved_report(self, session_key: str, entry: dict) -> str:
+        report_text = self._archive.read_report(entry["logPath"])
+        if report_text is None:
+            raise CommandError("the saved report of session %s beside %s cannot be read"
+                               % (root_id_of(session_key), entry["logPath"]))
+        return report_text
+
+    def _live_report(self, session: Session) -> str:
+        """The report of a session never archived, computed as a sync would and written nowhere."""
+        return self._archive.render_report(self._pricing.build(session))
 
     def _sync_while_on(self) -> SyncOutcome:
         return self._sync.sync() if self._state.read_on_flag() is not None else SyncOutcome()

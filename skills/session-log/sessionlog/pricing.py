@@ -125,6 +125,10 @@ class PricingRules:
     def __init__(self, price_book: PriceBook):
         self._price_book = price_book
 
+    def problem(self) -> Optional[str]:
+        """Why the price book cannot be used, or None; `status` reports it."""
+        return self._price_book.problem()
+
     def _cost(self, request: RequestUsage) -> Optional[Decimal]:
         if request.recorded_cost_usd is not None:
             return Decimal(str(request.recorded_cost_usd))

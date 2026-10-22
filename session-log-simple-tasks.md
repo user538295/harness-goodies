@@ -411,7 +411,7 @@ flowchart LR
         - #integration_test — `test_latest_ranks_newest_prompt_streaming_session_and_ignores_subagents_orphans_and_no_prompt_sessions` — S37
         - #integration_test — `test_usage_id_exact_prefix_ambiguous_unknown_and_subfolder_and_symlinked_cwd` — `abc`, `ab`, unknown id, project without sessions
         - #integration_test — `test_usage_while_off_prints_report_saved_at_last_sync` — S37
-- [ ] **BE-20** — Live report for a session never archived: read through the invoked harness's reader, priced by PricingRules, rendered by `Archive.renderReport`, nothing written and no sync while off; `--latest` reads the store only when the project has no archived session; prints the report text a failed write could not save #backend-role
+- [x] **BE-20** — Live report for a session never archived: read through the invoked harness's reader, priced by PricingRules, rendered by `Archive.renderReport`, nothing written and no sync while off; `--latest` reads the store only when the project has no archived session; prints the report text a failed write could not save #backend-role
     - Use Cases · 3.0h
     - needs BE-19 · completes S68
     - Tests
