@@ -3,11 +3,11 @@ name: session-log
 description: Manage session prompt logging and usage totals (on / off / status / usage)
 ---
 
-This skill runs the bundled script `session_log.py`, which turns prompt logging on or off, reports its status, and prints the token and price report of a session. It needs Python 3.14 or newer and supports exactly five host identities: `claude`, `codex`, `cursor`, `opencode` (OpenCode V2), and `omp`.
+This skill runs the bundled script `session_log.py`, which turns prompt logging on or off, reports its status, and prints the token and price report of a session. It needs Python 3.14 or newer and recognizes exactly five host identities: `claude`, `codex`, `cursor`, `opencode` (OpenCode V2), and `omp`. Session-log does not log in OpenCode until the next release: every command is unavailable there.
 
 ## Run it
 
-1. Select the identity of the host that loaded this skill from runtime/system context. Never infer it from paths, processes, or environment variables. It replaces `<harness>` below. If the host is not one of the five, or you cannot tell, stop and tell the user.
+1. Select the identity of the host that loaded this skill from runtime/system context. Never infer it from paths, processes, or environment variables. It replaces `<harness>` below. If the host is not one of the five, or you cannot tell, stop and tell the user. If the host is OpenCode, do not run the script and do not retry with another identity: tell the user that session-log does not log in OpenCode until the next release, and stop.
 2. Take the skill directory the host announced when it loaded this skill (Claude Code and OpenCode print `Base directory for this skill: <path>`, omp prints `[Skill directory: <path>]`; in Cursor and Codex it is the directory of this SKILL.md; a `file://` URL stands for the filesystem path it names). It replaces `<skill dir>` below.
 3. If the host announced no directory: on macOS and Linux run the locator below in bash, which only prints the directory, and use that path; on native Windows the locator cannot run (it is bash), so ask the user to set `SESSION_LOG_HOME` to the skill directory and to tell you its value, and use that value.
 4. Set `<arguments>` to the invocation arguments, or to `status` when none were supplied. Accept only `on`, `off`, `status`, `usage`, `usage --latest`, or `usage <session-id>` (a session id holds only letters, digits, `_` and `-`); for anything else stop and tell the user, because the line below is parsed by a shell.

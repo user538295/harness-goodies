@@ -318,7 +318,7 @@ flowchart LR
         - #unit_test — `test_plugin_registers_skills_and_agent_with_path_not_location` — `bun test`
         - #unit_test — `test_no_plugin_command_registered` — S27
         - #unit_test — `test_no_session_log_handler_loaded_and_recording_bash_stub_never_called` — no background `repair`
-- [ ] **FE-3** — Release 1 docs: [SKILL.md](./skills/session-log/SKILL.md) `:64` and [README.md](./README.md) `:154,160` say session-log does not log in OpenCode until the next release and tell the model not to run it there; the same for every other OpenCode line that says the plugin registers or logs session-log (grounding found SKILL.md `:45,79,84`, README `:72,176`) #frontend-role
+- [x] **FE-3** — Release 1 docs: [SKILL.md](./skills/session-log/SKILL.md) `:64` and [README.md](./README.md) `:154,160` say session-log does not log in OpenCode until the next release and tell the model not to run it there; the same for every other OpenCode line that says the plugin registers or logs session-log (grounding found SKILL.md `:45,79,84`, README `:72,176`) #frontend-role
     - Presentation · 2.0h
     - needs K1 · completes S66
     - Tests
