@@ -75,9 +75,9 @@ test("registers every skill directory under its directory name", () => {
 test("skill carries frontmatter metadata, its SKILL.md location, and the body without frontmatter", () => {
   const skill = registered.skills["session-log"];
   expect(skill.name).toBe("session-log");
-  expect(skill.description).toBe("Manage session prompt logging and usage totals (on / off / status / usage / repair)");
+  expect(skill.description).toBe("Manage session prompt logging and usage totals (on / off / status / usage)");
   expect(skill.location).toBe(path.join(repoRoot, "skills", "session-log", "SKILL.md"));
-  expect(skill.content.startsWith("<!-- universal-session-log: managed -->")).toBe(true);
+  expect(skill.content.trimStart().startsWith("This skill runs the bundled script `session_log.py`")).toBe(true);
 });
 
 test("folded YAML descriptions and CRLF frontmatter parse to plain text", () => {

@@ -1501,6 +1501,7 @@ class SessionLogRepairCommandTests(unittest.TestCase):
             seeded = home / SEEDED_RELATIVE
             seeded.parent.mkdir(parents=True)
             shutil.copytree(REPO / "skills/session-log", seeded)
+            (seeded / "SKILL.md").write_text("<!-- universal-session-log: managed -->\n")
             orphaned = sandbox_plugin_root(home / PLUGIN_CACHE_RELATIVE.replace(PLUGIN_VERSION, OLD_PLUGIN_VERSION))
             (orphaned / ORPHANED_PLUGIN_MARKER).write_text("1700000000000")
             state = home / ".claude/session-log"
@@ -3508,6 +3509,7 @@ class LegacyPackageCopyTests(unittest.TestCase):
     def test_neutralize_leaves_unproven_copies_alone(self):
         self.copy.parent.mkdir(parents=True)
         shutil.copytree(REPO / "skills/session-log", self.copy)
+        (self.copy / "SKILL.md").write_text("<!-- universal-session-log: managed -->\n")
         self.assertEqual(self.run_legacy_package("neutralize"), "kept: it has no ownership manifest\n")
         self.assertTrue((self.copy / "SKILL.md").is_file())
         self.assertEqual(self.run_legacy_package("neutralize", self.home / "absent/session-log"), "")
@@ -3515,6 +3517,7 @@ class LegacyPackageCopyTests(unittest.TestCase):
     def test_keeps_a_marked_copy_without_a_manifest(self):
         self.copy.parent.mkdir(parents=True)
         shutil.copytree(REPO / "skills/session-log", self.copy)
+        (self.copy / "SKILL.md").write_text("<!-- universal-session-log: managed -->\n")
         self.assert_kept("it has no ownership manifest")
 
     def test_keeps_a_copy_with_an_invalid_manifest(self):

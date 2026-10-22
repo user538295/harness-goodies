@@ -285,7 +285,7 @@ flowchart LR
         - #unit_test — `test_on_off_results_render_already_on_off_probe_fix_and_leftovers` — set field shown, unset field not
         - #unit_test — `test_status_result_renders_every_optional_field_with_fixed_wording` — unreadable, zstd count and fix, Cursor silent, price-file problem, state reset, file-time on-time
         - #unit_test — `test_usage_result_text_printed_unchanged` — incl. `≥` and `ő`
-- [ ] **FE-2** — Rewrite [SKILL.md](./skills/session-log/SKILL.md) and [test_locator.sh](./skills/session-log/tests/test_locator.sh): one line `python3 "<skill dir>/session_log.py" <harness> <arguments>`, Windows fallback (`py -3`, then `python`) as prose, announced directory first else the golden locator (probe `session_log.py`, which only prints the directory, Q26) on macOS/Linux or `SESSION_LOG_HOME` on Windows; frontmatter without `repair` and without the ownership marker #frontend-role
+- [x] **FE-2** — Rewrite [SKILL.md](./skills/session-log/SKILL.md) and [test_locator.sh](./skills/session-log/tests/test_locator.sh): one line `python3 "<skill dir>/session_log.py" <harness> <arguments>`, Windows fallback (`py -3`, then `python`) as prose, announced directory first else the golden locator (probe `session_log.py`, which only prints the directory, Q26) on macOS/Linux or `SESSION_LOG_HOME` on Windows; frontmatter without `repair` and without the ownership marker #frontend-role
     - Presentation · 4.0h
     - needs K1 · completes S25, S60
     - Tests
