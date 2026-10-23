@@ -14,7 +14,7 @@
 # NOT listed here (repo-only, maintained directly in the checkout, never synced
 # into ~/.claude): AGENTS.md, README.md, sync-manifest.txt, handout/, assets/,
 # hooks/, .claude-plugin/, .omp-plugin/, .cursor-plugin/, .codex-plugin/,
-# .agents/, .opencode-plugin/, package.json, bun.lock.
+# .agents/, .opencode-plugin/, package.json, bun.lock, skills/session-log/ (a copy of it under ~/.claude is an old seeded copy that session-log's leftover scan reports).
 #
 # Junk is never copied regardless of these entries: .DS_Store, __pycache__/,
 # *.pyc, .pytest_cache/, node_modules/, .git/, editor swap/backup files.
@@ -39,7 +39,6 @@ skills/options/
 skills/plain-language/
 skills/plan-maker/
 skills/quick-plan/
-skills/session-log/
 skills/skill-packager/
 skills/status-report/
 skills/wrap-up/

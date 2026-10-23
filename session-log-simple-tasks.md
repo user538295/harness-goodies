@@ -580,11 +580,10 @@ flowchart LR
     - needs BE-10, BE-37 · completes S35
     - Tests
         - #integration_test — `test_release_dry_run_without_version_guard_prints_plan_exits_0_pushes_nothing_runs_no_update_command` — S35, `main` run in a subshell, paths overridden
-- [ ] **BE-40** — Repo-scan test: `git grep` over tracked files for `install.sh`, `bin/session-log`, `adapters/`, `install_hooks.py`, `omp.extensions` and `skills/session-log/VERSION` lists only the exempt files (leftover scan module and its tests, [test_locator.sh](./skills/session-log/tests/test_locator.sh), [commit SKILL.md](./skills/commit/SKILL.md), the `session-log-simple-*` plan files if committed); skipped without `git` #backend-role
-    - Frameworks & Drivers · 2.0h
-    - needs BE-18, BE-33, BE-37, BE-38 · completes S58
+- [x] **FE-6** — Docs, project files: [CLAUDE.md](./CLAUDE.md) `:5` (drops `install_hooks.py`; add the brief's Key Decisions in short, Q24), [skill-paths.md](./.claude/rules/skill-paths.md) `:6`, [release-guide.md](./release-guide.md) `:39` and the VERSION paragraph `:87`, [sync-manifest.txt](./sync-manifest.txt) `:42` #frontend-role
+    - Presentation · 2.0h
+    - needs BE-37, BE-39 · completes S58
     - Tests
-        - #unit_test — `test_git_grep_lists_only_exempt_files` — S58
 - [ ] **T-8** — S30 smoke on the Mac for every harness from the local checkout under the `user538295` marketplace name, harness config backed up and restored per [CLAUDE.md](./CLAUDE.md); record install routes and exact skill invocation forms (incl. how OpenCode reaches the skill) and hand them to FE-4 #tester-role
     - — · 6.0h
     - needs FE-2, T-3, T-5, BE-26, BE-27, BE-29, BE-36 · completes S30
@@ -596,13 +595,6 @@ flowchart LR
         - #manual_test — OMP `/skill:session-log` run then `usage` — S30
         - #manual_test — OpenCode: record how the skill is reached now that the plugin command is gone, then `usage` — S30
         - #manual_test — Cursor app prompt: `hook` executable on the local install, whether the chat waits for the `sessionStart` sync — S30
-- [ ] **T-9** — S29 matrix: the unit suite and a sync on macOS under Homebrew `python3` (3.15) and in `python:3.14-slim`, `PATH` reduced to the interpreter; launcher and git checks run separately; Docker run commands recorded #tester-role
-    - — · 3.0h
-    - needs BE-37, BE-40 · completes S29
-    - Tests
-        - #e2e_test — `test_unit_suite_passes_under_homebrew_python3_with_reduced_path` — `unittest discover -s skills/session-log/tests -t skills/session-log`; launcher and git checks run separately (S29)
-        - #e2e_test — `test_unit_suite_passes_in_python314_slim` — no bash, jq, sqlite3 CLI or Node called
-        - #e2e_test — `test_git_checks_run_separately_in_macos_checkout_with_git_on_path` — S57 mode, S58 grep
 - [ ] **T-10** — OMP package: no session-log extension loads and `/skill:session-log status` runs the new script #tester-role
     - — · 2.0h
     - needs BE-38 · completes S28
@@ -617,10 +609,18 @@ flowchart LR
     - Presentation · 4.0h
     - needs BE-37, T-8 · completes S58
     - Tests
-- [ ] **FE-6** — Docs, project files: [CLAUDE.md](./CLAUDE.md) `:5` (drops `install_hooks.py`; add the brief's Key Decisions in short, Q24), [skill-paths.md](./.claude/rules/skill-paths.md) `:6`, [release-guide.md](./release-guide.md) `:39` and the VERSION paragraph `:87`, [sync-manifest.txt](./sync-manifest.txt) `:42` #frontend-role
-    - Presentation · 2.0h
-    - needs BE-37, BE-39 · completes S58
+- [ ] **BE-40** — Repo-scan test: `git grep` over tracked files for `install.sh`, `bin/session-log`, `adapters/`, `install_hooks.py`, `omp.extensions` and `skills/session-log/VERSION` lists only the exempt files (leftover scan module and its tests, [test_locator.sh](./skills/session-log/tests/test_locator.sh), [commit SKILL.md](./skills/commit/SKILL.md), the `session-log-simple-*` plan files if committed); skipped without `git` #backend-role
+    - Frameworks & Drivers · 2.0h
+    - needs BE-18, BE-33, BE-37, BE-38 · completes S58
     - Tests
+        - #unit_test — `test_git_grep_lists_only_exempt_files` — S58
+- [ ] **T-9** — S29 matrix: the unit suite and a sync on macOS under Homebrew `python3` (3.15) and in `python:3.14-slim`, `PATH` reduced to the interpreter; launcher and git checks run separately; Docker run commands recorded #tester-role
+    - — · 3.0h
+    - needs BE-37, BE-40 · completes S29
+    - Tests
+        - #e2e_test — `test_unit_suite_passes_under_homebrew_python3_with_reduced_path` — `unittest discover -s skills/session-log/tests -t skills/session-log`; launcher and git checks run separately (S29)
+        - #e2e_test — `test_unit_suite_passes_in_python314_slim` — no bash, jq, sqlite3 CLI or Node called
+        - #e2e_test — `test_git_checks_run_separately_in_macos_checkout_with_git_on_path` — S57 mode, S58 grep
 - [ ] **T-11** — S58 docs read-through: every file in the plan's Documentation update describes the new behaviour, no session-log `repair`, no `VERSION` guard #tester-role
     - — · 2.0h
     - needs BE-40, FE-4, FE-5, FE-6 · completes S58
