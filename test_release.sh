@@ -151,6 +151,7 @@ _out=$(
   set -e
   REPO_ROOT="$_fixture"
   PLUGIN_JSON="$_fixture/.claude-plugin/plugin.json"
+  # shellcheck disable=SC2030 # the fixture's file list must stay inside this subshell
   VERSION_FILES=("$PLUGIN_JSON")
   UPDATE_COMMANDS=("echo updated >> $_update_marker")
   git() { printf '%s\n' "$*" >> "$_git_calls"; command git "$@"; }
@@ -176,6 +177,7 @@ discard "$_fixture" "$_origin" "$_git_calls" "$_update_marker"
 
 # ── shipped versions agree ────────────────────────────────────────────────────
 echo "=== shipped versions agree ==="
+# shellcheck disable=SC2031 # reads the real list; the fixture's override above lived only in its subshell
 for _file in "${VERSION_FILES[@]}"; do
   assert_eq "${_file#"$SCRIPT_DIR"/} matches plugin.json" "$(current_version)" "$(version_in "$_file")"
 done
