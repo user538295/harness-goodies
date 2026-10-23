@@ -512,7 +512,7 @@ flowchart LR
         - #integration_test — `test_records_join_by_generation_id_subagents_per_child_conversation_id` — S12
         - #integration_test — `test_cancelled_prompt_lone_stop_duplicates_same_start_order_tmp_ignored_invalid_listed_once` — S44
         - #integration_test — `test_new_record_makes_conversation_read_again` — S14, Cursor part
-- [ ] **BE-32** — Cursor report labels: sub-agent rows show type, time and `not recorded by Cursor`; TOTAL reads `tokens: main session only — Cursor does not record sub-agent tokens` with the price marked incomplete #backend-role
+- [x] **BE-32** — Cursor report labels: sub-agent rows show type, time and `not recorded by Cursor`; TOTAL reads `tokens: main session only — Cursor does not record sub-agent tokens` with the price marked incomplete #backend-role
     - Use Cases · 2.0h
     - needs BE-13, BE-31 · completes S12
     - Tests

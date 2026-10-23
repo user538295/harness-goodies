@@ -21,6 +21,7 @@ SHIFT_AT = datetime(2026, 8, 28, 11, 0, 0)
 SLUG_MAX = 64
 POSIX_ONLY = unittest.skipIf(os.name == "nt", "POSIX file modes")
 STALE_SECONDS = 3600
+MILLION = 1_000_000
 NOW = 100000.0
 
 
@@ -247,16 +248,25 @@ class RenderTests(unittest.TestCase):
         text = writer().render_report(report_of(row(working=timedelta(seconds=-5))))
         self.assertIn("(working time 00:00:00)", text)
 
-    def test_cursor_agents_and_api_equivalent_labels(self):
-        agent = SubAgent("c1", "t", START, tokens_not_recorded=True)
-        report = pricing_report(Prompt(START, "p", requests=(RequestUsage("known", 1, 0, 0, 0, 0),)),
+    def test_cursor_subagent_rows_not_recorded_and_total_main_session_only_price_incomplete(self):
+        agent = SubAgent("c1", "explore", START, working_time=timedelta(seconds=65), tokens_not_recorded=True)
+        report = pricing_report(Prompt(START, "p", requests=(RequestUsage("known", MILLION, 0, 0, 0, 0),)),
                                 harness=Harness.CURSOR, agents=(agent,))
         text = writer().render_report(report)
-        self.assertIn("sub-agent: t (c1), working time: 00:00:00\ntokens: not recorded by Cursor\n", text)
+        self.assertIn("sub-agent: explore (c1), working time: 00:01:05\ntokens: not recorded by Cursor\n", text)
         self.assertIn("\nworking time: 00:00:00\ntokens: main session only \u2014 Cursor does not record sub-agent tokens\n"
                       "est. used token: ", text)
-        self.assertRegex(text, r"\nest\. used token: [^\n]*price: \$\d+\.\d\d \(API-equivalent\), model: known, effort: -\n")
-        self.assertRegex(text, r"\nest\. used token: [^\n]*price: \u2265 \$\d+\.\d\d \(incomplete\) \(API-equivalent\), model: known")
+        self.assertRegex(text, r"\nest\. used token: [^\n]*price: \u2265 \$10\.00 \(incomplete\) \(API-equivalent\), model: known")
+
+    def test_cursor_prices_labelled_api_equivalent(self):
+        prompt = Prompt(START, "p", requests=(RequestUsage("known", MILLION, 0, 0, 0, 0),))
+        cursor = writer().render_report(pricing_report(prompt, harness=Harness.CURSOR))
+        self.assertRegex(cursor, r'\n1\. [^\n]*"p"\nest\. used token: [^\n]*price: \$10\.00 \(API-equivalent\), model: known, effort: -\n')
+        codex = writer().render_report(pricing_report(prompt, harness=Harness.CODEX))
+        self.assertIn("price: $10.00 (API-equivalent), model: known", codex)
+        claude = writer().render_report(pricing_report(prompt))
+        self.assertIn("price: $10.00, model: known", claude)
+        self.assertNotIn("API-equivalent", claude)
 
     def test_log_golden_text(self):
         prompts = (Prompt(START, "first", START + timedelta(seconds=5), "reply one", timedelta(seconds=5)),
