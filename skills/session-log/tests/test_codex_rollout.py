@@ -484,6 +484,109 @@ class RequestSourceTest(unittest.TestCase):
         self.assertEqual(("gpt-a", "gpt-b"), (first.model_name, second.model_name))
 
 
+class SubAgentHeaderTest(unittest.TestCase):
+    def test_meta_names_the_parent_thread_and_the_agent_type_and_marks_a_fork(self):
+        spawn = {"subagent": {"thread_spawn": {"parent_thread_id": "p", "agent_role": "explorer"}}}
+        cases = (({"parent_thread_id": "p", "agent_role": "reviewer"}, "p", "reviewer", True),
+                 ({"parent_thread_id": "p", "source": spawn}, "p", "explorer", True),
+                 ({"source": {"subagent": {"other": "guardian"}}, "parent_thread_id": "p"}, "p", "guardian", True),
+                 ({"forked_from_id": "f"}, None, None, True),
+                 ({}, None, None, False))
+        for payload, parent, agent_type, forked in cases:
+            with self.subTest(payload=payload):
+                meta = parse_session_meta(_line(_meta(**payload)))
+                self.assertEqual((parent, agent_type, forked), (meta.parent_thread_id, meta.agent_type, meta.forked))
+
+    def test_a_parent_thread_id_role_or_source_that_is_not_text_is_ignored(self):
+        for payload in ({"parent_thread_id": "", "agent_role": ""}, {"parent_thread_id": 5, "agent_role": 7, "source": "cli"},
+                        {"source": {"subagent": "x"}}, {"source": {"subagent": {"thread_spawn": []}}}):
+            with self.subTest(payload=payload):
+                meta = parse_session_meta(_line(_meta(**payload)))
+                self.assertEqual((None, None, False), (meta.parent_thread_id, meta.agent_type, meta.forked))
+
+    def test_a_role_of_the_payload_wins_over_the_one_of_the_spawn_source(self):
+        source = {"subagent": {"thread_spawn": {"agent_role": "explorer"}, "other": "guardian"}}
+        self.assertEqual("worker", parse_session_meta(_line(_meta(agent_role="worker", source=source))).agent_type)
+        self.assertEqual("explorer", parse_session_meta(_line(_meta(source=source))).agent_type)
+
+    def test_requests_of_a_rollout_without_a_prompt_are_still_listed_whole_in_file_order(self):
+        rollout = _parse([_started(2), _recorded(3, _usage(10, output=1)), _recorded(4, _usage(20, output=2))])
+        self.assertEqual(((), [(10, 1, 0, 0), (20, 2, 0, 0)]), (rollout.prompts, [_shape(request) for request in rollout.requests]))
+
+    def test_requests_of_a_rollout_are_those_of_its_prompts_in_order(self):
+        rollout = _parse([_recorded(2, _usage(1)), _user(3, "one"), _recorded(4, _usage(2)), _user(5, "two"), _recorded(6, _usage(3))])
+        self.assertEqual([1, 2, 3], [request.input_tokens for request in rollout.requests])
+        self.assertEqual(list(rollout.requests), [request for prompt in rollout.prompts for request in prompt.requests])
+
+    def test_requests_are_the_growth_requests_when_the_rollout_has_no_token_usage_record(self):
+        rollout = _parse([_started(2), _count(3, _usage(10)), _count(4, _usage(25))])
+        self.assertEqual([10, 15], [request.input_tokens for request in rollout.requests])
+
+    def test_last_moment_is_the_newest_time_of_any_record_whatever_the_order(self):
+        rollout = _parse([_user(5), _event(3, {"type": "future_event"}), _event(None, {"type": "future_event"}),
+                          {"timestamp": "not a time", "type": "future_record", "payload": {}}])
+        self.assertEqual(_at(5), rollout.last_moment)
+
+    def test_last_moment_counts_the_meta_line_and_is_none_without_any_usable_time(self):
+        self.assertEqual(_at(1), _parse([_event(None, {"type": "future_event"})]).last_moment)
+        meta = _meta()
+        del meta["timestamp"]
+        self.assertIsNone(_parse([], meta=meta).last_moment)
+        self.assertIsNone(parse_rollout([]).last_moment)
+
+    def test_first_moment_is_the_earliest_time_of_the_records_after_the_header_whatever_the_order(self):
+        rollout = _parse([_user(5), _event(3, {"type": "future_event"}), _event(None, {"type": "future_event"}),
+                          {"timestamp": "not a time", "type": "future_record", "payload": {}}, _event(4, {"type": "future_event"})])
+        self.assertEqual(_at(3), rollout.first_moment)
+
+    def test_first_moment_ignores_the_header_line_and_is_none_without_a_usable_time_after_it(self):
+        self.assertIsNone(_parse([_event(None, {"type": "future_event"})]).first_moment)
+        self.assertIsNone(_parse([]).first_moment)
+        self.assertIsNone(parse_rollout([]).first_moment)
+
+    def test_first_moment_may_lie_before_the_header_time_because_only_the_records_after_the_header_line_count(self):
+        self.assertEqual(_at(0.5), _parse([_user(5), _event(0.5, {"type": "future_event"})]).first_moment)
+
+
+class ForkedTotalTest(unittest.TestCase):
+    """A fork starts from its parent's total; the parent's history it replays never counts as its own requests."""
+
+    PARENT = "33333333-3333-4333-8333-333333333333"
+
+    def _fork(self, records):
+        return _parse(records, meta=_meta(session_id=self.PARENT, parent_thread_id=self.PARENT, forked_from_id=self.PARENT))
+
+    def test_a_fork_replaying_its_parents_history_after_task_started_counts_only_its_own_growth(self):
+        records = [_count(2, _usage(5000, cached=4000, output=500)), _started(3), _count(4, _usage(1000, cached=800, output=100)),
+                   _count(5, _usage(3000, cached=2400, output=300)), _count(6, _usage(5000, cached=4000, output=500)), _user(7),
+                   _count(8, _usage(5600, cached=4300, output=530))]
+        (prompt,) = self._fork(records).prompts
+        self.assertEqual([(300, 30, 300, 0)], [_shape(request) for request in prompt.requests])
+
+    def test_the_same_records_of_a_rollout_that_is_no_fork_count_the_replayed_growth(self):
+        records = [_count(2, _usage(5000, cached=4000, output=500)), _started(3), _count(4, _usage(1000, cached=800, output=100)),
+                   _count(5, _usage(3000, cached=2400, output=300)), _user(7)]
+        (prompt,) = _parse(records).prompts
+        self.assertEqual([(400, 200, 1600, 0)], [_shape(request) for request in prompt.requests])
+
+    def test_a_fork_total_below_the_highest_total_so_far_lowers_it_in_no_field(self):
+        records = [_count(2, _usage(5000, output=500)), _started(3), _user(3), _count(4, _usage(4000, output=700)),
+                   _count(5, _usage(4500, output=700))]
+        (prompt,) = self._fork(records).prompts
+        self.assertEqual([(0, 200, 0, 0)], [_shape(request) for request in prompt.requests])
+
+    def test_a_fork_still_counts_growth_above_its_inherited_total_in_every_field(self):
+        records = [_count(2, _usage(5000, cached=4000, output=500)), _started(3), _user(3),
+                   _count(4, _usage(5100, cached=4000, cache_write=20, output=510))]
+        (prompt,) = self._fork(records).prompts
+        self.assertEqual([(100, 10, 0, 20)], [_shape(request) for request in prompt.requests])
+
+    def test_a_fork_with_no_inherited_total_before_its_first_task_started_counts_its_replay_as_its_own_requests(self):
+        """The documented limit: nothing tells the replayed records of a fork apart, so without an inherited starting total they count."""
+        rollout = self._fork([_started(2), _count(3, _usage(1000, output=100)), _count(4, _usage(3000, output=300))])
+        self.assertEqual([(1000, 100, 0, 0), (2000, 200, 0, 0)], [_shape(request) for request in rollout.requests])
+
+
 class SafetyTest(unittest.TestCase):
     def test_a_deeply_nested_line_is_skipped_not_raised(self):
         deep = "[" * 100000 + "]" * 100000 + "\n"

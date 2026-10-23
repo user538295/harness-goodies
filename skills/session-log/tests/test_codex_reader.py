@@ -319,13 +319,14 @@ class CodexReadTest(CodexReaderTestCase):
         self.assertEqual([6, 1], [len(prompt.requests) for prompt in session.prompts])
         self.assertEqual(((), None), (session.sub_agents, session.orphan_of_parent_id))
 
-    def test_read_takes_the_prompts_from_the_root_rollout_only(self):
+    def test_read_takes_the_prompts_from_the_root_rollout_only_and_leaves_out_the_units_of_other_sessions(self):
         self._install()
         self._install(CHILD_NAME, source=CHILD_FIXTURE)
         units = self.reader.scan().units
         result = self.reader.read("codex:" + ROOT_ID, units)
-        self.assertEqual(["prompt 1", "prompt 2"], [prompt.text for prompt in result.session.prompts])
-        self.assertEqual(((), None), (result.unreadable, self.reader.read("codex:" + CHILD_ROOT_ID, units).session))
+        self.assertEqual((["prompt 1", "prompt 2"], ()), ([prompt.text for prompt in result.session.prompts], result.session.sub_agents))
+        orphan = self.reader.read("codex:" + CHILD_ROOT_ID, units)
+        self.assertEqual(((), ["prompt 1"], CHILD_ROOT_ID), (result.unreadable, [p.text for p in orphan.session.prompts], orphan.session.orphan_of_parent_id))
 
     def test_read_finds_the_root_rollout_in_archived_sessions(self):
         self._install(folder=self.archived)
@@ -341,7 +342,8 @@ class CodexReadTest(CodexReaderTestCase):
         child = self._write("rollout-2026-09-11T10-10-15-child-%s.jsonl" % ROOT_ID,
                             _rollout_text("child", id=CHILD_ID, session_id=ROOT_ID, parent_thread_id=ROOT_ID))
         result = self.reader.read("codex:" + ROOT_ID, (self._unit(child),))
-        self.assertEqual((None, ()), (result.session, result.unreadable))
+        self.assertEqual((ROOT_ID, ["child"], (), ()), (result.session.orphan_of_parent_id, [p.text for p in result.session.prompts],
+                                                        result.session.sub_agents, result.unreadable))
 
     def test_read_finds_a_renamed_root_by_its_first_line_when_no_unit_named_after_the_root_id_is_the_root(self):
         self._write("rollout-renamed.jsonl", _rollout_text("renamed root"))
@@ -394,10 +396,10 @@ class CodexReadTest(CodexReaderTestCase):
         with mock.patch.object(CodexReader, "session_of", side_effect=AssertionError("session_of called")):
             self.assertEqual(ROOT_ID, self.reader.read("codex:" + ROOT_ID, (unit,)).session.session_id)
 
-    def test_read_opens_only_the_root_rollout_once_whatever_the_other_units_hold(self):
+    def test_read_opens_every_unit_it_is_given_exactly_once_whatever_the_unit_holds(self):
         root = self._install()
-        self._install(CHILD_NAME, source=CHILD_FIXTURE)
-        self._write("rollout-unrelated.jsonl", "not json\n")
+        child = self._install(CHILD_NAME, source=CHILD_FIXTURE)
+        unrelated = self._write("rollout-unrelated.jsonl", "not json\n")
         opened = []
         real_open = open
 
@@ -407,7 +409,7 @@ class CodexReadTest(CodexReaderTestCase):
 
         with mock.patch("sessionlog.store_files.open", counting, create=True):
             self.assertEqual(ROOT_ID, self.reader.read("codex:" + ROOT_ID, self.reader.scan().units).session.session_id)
-        self.assertEqual([root], opened)
+        self.assertEqual(sorted([root, child, unrelated]), sorted(opened))
 
     def test_read_without_a_root_unit_or_for_another_harnesss_key_gives_an_empty_result(self):
         self._install()
@@ -486,19 +488,26 @@ class CodexReadTest(CodexReaderTestCase):
         path = self._write_bytes("rollout-x-%s.jsonl" % ROOT_ID, data)
         self.assertEqual(["hi"], [p.text for p in self.reader.read("codex:" + ROOT_ID, (self._unit(path),)).session.prompts])
 
-    def test_read_picks_the_newest_of_the_units_that_are_the_root_and_the_greatest_key_on_a_tie_in_any_order(self):
-        older = self._write("rollout-a-%s.jsonl" % ROOT_ID, _rollout_text("older"))
-        newer = self._write("rollout-b-%s.jsonl" % ROOT_ID, _rollout_text("newer"), self.archived)
-        os.utime(older, ns=(0, ONE_SECOND_NS))
-        os.utime(newer, ns=(0, 2 * ONE_SECOND_NS))
+    def test_read_picks_the_unit_with_the_newest_header_time_among_those_that_are_the_root_whatever_the_file_times_and_the_order(self):
+        older = self._write("rollout-a-%s.jsonl" % ROOT_ID, _rollout_text("older", timestamp="2026-09-11T08:00:00.000Z"))
+        newer = self._write("rollout-b-%s.jsonl" % ROOT_ID, _rollout_text("newer", timestamp="2026-09-11T09:00:00.000Z"), self.archived)
+        for older_second, newer_second in ((9, 1), (1, 9), (5, 5)):
+            with self.subTest(older_file_second=older_second, newer_file_second=newer_second):
+                os.utime(older, ns=(0, older_second * ONE_SECOND_NS))
+                os.utime(newer, ns=(0, newer_second * ONE_SECOND_NS))
+                units = self.reader.scan().units
+                for ordered in (units, tuple(reversed(units))):
+                    self.assertEqual("newer", self.reader.read("codex:" + ROOT_ID, ordered).session.prompts[0].text)
+
+    def test_read_picks_the_greatest_file_name_among_the_units_that_are_the_root_when_their_header_times_are_equal_in_any_order(self):
+        lower_name = self._write("rollout-a-%s.jsonl" % ROOT_ID, _rollout_text("a"))  # in sessions/: the greater whole key, the newest file
+        greater_name = self._write("rollout-b-%s.jsonl" % ROOT_ID, _rollout_text("b"), self.archived)
+        self.assertLess(greater_name, lower_name)
+        os.utime(lower_name, ns=(0, 9 * ONE_SECOND_NS))
+        os.utime(greater_name, ns=(0, ONE_SECOND_NS))
         units = self.reader.scan().units
         for ordered in (units, tuple(reversed(units))):
-            self.assertEqual("newer", self.reader.read("codex:" + ROOT_ID, ordered).session.prompts[0].text)
-        os.utime(older, ns=(0, 2 * ONE_SECOND_NS))
-        units = self.reader.scan().units
-        greatest_key_text = {older: "older", newer: "newer"}[max(older, newer)]
-        for ordered in (units, tuple(reversed(units))):
-            self.assertEqual(greatest_key_text, self.reader.read("codex:" + ROOT_ID, ordered).session.prompts[0].text)
+            self.assertEqual("b", self.reader.read("codex:" + ROOT_ID, ordered).session.prompts[0].text)
 
 
 if __name__ == "__main__":

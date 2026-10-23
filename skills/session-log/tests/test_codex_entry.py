@@ -23,7 +23,11 @@ PROMPT_TWO_TOKENS = "input: 65446, output: 4529, cache_create: 0, cache_read: 0,
 TOTAL_TOKENS = "input: 128723, output: 9814, cache_create: 0, cache_read: 559744, total_tokens: 698281"
 
 
-class CodexEntryTest(unittest.TestCase):
+class CodexEntryTestCase(unittest.TestCase):
+    """A Codex home in a temporary folder with an empty `sessions/<day>` folder, and the entry script run over it with the clock `NOW`."""
+
+    NOW = FIXED_NOW
+
     def setUp(self):
         self.home = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.home, True)
@@ -31,20 +35,27 @@ class CodexEntryTest(unittest.TestCase):
         self.log_root = os.path.join(self.codex, "prompt-logs")
         self.day = os.path.join(self.codex, "sessions", DAY_FOLDER)
         os.makedirs(self.day)
-        shutil.copy(FIXTURE, os.path.join(self.day, ROOT_NAME))
 
-    def run_main(self, argv):
+    def run_main(self, argv, home=None, now=None):
         stdout, stderr = io.StringIO(), io.StringIO()
-        environment = session_log.Environment(stdout=stdout, stderr=stderr, home=self.home, get_cwd=lambda: CWD,
-                                              now=lambda: FIXED_NOW, to_local=lambda moment: moment.astimezone(timezone.utc))
+        environment = session_log.Environment(stdout=stdout, stderr=stderr, home=home or self.home, get_cwd=lambda: CWD,
+                                              now=lambda: now or self.NOW, to_local=lambda moment: moment.astimezone(timezone.utc))
         return session_log.main(argv, environment), stdout.getvalue(), stderr.getvalue()
 
-    def archived_files(self, suffix):
-        return sorted(os.path.join(folder, name) for folder, _, names in os.walk(self.log_root) for name in names if name.endswith(suffix))
+    def archived_files(self, suffix, log_root=None):
+        root = log_root or self.log_root
+        return sorted(os.path.join(folder, name) for folder, _, names in os.walk(root) for name in names if name.endswith(suffix))
 
-    def read(self, path):
+    @staticmethod
+    def read(path):
         with open(path, encoding="utf-8") as handle:
             return handle.read()
+
+
+class CodexEntryTest(CodexEntryTestCase):
+    def setUp(self):
+        super().setUp()
+        shutil.copy(FIXTURE, os.path.join(self.day, ROOT_NAME))
 
     def test_on_archives_the_rollout_as_a_log_without_injected_context_and_a_report_with_the_fixture_tokens(self):
         code, _, stderr = self.run_main(["codex", "on"])

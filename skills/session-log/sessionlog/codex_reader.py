@@ -1,19 +1,28 @@
 """Codex adapter of the C2 reader port: finds rollouts under `<root>/sessions/**` and `<root>/archived_sessions/**` as
 `*.jsonl` or compressed `*.jsonl.zst`, and maps file-system problems to unreadable sources; `codex_rollout` parses what is
-inside.
+inside and `codex_subagents` makes the threads, nests the child ones and splits an orphan family.
 
 A unit's key is the rollout's path without `.zst` and its fingerprint is the mtime alone, because compressing a rollout keeps
-its mtime (codex `rollout/src/compression.rs:902`): a rollout compressed after a sync is neither a new nor a changed unit.
-A compressed rollout's content is not read: `session_of` of one gives None and `read` lists it as not openable, so sync
-retries it on every sync; `_parse_unit` is the one place that opens a unit."""
+its mtime (codex `rollout/src/compression.rs`): a rollout compressed after a sync is neither a new nor a changed unit.
+
+Reading compressed rollouts is not implemented yet: `session_of` of one gives None, so sync links it to no session and lists
+it unreadable, and `read` lists it as not openable; sync retries it on every sync; `_parse_unit` is the one place that opens a
+unit. The family is built without it: a compressed child is missing from its session; a plain grandchild of a compressed
+middle thread cannot be nested under it and sits at the top level of the session; when the root's own rollout is gone and
+the root's or a middle thread's rollout is compressed (or otherwise not learned) the whole family is listed unreadable
+(`PARENT_UNREADABLE_REASON`) instead of being archived as orphans. Once compressed rollouts can be opened they give their
+session, threads and prompts and let their children nest under them; only rollouts that really fail then stay listed."""
 import os
-from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple, Union
+from typing import AbstractSet, Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 from .codex_rollout import Rollout, RolloutMeta, parse_rollout, parse_session_meta
+from .codex_subagents import Thread, copy_rank, nest_threads, split_orphan_family, thread_of_rollout
 from .model import Harness, Session, is_safe_id
 from .reader_port import (UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key,
                           root_id_of)
 from .store_files import StoreFiles
+
+PARENT_UNREADABLE_REASON = "parent rollout cannot be read"
 
 _STORE_FOLDERS = ("sessions", "archived_sessions")
 _ROLLOUT_SUFFIX = ".jsonl"
@@ -35,6 +44,14 @@ class _Header(NamedTuple):
 
     meta: Optional[RolloutMeta]
     unparsable: bool
+
+
+class _Found(NamedTuple):
+    """A readable rollout of the session: its unit, its parse and the `meta` of that parse, which names the session's root."""
+
+    unit: SourceUnit
+    rollout: Rollout
+    meta: RolloutMeta
 
 
 def _is_rollout_name(name: str) -> bool:
@@ -91,66 +108,90 @@ def _read_header(lines: Iterable[str]) -> _Header:
     return _Header(None, unparsable=False)
 
 
-def _build_session(root_id: str, rollout: Rollout) -> Optional[Session]:
-    """The session a root rollout holds; None when its header gives no start time."""
-    meta = rollout.meta
-    if meta is None or meta.started_at is None:
-        return None
-    return Session(harness=Harness.CODEX, session_id=root_id, started_at=meta.started_at, project_dir=meta.project_dir,
-                   prompts=rollout.prompts)
-
-
 def _newest_first(units: Iterable[SourceUnit]) -> List[SourceUnit]:
     return sorted(units, key=lambda unit: (unit.modified_at, unit.key), reverse=True)
 
 
-def _parse_if_root(unit: SourceUnit, root_id: str, unreadable: List[UnreadableSource]) -> Optional[Rollout]:
-    """The parse of the unit when it is the root's own rollout; a unit that cannot be read is added to `unreadable`."""
-    rollout = _parse_unit(unit, parse_rollout)
-    if isinstance(rollout, UnreadableSource):
-        unreadable.append(rollout)
-        return None
-    return rollout if rollout.meta is not None and rollout.meta.thread_id == root_id else None
-
-
-def _is_root_header(unit: SourceUnit, root_id: str, unreadable: List[UnreadableSource]) -> bool:
-    """Whether the unit's first line says it is the root's own rollout; a unit that cannot be read is added to `unreadable`."""
-    header = _parse_unit(unit, _read_header)
-    if isinstance(header, UnreadableSource):
-        unreadable.append(header)
+def _is_named_after(thread_id: str, path: str) -> bool:
+    """Whether a rollout path is named after the thread: its file name is `rollout-<timestamp>-<thread id>.jsonl`, or, for a
+    reverted thread, `rollout-<timestamp>-<thread id>_<rollout id>.jsonl` (codex `rollout_file_name.rs`)."""
+    name = os.path.basename(path)
+    if not name.endswith(_ROLLOUT_SUFFIX):
         return False
-    return header.meta is not None and header.meta.thread_id == root_id
+    stem = name[: -len(_ROLLOUT_SUFFIX)]
+    return stem.endswith("-" + thread_id) or "-" + thread_id + "_" in stem
 
 
-def _root_rollout(root_id: str, units: Tuple[SourceUnit, ...], unreadable: List[UnreadableSource]) -> Optional[Rollout]:
-    """The root's own rollout among the units of its session: the units named after the root id first, then, only when none
-    of them is the root, the others by their first line."""
-    named = [unit for unit in units if root_id in os.path.basename(unit.key)]
-    for unit in _newest_first(named):
-        rollout = _parse_if_root(unit, root_id, unreadable)
-        if rollout is not None:
-            return rollout
-    for unit in _newest_first(unit for unit in units if unit not in named):
-        if _is_root_header(unit, root_id, unreadable):
-            rollout = _parse_if_root(unit, root_id, unreadable)
-            if rollout is not None:
-                return rollout
-    return None
+def _is_better_copy(found: _Found, known: _Found) -> bool:
+    """Whether `found` ranks above `known`, another rollout of the same thread (see `copy_rank`)."""
+    return copy_rank(found.meta.started_at, found.unit.key) > copy_rank(known.meta.started_at, known.unit.key)
+
+
+def _missing_parent_ids(root_id: str, children: Sequence[_Found]) -> Set[str]:
+    """The thread ids of the parents the family has no rollout of: the root, whose own rollout is absent, and the parent of
+    every child that is no thread of the family."""
+    thread_ids = {found.meta.thread_id for found in children}
+    parents = {found.meta.parent_thread_id for found in children}
+    return {root_id} | {parent for parent in parents if parent is not None and parent not in thread_ids}
+
+
+def _has_unlearned_parent(root_id: str, children: Sequence[_Found], unit_keys: AbstractSet[str],
+                          scanned_paths: Iterable[str]) -> bool:
+    """Whether one of `scanned_paths` that is not one of the session's units (`unit_keys`) is named after a missing parent
+    (`_missing_parent_ids`): a rollout of the parent is there but could not be learned. `scanned_paths` are the paths as of the
+    last scan, which the caller obtains; this reads no file and runs no scan."""
+    missing = _missing_parent_ids(root_id, children)
+    return any(path not in unit_keys and any(_is_named_after(thread_id, path) for thread_id in missing) for path in scanned_paths)
+
+
+def _threads_of(found: Iterable[_Found]) -> List[Thread]:
+    threads = (thread_of_rollout(item.rollout, item.unit.modified_at) for item in found)
+    return [thread for thread in threads if thread is not None]
+
+
+def _root_session(root_id: str, root: _Found, children: Sequence[_Found]) -> Optional[Session]:
+    """The session of the root's own rollout with every other thread as a sub-agent; None when its header gives no start time."""
+    if root.meta.started_at is None:
+        return None
+    return Session(harness=Harness.CODEX, session_id=root_id, started_at=root.meta.started_at, project_dir=root.meta.project_dir,
+                   prompts=root.rollout.prompts, sub_agents=nest_threads(_threads_of(children)))
+
+
+def _orphan_session(root_id: str, found: Sequence[_Found]) -> Optional[Session]:
+    """The session of a family whose root rollout is gone (see `split_orphan_family`); None when no thread has a start time."""
+    family = split_orphan_family(root_id, _threads_of(found))
+    if family is None:
+        return None
+    return Session(harness=Harness.CODEX, session_id=root_id, started_at=family.started_at, project_dir=family.project_dir,
+                   orphan_of_parent_id=family.orphan_of_parent_id, prompts=family.prompts, sub_agents=family.sub_agents)
 
 
 class CodexReader:
     """Reads the rollouts below the Codex home `root`; each rollout file is one unit. `session_of` reads the beginning of
     the rollout up to its first non-blank line (a buffered chunk is decoded, so bad bytes right after the header can still
-    fail it), whose `session_meta` names the root session; a unit it cannot learn that from (an empty rollout, one whose first
-    line is no `session_meta`, one that cannot be opened or decoded) gives None. `read` builds the session from the root's
-    own rollout, the one whose `session_meta.id` is the root id. Codex names a rollout after its thread
-    (`rollout-<time>-<thread id>`, a reverted thread's `...-<thread id>_<rollout id>`), so the units whose file name carries
-    the root id are tried first, newest first (`modified_at`, then greatest key), and only when none is the root are the
-    other units' first lines looked at (a renamed rollout): the unit's own `id` is checked there, never its session, so no
-    unit's session is learned from content again. A unit that cannot be read is listed unreadable. Nothing raises."""
+    fail it), whose `session_meta` names the root session (`session_id`, which a grandchild shares with its root); a unit it
+    cannot learn that from (an empty rollout, one whose first line is no `session_meta`, one that cannot be opened or
+    decoded) gives None.
+
+    `read` opens every unit of the session once. The root's own rollout, the one whose `session_meta.id` is the root id, gives
+    the prompts; every other rollout is a sub-agent nested under the thread its `parent_thread_id` names. A thread kept in
+    several rollouts (a reverted thread, `...-<thread id>_<rollout id>`) is read from the one `copy_rank` ranks highest: the
+    latest header start (a header without a time is the oldest), then the file name, then the whole key; the file's mtime is
+    never asked, so touching or restoring an older copy changes nothing. A unit that names another session is left out. A
+    unit that cannot be read is listed unreadable. Nothing raises.
+
+    Without the root's own rollout the family is an orphan and is archived alone (`split_orphan_family`), unless a parent
+    cannot be told from unreadable: a unit of the session that cannot be read, or a rollout named after the root id or after
+    the `parent_thread_id` of a child that is no thread of the family (see `_is_named_after`) that is not one of the session's
+    units, although the last `scan` found it (listed, or listed as a problem): it could not be learned, as a compressed one
+    cannot yet. Then no session is built and `read` lists one unit unreadable, the newest of the session's units; sync marks
+    every other unit of the session with that first reason (`_mark`), so no family is archived as an orphan by mistake.
+    `read` relies on the last `scan` for that (`_scanned_paths`), and runs one itself when none has run on this
+    reader yet."""
 
     def __init__(self, root: str) -> None:
         self._folders = tuple(os.path.join(root, name) for name in _STORE_FOLDERS)
+        self._found_paths: Optional[Tuple[str, ...]] = None
 
     def scan(self) -> ScanResult:
         units: List[SourceUnit] = []
@@ -161,6 +202,7 @@ class CodexReader:
             units.extend(listed.units)
             problems.extend(listed.problems)
             pending.extend(listed.subfolders)
+        self._found_paths = tuple(unit.key for unit in units) + tuple(problem.path for problem in problems)
         return ScanResult(units=sorted(units, key=lambda unit: unit.key), unreadable=sorted(problems, key=lambda source: source.path))
 
     def session_of(self, unit: SourceUnit) -> Optional[str]:
@@ -169,6 +211,13 @@ class CodexReader:
             return None
         return build_session_key(Harness.CODEX, header.meta.root_id)
 
+    def _scanned_paths(self) -> Tuple[str, ...]:
+        """The paths (unit keys and paths of problems) the last scan found, as of that scan: a rollout added or removed since
+        does not show. Runs one scan when none has run on this reader yet."""
+        if self._found_paths is None:
+            self.scan()
+        return self._found_paths or ()
+
     def read(self, session_key: str, units: Tuple[SourceUnit, ...]) -> ReadResult:
         root_id = root_id_of(session_key)
         if not root_id or session_key != build_session_key(Harness.CODEX, root_id):
@@ -176,6 +225,23 @@ class CodexReader:
         if units and not is_safe_id(root_id):
             return ReadResult(unreadable=(_FILES.unreadable(_newest_first(units)[0].key, UNSAFE_ID_REASON),))
         unreadable: List[UnreadableSource] = []
-        rollout = _root_rollout(root_id, units, unreadable)
-        session = None if rollout is None else _build_session(root_id, rollout)
+        found_by_thread: Dict[str, _Found] = {}
+        for unit in _newest_first(units):
+            rollout = _parse_unit(unit, parse_rollout)
+            if isinstance(rollout, UnreadableSource):
+                unreadable.append(rollout)
+            elif rollout.meta is not None and rollout.meta.root_id == root_id:
+                found = _Found(unit, rollout, rollout.meta)
+                known = found_by_thread.get(found.meta.thread_id)
+                if known is None or _is_better_copy(found, known):
+                    found_by_thread[found.meta.thread_id] = found
+        root = found_by_thread.pop(root_id, None)
+        children = list(found_by_thread.values())
+        if root is not None:
+            return ReadResult(session=_root_session(root_id, root, children), unreadable=tuple(unreadable))
+        if children and not unreadable:
+            scanned_paths = self._scanned_paths()
+            if _has_unlearned_parent(root_id, children, {unit.key for unit in units}, scanned_paths):
+                unreadable.append(_FILES.unreadable(_newest_first(units)[0].key, PARENT_UNREADABLE_REASON))
+        session = None if unreadable else _orphan_session(root_id, children)
         return ReadResult(session=session, unreadable=tuple(unreadable))
