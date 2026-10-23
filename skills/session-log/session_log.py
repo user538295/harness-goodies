@@ -21,10 +21,9 @@ HOOK_ARGUMENT = "hook"
 LATEST_FLAG = "--latest"
 OPTION_PREFIX = "--"
 COMMANDS = ("on", "off", "status", "usage")
-SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "omp": (".omp", "agent"), "opencode": (".config", "opencode")}
+SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "cursor": (".cursor",), "omp": (".omp", "agent"),
+                           "opencode": (".config", "opencode")}
 CURSOR_HARNESS = "cursor"
-# Cursor joins SUPPORTED_HARNESS_ROOTS (the harnesses the command line accepts) when its reader is wired; until then only its hooks name it.
-HARNESS_ROOTS = dict(SUPPORTED_HARNESS_ROOTS, cursor=(".cursor",))
 CURSOR_RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop")
 OPENCODE_DATA_HOME = (".local", "share")
 OPENCODE_DATA_FOLDER = OPENCODE_DATA_HOME + ("opencode",)
@@ -155,6 +154,10 @@ def _build_reader(harness, root, home, path_module, env):
         return OmpReader(root)
     if harness == "opencode":
         return _opencode_reader(home, path_module, env)
+    if harness == CURSOR_HARNESS:
+        from sessionlog.cursor_reader import CursorReader
+        from sessionlog.cursor_records import RECORDS_FOLDER
+        return CursorReader(path_module.join(root, LOG_FOLDER_NAME, RECORDS_FOLDER))
     raise RuntimeFailure("no reader for harness '%s'" % harness)
 
 
@@ -183,7 +186,7 @@ def _harness_folders(harness, environment):
     """Returns (home, root, log root) of the harness; a relocated root ends the run first (the check of C1 after the version check)."""
     home = _home_folder(environment)
     _refuse_relocated_root(harness, home, environment)
-    root = environment.path_module.join(home, *HARNESS_ROOTS[harness])
+    root = environment.path_module.join(home, *SUPPORTED_HARNESS_ROOTS[harness])
     return home, root, environment.path_module.join(root, LOG_FOLDER_NAME)
 
 

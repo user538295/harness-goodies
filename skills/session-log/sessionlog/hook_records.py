@@ -13,7 +13,7 @@ import stat
 import time
 from typing import Callable, Iterator, Optional
 
-from .cursor_records import INVALID_FOLDER, RECORDS_FOLDER, STALE_RECORD_TEMP, record_fields, record_file_name
+from .cursor_records import HOOK_CONVERSATION_ID_KEY, INVALID_FOLDER, RECORDS_FOLDER, STALE_RECORD_TEMP, record_fields, record_file_name
 from .model import is_safe_id
 from .temp_files import publish, remove_stale_temps, temp_name
 
@@ -37,7 +37,7 @@ def _conversation_id(text: str) -> Optional[str]:
         return None
     if not isinstance(data, dict):
         return None
-    value = data.get("conversation_id")
+    value = data.get(HOOK_CONVERSATION_ID_KEY)
     return value if is_safe_id(value) else None
 
 

@@ -21,7 +21,7 @@ PROMPT_ONE_TOKENS = "input: 10, output: 160, cache_create: 200, cache_read: 2200
 PROMPT_TWO_TOKENS = "input: 10, output: 83, cache_create: 100, cache_read: 1500, total_tokens: 1693"
 CHILD_TOKENS = "input: 50, output: 20, cache_create: 0, cache_read: 400, total_tokens: 470"
 TOTAL_TOKENS = "input: 70, output: 263, cache_create: 300, cache_read: 4100, total_tokens: 4733"
-SUPPORTED_HARNESSES = "(supported: claude, codex, omp, opencode)"
+SUPPORTED_HARNESSES = "(supported: claude, codex, cursor, omp, opencode)"
 
 
 class OmpEntryTestCase(unittest.TestCase):

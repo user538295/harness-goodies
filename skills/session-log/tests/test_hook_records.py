@@ -15,11 +15,13 @@ from unittest import mock
 
 import session_log
 from sessionlog import cursor_records, hook_records, temp_files
+from sessionlog.cursor_reader import CursorReader
 from sessionlog.state import FileStateStore
 from tests.test_session_log import ENTRY, ON_FLAG, SUBPROCESS_ENV_NAMES, SUBPROCESS_TIMEOUT_SECONDS, SandboxCase
 
 CURSOR_FOLDER = ".cursor"
 LOG_FOLDER = "prompt-logs"
+SYNC_STATE = ".sync.json"
 RECORDS_FOLDER = ".records"
 INVALID_FOLDER = ".invalid"
 LEGACY_FLAG = ".enabled"
@@ -80,6 +82,20 @@ class CursorHookCase(SandboxCase):
         os.makedirs(self.log_root, exist_ok=True)
         with open(os.path.join(self.log_root, ON_FLAG), "w", encoding="utf-8") as stream:
             stream.write("2000-01-01T00:00:00+00:00\n")
+
+    def sync_state_path(self):
+        return os.path.join(self.log_root, SYNC_STATE)
+
+    def forget_sync(self):
+        """Removes what a sync saves, so `sync_ran` tells whether the next hook synced."""
+        try:
+            os.remove(self.sync_state_path())
+        except FileNotFoundError:
+            pass
+
+    def sync_ran(self):
+        """Whether a sync ran to the saving of its state file (it runs only while logging is on)."""
+        return os.path.isfile(self.sync_state_path())
 
     def run_cursor_hook(self, event, stdin=b"", **kwargs):
         kwargs.setdefault("time_ns", lambda: next(self.ticks))
@@ -321,8 +337,7 @@ class GateTests(CursorHookCase):
         with open(stale, "w", encoding="utf-8") as stream:
             stream.write("x")
         self.age_file(stale, OLD_AGE_SECONDS)
-        with mock.patch.object(hook_records.os.path, "isjunction", side_effect=lambda path: path == junction), \
-                mock.patch.object(session_log, "_sync_at_session_start"):
+        with mock.patch.object(hook_records.os.path, "isjunction", side_effect=lambda path: path == junction):
             self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("stop", payload(conversation_id=CONVERSATION)))
             self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("sessionStart", time_ns=lambda: START_NS))
         self.assertEqual([os.path.basename(stale)], os.listdir(junction))
@@ -442,18 +457,16 @@ class LinkSafetyTests(CursorHookCase):
         os.makedirs(self.records)
         self.make_link(os.path.join(self.records, CONVERSATION))
         stale = self.stale_temp_in(self.elsewhere)
-        with mock.patch.object(session_log, "_sync_at_session_start") as sync:
-            self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("sessionStart", time_ns=lambda: START_NS))
-        sync.assert_called_once()
+        self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("sessionStart", time_ns=lambda: START_NS))
+        self.assertTrue(self.sync_ran())
         self.assertTrue(os.path.exists(stale))
 
     def test_stale_temp_removal_does_not_follow_a_symlinked_records_folder(self):
         self.make_link(self.records)
         os.makedirs(os.path.join(self.elsewhere, CONVERSATION))
         stale = self.stale_temp_in(os.path.join(self.elsewhere, CONVERSATION))
-        with mock.patch.object(session_log, "_sync_at_session_start") as sync:
-            self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("sessionStart", time_ns=lambda: START_NS))
-        sync.assert_called_once()
+        self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("sessionStart", time_ns=lambda: START_NS))
+        self.assertTrue(self.sync_ran())
         self.assertTrue(os.path.exists(stale))
 
 
@@ -469,10 +482,11 @@ class SessionStartTests(CursorHookCase):
         self.age_file(path, age)
         return path
 
-    def run_session_start(self, **kwargs):
-        with mock.patch.object(session_log, "_sync_at_session_start", **kwargs) as sync:
-            self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("sessionStart", time_ns=lambda: START_NS))
-        return sync
+    def run_session_start(self):
+        """Runs a real `sessionStart` hook; whether its sync got as far as saving `.sync.json`."""
+        self.forget_sync()
+        self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("sessionStart", time_ns=lambda: START_NS))
+        return self.sync_ran()
 
     def test_session_start_removes_old_record_temp_keeps_fresh_one_then_syncs(self):
         self.turn_logging_on()
@@ -481,10 +495,12 @@ class SessionStartTests(CursorHookCase):
         fresh = self.seed(CONVERSATION, self.temp_name(suffix="cccc2222"), FRESH_AGE_SECONDS)
         record = self.seed(CONVERSATION, "%d-stop-%d.json" % (START_NS - 9, FIXED_PID), OLD_AGE_SECONDS)
         foreign = self.seed(CONVERSATION, ".notes.tmp", OLD_AGE_SECONDS)
-        seen = []
+        scans = []
+        real_scan = CursorReader.scan
 
-        def sync(harness, environment):
-            seen.append((harness, environment, os.path.exists(old), os.path.exists(old_invalid), os.path.exists(fresh)))
+        def scan(reader):
+            scans.append((os.path.exists(old), os.path.exists(old_invalid), os.path.exists(fresh)))
+            return real_scan(reader)
 
         reads = []
 
@@ -493,36 +509,37 @@ class SessionStartTests(CursorHookCase):
                 reads.append(True)
                 raise AssertionError("sessionStart must not read stdin")
 
-        with mock.patch.object(session_log, "_sync_at_session_start", side_effect=sync) as called:
+        with mock.patch.object(CursorReader, "scan", scan):
             stdout, stderr = io.StringIO(), io.StringIO()
             environment = self.environment(stdout, stderr, stdin=Unreadable(), time_ns=lambda: START_NS, pid=lambda: FIXED_PID)
             self.assertEqual(0, session_log.main(["hook", "cursor", "sessionStart"], environment))
         self.assertEqual(("", ""), (stdout.getvalue(), stderr.getvalue()))
-        called.assert_called_once()
         self.assertEqual([], reads)
-        self.assertEqual([("cursor", environment, False, False, True)], seen)
+        self.assertEqual([(False, False, True)], scans)  # the real sync ran once, after the old temps went
+        self.assertTrue(self.sync_ran())
         self.assertEqual(sorted([os.path.join(CONVERSATION, os.path.basename(path)) for path in (fresh, record, foreign)]),
                          self.files_under(self.records))  # fresh temp, records and other files stay, nothing new
         self.assertFalse(os.path.exists(old_invalid))
 
     def test_session_start_writes_no_record_and_does_nothing_while_logging_is_off(self):
         old = self.seed(CONVERSATION, self.temp_name(), OLD_AGE_SECONDS)
-        self.assertEqual(0, self.run_session_start().call_count)
+        self.assertFalse(self.run_session_start())
         self.assertTrue(os.path.exists(old))
         self.turn_logging_on()
-        self.assertEqual(1, self.run_session_start().call_count)
+        self.assertTrue(self.run_session_start())
         self.assertFalse(os.path.exists(old))
         self.assertEqual([], self.files_under(self.records))  # no record of its own
 
     def test_session_start_without_a_records_folder_still_syncs(self):
         self.turn_logging_on()
-        self.assertEqual(1, self.run_session_start().call_count)
+        self.assertTrue(self.run_session_start())
         self.assertFalse(os.path.exists(self.records))
 
     def test_a_failing_sync_does_not_undo_the_cleanup_and_stays_silent(self):
         self.turn_logging_on()
         old = self.seed(CONVERSATION, self.temp_name(), OLD_AGE_SECONDS)
-        self.run_session_start(side_effect=RuntimeError("boom"))
+        with mock.patch.object(CursorReader, "scan", side_effect=RuntimeError("boom")):
+            self.assertFalse(self.run_session_start())
         self.assertFalse(os.path.exists(old))
 
     def test_a_cleanup_that_cannot_remove_or_list_does_not_stop_the_sync(self):
@@ -530,7 +547,7 @@ class SessionStartTests(CursorHookCase):
         old = self.seed(CONVERSATION, self.temp_name(), OLD_AGE_SECONDS)
         for step in ("unlink", "listdir"):
             with self.subTest(step=step), mock.patch.object(temp_files.os, step, side_effect=PermissionError("denied")) as failing:
-                self.assertEqual(1, self.run_session_start().call_count)
+                self.assertTrue(self.run_session_start())
                 failing.assert_any_call(old if step == "unlink" else self.records)
         self.assertTrue(os.path.exists(old))
 
@@ -566,7 +583,7 @@ class SessionStartTests(CursorHookCase):
             return real_listdir(path)
 
         with mock.patch.object(temp_files.os, "listdir", side_effect=listdir):
-            self.assertEqual(1, self.run_session_start().call_count)
+            self.assertTrue(self.run_session_start())
         self.assertTrue(os.path.exists(unlistable))
         self.assertFalse(os.path.exists(removable))
 

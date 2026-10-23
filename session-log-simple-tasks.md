@@ -283,7 +283,7 @@ flowchart LR
     - needs K1 · completes S67
     - Tests
         - #unit_test — `test_on_off_results_render_already_on_off_probe_fix_and_leftovers` — set field shown, unset field not
-        - #unit_test — `test_status_result_renders_every_optional_field_with_fixed_wording` — unreadable, zstd count and fix, Cursor silent, price-file problem, state reset, file-time on-time
+        - #unit_test — `test_status_result_renders_every_optional_field_with_fixed_wording` — unreadable, Cursor silent, price-file problem, state reset, file-time on-time
         - #unit_test — `test_usage_result_text_printed_unchanged` — incl. `≥` and `ő`
 - [x] **FE-2** — Rewrite [SKILL.md](./skills/session-log/SKILL.md) and [test_locator.sh](./skills/session-log/tests/test_locator.sh): one line `python3 "<skill dir>/session_log.py" <harness> <arguments>`, Windows fallback (`py -3`, then `python`) as prose, announced directory first else the golden locator (probe `session_log.py`, which only prints the directory, Q26) on macOS/Linux or `SESSION_LOG_HOME` on Windows; frontmatter without `repair` and without the ownership marker #frontend-role
     - Presentation · 4.0h
@@ -293,15 +293,16 @@ flowchart LR
         - #unit_test — `test_skill_md_has_no_repair_no_install_sh_no_managed_marker` — static text
         - #integration_test — `test_locator_prints_newest_copy_holding_session_log_py_skipping_seeded_and_neutralized` — `mkpackage` builds [SKILL.md](./skills/session-log/SKILL.md) + stub `session_log.py`; old seeded copy (SKILL.md + `install.sh`) loses to the plugin cache (S60)
         - #integration_test — `test_locator_not_found_prints_error_with_session_log_home_hint` — Q26
-- [x] **BE-9** — Entry script `session_log.py`: parses on Python 3.4 and checks ≥ 3.9 before importing `sessionlog/`; stdout and stderr UTF-8; argv with its own `session-log:` texts, exit 0/1/2, no traceback; composition root builds the Claude reader, Archive, StateStore, PriceBook, injected clock, platform, path module; dispatches one use case and prints via the presentation module #backend-role
+- [x] **BE-9** — Entry script `session_log.py`: parses on Python 3.4 and checks ≥ 3.14 before importing `sessionlog/`, printing the requirement line and one install-fix line for the running platform (S55); stdout and stderr UTF-8; argv with its own `session-log:` texts, exit 0/1/2, no traceback; composition root builds the Claude reader, Archive, StateStore, PriceBook, injected clock, platform, path module; dispatches one use case and prints via the presentation module #backend-role
     - Frameworks & Drivers · 4.0h
     - needs BE-4, BE-8, FE-1 · completes C1, S5, S36, S54
     - Tests
         - #unit_test — `test_unsupported_or_missing_harness_exits_2_with_session_log_prefix_writes_nothing` — S5
         - #unit_test — `test_bad_arguments_exit_2_without_argparse_usage_and_runtime_error_exits_1` — S36
-        - #unit_test — `test_injected_old_python_prints_requirement_exit_1_and_exception_gives_internal_error_not_traceback` — S55, command half
+        - #unit_test — `test_injected_old_python_prints_requirement_and_fix_line_exit_1_and_exception_gives_internal_error_not_traceback` — S55, command half
+        - #unit_test — `test_fix_line_names_brew_on_darwin_install_manager_on_win32_and_package_manager_elsewhere` — S55, injected `sys.platform`
         - #integration_test — `test_cp1252_subprocess_stdout_is_utf8_and_files_are_utf8_lf` — S54, report with `≥` and `ő`
-- [x] **T-1** — E2E of the skeleton in a sandbox `HOME`: `on`, `off`, `status`, `usage` for Claude on macOS and in `python:3.9-slim`; the Docker run commands live with the tests #tester-role
+- [x] **T-1** — E2E of the skeleton in a sandbox `HOME`: `on`, `off`, `status`, `usage` for Claude on macOS and in `python:3.14-slim`; the Docker run commands live with the tests #tester-role
     - — · 3.0h
     - needs BE-9, FE-2 · completes S1, S2, S3, S4
     - Tests
@@ -435,7 +436,7 @@ flowchart LR
         - #unit_test — `test_leftover_list_is_per_harness_for_the_invoked_harness_only` — one reader per run
 
 ### Phase 8 · Get an exact fix when Python is missing or too old
-- [x] **BE-23** — Python probe runner: on Windows `on` and `status` run `python3 -c` (version ≥ 3.9) through the injected runner and platform; any failure prints the exact fix; no probe elsewhere #backend-role
+- [x] **BE-23** — Python probe runner: on Windows `on` and `status` run `python3 -c` (version ≥ 3.14) through the injected runner and platform; any failure prints the exact fix; no probe elsewhere #backend-role
     - Interface Adapters · 2.0h
     - needs BE-8 · completes S24
     - Tests
@@ -445,11 +446,11 @@ flowchart LR
     - — · 2.0h
     - needs BE-9, BE-17 · completes S55
     - Tests
-        - #e2e_test — `test_python34_command_prints_requirement_message_and_exits_1` — `session-log: Python 3.9+ required (found 3.4)`
+        - #e2e_test — `test_python34_command_prints_requirement_and_fix_lines_exits_1_and_on_creates_no_flag` — `session-log: Python 3.14+ required (found 3.4)` then `session-log: fix: …`
         - #e2e_test — `test_python34_hook_exits_0_silently` — S55
 
 ### Phase 9 · Log Codex sessions, compressed rollouts and sub-agents
-- [x] **BE-24** — CodexReader core (built with the ordered `ZstdDecoder` list): rollouts under `sessions/` and `archived_sessions/` (`.jsonl`, `.jsonl.zst`), keys drop `.zst`, `sessionOf` from the rollout's first line, prompts only from `UserMessage` items or old `user_message` events, uncached input = `input_tokens` − `cached_input_tokens`, `cache_write_input_tokens` as cache write, requests from `token_usage_record` else growth of `total_token_usage`, `last_token_usage` never summed; wired into the composition root #backend-role
+- [x] **BE-24** — CodexReader core: rollouts under `sessions/` and `archived_sessions/` (`.jsonl`, `.jsonl.zst`), keys drop `.zst`, `sessionOf` from the rollout's first line, prompts only from `UserMessage` items or old `user_message` events, uncached input = `input_tokens` − `cached_input_tokens`, `cache_write_input_tokens` as cache write, requests from `token_usage_record` else growth of `total_token_usage`, `last_token_usage` never summed; wired into the composition root #backend-role
     - Interface Adapters · 4.0h
     - needs BE-9, BE-14 · completes S7
     - Tests
@@ -504,7 +505,7 @@ flowchart LR
         - #integration_test — `test_hook_with_bom_and_non_ascii_writes_one_record_via_temp_rename_prints_nothing` — S22
         - #integration_test — `test_empty_invalid_json_missing_or_unsafe_id_go_to_invalid_ansi_input_kept_with_replacement_chars` — S45, ids `../x`, `a/b`, `.`, `CON`
         - #integration_test — `test_session_start_removes_old_record_temp_keeps_fresh_one_then_syncs` — S45
-- [ ] **BE-31** — CursorReader: scan of record folders, join by `generation_id` (usage from `stop` only), sub-agents per `child_conversation_id` (start = arrival − `duration_ms`), duplicates counted once, cancelled prompt without reply and zero tokens, lone `stop` under `(prompt not recorded)`, `*.tmp` ignored, `.records/.invalid/` listed once with its call count, slug from `workspace_roots[0]` of the first record; wired into the composition root #backend-role
+- [x] **BE-31** — CursorReader: scan of record folders, join by `generation_id` (usage from `stop` only), sub-agents per `child_conversation_id` (start = arrival − `duration_ms`), duplicates counted once, cancelled prompt without reply and zero tokens, lone `stop` under `(prompt not recorded)`, `*.tmp` ignored, `.records/.invalid/` listed once with its call count, slug from `workspace_roots[0]` of the first record; wired into the composition root #backend-role
     - Interface Adapters · 4.0h
     - needs BE-14, BE-30 · completes S12, S14, S44
     - Tests
@@ -536,7 +537,7 @@ flowchart LR
     - — · 3.0h
     - needs T-1, BE-15, BE-18, BE-26, BE-30, BE-32, BE-33 · completes S3, S59
     - Tests
-        - #e2e_test — `test_status_lists_unreadable_skipped_zstd_count_fix_price_problem_state_reset_and_cursor_hook_silence` — S3 full field set, `.records/.invalid/` call count
+        - #e2e_test — `test_status_lists_unreadable_skipped_price_problem_state_reset_and_cursor_hook_silence` — S3 full field set, `.records/.invalid/` call count
         - #manual_test — Cursor with claude-goodies imported starts a chat normally with and without `session_log.py`, prints nothing, records whether exec form is honoured and the start delay — S59 (non-automatable: needs the Cursor app importing the plugin)
 
 ### Phase 13 · Keep logs private and refuse unsafe or relocated roots
@@ -595,12 +596,12 @@ flowchart LR
         - #manual_test — OMP `/skill:session-log` run then `usage` — S30
         - #manual_test — OpenCode: record how the skill is reached now that the plugin command is gone, then `usage` — S30
         - #manual_test — Cursor app prompt: `hook` executable on the local install, whether the chat waits for the `sessionStart` sync — S30
-- [ ] **T-9** — S29 matrix: the unit suite and a sync on macOS under `/usr/bin/python3` (3.9) and Homebrew `python3` (3.15 with `compression.zstd`) and in `python:3.9-slim`, `PATH` reduced to the interpreter (plus `zstd` for its own test); launcher and git checks run separately; Docker run commands recorded #tester-role
+- [ ] **T-9** — S29 matrix: the unit suite and a sync on macOS under Homebrew `python3` (3.15) and in `python:3.14-slim`, `PATH` reduced to the interpreter; launcher and git checks run separately; Docker run commands recorded #tester-role
     - — · 3.0h
     - needs BE-37, BE-40 · completes S29
     - Tests
-        - #e2e_test — `test_unit_suite_passes_under_usr_bin_python3_with_reduced_path` — `unittest discover -s skills/session-log/tests -t skills/session-log`; launcher and git checks run separately (S29)
-        - #e2e_test — `test_unit_suite_passes_under_homebrew_python3_with_zstd_and_in_python39_slim` — no bash, jq, sqlite3 CLI or Node called
+        - #e2e_test — `test_unit_suite_passes_under_homebrew_python3_with_reduced_path` — `unittest discover -s skills/session-log/tests -t skills/session-log`; launcher and git checks run separately (S29)
+        - #e2e_test — `test_unit_suite_passes_in_python314_slim` — no bash, jq, sqlite3 CLI or Node called
         - #e2e_test — `test_git_checks_run_separately_in_macos_checkout_with_git_on_path` — S57 mode, S58 grep
 - [ ] **T-10** — OMP package: no session-log extension loads and `/skill:session-log status` runs the new script #tester-role
     - — · 2.0h
