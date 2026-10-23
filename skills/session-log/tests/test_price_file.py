@@ -109,9 +109,10 @@ class PriceFileTests(unittest.TestCase):
 
     def test_missing_malformed_or_duplicate_prefix_file_makes_every_price_unknown_and_names_problem(self):
         deep = "[" * 100000
+        # the message of a 100000-deep JSON array differs by Python build: "recursion" (older), "Stack overflow" (3.14 on Linux, seen in python:3.14-slim), or a plain parse error
         for name, content, reason in (
                 ("missing", None, "No such file"), ("malformed", "{", "Expecting"),
-                ("truncated", '{"models": [', "Expecting"), ("deeply nested", deep, "recursion|Expecting value"),
+                ("truncated", '{"models": [', "Expecting"), ("deeply nested", deep, "recursion|Stack overflow|Expecting value"),
                 ("empty models", '{"models": []}', "nonempty models"),
                 ("duplicate", json.dumps({"models": [entry("known"), entry("known")]}), "duplicate prefix known")):
             with self.subTest(name):

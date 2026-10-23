@@ -614,7 +614,7 @@ flowchart LR
     - needs BE-18, BE-33, BE-37, BE-38 · completes S58
     - Tests
         - #unit_test — `test_git_grep_lists_only_exempt_files` — S58
-- [ ] **T-9** — S29 matrix: the unit suite and a sync on macOS under Homebrew `python3` (3.15) and in `python:3.14-slim`, `PATH` reduced to the interpreter; launcher and git checks run separately; Docker run commands recorded #tester-role
+- [x] **T-9** — S29 matrix: the unit suite and a sync on macOS under Homebrew `python3` (3.15) and in `python:3.14-slim`, `PATH` reduced to the interpreter; launcher and git checks run separately; Docker run commands recorded #tester-role
     - — · 3.0h
     - needs BE-37, BE-40 · completes S29
     - Tests
