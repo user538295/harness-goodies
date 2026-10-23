@@ -3,7 +3,7 @@
 # These are the "curated" paths: files that live in ~/.claude (runtime) AND
 # ship in this repo. One tool reads this file:
 #
-#   * claude-sync.sh  — CAPTURE: copies each path  ~/.claude  ->  this checkout
+#   * claude-sync.sh  — CAPTURE: copies each path  ~/.claude  ->  this checkout (the tool is not part of this repo)
 #
 # Format:
 #   - One path per line, relative to the repo root (== relative to ~/.claude).
@@ -14,7 +14,8 @@
 # NOT listed here (repo-only, maintained directly in the checkout, never synced
 # into ~/.claude): AGENTS.md, README.md, sync-manifest.txt, handout/, assets/,
 # hooks/, .claude-plugin/, .omp-plugin/, .cursor-plugin/, .codex-plugin/,
-# .agents/, .opencode-plugin/, package.json, bun.lock, skills/session-log/ (a copy of it under ~/.claude is an old seeded copy that session-log's leftover scan reports).
+# .agents/, .opencode-plugin/, package.json, bun.lock, skills/double-check/ (not in ~/.claude),
+# skills/session-log/ (a copy of it under ~/.claude/skills is an old seeded copy when it still holds the old installer script, ownership manifest or marker, which session-log's leftover scan reports).
 #
 # Junk is never copied regardless of these entries: .DS_Store, __pycache__/,
 # *.pyc, .pytest_cache/, node_modules/, .git/, editor swap/backup files.

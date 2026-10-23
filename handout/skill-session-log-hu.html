@@ -28,7 +28,7 @@
         <li><strong>Sessionönként egy napló és egy riport.</strong> Minden session, amelyben a naplózás bekapcsolása óta történt aktivitás, kap egy Markdown naplót (minden prompt és a rá kapott válasz, helyi idővel és UTC-eltolással) és mellé egy egyszerű szöveges usage-riportot. Mindkettő egészében íródik újra, ha a session változik. Ha egy sessionben az <code>on</code> után aktivitás történik, az egészében archiválódik, az <code>on</code> előtti promptokkal együtt; az <code>off</code> sem rejti el a korábbi promptokat: ha egy session egy későbbi <code>on</code> után is folytatódik, a naplózás kikapcsolt állapotában beírt promptok is archiválódnak vele. Kivétel a Cursor: csak azt archiválja, amit a hookjai a naplózás bekapcsolt állapotában rögzítettek.</li>
         <li><strong>Minden környezetben ugyanaz a riport, ahol a skill fut.</strong> Promptonként (a riportban <em>request</em>): munkaidő, input-, output-, cache-író (<code>cache_create</code>) és cache-olvasó tokenek, becsült ár, a használt modellek és effort-szintek. Az árak a mellékelt <code>prices.json</code>-ból jönnek, kivéve, ahol a környezet maga rögzíti a költséget (OMP, OpenCode): a költséget a rögzített értéken veszi át; a Codex és a Cursor ára <code>API-equivalent</code> címkét kap.</li>
         <li><strong>Az alügynököket is számolja.</strong> Minden alügynök külön sort kap, tokenjei és ára beleszámít a <code>TOTAL</code>-ba. Kivétel a Cursor: nem tárol alügynök-tokeneket, ezért a riportja csak a fő sessiont fedi, az ára pedig hiányosként van jelölve.</li>
-        <li><strong>Usage olyan sessionre is, amelyet sosem archiváltak.</strong> A <code>usage</code> ugyanazt a riportot élőben számolja ki a környezet adataiból, és semmit nem ment el — például egy olyan sessionre, amelyben az <code>on</code> óta nem volt aktivitás.</li>
+        <li><strong>Usage olyan sessionre is, amelyet sosem archiváltak.</strong> A <code>usage</code> ugyanazt a riportot élőben számolja ki a környezet adataiból, amelyeknek még létezniük kell, és semmit nem ment el — például egy olyan sessionre, amelyben az <code>on</code> óta nem volt aktivitás.</li>
         <li><strong>Egyértelmű környezetazonosítás.</strong> A skill azt mondja a modellnek, hogy a host futásidejű környezetéből vegye az azonosítót (<code>claude</code>, <code>codex</code>, <code>cursor</code>, <code>opencode</code> vagy <code>omp</code>); a szkript útvonalból, folyamatból vagy környezeti változóból soha nem találgat.</li>
         <li><strong>Helyi és privát.</strong> A naplómappák <code>700</code>, a naplófájlok <code>600</code> jogosultsággal jönnek létre. A csomag semmit nem tölt fel.</li>
       </ul>
@@ -65,7 +65,7 @@
           </tr>
         </tbody>
       </table>
-      <p>A <code>usage</code> legfeljebb egy argumentumot fogad el. Argumentum nélkül vagy a <code>--latest</code>-tel az aktuális projekt azon sessionjét riportolja, amelyikben a legfrissebb prompt van, az archivált felső szintű sessionök közül; ha a projektnek nincs ilyen, a legközelebbi szülőmappáét, amelyiknek van (előbb az archívumot olvassa, a környezet adatait csak akkor, ha a projektnek nincs archivált sessionje). Sessionazonosítóval azt a sessiont riportolja: a pontos azonosító egyezik, különben az az egyetlen session, amelynek azonosítója azzal kezdődik, amit beírtál. A sessionazonosító csak betűt, számjegyet, <code>_</code>-t és <code>-</code>-t tartalmazhat.</p>
+      <p>A <code>usage</code> legfeljebb egy argumentumot fogad el. Argumentum nélkül vagy a <code>--latest</code>-tel az aktuális projekt azon sessionjét riportolja, amelyikben a legfrissebb prompt van, az archivált felső szintű sessionök közül; ha a projektnek nincs ilyen, a legközelebbi szülőmappáét, amelyiknek van (előbb az archívumot olvassa; a környezet adatait csak akkor, ha a projektnek nincs archivált sessionje, és ilyenkor a legfrissebb forrásfájlú session nyer). Sessionazonosítóval azt a sessiont riportolja: a pontos azonosító egyezik, különben az az egyetlen session, amelynek azonosítója azzal kezdődik, amit beírtál. A sessionazonosító csak betűt, számjegyet, <code>_</code>-t és <code>-</code>-t tartalmazhat.</p>
       <p>A szkript a hibákat a stderr-re írja <code>session-log:</code> előtaggal, és <code>0</code>-val lép ki siker esetén, <code>1</code>-gyel futásidejű hibánál, <code>2</code>-vel hibás argumentumoknál.</p>
 
       <h3>Hogyan hívd meg az egyes környezetekben</h3>
@@ -88,7 +88,7 @@
           <tr>
             <td>Cursor</td>
             <td><code>/session-log &lt;args&gt;</code></td>
-            <td>Lefuttatta a szkriptet a <code>cursor-agent -p</code>-ben, az viszont nem süt el prompt-hookot, így nem rögzít semmit. A Cursor alkalmazásban használt formát még nem volt megfigyelve.</td>
+            <td>Lefuttatta a szkriptet a <code>cursor-agent -p</code>-ben, az viszont nem süt el prompt-hookot, így nem rögzít semmit. A Cursor alkalmazásban használt forma még nincs megfigyelve.</td>
           </tr>
           <tr>
             <td>OMP</td>

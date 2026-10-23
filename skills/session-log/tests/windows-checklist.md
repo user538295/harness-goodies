@@ -6,7 +6,7 @@ Run by the maintainer on a real Windows PC (Intel/AMD, x64) after release 2 (Q22
 
 - `<home>` is `%USERPROFILE%` (PowerShell: `$HOME`). A harness root is `<home>\.claude`, `<home>\.codex`, `<home>\.cursor`, `<home>\.omp\agent` or `<home>\.config\opencode`; its log folder, the "log root", is `<root>\prompt-logs`. `on` prints it as `Logs are saved under <log root>.`; `status` prints it as `Log root: <log root>`.
 - `<skill dir>` is the installed skill directory, the one that holds `session_log.py`, `hook` and `hook.ps1`. The skill runs exactly one line: `python3 "<skill dir>/session_log.py" <harness> <arguments>`.
-- The skill is invoked as `/session-log <arguments>`; in OMP as `/skill:session-log <arguments>`; for OpenCode and Cursor use the invocation form recorded by the S30 smoke run on the Mac (kept with the release's close-out evidence). Cursor's plugin is `cursor-goodies`; the other harnesses use `claude-goodies`, `codex-goodies` and `omp-goodies`, installed by the route S30 recorded for each.
+- The skill is invoked as `/session-log <arguments>` in Claude Code and Cursor (the form in the Cursor app is not yet observed: record what works), as `$session-log <arguments>` in Codex, and as `/skill:omp-goodies/session-log <arguments>` in OMP (the plain `/skill:session-log` can reach an older copy in the Claude plugin cache); these are the forms of README's Install · Update. OpenCode is not usable through the skill while SKILL.md still tells the model to stop there: run the skill line yourself, `python3 "<skill dir>\session_log.py" opencode <arguments>`, and use SKILL.md's form once a later release changes that. Cursor's plugin is `cursor-goodies`; the other harnesses use `claude-goodies`, `codex-goodies`, `omp-goodies` and `opencode-goodies`, installed by the route S30 recorded for each.
 - "As on macOS" means the wording of the Mac run of S30. There is no `sync` command: `on`, `status` and `usage` sync first while logging is on.
 - Prompt text for every "one prompt" step: `Say hello. Győző ≥ 3` (it holds `ő` and `≥`). Send it in a new session of that harness, in the demo project, and wait for the reply before running `status` or `usage`.
 - Changing `PATH`, app execution aliases or environment variables only affects processes started afterwards: quit the harness completely (check Task Manager), change the setting, then start the harness again from a new terminal (CLI harnesses) or the Start menu (Cursor).
@@ -37,7 +37,7 @@ Repeat the whole section once per harness (Claude Code, Codex, Cursor, OMP, Open
 - [ ] `ő` and `≥` read correctly in the `.md` log and in the report (both hold the prompt text; the report's prompt row shows its first characters); Cursor under 5.1 is exempt (section 2).
 - [ ] `off` prints `Session logging is off.` and `Logs under <log root> are kept.`; `.log_enabled` is gone and the log files stay. Run `on` again before the next section.
 - [ ] OpenCode only: `status` finds the database in `<home>\.local\share\opencode` (`opencode.db`, else the newest `opencode-*.db`) and lists no "no OpenCode database" item. Do not set `XDG_DATA_HOME` (a moved data folder makes every command exit 1 as a relocated root); `OPENCODE_DB` must name a database inside that folder.
-- [ ] OMP only: the skill runs as `/skill:session-log`, and OMP loads no session-log extension at start (S28).
+- [ ] OMP only: the skill runs as `/skill:omp-goodies/session-log`, and OMP loads no session-log extension at start (S28).
 
 ## 2. Cursor under Windows PowerShell 5.1 without pwsh
 

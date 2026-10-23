@@ -621,7 +621,7 @@ flowchart LR
         - #e2e_test — `test_unit_suite_passes_under_homebrew_python3_with_reduced_path` — `unittest discover -s skills/session-log/tests -t skills/session-log`; launcher and git checks run separately (S29)
         - #e2e_test — `test_unit_suite_passes_in_python314_slim` — no bash, jq, sqlite3 CLI or Node called
         - #e2e_test — `test_git_checks_run_separately_in_macos_checkout_with_git_on_path` — S57 mode, S58 grep
-- [ ] **T-11** — S58 docs read-through: every file in the plan's Documentation update describes the new behaviour, no session-log `repair`, no `VERSION` guard #tester-role
+- [x] **T-11** — S58 docs read-through: every file in the plan's Documentation update describes the new behaviour, no session-log `repair`, no `VERSION` guard #tester-role
     - — · 2.0h
     - needs BE-40, FE-4, FE-5, FE-6 · completes S58
     - Tests
