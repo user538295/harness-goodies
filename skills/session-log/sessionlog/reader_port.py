@@ -12,6 +12,7 @@ CANNOT_BE_OPENED_REASON = "cannot be opened"
 CANNOT_BE_DECODED_REASON = "cannot be decoded"
 CANNOT_BE_LISTED_REASON = "cannot be listed"
 CANNOT_BE_PARSED_REASON = "cannot be parsed"
+NOT_A_REGULAR_FILE_REASON = "not a regular file"
 
 
 def build_session_key(harness: Harness, root_id: str) -> str:

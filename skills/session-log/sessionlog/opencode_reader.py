@@ -2,8 +2,9 @@
 sessions are the rows of `session_v2` (`parent_id` marks a sub-agent) and their messages the rows of `session_message`, read by `seq`
 (`opencode_messages` parses them, `opencode_family` makes the session). Every database problem becomes an unreadable source; nothing
 raises: a database that does not exist is `NO_DATABASE_REASON`, one a writer holds locked `DATABASE_BUSY_REASON` (read again by the next
-scan and read), one without the tables of OpenCode v2 (a v1-only database) `UNSUPPORTED_DATABASE_REASON`, any other failure
-`CANNOT_BE_OPENED_REASON`. Which database file is chosen is not this module's business (`opencode_database` does): the reader is built
+scan and read), one without the tables of OpenCode v2 (a v1-only database) `UNSUPPORTED_DATABASE_REASON`, a FIFO or another special file
+in its place (never opened, as SQLite would block on it) "not a regular file", any other failure `CANNOT_BE_OPENED_REASON`. Which
+database file is chosen is not this module's business (`opencode_database` does): the reader is built
 with one path. No row is ever written; for a WAL-mode database whose `-wal` and `-shm` files are gone SQLite itself creates those two
 bookkeeping files on the first read.
 
@@ -16,7 +17,6 @@ when it is a root, and starts a sub-agent when the root does.
 A unit's session is learned from the `parent_id` chain: the topmost session row is the root. A session in a parent loop, and every
 session hanging from one, is its own session key: `read` lists it unreadable (`PARENT_CYCLE_REASON`) and builds no session from it, and
 nothing walks a loop. The parent links of the last scan serve `session_of` and `read`, so a family is judged on what the scan saw."""
-import os
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -28,8 +28,9 @@ from .json_records import parse_epoch_milliseconds, whole_count
 from .model import Harness, is_safe_id
 from .opencode_family import ParentOf, SessionRow, build_session, root_id_for
 from .opencode_messages import Transcript, parse_messages
-from .reader_port import (CANNOT_BE_OPENED_REASON, PARENT_CYCLE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource,
-                          build_session_key, root_id_of)
+from .reader_port import (CANNOT_BE_OPENED_REASON, NOT_A_REGULAR_FILE_REASON, PARENT_CYCLE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult,
+                          SourceUnit, UnreadableSource, build_session_key, root_id_of)
+from .store_files import NotARegularFileError, require_regular_file
 
 NO_DATABASE_REASON = "no OpenCode database"
 DATABASE_BUSY_REASON = "database busy"
@@ -81,9 +82,11 @@ def _unreadable(path: str, reason: str) -> UnreadableSource:
 def _failure_reason(path: str, error: sqlite3.Error) -> str:
     """Why the database at `path` could not be queried."""
     try:
-        os.stat(path)
+        require_regular_file(path)
     except FileNotFoundError:  # also a dangling link; any other failure (say no permission) is not "no database"
         return NO_DATABASE_REASON
+    except NotARegularFileError:
+        return NOT_A_REGULAR_FILE_REASON
     except OSError:
         return CANNOT_BE_OPENED_REASON
     if (getattr(error, "sqlite_errorcode", 0) & _PRIMARY_RESULT_CODE_MASK) in _BUSY_CODES:
@@ -127,6 +130,14 @@ class OpenCodeReader:
         self._links: Optional[_ParentLinks] = None  # the parent links of the last scan; loaded by the first call that needs them otherwise
 
     def _connect(self) -> sqlite3.Connection:
+        """A read-only connection. A FIFO or another special file in the database's place is refused before SQLite could open (and block
+        on) it, as an error `_failure_reason` words as "not a regular file"."""
+        try:
+            require_regular_file(self._path)
+        except NotARegularFileError as error:
+            raise sqlite3.OperationalError(str(error)) from error
+        except OSError:
+            pass  # SQLite reports a missing or unreachable file itself
         connection = sqlite3.connect(self._uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS)
         connection.text_factory = _decode_text
         return connection

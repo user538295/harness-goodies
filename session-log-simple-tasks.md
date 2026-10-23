@@ -554,7 +554,7 @@ flowchart LR
         - #integration_test — `test_moved_root_command_exits_1_naming_variable_hook_exits_0_enabled_left_unconverted` — S64
         - #integration_test — `test_spelled_out_default_roots_work_as_unset` — `CLAUDE_CONFIG_DIR=~/.claude`, `XDG_CONFIG_HOME=~/.config`
         - #integration_test — `test_symlinked_harness_root_or_prompt_logs_fails_command_and_hook_writes_nothing_even_with_old_enabled` — S62
-- [ ] **BE-36** — Non-regular source guard in every reader: a FIFO or other non-regular file (a `.jsonl` in the Claude, Codex or OMP store, a Cursor record) is listed unreadable "not a regular file" and never opened #backend-role
+- [x] **BE-36** — Non-regular source guard in every reader: a FIFO or other non-regular file (a `.jsonl` in the Claude, Codex or OMP store, a Cursor record) is listed unreadable "not a regular file" and never opened #backend-role
     - Interface Adapters · 2.0h
     - needs BE-6, BE-24, BE-27, BE-28, BE-31, BE-34 · completes S62
     - Tests

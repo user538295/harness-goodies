@@ -20,7 +20,7 @@ from .omp_layout import (ARCHIVE_FOLDER, ARCHIVED_SUFFIX, SESSION_SUFFIX, SESSIO
 from .omp_transcript import parse_parent_link, parse_transcript
 from .reader_port import (PARENT_CYCLE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key,
                           root_id_of)
-from .store_files import FILE_ENCODING, FileOpener, StoreFiles, open_text
+from .store_files import FILE_ENCODING, FileOpener, StoreFiles, open_text, require_regular_file
 
 PARENT_UNREADABLE_REASON = "parent session cannot be read"
 
@@ -30,6 +30,7 @@ _FILES = StoreFiles(Harness.OMP)
 def _open_session(key: str) -> TextIO:
     """The unit's file as text, decompressed when it is a gzipped archive file."""
     if key.endswith(ARCHIVED_SUFFIX):
+        require_regular_file(key)
         return gzip.open(key, "rt", encoding=FILE_ENCODING)
     return open_text(key)
 

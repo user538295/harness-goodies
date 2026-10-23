@@ -7,7 +7,8 @@ through a link. A `.records` that is a link is listed unreadable alone and not r
 fingerprint the number of its record files and the newest record's name,
 so a new record, a repeated one too, makes the conversation read again; it is modified at the arrival of that newest record. A scan
 only lists names: no record is opened. A file counts as a record when its name is `<arrival_ns>-<event>-<pid>.json` and it is a regular
-file; temps, other files and anything that is no regular file are left out (a FIFO is never opened).
+file; temps and other files are left out, and an entry named like a record that is no regular file (a FIFO, a device) is listed unreadable
+as "not a regular file" and never opened, the rest of the conversation staying a unit.
 
 `.records/.invalid/` holds the calls the hook could not file under a conversation; it is no unit, and a scan lists it once as unreadable,
 naming how many calls it holds (none, no entry).
@@ -23,10 +24,10 @@ from typing import List, NamedTuple, Optional, Tuple, Union
 from .cursor_conversation import build_session
 from .cursor_records import INVALID_FOLDER, RECORD_FILE_NAME, HookRecord, moment_of_ns, nanoseconds_of, parse_record
 from .model import Harness, is_safe_id
-from .reader_port import (CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource,
-                          build_session_key, root_id_of)
+from .reader_port import (CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, NOT_A_REGULAR_FILE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult,
+                          SourceUnit, UnreadableSource, build_session_key, root_id_of)
 from .safe_paths import LINK_REASON, is_link
-from .store_files import StoreFiles, open_text
+from .store_files import NotARegularFileError, StoreFiles, open_text
 
 INVALID_CALLS_REASON = "hook calls without a usable conversation id: %d"
 
@@ -41,11 +42,19 @@ class _RecordFile(NamedTuple):
     path: str
 
 
-def _is_regular_file(entry: os.DirEntry) -> bool:
+def _is_regular_file(entry: os.DirEntry) -> Optional[bool]:
+    """Whether the entry is a regular file; False for a FIFO, a device or any other special file, None for a folder (never a record), a
+    dangling link (as for the other readers, it has vanished) or an entry that cannot be examined (left out silently, as
+    before: a record that cannot be examined cannot be told from one that is gone)."""
     try:
-        return entry.is_file()
-    except OSError:
+        if entry.is_file():
+            return True
+        if entry.is_dir():
+            return None
+        entry.stat()  # raises FileNotFoundError for a dangling link
         return False
+    except OSError:
+        return None
 
 
 def _names_folder(name: str) -> bool:
@@ -53,14 +62,21 @@ def _names_folder(name: str) -> bool:
     return name == INVALID_FOLDER or is_safe_id(name)
 
 
-def _record_files(listing: List[os.DirEntry]) -> List[_RecordFile]:
-    """The record files of a folder listing, oldest arrival first, then by name."""
+def _record_files(listing: List[os.DirEntry]) -> Tuple[List[_RecordFile], List[UnreadableSource]]:
+    """The record files of a folder listing, oldest arrival first, then by name, and the entries named like a record that are no
+    regular file (listed unreadable, never opened)."""
     found = []
+    problems = []
     for entry in listing:
         match = RECORD_FILE_NAME.fullmatch(entry.name)
-        if match is not None and _is_regular_file(entry):
+        if match is None:
+            continue
+        is_regular = _is_regular_file(entry)
+        if is_regular:
             found.append(_RecordFile(int(match.group(1)), entry.name, entry.path))
-    return sorted(found)
+        elif is_regular is False:
+            problems.append(_FILES.unreadable(entry.path, NOT_A_REGULAR_FILE_REASON))
+    return sorted(found), problems
 
 
 def _fingerprint(files: List[_RecordFile]) -> str:
@@ -91,7 +107,8 @@ class CursorReader:
             elif is_dir and entry.name == INVALID_FOLDER:
                 problems.extend(self._invalid_calls(entry))
             elif is_dir and is_safe_id(entry.name):
-                found = self._conversation_unit(entry)
+                found, listed_problems = self._conversation_unit(entry)
+                problems.extend(listed_problems)
                 if isinstance(found, SourceUnit):
                     units.append(found)
                 elif found is not None:
@@ -100,24 +117,26 @@ class CursorReader:
 
     @staticmethod
     def _invalid_calls(folder: os.DirEntry) -> List[UnreadableSource]:
-        """The `.invalid` folder as one unreadable source with its call count; nothing when it holds no call."""
+        """The `.invalid` folder as one unreadable source with its call count (nothing when it holds no call), then the entries in it
+        that are no regular file."""
         listing = _FILES.list_dir(folder.path)
         if isinstance(listing, UnreadableSource):
             return [listing]
-        calls = len(_record_files(listing))
-        return [_FILES.unreadable(folder.path, INVALID_CALLS_REASON % calls)] if calls else []
+        files, problems = _record_files(listing)
+        calls = [_FILES.unreadable(folder.path, INVALID_CALLS_REASON % len(files))] if files else []
+        return calls + problems
 
     @staticmethod
-    def _conversation_unit(folder: os.DirEntry) -> Union[SourceUnit, UnreadableSource, None]:
-        """The unit of a conversation folder; None when it holds no record."""
+    def _conversation_unit(folder: os.DirEntry) -> Tuple[Union[SourceUnit, UnreadableSource, None], List[UnreadableSource]]:
+        """The unit of a conversation folder (None when it holds no record) and the entries in it that are no regular file."""
         listing = _FILES.list_dir(folder.path)
         if isinstance(listing, UnreadableSource):
-            return listing
-        files = _record_files(listing)
+            return listing, []
+        files, problems = _record_files(listing)
         if not files:
-            return None
+            return None, problems
         newest_at = moment_of_ns(files[-1].arrival_ns) or _LATEST_TIME
-        return SourceUnit(key=folder.path, fingerprint=_fingerprint(files), modified_at=newest_at)
+        return SourceUnit(key=folder.path, fingerprint=_fingerprint(files), modified_at=newest_at), problems
 
     @staticmethod
     def session_of(unit: SourceUnit) -> str:
@@ -139,7 +158,7 @@ class CursorReader:
         listing = _FILES.list_dir(unit.key)
         if isinstance(listing, UnreadableSource):
             return ReadResult(unreadable=(listing,))
-        files = _record_files(listing)
+        files, _ = _record_files(listing)
         records: List[HookRecord] = []
         for file in files:
             try:
@@ -147,6 +166,8 @@ class CursorReader:
                     text = handle.read()
             except (UnicodeDecodeError, FileNotFoundError):
                 continue
+            except NotARegularFileError:
+                return ReadResult(unreadable=(_FILES.unreadable(file.path, NOT_A_REGULAR_FILE_REASON),))
             except OSError:
                 return ReadResult(unreadable=(_FILES.unreadable(unit.key, CANNOT_BE_OPENED_REASON),))
             record = parse_record(text)
@@ -180,6 +201,6 @@ class CursorHookActivity:
                 inner = _FILES.list_dir(entry.path)
                 if isinstance(inner, UnreadableSource):
                     undetermined = True
-                elif any(file.arrival_ns >= floor for file in _record_files(inner)):
+                elif any(file.arrival_ns >= floor for file in _record_files(inner)[0]):
                     return True
         return None if undetermined else False

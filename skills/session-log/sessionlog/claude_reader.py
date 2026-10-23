@@ -28,7 +28,7 @@ _FILES = StoreFiles(Harness.CLAUDE)
 
 
 def _source_of(entry: os.DirEntry) -> Optional[_Found]:
-    """The unit of a session or sub-agent file; None for a directory or a file that vanished meanwhile."""
+    """The unit of a session or sub-agent file; None for a directory or a file that vanished meanwhile, unreadable for a FIFO or other special file."""
     return _FILES.regular_file_unit(entry, entry.path, lambda file_stat: "%d:%d" % (file_stat.st_size, file_stat.st_mtime_ns))
 
 

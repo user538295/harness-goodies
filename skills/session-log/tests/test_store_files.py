@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 from sessionlog.model import Harness
 from sessionlog.reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON,
-                                    CANNOT_BE_PARSED_REASON, SourceUnit, UnreadableSource)
-from sessionlog.store_files import FileOpener, StoreFiles
+                                    CANNOT_BE_PARSED_REASON, NOT_A_REGULAR_FILE_REASON, SourceUnit, UnreadableSource)
+from sessionlog.store_files import FileOpener, NotARegularFileError, StoreFiles, open_text
 from tests.store_fakes import FakeEntry, JunctionEntry, StatEntry, scandir_wrapping
 
 ONE_SECOND_NS = 1_000_000_000
@@ -101,6 +101,20 @@ class RegularFileUnitTest(StoreFilesTestCase):
     def test_a_file_that_cannot_be_examined_is_unreadable_under_the_key(self):
         self.assertEqual(UnreadableSource(Harness.OMP, "the-key", CANNOT_BE_LISTED_REASON),
                          FILES.regular_file_unit(FakeEntry("/x/locked.jsonl", PermissionError()), "the-key", _fingerprint))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
+    def test_a_fifo_is_unreadable_as_not_a_regular_file_under_the_key_and_never_opened(self):
+        os.mkfifo(os.path.join(self.folder, "a.jsonl"))
+        self.assertEqual(UnreadableSource(Harness.OMP, "the-key", NOT_A_REGULAR_FILE_REASON),
+                         FILES.regular_file_unit(self._entry("a.jsonl"), "the-key", _fingerprint))
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
+    def test_open_text_refuses_a_fifo_without_opening_it(self):
+        path = os.path.join(self.folder, "a.jsonl")
+        os.mkfifo(path)
+        with self.assertRaises(NotARegularFileError):
+            open_text(path)
+        self.assertEqual(NOT_A_REGULAR_FILE_REASON, FILES.parse_file(path, lambda lines: None, FileOpener(open_text)).reason)
 
     def test_a_modification_time_that_is_no_time_makes_no_unit(self):
         for seconds in (float("inf"), 1e30, -1e30, float("nan")):

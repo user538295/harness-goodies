@@ -19,7 +19,7 @@ from .codex_subagents import copy_rank, thread_of_rollout
 from .model import Harness, Session, is_safe_id
 from .reader_port import (UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key,
                           root_id_of)
-from .store_files import FILE_ENCODING, FileOpener, StoreFiles, open_text
+from .store_files import FILE_ENCODING, FileOpener, StoreFiles, open_text, require_regular_file
 
 try:
     from compression import zstd
@@ -68,7 +68,7 @@ def _key_of(path: str) -> str:
 
 
 def _source_of(entry: os.DirEntry) -> Union[SourceUnit, UnreadableSource, None]:
-    """The unit of a rollout file; None for a directory or a file that vanished meanwhile."""
+    """The unit of a rollout file; None for a directory or a file that vanished meanwhile, unreadable for a FIFO or other special file."""
     return _FILES.regular_file_unit(entry, _key_of(entry.path), lambda file_stat: str(file_stat.st_mtime_ns))
 
 
@@ -78,9 +78,13 @@ def _open_rollout(key: str) -> TextIO:
     so was never listed) which opening would block on or fail."""
     if os.path.isfile(key):
         return open_text(key)
+    compressed = key + _COMPRESSED_SUFFIX
+    if not os.path.lexists(compressed):
+        require_regular_file(key)  # a plain entry that is no regular file is reported as such; a vanished one raises as `open` would
+    require_regular_file(compressed)
     if zstd is None:
         raise OSError("this Python has no compression.zstd")
-    return zstd.open(key + _COMPRESSED_SUFFIX, "rt", encoding=FILE_ENCODING)
+    return zstd.open(compressed, "rt", encoding=FILE_ENCODING)
 
 
 # `ZstdError` for data that is no zstd stream, `EOFError` for one that ends early

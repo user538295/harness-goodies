@@ -326,7 +326,7 @@ class DatabaseFailureTest(unittest.TestCase):
         self.assertEqual((UnreadableSource(Harness.OPENCODE, path, CANNOT_BE_OPENED_REASON),), OpenCodeReader(path).scan().unreadable)
 
     def test_a_path_that_cannot_even_be_inspected_is_not_reported_as_no_database(self):
-        with mock.patch.object(opencode_reader.os, "stat", side_effect=PermissionError):
+        with mock.patch.object(os, "stat", side_effect=PermissionError):
             self.assertEqual((UnreadableSource(Harness.OPENCODE, self.path, CANNOT_BE_OPENED_REASON),), OpenCodeReader(self.path).scan().unreadable)
 
     def test_every_busy_or_locked_result_code_counts_as_busy_extended_ones_too_and_any_other_does_not(self):

@@ -15,7 +15,8 @@ from sessionlog.cursor_conversation import NO_PROMPT_TEXT
 from sessionlog.cursor_reader import INVALID_CALLS_REASON, CursorHookActivity, CursorReader
 from sessionlog.cursor_records import INVALID_FOLDER, record_fields
 from sessionlog.model import Harness, Prompt, RequestUsage, SubAgent
-from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource,
+from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, NOT_A_REGULAR_FILE_REASON,
+                                    UNSAFE_ID_REASON, SourceUnit, UnreadableSource,
                                     build_session_key)
 from sessionlog.safe_paths import LINK_REASON
 from tests.cursor_record_files import (CONVERSATION, WORKSPACE, at_ns, moment, prompt_input, response_input, stop_input, subagent_input,
@@ -447,12 +448,14 @@ class ReadTest(CursorReaderTestCase):
                 self.assertEqual((None, ()), (result.session, result.unreadable))
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
-    def test_a_fifo_named_like_a_record_is_never_opened(self):
+    def test_a_fifo_named_like_a_record_is_listed_unreadable_and_never_opened(self):
         self.write("beforeSubmitPrompt", 0, prompt_input("g1", "kept"))
-        os.mkfifo(os.path.join(self.records, CONVERSATION, "%d-stop-1.json" % at_ns(1)))
+        fifo = os.path.join(self.records, CONVERSATION, "%d-stop-1.json" % at_ns(1))
+        os.mkfifo(fifo)
         scan = self.reader.scan()
-        self.assertEqual(("1", ()), (scan.units[0].fingerprint.split(":")[0], scan.unreadable))
-        (prompt,) = self.session().prompts
+        self.assertEqual(("1", [UnreadableSource(Harness.CURSOR, fifo, NOT_A_REGULAR_FILE_REASON)]),
+                         (scan.units[0].fingerprint.split(":")[0], list(scan.unreadable)))
+        (prompt,) = self.reader.read(key_of(), scan.units).session.prompts
         self.assertEqual("kept", prompt.text)
 
     def test_the_record_text_is_read_as_utf8_with_a_byte_order_mark_dropped(self):
