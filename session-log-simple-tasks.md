@@ -533,7 +533,7 @@ flowchart LR
         - #e2e_test — `test_hook_ps1_picks_py3_first_never_falls_through_even_when_py3_reports_python_38` — S56
         - #e2e_test — `test_skill_md_command_line_runs_from_path_with_space_and_apostrophe_under_sh_and_pwsh` — S56
         - #e2e_test — `test_session_start_runs_sync_writes_no_record_prints_nothing_and_off_hooks_write_nothing` — S34, S2 hook half
-- [ ] **T-6** — Full `status` e2e across the readers and the Cursor import of the Claude hook #tester-role
+- [x] **T-6** — Full `status` e2e across the readers and the Cursor import of the Claude hook #tester-role
     - — · 3.0h
     - needs T-1, BE-15, BE-18, BE-26, BE-30, BE-32, BE-33 · completes S3, S59
     - Tests

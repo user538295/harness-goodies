@@ -12,7 +12,7 @@ from unittest import mock
 
 from sessionlog import cursor_reader
 from sessionlog.cursor_conversation import NO_PROMPT_TEXT
-from sessionlog.cursor_reader import INVALID_CALLS_REASON, CursorReader
+from sessionlog.cursor_reader import INVALID_CALLS_REASON, CursorHookActivity, CursorReader
 from sessionlog.cursor_records import INVALID_FOLDER, record_fields
 from sessionlog.model import Harness, Prompt, RequestUsage, SubAgent
 from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource,
@@ -138,6 +138,39 @@ class ScanTest(CursorReaderTestCase):
         self.write("stop", 1, stop_input("g1"))
         unit = self.reader.scan().units[0]
         self.assertEqual("cursor:" + CONVERSATION, self.reader.session_of(unit))
+
+
+class HookActivityTest(CursorReaderTestCase):
+    def test_a_record_at_or_after_the_time_counts_in_a_conversation_or_in_invalid_and_an_older_one_or_none_does_not(self):
+        activity = CursorHookActivity(self.records)
+        self.assertIs(False, activity.recorded_since(moment(0)))  # no records folder
+        self.write("beforeSubmitPrompt", 5, prompt_input("g1"))
+        self.assertIs(True, activity.recorded_since(moment(5)))
+        self.assertIs(False, activity.recorded_since(moment(6)))
+        self.write("beforeSubmitPrompt", 9, {}, conversation=INVALID_FOLDER)
+        self.assertIs(True, activity.recorded_since(moment(6)))
+
+    def test_only_invalid_counts_and_a_temp_or_other_file_does_not(self):
+        activity = CursorHookActivity(self.records)
+        self.write_text_file(os.path.join(self.records, "conv-1", ".5-stop-1.json.1.abcd.tmp"), "{}")
+        self.write_text_file(os.path.join(self.records, "conv-1", "notes.txt"), "x")
+        self.assertIs(False, activity.recorded_since(moment(0)))
+        self.write("beforeSubmitPrompt", 5, {}, conversation=INVALID_FOLDER)
+        self.assertIs(True, activity.recorded_since(moment(0)))
+
+    def test_a_folder_that_cannot_be_listed_leaves_the_answer_open_unless_a_record_was_found(self):
+        self.write("beforeSubmitPrompt", 5, prompt_input("g1"), conversation="conv-a")
+        self.write("beforeSubmitPrompt", 9, prompt_input("g2"), conversation="conv-b")
+        broken = os.path.join(self.records, "conv-a")
+        with scandir_wrapping(fail={broken: PermissionError()}):
+            activity = CursorHookActivity(self.records)
+            self.assertIsNone(activity.recorded_since(moment(10)))
+            self.assertIs(True, activity.recorded_since(moment(9)))
+
+    def test_an_unlistable_records_folder_cannot_be_told(self):
+        self.write("beforeSubmitPrompt", 5, prompt_input("g1"))
+        with scandir_wrapping(fail={self.records: PermissionError()}):
+            self.assertIsNone(CursorHookActivity(self.records).recorded_since(moment(0)))
 
 
 class ReadTest(CursorReaderTestCase):

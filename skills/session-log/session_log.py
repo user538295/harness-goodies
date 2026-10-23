@@ -194,7 +194,7 @@ class _Composition(object):
     """The adapters of one run, the sync use case, the usage target resolver, the leftover scan and the Python probe; command use
     cases are built over them only for a command."""
 
-    def __init__(self, sync, targets, archive, state, pricing, log_root, leftover_scan, python_probe):
+    def __init__(self, sync, targets, archive, state, pricing, log_root, leftover_scan, python_probe, hooks_recorded_since):
         self.sync = sync
         self.targets = targets
         self.archive = archive
@@ -203,6 +203,16 @@ class _Composition(object):
         self.log_root = log_root
         self.leftover_scan = leftover_scan
         self.python_probe = python_probe
+        self.hooks_recorded_since = hooks_recorded_since
+
+
+def _hooks_recorded_since(harness, log_root, path_module):
+    """What tells `status` whether a hook call was recorded since `on`: only Cursor logs from hook calls."""
+    if harness != CURSOR_HARNESS:
+        return None
+    from sessionlog.cursor_reader import CursorHookActivity
+    from sessionlog.cursor_records import RECORDS_FOLDER
+    return CursorHookActivity(path_module.join(log_root, RECORDS_FOLDER)).recorded_since
 
 
 def _compose(harness, environment):
@@ -231,7 +241,7 @@ def _compose(harness, environment):
     state.migrate_enabled()
     probe = PythonProbeRunner(environment.platform, run_command if environment.run_probe is None else environment.run_probe)
     return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, pricing, log_root,
-                        LeftoverScan(Harness(harness), root), probe)
+                        LeftoverScan(Harness(harness), root), probe, _hooks_recorded_since(harness, log_root, path_module))
 
 
 def _run(harness, command, target, environment):
@@ -243,7 +253,7 @@ def _run(harness, command, target, environment):
     composition = _compose(harness, environment)
     use_cases = CommandUseCases(composition.sync, composition.targets, composition.archive, composition.state,
                                 composition.pricing, environment.now, composition.log_root, composition.leftover_scan,
-                                composition.python_probe)
+                                composition.python_probe, composition.hooks_recorded_since)
     handlers = {
         "on": lambda: presentation.render_on(use_cases.on()),
         "off": lambda: presentation.render_off(use_cases.off()),

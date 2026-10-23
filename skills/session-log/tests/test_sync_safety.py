@@ -540,7 +540,7 @@ class VanishedUnreadableUnitTest(SafetyTestCase):
         self.reader = IncompleteScanReader(self.root)
         self._sync()
         self.assertEqual(self._saved()["units"][bad]["state"], "unreadable")
-        self.assertEqual([item.path for item in self._commands().status().unreadable], [bad])
+        self.assertEqual([item.path for item in self._commands().status().unreadable], [bad, self.reader._projects])  # the folder it could not list too
         self.reader = CountingReader(self.root)
         self._sync()
         self.assertEqual(self._saved()["units"][bad], {"sessionKey": self._key("bad"), "state": "inactive"})

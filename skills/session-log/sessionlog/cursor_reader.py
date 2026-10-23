@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import List, NamedTuple, Optional, Tuple, Union
 
 from .cursor_conversation import build_session
-from .cursor_records import INVALID_FOLDER, RECORD_FILE_NAME, HookRecord, moment_of_ns, parse_record
+from .cursor_records import INVALID_FOLDER, RECORD_FILE_NAME, HookRecord, moment_of_ns, nanoseconds_of, parse_record
 from .model import Harness, is_safe_id
 from .reader_port import (CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource,
                           build_session_key, root_id_of)
@@ -143,3 +143,29 @@ class CursorReader:
         if files and not records:
             return ReadResult(unreadable=(_FILES.unreadable(unit.key, CANNOT_BE_PARSED_REASON),))
         return ReadResult(session=build_session(root_id, records))
+
+
+class CursorHookActivity:
+    """Whether a hook call was recorded since a time: any record file named by an arrival at or after it, in a conversation folder or in
+    `.invalid`. Only names are read. A folder that cannot be listed leaves the answer open (None) unless a record was found elsewhere."""
+
+    def __init__(self, records_folder: str) -> None:
+        self._records = records_folder
+
+    def recorded_since(self, moment: datetime) -> Optional[bool]:
+        floor = nanoseconds_of(moment)
+        listing = _FILES.list_dir(self._records)
+        if isinstance(listing, UnreadableSource):
+            return None
+        undetermined = False
+        for entry in listing:
+            is_dir = _FILES.is_real_dir(entry)
+            if isinstance(is_dir, UnreadableSource):
+                undetermined = True
+            elif is_dir and (entry.name == INVALID_FOLDER or is_safe_id(entry.name)):
+                inner = _FILES.list_dir(entry.path)
+                if isinstance(inner, UnreadableSource):
+                    undetermined = True
+                elif any(file.arrival_ns >= floor for file in _record_files(inner)):
+                    return True
+        return None if undetermined else False

@@ -71,11 +71,14 @@ class CommandUseCases:
     `sync` and `state` must share one `StateStore` instance: its `sync_reset` tells `status` that the sync rebuilt a corrupt file.
     `targets` must read the same store as `sync`. `pricing` must be the one `sync` uses, so a live report equals the saved one.
     `leftover_scan` finds the old-release leftovers of the invoked harness; `on` and `status` report them, nothing deletes them.
-    `python_probe` checks `python3` on Windows (None elsewhere); `on` and `status` report its result."""
+    `python_probe` checks `python3` on Windows (None elsewhere); `on` and `status` report its result.
+    `hooks_recorded_since` is set only for a harness that logs from hook calls: given the on-time it tells whether any hook call was
+    recorded since (None when that cannot be told), and `status` reports its answer. While logging is off nothing is synced, so
+    `status` then lists only what the sync state holds."""
 
     def __init__(self, sync: SyncUseCase, targets: UsageTargetResolver, archive: Archive, state: StateStore,
                  pricing: PricingRules, now: Callable[[], datetime], log_root: str, leftover_scan: LeftoverScanner,
-                 python_probe: PythonProbe) -> None:
+                 python_probe: PythonProbe, hooks_recorded_since: Optional[Callable[[datetime], Optional[bool]]] = None) -> None:
         self._sync = sync
         self._targets = targets
         self._archive = archive
@@ -85,6 +88,7 @@ class CommandUseCases:
         self._log_root = log_root
         self._leftover_scan = leftover_scan
         self._python_probe = python_probe
+        self._hooks_recorded_since = hooks_recorded_since
 
     def on(self) -> OnResult:
         flag = self._state.read_on_flag()
@@ -106,7 +110,7 @@ class CommandUseCases:
         return OffResult(False, self._log_root)
 
     def status(self) -> StatusResult:
-        self._sync_while_on()
+        outcome = self._sync_while_on()
         flag = self._state.read_on_flag()
         state = self._state.load_sync()
         last_sync_at = state.get("lastSyncAt")
@@ -117,7 +121,8 @@ class CommandUseCases:
             log_root=self._log_root,
             last_sync_at=parse_timestamp(last_sync_at) if last_sync_at else None,
             archived_session_count=len(state["sessions"]),
-            unreadable=self._unreadable(state),
+            unreadable=self._unreadable(state, outcome),
+            cursor_recorded_since_on=self._recorded_since_on(flag),
             price_file_problem=self._pricing.problem(),
             sync_state_reset=self._state.sync_reset,
             leftovers=self._leftover_scan.scan(),
@@ -156,11 +161,17 @@ class CommandUseCases:
         """The report of a session never archived, computed as a sync would and written nowhere."""
         return self._archive.render_report(self._pricing.build(session))
 
+    def _recorded_since_on(self, flag: Optional[OnFlag]) -> Optional[bool]:
+        if self._hooks_recorded_since is None or flag is None:
+            return None
+        return self._hooks_recorded_since(flag.on_at)
+
     def _sync_while_on(self) -> SyncOutcome:
         return self._sync.sync() if self._state.read_on_flag() is not None else SyncOutcome()
 
     @staticmethod
-    def _unreadable(state: dict) -> Tuple[UnreadableItem, ...]:
+    def _unreadable(state: dict, outcome: SyncOutcome) -> Tuple[UnreadableItem, ...]:
+        """What the state holds, then what the sync's scan could not use, each path once (the state's reason wins)."""
         items: List[UnreadableItem] = []
         for key, unit in sorted(state["units"].items()):
             if unit["state"] == UNIT_UNREADABLE:
@@ -168,4 +179,6 @@ class CommandUseCases:
         for _, entry in sorted(state["sessions"].items()):
             if entry["state"] == SESSION_SKIPPED:
                 items.append(UnreadableItem(entry["logPath"], entry.get("reason", "")))
+        listed = {item.path for item in items}
+        items.extend(UnreadableItem(source.path, source.reason) for source in outcome.scan_problems if source.path not in listed)
         return tuple(items)

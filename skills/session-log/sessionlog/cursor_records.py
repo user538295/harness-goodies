@@ -55,6 +55,11 @@ def record_fields(event: str, conversation_id: Optional[str], received_at_ns: in
     return fields
 
 
+def nanoseconds_of(moment: datetime) -> int:
+    """The nanoseconds from the epoch to `moment`, to the microsecond."""
+    return (moment - _EPOCH) // timedelta(microseconds=1) * _NANOSECONDS_PER_MICROSECOND
+
+
 def moment_of_ns(nanoseconds: int) -> Optional[datetime]:
     """The UTC time `nanoseconds` after the epoch, to the microsecond; None for a time a datetime cannot hold."""
     try:

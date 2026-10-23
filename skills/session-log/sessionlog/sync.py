@@ -42,7 +42,7 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 from .archive_port import Archive
 from .model import Session, is_safe_id
 from .pricing import PricingRules
-from .reader_port import UNSAFE_ID_REASON, SessionReader, SourceUnit, root_id_of
+from .reader_port import UNSAFE_ID_REASON, SessionReader, SourceUnit, UnreadableSource, root_id_of
 from .state_port import StateStore, recorded_session_key
 
 # Raised by every change that alters log or report text for the same source (readers, model, PricingRules, writer,
@@ -62,9 +62,11 @@ _Units = Tuple[SourceUnit, ...]
 
 @dataclass(frozen=True)
 class SyncOutcome:
-    """`unsaved_reports` holds the report text per session key whose files could not be written in this run."""
+    """`unsaved_reports` holds the report text per session key whose files could not be written in this run; `scan_problems` the sources
+    the scan could not use (not units), which `status` names."""
 
     unsaved_reports: Dict[str, str] = field(default_factory=dict)
+    scan_problems: Tuple[UnreadableSource, ...] = ()
 
 
 class _Publication(NamedTuple):
@@ -127,7 +129,7 @@ class SyncUseCase:
             if report_text is not None:
                 unsaved[session_key] = report_text
             self._save(state)
-        return SyncOutcome(unsaved)
+        return SyncOutcome(unsaved, scan.unreadable)
 
     def _budget_spent(self, started_at: datetime, budget_seconds: Optional[float]) -> bool:
         return budget_seconds is not None and (self._now() - started_at).total_seconds() >= budget_seconds

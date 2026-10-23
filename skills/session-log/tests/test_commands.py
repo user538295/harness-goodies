@@ -13,11 +13,12 @@ from sessionlog.command_error import CommandError
 from sessionlog.commands import CommandUseCases, OffResult, OnResult, UnreadableItem
 from sessionlog.pricing import PricingRules
 from sessionlog.probe_port import ProbeResult
-from sessionlog.reader_port import ScanResult
+from sessionlog.reader_port import CANNOT_BE_LISTED_REASON, ScanResult
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import SyncOutcome, SyncUseCase
 from sessionlog.usage_target import UsageTargetResolver
+from tests.store_fakes import scandir_wrapping
 from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, FakeArchive, NoLeftovers, NoProbe, _NoPrices, _transcript
 
 CWD = "/work/proj"
@@ -265,6 +266,45 @@ class StatusTest(CommandTestCase):
         failed = "%s: %s" % (FAILED_FILE, WRITE_FAILURE)  # the failed file is named with the reason
         self.assertEqual(status.unreadable, (UnreadableItem(path_b, failed), UnreadableItem("/logs/a.md", failed)))
         self.assertEqual(status.log_root, self.log_root)
+
+    def _status_asking(self, answer):
+        """(status, the times asked) of a status whose hook-activity answer is `answer`."""
+        asked = []
+
+        def recorded_since(moment):
+            asked.append(moment)
+            return answer
+
+        commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state, PricingRules(self.prices),
+                                   lambda: self.clock, self.log_root, NoLeftovers(), NoProbe(), recorded_since)
+        return commands.status(), asked
+
+    def test_status_names_a_source_the_scan_could_not_list(self):
+        self._enable()
+        projects = os.path.join(self.root, "projects")
+        with scandir_wrapping(fail={projects: PermissionError()}):
+            status = self.commands.status()
+        self.assertEqual(status.unreadable, (UnreadableItem(projects, CANNOT_BE_LISTED_REASON),))
+
+    def test_status_lists_a_path_the_state_and_the_scan_both_name_once_with_the_state_reason(self):
+        self._enable()
+        projects = os.path.join(self.root, "projects")
+        state = self.state.load_sync()
+        state["units"][projects] = {"state": "unreadable", "reason": "earlier failure"}
+        self.state.save_sync(state)
+        with scandir_wrapping(fail={projects: PermissionError()}):
+            status = self.commands.status()
+        self.assertEqual(status.unreadable, (UnreadableItem(projects, "earlier failure"),))
+
+    def test_status_asks_hook_activity_since_the_on_time_and_reports_the_answer_only_while_on(self):
+        self._enable()
+        for answer in (True, False, None):
+            status, asked = self._status_asking(answer)
+            self.assertEqual((status.cursor_recorded_since_on, asked), (answer, [ON_AT]))
+        self.assertIsNone(self.commands.status().cursor_recorded_since_on)  # no hook activity given: not a hook harness
+        self.state.delete_on_flag()
+        status, asked = self._status_asking(False)
+        self.assertEqual((status.cursor_recorded_since_on, asked), (None, []))
 
     def test_status_without_problems_has_no_optional_fields(self):
         self._enable()
