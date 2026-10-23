@@ -87,7 +87,6 @@ test("plugin registers skills and agent with path, not location", () => {
   const skill = registered.skills["session-log"];
   expect(skill.name).toBe("session-log");
   expect(skill.description).toBe("Manage session prompt logging and usage totals (on / off / status / usage)");
-  expect(skill.content.trimStart().startsWith("This skill runs the bundled script `session_log.py`")).toBe(true);
   const agents = fs.readdirSync(path.join(repoRoot, "agents")).filter((name) => name.endsWith(".md"));
   expect(Object.keys(registered.agents)).toHaveLength(agents.length);
   for (const agent of Object.values(registered.agents)) expect(agent.system).toBeTruthy();

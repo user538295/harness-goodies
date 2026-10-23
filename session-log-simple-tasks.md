@@ -569,7 +569,7 @@ flowchart LR
     - Frameworks & Drivers · 3.0h
     - needs T-7, BE-13, BE-18, BE-20, BE-22, BE-23, BE-25, BE-26, BE-29, BE-32, BE-33, BE-35, BE-36 · completes S58
     - Tests
-- [ ] **BE-38** — OMP manifest and plugin test: drop `omp.extensions` from [package.json](./package.json); [index.test.js](./.opencode-plugin/index.test.js) `:78` expects the new [SKILL.md](./skills/session-log/SKILL.md) description and the `:80` marker assertion is removed #backend-role
+- [x] **BE-38** — OMP manifest and plugin test: drop `omp.extensions` from [package.json](./package.json); [index.test.js](./.opencode-plugin/index.test.js) `:78` expects the new [SKILL.md](./skills/session-log/SKILL.md) description and the `:80` marker assertion is removed #backend-role
     - Frameworks & Drivers · 1.0h
     - needs BE-10, BE-37 · completes S28
     - Tests
