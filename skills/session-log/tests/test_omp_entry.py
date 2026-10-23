@@ -41,7 +41,7 @@ class OmpEntryTestCase(unittest.TestCase):
     def run_main(self, argv, now=None):
         stdout, stderr = io.StringIO(), io.StringIO()
         environment = session_log.Environment(stdout=stdout, stderr=stderr, home=self.home, get_cwd=lambda: CWD,
-                                              now=lambda: now or self.NOW, to_local=lambda moment: moment.astimezone(timezone.utc))
+                                              now=lambda: now or self.NOW, to_local=lambda moment: moment.astimezone(timezone.utc), env={})
         return session_log.main(argv, environment), stdout.getvalue(), stderr.getvalue()
 
     def archived_files(self, suffix):
@@ -142,7 +142,7 @@ class OmpEntryTest(OmpEntryTestCase):
         self.install("2026-10-13T08-50-00-000Z_later", text=jsonl(header_record("later"), user_record(10, "later")))
         before = (read_text(os.path.join(self.log_root, ".sync.json")), self.archived_files(".md"))
         stdout, stderr = io.StringIO(), io.StringIO()
-        environment = session_log.Environment(stdout=stdout, stderr=stderr, home=self.home, now=lambda: FIXED_NOW)
+        environment = session_log.Environment(stdout=stdout, stderr=stderr, home=self.home, now=lambda: FIXED_NOW, env={})
         self.assertEqual(0, session_log.main(["hook", "omp", "SessionStart"], environment))
         self.assertEqual(("", "", before), (stdout.getvalue(), stderr.getvalue(), (read_text(os.path.join(self.log_root, ".sync.json")), self.archived_files(".md"))))
 

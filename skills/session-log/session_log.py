@@ -27,10 +27,19 @@ CURSOR_HARNESS = "cursor"
 CURSOR_RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop")
 OPENCODE_DATA_HOME = (".local", "share")
 OPENCODE_DATA_FOLDER = OPENCODE_DATA_HOME + ("opencode",)
-# Per harness, the variables that can move its root (C1: the relocated-root check), each as (variable, how the message calls the root it
-# moves, that root's default below home).
-RELOCATION_VARIABLES = {"opencode": (("XDG_DATA_HOME", "OpenCode's XDG data home", OPENCODE_DATA_HOME),)}
 LOG_FOLDER_NAME = "prompt-logs"
+# Per harness, the variables that can move its root (C1: the relocated-root check), each as (variable, how the message calls the root it
+# moves, that root's default below home). `OMP_PROMPT_LOG_DIR` moves only OMP's log folder; the old release refused it too.
+RELOCATION_VARIABLES = {
+    "claude": (("CLAUDE_CONFIG_DIR", "Claude Code's root", SUPPORTED_HARNESS_ROOTS["claude"]),),
+    "codex": (("CODEX_HOME", "Codex's root", SUPPORTED_HARNESS_ROOTS["codex"]),),
+    "opencode": (("OPENCODE_CONFIG_DIR", "OpenCode's config root", SUPPORTED_HARNESS_ROOTS["opencode"]),
+                 ("XDG_CONFIG_HOME", "OpenCode's XDG config home", SUPPORTED_HARNESS_ROOTS["opencode"][:1]),
+                 ("XDG_DATA_HOME", "OpenCode's XDG data home", OPENCODE_DATA_HOME)),
+    "omp": (("PI_CODING_AGENT_DIR", "OMP's root", SUPPORTED_HARNESS_ROOTS["omp"]),
+            ("OMP_PROMPT_LOG_DIR", "OMP's prompt-log root", SUPPORTED_HARNESS_ROOTS["omp"] + (LOG_FOLDER_NAME,))),
+}
+HOME_MARK = "~"
 PRICE_FILE_NAME = "prices.json"
 SKILL_DIR = os.path.dirname(os.path.realpath(__file__))
 PRICE_FILE_PATH = os.path.join(SKILL_DIR, PRICE_FILE_NAME)
@@ -167,10 +176,31 @@ def _refuse_relocated_root(harness, home, environment):
     root works as unset."""
     path_module = environment.path_module
     for variable, label, default_parts in RELOCATION_VARIABLES.get(harness, ()):
-        actual = environment.env.get(variable, "")
+        actual = _expand_home_mark(environment.env.get(variable, ""), home, path_module)
         default = path_module.join(home, *default_parts)
         if actual and path_module.normcase(path_module.realpath(actual)) != path_module.normcase(path_module.realpath(default)):
             raise RuntimeFailure("%s is relocated: %s is %s; session-log supports only the default %s" % (label, variable, actual, default))
+
+
+def _expand_home_mark(value, home, path_module):
+    """A leading `~` of a variable's value as the home folder of the run: a shell expands it, but a hook's environment and a variable
+    set in a settings file keep it as typed, and it spells out a default root."""
+    separators = path_module.sep + (path_module.altsep or "")
+    if value == HOME_MARK:
+        return home
+    if value[:1] == HOME_MARK and value[1:2] in separators:
+        return path_module.join(home, value[1:].lstrip(separators))
+    return value
+
+
+def _refuse_linked_root(root, log_root):
+    """The symlink check of C1 (right after the relocated-root check): a harness root or `prompt-logs` that is a symbolic link or a
+    junction refuses every write, as the old release did, so the run ends before the `.enabled` migration creates anything."""
+    from sessionlog.safe_paths import LINK_REASON, is_link
+
+    for folder in (root, log_root):
+        if is_link(folder):
+            raise RuntimeFailure("%s %s" % (folder, LINK_REASON))
 
 
 def _home_folder(environment):
@@ -183,11 +213,14 @@ def _home_folder(environment):
 
 
 def _harness_folders(harness, environment):
-    """Returns (home, root, log root) of the harness; a relocated root ends the run first (the check of C1 after the version check)."""
+    """Returns (home, root, log root) of the harness; a relocated root, then a symlinked root or `prompt-logs`, ends the run first
+    (the checks of C1 after the version check)."""
     home = _home_folder(environment)
     _refuse_relocated_root(harness, home, environment)
     root = environment.path_module.join(home, *SUPPORTED_HARNESS_ROOTS[harness])
-    return home, root, environment.path_module.join(root, LOG_FOLDER_NAME)
+    log_root = environment.path_module.join(root, LOG_FOLDER_NAME)
+    _refuse_linked_root(root, log_root)
+    return home, root, log_root
 
 
 class _Composition(object):
@@ -217,8 +250,9 @@ def _hooks_recorded_since(harness, log_root, path_module):
 
 def _compose(harness, environment):
     """Builds every adapter of one run, the sync use case and the usage target resolver over them, and ends by converting an old
-    release's `.enabled` flag, so what a command or the hook reads afterwards is the converted state. A relocated root ends the run
-    first, and a database the environment names but the run refuses ends it before the flag is converted."""
+    release's `.enabled` flag, so what a command or the hook reads afterwards is the converted state. A relocated root, then a
+    symlinked root or `prompt-logs`, ends the run first, and a database the environment names but the run refuses ends it before the
+    flag is converted."""
     from sessionlog.leftover_scan import LeftoverScan
     from sessionlog.log_usage_writer import LogUsageWriter
     from sessionlog.model import Harness
@@ -297,8 +331,8 @@ def _sync_at_session_start(harness, environment):
 
 def _cursor_records_when_on(environment):
     """The hook records of Cursor's `prompt-logs` folder while logging is on, else None, in the C1 order of a hook: the
-    relocated-root check, the `.enabled` migration, then the `.log_enabled` check. Nothing is created while logging is off. A
-    migration that created `.log_enabled` but could not remove `.enabled` does not stop the hook: logging is on."""
+    relocated-root check, the symlink check, the `.enabled` migration, then the `.log_enabled` check. Nothing is created while
+    logging is off. A migration that created `.log_enabled` but could not remove `.enabled` does not stop the hook: logging is on."""
     from sessionlog.hook_records import HookRecords
     from sessionlog.state import FileStateStore
 

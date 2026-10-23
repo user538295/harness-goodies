@@ -547,7 +547,7 @@ flowchart LR
     - Tests
         - #integration_test — `test_umask_022_new_folders_0700_all_written_files_0600_existing_folder_mode_kept` — S50, rewritten 0644 log becomes 0600
         - #integration_test — `test_symlinked_slug_folder_log_file_records_and_conversation_folder_skipped_and_named_in_status` — S62
-- [ ] **BE-35** — Entry root checks in the C1 order — version, relocated root, symlinked harness root or `prompt-logs`, migration, `.log_enabled`: a moved root (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, `XDG_*`, `PI_CODING_AGENT_DIR`, and `OMP_PROMPT_LOG_DIR` "as today" per the plan's Out of Scope) exits 1 naming the variable and the default root, a hook exits 0 writing nothing, `.enabled` left unconverted; a spelled-out default root works as unset; a symlinked root fails a command and a hook writes nothing #backend-role
+- [x] **BE-35** — Entry root checks in the C1 order — version, relocated root, symlinked harness root or `prompt-logs`, migration, `.log_enabled`: a moved root (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, `XDG_*`, `PI_CODING_AGENT_DIR`, and `OMP_PROMPT_LOG_DIR` "as today" per the plan's Out of Scope) exits 1 naming the variable and the default root, a hook exits 0 writing nothing, `.enabled` left unconverted; a spelled-out default root works as unset; a symlinked root fails a command and a hook writes nothing #backend-role
     - Frameworks & Drivers · 3.0h
     - needs BE-17, BE-21, BE-34 · completes S62, S64
     - Tests

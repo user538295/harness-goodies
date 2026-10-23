@@ -135,7 +135,7 @@ class EntryWiringTest(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         environment = session_log.Environment(stdout=stdout, stderr=stderr, home=home or self.home, platform=platform,
                                               run_probe=runner, get_cwd=lambda: CWD, now=lambda: CLOCK,
-                                              to_local=lambda moment: moment.astimezone(timezone.utc))
+                                              to_local=lambda moment: moment.astimezone(timezone.utc), env={})
         code = session_log.main(argv, environment)
         return code, stdout.getvalue(), stderr.getvalue()
 

@@ -71,6 +71,7 @@ class SandboxCase(unittest.TestCase):
         kwargs.setdefault("get_cwd", lambda: CWD)
         kwargs.setdefault("now", lambda: FIXED_NOW)
         kwargs.setdefault("to_local", lambda moment: moment.astimezone(timezone.utc))
+        kwargs.setdefault("env", {})
         return session_log.Environment(stdout=stdout, stderr=stderr, **kwargs)
 
     def run_main(self, argv, **kwargs):

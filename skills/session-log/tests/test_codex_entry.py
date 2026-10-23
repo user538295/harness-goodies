@@ -39,7 +39,7 @@ class CodexEntryTestCase(unittest.TestCase):
     def run_main(self, argv, home=None, now=None):
         stdout, stderr = io.StringIO(), io.StringIO()
         environment = session_log.Environment(stdout=stdout, stderr=stderr, home=home or self.home, get_cwd=lambda: CWD,
-                                              now=lambda: now or self.NOW, to_local=lambda moment: moment.astimezone(timezone.utc))
+                                              now=lambda: now or self.NOW, to_local=lambda moment: moment.astimezone(timezone.utc), env={})
         return session_log.main(argv, environment), stdout.getvalue(), stderr.getvalue()
 
     def archived_files(self, suffix, log_root=None):
@@ -124,7 +124,7 @@ class CodexEntryTest(CodexEntryTestCase):
             handle.write(json.dumps(record) + "\n" + json.dumps(prompt) + "\n")
         before = (self.read(os.path.join(self.log_root, ".sync.json")), self.archived_files(".md"))
         stdout, stderr = io.StringIO(), io.StringIO()
-        environment = session_log.Environment(stdout=stdout, stderr=stderr, home=self.home, now=lambda: FIXED_NOW)
+        environment = session_log.Environment(stdout=stdout, stderr=stderr, home=self.home, now=lambda: FIXED_NOW, env={})
         self.assertEqual(0, session_log.main(["hook", "codex", "SessionStart"], environment))
         self.assertEqual(("", "", before), (stdout.getvalue(), stderr.getvalue(),
                                             (self.read(os.path.join(self.log_root, ".sync.json")), self.archived_files(".md"))))
