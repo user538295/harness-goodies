@@ -595,7 +595,7 @@ flowchart LR
         - #manual_test — OMP `/skill:session-log` run then `usage` — S30
         - #manual_test — OpenCode: record how the skill is reached now that the plugin command is gone, then `usage` — S30
         - #manual_test — Cursor app prompt: `hook` executable on the local install, whether the chat waits for the `sessionStart` sync — S30
-- [ ] **T-10** — OMP package: no session-log extension loads and `/skill:session-log status` runs the new script #tester-role
+- [x] **T-10** — OMP package: no session-log extension loads and `/skill:session-log status` runs the new script #tester-role
     - — · 2.0h
     - needs BE-38 · completes S28
     - Tests
