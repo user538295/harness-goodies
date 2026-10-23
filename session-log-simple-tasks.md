@@ -584,7 +584,7 @@ flowchart LR
     - Presentation · 2.0h
     - needs BE-37, BE-39 · completes S58
     - Tests
-- [ ] **T-8** — S30 smoke on the Mac for every harness from the local checkout under the `user538295` marketplace name, harness config backed up and restored per [CLAUDE.md](./CLAUDE.md); record install routes and exact skill invocation forms (incl. how OpenCode reaches the skill) and hand them to FE-4 #tester-role
+- [x] **T-8** — S30 smoke on the Mac for every harness from the local checkout under the `user538295` marketplace name, harness config backed up and restored per [CLAUDE.md](./CLAUDE.md); record install routes and exact skill invocation forms (incl. how OpenCode reaches the skill) and hand them to FE-4 #tester-role
     - — · 6.0h
     - needs FE-2, T-3, T-5, BE-26, BE-27, BE-29, BE-36 · completes S30
     - Tests
