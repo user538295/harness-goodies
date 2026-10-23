@@ -488,7 +488,7 @@ flowchart LR
         - #unit_test — `test_parent_id_subagents_walked_cost_used_cyclic_sessions_listed_unreadable_and_sync_ends` — S11, ports `session-log.test.js` `:337`; DB built from text at test time
         - #integration_test — `test_database_opened_read_only` — no write to the store
         - #integration_test — `test_assistant_row_updated_in_place_is_read_again` — S14, `time_updated` fingerprint
-- [ ] **BE-29** — OpenCode database choice and failure modes: `OPENCODE_DB` (relative name inside the data folder, `:memory:` exit 1), `OPENCODE_CHANNEL` (`beta`, `nightly`), newest `opencode-*.db`, no database listed without error, busy database unreadable and retried, v1-only database "unsupported OpenCode database", non-default `XDG_DATA_HOME` exit 1 naming the root #backend-role
+- [x] **BE-29** — OpenCode database choice and failure modes: `OPENCODE_DB` (relative name inside the data folder, `:memory:` exit 1), `OPENCODE_CHANNEL` (`beta`, `nightly`), newest `opencode-*.db`, no database listed without error, busy database unreadable and retried, v1-only database "unsupported OpenCode database", non-default `XDG_DATA_HOME` exit 1 naming the root #backend-role
     - Interface Adapters · 3.0h
     - needs BE-28 · completes S39
     - Tests

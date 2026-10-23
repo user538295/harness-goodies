@@ -11,12 +11,13 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+from sessionlog import opencode_reader
 from sessionlog.model import Harness
-from sessionlog.opencode_reader import OpenCodeReader
-from sessionlog.reader_port import (CANNOT_BE_OPENED_REASON, PARENT_CYCLE_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource,
-                                    build_session_key)
-from tests.opencode_db import (BASE, CHILD_ID, CWD, FIXTURES, NO_SEQ_INDEX_SCHEMA, ROOT_ID, V1_SCHEMA, OpenCodeDatabase, assistant_data, folder_snapshot,
-                               ms, user_data)
+from sessionlog.opencode_reader import (CANNOT_BE_OPENED_REASON, DATABASE_BUSY_REASON, NO_DATABASE_REASON, UNSUPPORTED_DATABASE_REASON,
+                                        OpenCodeReader)
+from sessionlog.reader_port import PARENT_CYCLE_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource, build_session_key
+from tests.opencode_db import (BASE, CHILD_ID, CWD, FIXTURES, NO_SEQ_INDEX_SCHEMA, ROOT_ID, SCHEMA, V1_SCHEMA, OpenCodeDatabase, assistant_data,
+                               folder_snapshot, ms, user_data)
 
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -274,10 +275,15 @@ class DatabaseFailureTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.folder, True)
         self.path = os.path.join(self.folder, "opencode.db")
 
-    def test_a_database_file_that_is_missing_is_listed_unreadable_not_raised(self):
+    def test_a_database_file_that_is_missing_is_listed_unreadable_as_no_database_not_raised(self):
         scan = OpenCodeReader(self.path).scan()
-        self.assertEqual(((), (UnreadableSource(Harness.OPENCODE, self.path, CANNOT_BE_OPENED_REASON),)), (scan.units, scan.unreadable))
+        self.assertEqual(((), (UnreadableSource(Harness.OPENCODE, self.path, NO_DATABASE_REASON),)), (scan.units, scan.unreadable))
         self.assertFalse(os.path.exists(self.path))  # looking for a database never makes one
+
+    def test_a_missing_data_folder_is_no_database_too(self):
+        path = os.path.join(self.folder, "no", "such", "folder", "opencode.db")
+        self.assertEqual((UnreadableSource(Harness.OPENCODE, path, NO_DATABASE_REASON),), OpenCodeReader(path).scan().unreadable)
+        self.assertFalse(os.path.exists(os.path.join(self.folder, "no")))
 
     def test_a_file_that_is_no_database_is_listed_unreadable_by_scan_and_by_read(self):
         with open(self.path, "wb") as handle:
@@ -298,9 +304,92 @@ class DatabaseFailureTest(unittest.TestCase):
         self.assertEqual(1, len(reader.scan().unreadable))
         self.assertIsNone(reader.session_of(units[0]))
 
-    def test_a_database_without_session_v2_is_listed_unreadable(self):
+    def test_a_database_without_session_v2_is_listed_unreadable_as_unsupported(self):
         OpenCodeDatabase(self.path, schema=V1_SCHEMA)
-        self.assertEqual((UnreadableSource(Harness.OPENCODE, self.path, CANNOT_BE_OPENED_REASON),), OpenCodeReader(self.path).scan().unreadable)
+        reader = OpenCodeReader(self.path)
+        self.assertEqual((UnreadableSource(Harness.OPENCODE, self.path, UNSUPPORTED_DATABASE_REASON),), reader.scan().unreadable)
+        unit = SourceUnit(key=ROOT_ID, fingerprint="x", modified_at=BASE)
+        self.assertEqual((UnreadableSource(Harness.OPENCODE, ROOT_ID, UNSUPPORTED_DATABASE_REASON),), reader.read(key_of(ROOT_ID), (unit,)).unreadable)
+        self.assertIsNone(reader.session_of(unit))
+
+    def test_a_database_whose_tables_lack_a_column_the_reader_needs_is_unsupported(self):
+        OpenCodeDatabase(self.path, schema=SCHEMA.replace("  `agent` text,\n", ""))
+        self.assertEqual((UnreadableSource(Harness.OPENCODE, ROOT_ID, UNSUPPORTED_DATABASE_REASON),),
+                         OpenCodeReader(self.path).read(key_of(ROOT_ID), (SourceUnit(key=ROOT_ID, fingerprint="x", modified_at=BASE),)).unreadable)
+
+    def test_a_dangling_link_is_no_database_and_a_folder_is_one_that_cannot_be_opened(self):
+        link = os.path.join(self.folder, "dangling.db")
+        os.symlink(os.path.join(self.folder, "gone.db"), link)
+        self.assertEqual((UnreadableSource(Harness.OPENCODE, link, NO_DATABASE_REASON),), OpenCodeReader(link).scan().unreadable)
+        os.mkdir(os.path.join(self.folder, "folder.db"))
+        path = os.path.join(self.folder, "folder.db")
+        self.assertEqual((UnreadableSource(Harness.OPENCODE, path, CANNOT_BE_OPENED_REASON),), OpenCodeReader(path).scan().unreadable)
+
+    def test_a_path_that_cannot_even_be_inspected_is_not_reported_as_no_database(self):
+        with mock.patch.object(opencode_reader.os, "stat", side_effect=PermissionError):
+            self.assertEqual((UnreadableSource(Harness.OPENCODE, self.path, CANNOT_BE_OPENED_REASON),), OpenCodeReader(self.path).scan().unreadable)
+
+    def test_every_busy_or_locked_result_code_counts_as_busy_extended_ones_too_and_any_other_does_not(self):
+        OpenCodeDatabase(self.path)
+        for code, reason in ((sqlite3.SQLITE_BUSY, DATABASE_BUSY_REASON), (sqlite3.SQLITE_LOCKED, DATABASE_BUSY_REASON),
+                             (sqlite3.SQLITE_BUSY_SNAPSHOT, DATABASE_BUSY_REASON), (sqlite3.SQLITE_LOCKED_SHAREDCACHE, DATABASE_BUSY_REASON),
+                             (sqlite3.SQLITE_CANTOPEN, CANNOT_BE_OPENED_REASON), (sqlite3.SQLITE_IOERR, CANNOT_BE_OPENED_REASON)):
+            with self.subTest(code):
+                error = sqlite3.OperationalError("whatever")
+                error.sqlite_errorcode = code
+                self.assertEqual(reason, opencode_reader._failure_reason(self.path, error))
+
+
+class BusyDatabaseTest(unittest.TestCase):
+    """A database OpenCode holds locked (a writer in a rollback-journal database keeps every reader out) is listed unreadable as busy, and
+    read again by the next scan and read once it is free."""
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder, True)
+        self.database = OpenCodeDatabase(os.path.join(self.folder, "opencode.db")).fixture()
+        self.reader = OpenCodeReader(self.database.path)
+        patched = mock.patch.object(opencode_reader, "BUSY_TIMEOUT_SECONDS", 0.05)
+        patched.start()
+        self.addCleanup(patched.stop)
+
+    def lock(self):
+        writer = sqlite3.connect(self.database.path)
+        self.addCleanup(writer.close)
+        writer.execute("BEGIN EXCLUSIVE")
+        return writer
+
+    def test_a_busy_database_is_listed_unreadable_by_scan_and_session_of_is_not_answered_then_the_next_scan_reads_it(self):
+        writer = self.lock()
+        self.assertEqual((), self.reader.scan().units)
+        self.assertEqual((UnreadableSource(Harness.OPENCODE, self.database.path, DATABASE_BUSY_REASON),), self.reader.scan().unreadable)
+        self.assertIsNone(self.reader.session_of(SourceUnit(key=ROOT_ID, fingerprint="x", modified_at=BASE)))
+        writer.rollback()
+        scan = self.reader.scan()
+        self.assertEqual(((), 2), (scan.unreadable, len(scan.units)))
+
+    def test_a_database_that_turns_busy_between_the_scan_and_the_read_lists_every_unit_unreadable_and_the_read_works_once_it_is_free(self):
+        units = self.reader.scan().units
+        writer = self.lock()
+        busy = self.reader.read(key_of(ROOT_ID), units)
+        self.assertIsNone(busy.session)
+        self.assertEqual({UnreadableSource(Harness.OPENCODE, unit.key, DATABASE_BUSY_REASON) for unit in units}, set(busy.unreadable))
+        writer.rollback()
+        free = self.reader.read(key_of(ROOT_ID), units)
+        self.assertEqual(((), ROOT_ID), (free.unreadable, free.session.session_id))
+
+    def test_every_connection_waits_for_a_lock_the_busy_timeout_long(self):
+        real_connect, timeouts = sqlite3.connect, []
+
+        def connect(database, *args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return real_connect(database, *args, **kwargs)
+
+        with mock.patch.object(opencode_reader, "BUSY_TIMEOUT_SECONDS", 0.25), mock.patch("sqlite3.connect", connect):
+            units = self.reader.scan().units
+            self.reader.session_of(units[0])
+            self.reader.read(key_of(ROOT_ID), units)
+        self.assertEqual({0.25}, set(timeouts))
 
 
 class ReadOnlyTest(OpenCodeReaderTestCase):

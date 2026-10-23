@@ -1,6 +1,6 @@
 """`session_log.py opencode ...` (S11, S14 end to end through sync): the entry script runs the OpenCode reader over the database in
 `~/.local/share/opencode`, with the injected clock before the fixture's times. The database is built here from text; the real one is never
-opened."""
+opened. `OpenCodeEntryTestCase` is also the base of the database-choice tests (S39, `test_opencode_database_choice`)."""
 import io
 import os
 import shutil
@@ -20,17 +20,23 @@ TOTAL_TOKENS = "input: 22, output: 159, cache_create: 53, cache_read: 309, total
 
 
 class OpenCodeEntryTestCase(unittest.TestCase):
+    starts_with_database = True  # a test of the database choice sets it False and makes its own databases
+
     def setUp(self):
         self.home = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.home, True)
         self.data = os.path.join(self.home, ".local", "share", "opencode")
         self.log_root = os.path.join(self.home, ".config", "opencode", "prompt-logs")
-        self.database = OpenCodeDatabase(os.path.join(self.data, "opencode.db"))
+        self.database_path = os.path.join(self.data, "opencode.db")
+        if self.starts_with_database:
+            self.database = OpenCodeDatabase(self.database_path)
 
-    def run_main(self, argv, now=FIXED_NOW):
+    def run_main(self, argv, now=FIXED_NOW, env=None):
+        """One run of the entry; `env` is the whole environment of the run (empty by default: the developer's `OPENCODE_DB`, `OPENCODE_CHANNEL`
+        or `XDG_DATA_HOME` must never choose the database of a test)."""
         stdout, stderr = io.StringIO(), io.StringIO()
         environment = session_log.Environment(stdout=stdout, stderr=stderr, home=self.home, get_cwd=lambda: CWD, now=lambda: now,
-                                              to_local=lambda moment: moment.astimezone(timezone.utc))
+                                              to_local=lambda moment: moment.astimezone(timezone.utc), env={} if env is None else env)
         return session_log.main(argv, environment), stdout.getvalue(), stderr.getvalue()
 
     def archived_files(self, suffix):

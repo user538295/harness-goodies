@@ -1,8 +1,11 @@
 """OpenCode adapter of the C2 reader port: reads the database `opencode.db` strictly read-only (a `mode=ro` URI), where
 sessions are the rows of `session_v2` (`parent_id` marks a sub-agent) and their messages the rows of `session_message`, read by `seq`
 (`opencode_messages` parses them, `opencode_family` makes the session). Every database problem becomes an unreadable source; nothing
-raises. Which database file is chosen is not this module's business: the reader is built with one path. No row is ever written; for a
-WAL-mode database whose `-wal` and `-shm` files are gone SQLite itself creates those two bookkeeping files on the first read.
+raises: a database that does not exist is `NO_DATABASE_REASON`, one a writer holds locked `DATABASE_BUSY_REASON` (read again by the next
+scan and read), one without the tables of OpenCode v2 (a v1-only database) `UNSUPPORTED_DATABASE_REASON`, any other failure
+`CANNOT_BE_OPENED_REASON`. Which database file is chosen is not this module's business (`opencode_database` does): the reader is built
+with one path. No row is ever written; for a WAL-mode database whose `-wal` and `-shm` files are gone SQLite itself creates those two
+bookkeeping files on the first read.
 
 A unit is one session row; its key is the session id and its fingerprint the messages' row count, newest `seq` and newest
 `time_updated` (OpenCode updates an assistant row in place while it streams, so the count and `seq` alone would miss a finish, tokens
@@ -13,6 +16,7 @@ when it is a root, and starts a sub-agent when the root does.
 A unit's session is learned from the `parent_id` chain: the topmost session row is the root. A session in a parent loop, and every
 session hanging from one, is its own session key: `read` lists it unreadable (`PARENT_CYCLE_REASON`) and builds no session from it, and
 nothing walks a loop. The parent links of the last scan serve `session_of` and `read`, so a family is judged on what the scan saw."""
+import os
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -24,8 +28,18 @@ from .json_records import parse_epoch_milliseconds, whole_count
 from .model import Harness, is_safe_id
 from .opencode_family import ParentOf, SessionRow, build_session, root_id_for
 from .opencode_messages import Transcript, parse_messages
-from .reader_port import (CANNOT_BE_OPENED_REASON, PARENT_CYCLE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit,
-                          UnreadableSource, build_session_key, root_id_of)
+from .reader_port import (CANNOT_BE_OPENED_REASON, PARENT_CYCLE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource,
+                          build_session_key, root_id_of)
+
+NO_DATABASE_REASON = "no OpenCode database"
+DATABASE_BUSY_REASON = "database busy"
+UNSUPPORTED_DATABASE_REASON = "unsupported OpenCode database"
+# How long a query waits for a lock before the database counts as busy. Short on purpose: nothing is remembered about a busy database, so
+# every session of a sync would wait this long again.
+BUSY_TIMEOUT_SECONDS = 1.0
+_PRIMARY_RESULT_CODE_MASK = 0xFF  # SQLite's extended result codes keep the primary code in the low byte
+_BUSY_CODES = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+_UNSUPPORTED_SCHEMA_MESSAGES = ("no such table", "no such column")
 
 _UNKNOWN_TIME = datetime.fromtimestamp(0, timezone.utc)
 _SCAN_SQL = (
@@ -64,6 +78,21 @@ def _unreadable(path: str, reason: str) -> UnreadableSource:
     return UnreadableSource(Harness.OPENCODE, path, reason)
 
 
+def _failure_reason(path: str, error: sqlite3.Error) -> str:
+    """Why the database at `path` could not be queried."""
+    try:
+        os.stat(path)
+    except FileNotFoundError:  # also a dangling link; any other failure (say no permission) is not "no database"
+        return NO_DATABASE_REASON
+    except OSError:
+        return CANNOT_BE_OPENED_REASON
+    if (getattr(error, "sqlite_errorcode", 0) & _PRIMARY_RESULT_CODE_MASK) in _BUSY_CODES:
+        return DATABASE_BUSY_REASON
+    if isinstance(error, sqlite3.OperationalError) and str(error).startswith(_UNSUPPORTED_SCHEMA_MESSAGES):
+        return UNSUPPORTED_DATABASE_REASON
+    return CANNOT_BE_OPENED_REASON
+
+
 def _fingerprint(message_count: object, newest_seq: object, newest_update: object) -> str:
     """The messages' row count, newest `seq` and newest `time_updated`; a value that is no count from zero up counts as 0."""
     return ":".join(str(whole_count(value)) for value in (message_count, newest_seq, newest_update))
@@ -88,8 +117,9 @@ def _transcript_of(database: sqlite3.Connection, session_id: str) -> Transcript:
 
 
 class OpenCodeReader:
-    """Reads the OpenCode database at `database_path`. A database that is missing, cannot be opened or queried, or lacks `session_v2`
-    makes `scan` list it unreadable under its path, and `read` every unit it was given; `session_of` is then None (not learnable now)."""
+    """Reads the OpenCode database at `database_path`. A database that is missing, busy, without the tables of OpenCode v2 or otherwise
+    cannot be opened or queried makes `scan` list it unreadable under its path with the reason (see the module text), and `read` every unit
+    it was given; `session_of` is then None (not learnable now). Nothing is remembered about a failure: the next call tries again."""
 
     def __init__(self, database_path: str) -> None:
         self._path = database_path
@@ -97,7 +127,7 @@ class OpenCodeReader:
         self._links: Optional[_ParentLinks] = None  # the parent links of the last scan; loaded by the first call that needs them otherwise
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._uri, uri=True)
+        connection = sqlite3.connect(self._uri, uri=True, timeout=BUSY_TIMEOUT_SECONDS)
         connection.text_factory = _decode_text
         return connection
 
@@ -112,9 +142,9 @@ class OpenCodeReader:
         try:
             with closing(self._connect()) as database:
                 rows = database.execute(_SCAN_SQL).fetchall()
-        except sqlite3.Error:
+        except sqlite3.Error as error:
             self._links = None
-            return ScanResult(unreadable=(_unreadable(self._path, CANNOT_BE_OPENED_REASON),))
+            return ScanResult(unreadable=(_unreadable(self._path, _failure_reason(self._path, error)),))
         self._links = _links_of((row[0], row[1]) for row in rows)
         units = [SourceUnit(key=str(session_id), fingerprint=_fingerprint(message_count, newest_seq, newest_update),
                             modified_at=_modified_at(session_updated, newest_update))
@@ -145,8 +175,9 @@ class OpenCodeReader:
         try:
             with closing(self._connect()) as database:
                 return self._read_family(database, self._links_in(database), root_id, keys)
-        except sqlite3.Error:
-            return ReadResult(unreadable=tuple(_unreadable(key, CANNOT_BE_OPENED_REASON) for key in keys))
+        except sqlite3.Error as error:
+            reason = _failure_reason(self._path, error)
+            return ReadResult(unreadable=tuple(_unreadable(key, reason) for key in keys))
 
     @staticmethod
     def _read_family(database: sqlite3.Connection, links: _ParentLinks, root_id: str, keys: Iterable[str]) -> ReadResult:

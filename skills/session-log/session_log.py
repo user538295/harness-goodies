@@ -22,7 +22,11 @@ LATEST_FLAG = "--latest"
 OPTION_PREFIX = "--"
 COMMANDS = ("on", "off", "status", "usage")
 SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "omp": (".omp", "agent"), "opencode": (".config", "opencode")}
-OPENCODE_DATABASE_PATH = (".local", "share", "opencode", "opencode.db")
+OPENCODE_DATA_HOME = (".local", "share")
+OPENCODE_DATA_FOLDER = OPENCODE_DATA_HOME + ("opencode",)
+# Per harness, the variables that can move its root (C1: the relocated-root check), each as (variable, how the message calls the root it
+# moves, that root's default below home).
+RELOCATION_VARIABLES = {"opencode": (("XDG_DATA_HOME", "OpenCode's XDG data home", OPENCODE_DATA_HOME),)}
 LOG_FOLDER_NAME = "prompt-logs"
 PRICE_FILE_NAME = "prices.json"
 SKILL_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -44,12 +48,13 @@ class RuntimeFailure(Exception):
 
 
 class Environment(object):
-    """Everything a run takes from the machine; each argument defaults to the real thing and is a test injection point.
+    """Everything a run takes from the machine; each argument defaults to the real thing and is a test injection point. `env` is the
+    whole set of environment variables the run reads (tests pass their own, so the developer's never leak in).
     `run_probe` stays None until `_compose`, because the package that holds the real runner is not importable before the
     version check."""
 
     def __init__(self, stdout=None, stderr=None, version_info=None, platform=None, home=None, get_cwd=None, now=None,
-                 to_local=None, path_module=None, run_probe=None):
+                 to_local=None, path_module=None, run_probe=None, env=None):
         self.stdout = sys.stdout if stdout is None else stdout
         self.stderr = sys.stderr if stderr is None else stderr
         self.version_info = sys.version_info if version_info is None else version_info
@@ -60,6 +65,7 @@ class Environment(object):
         self.to_local = (lambda moment: moment.astimezone()) if to_local is None else to_local
         self.path_module = os.path if path_module is None else path_module
         self.run_probe = run_probe
+        self.env = os.environ if env is None else env
 
 
 def _error_text(message):
@@ -108,7 +114,20 @@ def _parse(argv, supported_harnesses):
     return harness, command, rest[0]
 
 
-def _build_reader(harness, root, home, path_module):
+def _opencode_reader(home, path_module, env):
+    """The reader of the database `choose_database` picks; a choice the run refuses ends it with the entry's own text."""
+    from sessionlog.opencode_database import DatabaseOutsideDataFolderError, InMemoryDatabaseError, choose_database
+    from sessionlog.opencode_reader import OpenCodeReader
+    try:
+        database_path = choose_database(path_module.join(home, *OPENCODE_DATA_FOLDER), env)
+    except InMemoryDatabaseError:
+        raise RuntimeFailure("OpenCode in-memory databases are unsupported")
+    except DatabaseOutsideDataFolderError as error:
+        raise RuntimeFailure("OpenCode database path is not inside the OpenCode data folder: %s" % error.path)
+    return OpenCodeReader(database_path)
+
+
+def _build_reader(harness, root, home, path_module, env):
     if harness == "claude":
         from sessionlog.claude_reader import ClaudeReader
         return ClaudeReader(root)
@@ -119,9 +138,20 @@ def _build_reader(harness, root, home, path_module):
         from sessionlog.omp_reader import OmpReader
         return OmpReader(root)
     if harness == "opencode":
-        from sessionlog.opencode_reader import OpenCodeReader
-        return OpenCodeReader(path_module.join(home, *OPENCODE_DATABASE_PATH))
+        return _opencode_reader(home, path_module, env)
     raise RuntimeFailure("no reader for harness '%s'" % harness)
+
+
+def _refuse_relocated_root(harness, home, environment):
+    """The relocated-root check of C1 (right after the version check): a variable that moves the harness's root away from its default
+    ends the run before anything is read or written. A variable that is empty counts as unset, and one that spells out the default
+    root works as unset."""
+    path_module = environment.path_module
+    for variable, label, default_parts in RELOCATION_VARIABLES.get(harness, ()):
+        actual = environment.env.get(variable, "")
+        default = path_module.join(home, *default_parts)
+        if actual and path_module.normcase(path_module.realpath(actual)) != path_module.normcase(path_module.realpath(default)):
+            raise RuntimeFailure("%s is relocated: %s is %s; session-log supports only the default %s" % (label, variable, actual, default))
 
 
 def _home_folder(environment):
@@ -150,7 +180,8 @@ class _Composition(object):
 
 def _compose(harness, environment):
     """Builds every adapter of one run, the sync use case and the usage target resolver over them, and ends by converting an old
-    release's `.enabled` flag, so what a command or the hook reads afterwards is the converted state."""
+    release's `.enabled` flag, so what a command or the hook reads afterwards is the converted state. A relocated root ends the run
+    first, and a database the environment names but the run refuses ends it before the flag is converted."""
     from sessionlog.leftover_scan import LeftoverScan
     from sessionlog.log_usage_writer import LogUsageWriter
     from sessionlog.model import Harness
@@ -164,12 +195,13 @@ def _compose(harness, environment):
 
     path_module = environment.path_module
     home = _home_folder(environment)
+    _refuse_relocated_root(harness, home, environment)
     root = path_module.join(home, *SUPPORTED_HARNESS_ROOTS[harness])
     log_root = path_module.join(root, LOG_FOLDER_NAME)
     price_book = PriceFile(Path(PRICE_FILE_PATH))
     archive = LogUsageWriter(log_root, environment.to_local, path_module)
     state = FileStateStore(log_root, environment.now)
-    reader = _build_reader(harness, root, home, path_module)
+    reader = _build_reader(harness, root, home, path_module, environment.env)
     pricing = PricingRules(price_book)
     sync = SyncUseCase(reader, archive, state, pricing, environment.now)
     state.migrate_enabled()
