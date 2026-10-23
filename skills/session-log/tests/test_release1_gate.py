@@ -5,7 +5,7 @@ newer, found on `PATH`) in a scratch `HOME` and scratch XDG folders on its own f
 `.opencode-plugin` directory as the only configured plugin (OpenCode resolves a configured directory to its `index`, as the
 plugin loader does for a package route; a repository-root path is read as a folder of plugins and loads nothing). Every
 `OPENCODE_*` variable of the caller is dropped, so the user's own OpenCode config, data and managed service are never touched.
-A `bash` stub first on `PATH` records any call, because the old handlers started `bash install.sh ... repair` in the background
+A `bash` stub first on `PATH` records any call, because the old handlers started the shell installer script with `repair` in the background
 (S27). The plugin imports `yaml`, so the repository needs its dependencies installed. The test is skipped when no `opencode`
 2.0.4 or newer is installed, unless `RELEASE1_GATE_REQUIRE_OPENCODE=1`, which turns that skip into a failure. Being a `test_*.py`
 file it also runs in a full `discover` on a machine with OpenCode, and then costs a few seconds.

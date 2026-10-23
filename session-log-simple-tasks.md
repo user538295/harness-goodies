@@ -609,7 +609,7 @@ flowchart LR
     - Presentation · 4.0h
     - needs BE-37, T-8 · completes S58
     - Tests
-- [ ] **BE-40** — Repo-scan test: `git grep` over tracked files for `install.sh`, `bin/session-log`, `adapters/`, `install_hooks.py`, `omp.extensions` and `skills/session-log/VERSION` lists only the exempt files (leftover scan module and its tests, [test_locator.sh](./skills/session-log/tests/test_locator.sh), [commit SKILL.md](./skills/commit/SKILL.md), the `session-log-simple-*` plan files if committed); skipped without `git` #backend-role
+- [x] **BE-40** — Repo-scan test: `git grep` over tracked files for `install.sh`, `bin/session-log`, `adapters/`, `install_hooks.py`, `omp.extensions` and `skills/session-log/VERSION` lists only the exempt files (leftover scan module and its tests, [test_locator.sh](./skills/session-log/tests/test_locator.sh), [commit SKILL.md](./skills/commit/SKILL.md), the `session-log-simple-*` plan files if committed); skipped without `git` #backend-role
     - Frameworks & Drivers · 2.0h
     - needs BE-18, BE-33, BE-37, BE-38 · completes S58
     - Tests
