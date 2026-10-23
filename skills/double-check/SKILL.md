@@ -71,7 +71,10 @@ The default config:
   { "skill": "/open-code-review" },
   { "tool": "markdownlint" },
   { "tool": "shellcheck" },
-  { "md": "conventions.md" }
+  {
+    "md": "AGENTS.md",
+    "args": "return NONE if the target has none. Check strictly: every violated rule is a finding, at least Moderate."
+  }
 ]
 ```
 
