@@ -9,6 +9,7 @@ from typing import Callable, List, Optional
 from .archive_port import WriteOutcome
 from .model import Session
 from .pricing import PARTIAL, PRICED, UNKNOWN, Price, UsageReport
+from .temp_files import STALE_TEMP_TAIL, publish, remove_stale_temps, temp_name
 
 CENTS_PER_DOLLAR = 100
 SLUG_MAX_LENGTH = 64
@@ -17,23 +18,17 @@ ROOT_SLUG = "root"
 UNKNOWN_SLUG = "unknown"
 SECONDS_PER_MINUTE = 60
 SECONDS_PER_HOUR = 3600
-STALE_TEMP_SECONDS = SECONDS_PER_HOUR
-FILE_MODE = 0o600
-TEMP_RANDOM_BYTES = 4
 SESSION_PREFIX = "session_"
 LOG_SUFFIX = ".md"
 REPORT_SUFFIX = ".usage.txt"
-TEMP_SUFFIX = ".tmp"
 FILE_TIME_FORMAT = "%Y-%m-%d_%H-%M-%S"
 ENTRY_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 CLOCK_FORMAT = "%H:%M:%S"
 NO_VALUE = "-"
 API_EQUIVALENT = " (API-equivalent)"
 _OTHER_CHARS = re.compile(r"[^A-Za-z0-9_-]")
-_TEMP_NAME = ".%s.%d.%s" + TEMP_SUFFIX
 _LINE_BREAKS = re.compile(r"[\r\n\t]+")
-_STALE_TEMP = re.compile(r"\.%s.*(?:%s|%s)\.\d+\.[0-9a-f]+%s" % (
-    re.escape(SESSION_PREFIX), re.escape(LOG_SUFFIX), re.escape(REPORT_SUFFIX), re.escape(TEMP_SUFFIX)))
+_STALE_TEMP = re.compile(r"\.%s.*(?:%s|%s)" % (re.escape(SESSION_PREFIX), re.escape(LOG_SUFFIX), re.escape(REPORT_SUFFIX)) + STALE_TEMP_TAIL)
 
 
 def _offset_label(moment: datetime) -> str:
@@ -92,13 +87,6 @@ def _estimate(usage, price_text: str) -> str:
             "price: %s, model: %s, effort: %s") % (
         usage.input_tokens, usage.output_tokens, usage.cache_write_tokens, usage.cache_read_tokens,
         usage.total_tokens or 0, price_text, _single_line(usage.model_names), _single_line(usage.effort or NO_VALUE))
-
-
-def _discard(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
 
 
 class LogUsageWriter:
@@ -185,41 +173,13 @@ class LogUsageWriter:
 
     def _temp_path(self, path: str) -> str:
         folder, name = self._path.split(path)
-        return self._path.join(folder, _TEMP_NAME % (name, self._pid(), os.urandom(TEMP_RANDOM_BYTES).hex()))
+        return self._path.join(folder, temp_name(name, self._pid()))
 
     def _remove_stale_temps(self, folder: str) -> None:
-        try:
-            names = os.listdir(folder)
-        except OSError:
-            return
-        cutoff = self._clock() - STALE_TEMP_SECONDS
-        for name in names:
-            if not name.endswith(TEMP_SUFFIX) or not _STALE_TEMP.fullmatch(name):
-                continue
-            path = self._path.join(folder, name)
-            try:
-                if os.stat(path).st_mtime < cutoff:
-                    os.unlink(path)
-            except OSError:
-                continue
+        remove_stale_temps(folder, _STALE_TEMP, self._clock())
 
     def _replace_with(self, path: str, text: str) -> None:
-        temp = self._temp_path(path)
-        descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
-        try:
-            try:
-                handle = os.fdopen(descriptor, "wb")
-            except BaseException:
-                os.close(descriptor)
-                raise
-            with handle:
-                handle.write(_text(text).encode("utf-8", errors="replace"))
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp, path)
-        except BaseException:
-            _discard(temp)
-            raise
+        publish(self._temp_path(path), path, _text(text).encode("utf-8", errors="replace"))
 
     def write(self, log_path: str, log_text: str, report_text: str) -> WriteOutcome:
         folder = self._path.dirname(log_path)

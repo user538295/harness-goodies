@@ -497,7 +497,7 @@ flowchart LR
         - #integration_test — `test_relocated_xdg_data_home_exits_1_naming_the_root` — S39
 
 ### Phase 12 · Log Cursor sessions from hook records
-- [ ] **BE-30** — Hook records module (C5): `hook cursor <event>` writes one record per call to `prompt-logs/.records/<conversation_id>/<arrival_ns>-<event>-<pid>.json` via exclusive temp + rename; reads only `conversation_id`; UTF-8 with errors replaced, BOM stripped; bad JSON or unsafe id into `.records/.invalid/`; `sessionStart` removes record temps older than 1 hour, then syncs; prints nothing, exits 0 #backend-role
+- [x] **BE-30** — Hook records module (C5): `hook cursor <event>` writes one record per call to `prompt-logs/.records/<conversation_id>/<arrival_ns>-<event>-<pid>.json` via exclusive temp + rename; reads only `conversation_id`; UTF-8 with errors replaced, BOM stripped; bad JSON or unsafe id into `.records/.invalid/`; `sessionStart` removes record temps older than 1 hour, then syncs; prints nothing, exits 0 #backend-role
     - Frameworks & Drivers · 4.0h
     - needs BE-17 · completes C5, S22, S45
     - Tests

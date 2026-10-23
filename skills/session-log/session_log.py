@@ -22,6 +22,10 @@ LATEST_FLAG = "--latest"
 OPTION_PREFIX = "--"
 COMMANDS = ("on", "off", "status", "usage")
 SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "omp": (".omp", "agent"), "opencode": (".config", "opencode")}
+CURSOR_HARNESS = "cursor"
+# Cursor joins SUPPORTED_HARNESS_ROOTS (the harnesses the command line accepts) when its reader is wired; until then only its hooks name it.
+HARNESS_ROOTS = dict(SUPPORTED_HARNESS_ROOTS, cursor=(".cursor",))
+CURSOR_RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop")
 OPENCODE_DATA_HOME = (".local", "share")
 OPENCODE_DATA_FOLDER = OPENCODE_DATA_HOME + ("opencode",)
 # Per harness, the variables that can move its root (C1: the relocated-root check), each as (variable, how the message calls the root it
@@ -51,10 +55,14 @@ class Environment(object):
     """Everything a run takes from the machine; each argument defaults to the real thing and is a test injection point. `env` is the
     whole set of environment variables the run reads (tests pass their own, so the developer's never leak in).
     `run_probe` stays None until `_compose`, because the package that holds the real runner is not importable before the
-    version check."""
+    version check; `stdin` (a binary stream), `time_ns` and `pid` stay None until the hook that needs them: the real standard input
+    is read by `read_stdin`, the real clock and process id are the defaults of the hook records module."""
 
     def __init__(self, stdout=None, stderr=None, version_info=None, platform=None, home=None, get_cwd=None, now=None,
-                 to_local=None, path_module=None, run_probe=None, env=None):
+                 to_local=None, path_module=None, run_probe=None, env=None, stdin=None, time_ns=None, pid=None):
+        self.stdin = stdin
+        self.time_ns = time_ns
+        self.pid = pid
         self.stdout = sys.stdout if stdout is None else stdout
         self.stderr = sys.stderr if stderr is None else stderr
         self.version_info = sys.version_info if version_info is None else version_info
@@ -66,6 +74,14 @@ class Environment(object):
         self.path_module = os.path if path_module is None else path_module
         self.run_probe = run_probe
         self.env = os.environ if env is None else env
+
+    def read_stdin(self):
+        """The raw bytes of the hook input: the injected binary stream, else the real standard input (no input at all when the
+        process has none)."""
+        stream = self.stdin
+        if stream is None:
+            stream = getattr(sys.stdin, "buffer", None)
+        return b"" if stream is None else stream.read()
 
 
 def _error_text(message):
@@ -163,6 +179,14 @@ def _home_folder(environment):
     return home
 
 
+def _harness_folders(harness, environment):
+    """Returns (home, root, log root) of the harness; a relocated root ends the run first (the check of C1 after the version check)."""
+    home = _home_folder(environment)
+    _refuse_relocated_root(harness, home, environment)
+    root = environment.path_module.join(home, *HARNESS_ROOTS[harness])
+    return home, root, environment.path_module.join(root, LOG_FOLDER_NAME)
+
+
 class _Composition(object):
     """The adapters of one run, the sync use case, the usage target resolver, the leftover scan and the Python probe; command use
     cases are built over them only for a command."""
@@ -194,10 +218,7 @@ def _compose(harness, environment):
     from pathlib import Path
 
     path_module = environment.path_module
-    home = _home_folder(environment)
-    _refuse_relocated_root(harness, home, environment)
-    root = path_module.join(home, *SUPPORTED_HARNESS_ROOTS[harness])
-    log_root = path_module.join(root, LOG_FOLDER_NAME)
+    home, root, log_root = _harness_folders(harness, environment)
     price_book = PriceFile(Path(PRICE_FILE_PATH))
     archive = LogUsageWriter(log_root, environment.to_local, path_module)
     state = FileStateStore(log_root, environment.now)
@@ -261,7 +282,42 @@ def _sync_at_session_start(harness, environment):
     _compose(harness, environment).sync.sync(HOOK_SYNC_BUDGET_SECONDS)
 
 
-HOOK_HANDLERS = {("claude", "SessionStart"): _sync_at_session_start}
+def _cursor_records_when_on(environment):
+    """The hook records of Cursor's `prompt-logs` folder while logging is on, else None, in the C1 order of a hook: the
+    relocated-root check, the `.enabled` migration, then the `.log_enabled` check. Nothing is created while logging is off. A
+    migration that created `.log_enabled` but could not remove `.enabled` does not stop the hook: logging is on."""
+    from sessionlog.hook_records import HookRecords
+    from sessionlog.state import FileStateStore
+
+    _, _, log_root = _harness_folders(CURSOR_HARNESS, environment)
+    state = FileStateStore(log_root, environment.now)
+    try:
+        state.migrate_enabled()
+    except OSError:
+        pass
+    return HookRecords(log_root, environment.time_ns, environment.pid) if state.read_on_flag() is not None else None
+
+
+def _cursor_record_handler(event):
+    """Hook handler of one Cursor event that is recorded: one record file holding the raw input, while logging is on."""
+    def handler(harness, environment):
+        records = _cursor_records_when_on(environment)
+        if records is not None:
+            records.record(event, environment.read_stdin)
+    return handler
+
+
+def _cursor_session_start(harness, environment):
+    """Cursor `sessionStart`, while logging is on: removes the record temps a killed hook left, then syncs. It writes no record
+    and, like the Claude hook, never reads its input."""
+    records = _cursor_records_when_on(environment)
+    if records is not None:
+        records.remove_stale_temps()
+        _sync_at_session_start(harness, environment)
+
+
+HOOK_HANDLERS = dict([(("claude", "SessionStart"), _sync_at_session_start), ((CURSOR_HARNESS, "sessionStart"), _cursor_session_start)]
+                     + [((CURSOR_HARNESS, event), _cursor_record_handler(event)) for event in CURSOR_RECORD_EVENTS])
 
 
 def _run_hook(arguments, environment):
