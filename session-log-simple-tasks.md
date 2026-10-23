@@ -481,7 +481,7 @@ flowchart LR
         - #integration_test — `test_omp_gc_moved_file_read_once_found_inactive_not_read_again` — S47
 
 ### Phase 11 · Log OpenCode sessions
-- [ ] **BE-28** — OpenCodeReader: database opened read-only, sessions in `session_v2` and messages in `session_message` read by `seq`, `parent_id` sub-agents walked recursively, recorded cost (0 = free), tokens, model and `time.completed` from assistant `data`, `time_updated` in the fingerprint, cycles unreadable; ported from [session_log_usage.sh](./skills/session-log/adapters/opencode/session_log_usage.sh); wired into the composition root #backend-role
+- [x] **BE-28** — OpenCodeReader: database opened read-only, sessions in `session_v2` and messages in `session_message` read by `seq`, `parent_id` sub-agents walked recursively, recorded cost (0 = free), tokens, model and `time.completed` from assistant `data`, `time_updated` in the fingerprint, cycles unreadable; ported from [session_log_usage.sh](./skills/session-log/adapters/opencode/session_log_usage.sh); wired into the composition root #backend-role
     - Interface Adapters · 4.0h
     - needs BE-9, BE-14 · completes S11, S14
     - Tests

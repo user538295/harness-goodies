@@ -7,6 +7,7 @@ from .model import Harness, Session
 
 
 UNSAFE_ID_REASON = "unsafe id"
+PARENT_CYCLE_REASON = "parent cycle"
 CANNOT_BE_OPENED_REASON = "cannot be opened"
 CANNOT_BE_DECODED_REASON = "cannot be decoded"
 CANNOT_BE_LISTED_REASON = "cannot be listed"

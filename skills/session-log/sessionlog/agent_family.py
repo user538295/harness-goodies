@@ -1,6 +1,7 @@
 """Pure rules for the sub-agents of one session whose sub-agents are whole transcripts of their own (a Codex rollout, an OMP session
-file), shared by those readers: the thread a transcript makes, the nesting of the child threads by the thread their parent names, and
-the split of a family whose root transcript is gone into the session it archives as and its sub-agents; no file access."""
+file, an OpenCode session), shared by those readers: the thread a transcript makes, the nesting of the child threads by the thread
+their parent names (all three), and the split of a family whose root transcript is gone into the session it archives as and its
+sub-agents (Codex and OMP); no file access."""
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import List, Optional, Sequence, Tuple

@@ -21,7 +21,8 @@ HOOK_ARGUMENT = "hook"
 LATEST_FLAG = "--latest"
 OPTION_PREFIX = "--"
 COMMANDS = ("on", "off", "status", "usage")
-SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "omp": (".omp", "agent")}
+SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "omp": (".omp", "agent"), "opencode": (".config", "opencode")}
+OPENCODE_DATABASE_PATH = (".local", "share", "opencode", "opencode.db")
 LOG_FOLDER_NAME = "prompt-logs"
 PRICE_FILE_NAME = "prices.json"
 SKILL_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -107,7 +108,7 @@ def _parse(argv, supported_harnesses):
     return harness, command, rest[0]
 
 
-def _build_reader(harness, root):
+def _build_reader(harness, root, home, path_module):
     if harness == "claude":
         from sessionlog.claude_reader import ClaudeReader
         return ClaudeReader(root)
@@ -117,6 +118,9 @@ def _build_reader(harness, root):
     if harness == "omp":
         from sessionlog.omp_reader import OmpReader
         return OmpReader(root)
+    if harness == "opencode":
+        from sessionlog.opencode_reader import OpenCodeReader
+        return OpenCodeReader(path_module.join(home, *OPENCODE_DATABASE_PATH))
     raise RuntimeFailure("no reader for harness '%s'" % harness)
 
 
@@ -159,12 +163,13 @@ def _compose(harness, environment):
     from pathlib import Path
 
     path_module = environment.path_module
-    root = path_module.join(_home_folder(environment), *SUPPORTED_HARNESS_ROOTS[harness])
+    home = _home_folder(environment)
+    root = path_module.join(home, *SUPPORTED_HARNESS_ROOTS[harness])
     log_root = path_module.join(root, LOG_FOLDER_NAME)
     price_book = PriceFile(Path(PRICE_FILE_PATH))
     archive = LogUsageWriter(log_root, environment.to_local, path_module)
     state = FileStateStore(log_root, environment.now)
-    reader = _build_reader(harness, root)
+    reader = _build_reader(harness, root, home, path_module)
     pricing = PricingRules(price_book)
     sync = SyncUseCase(reader, archive, state, pricing, environment.now)
     state.migrate_enabled()

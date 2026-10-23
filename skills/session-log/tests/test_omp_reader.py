@@ -11,9 +11,9 @@ from datetime import timedelta
 from unittest import mock
 
 from sessionlog.model import Harness
-from sessionlog.omp_reader import PARENT_CYCLE_REASON, PARENT_UNREADABLE_REASON, OmpReader
+from sessionlog.omp_reader import PARENT_UNREADABLE_REASON, OmpReader
 from sessionlog.reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON,
-                                    CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource)
+                                    CANNOT_BE_PARSED_REASON, PARENT_CYCLE_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource)
 from tests.omp_records import (CHILD_FIXTURE, CWD, FIXTURE_CHILD_ID, FIXTURE_ROOT_ID, FIXTURE_ROOT_STEM, PROJECT, ROOT_FIXTURE, assistant_record,
                                at, custom_record, effort_record, header_record, init_record, jsonl, read_text, root_of, usage_of,
                                user_record)

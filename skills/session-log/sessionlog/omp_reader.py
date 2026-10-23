@@ -18,11 +18,10 @@ from .omp_family import Member, build_session, cyclic_keys
 from .omp_layout import (ARCHIVE_FOLDER, ARCHIVED_SUFFIX, SESSION_SUFFIX, SESSIONS_FOLDER, Place, place_of, root_id_of_stem,
                          stem_of_path)
 from .omp_transcript import parse_parent_link, parse_transcript
-from .reader_port import (UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key,
+from .reader_port import (PARENT_CYCLE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key,
                           root_id_of)
 from .store_files import FILE_ENCODING, FileOpener, StoreFiles, open_text
 
-PARENT_CYCLE_REASON = "parent cycle"
 PARENT_UNREADABLE_REASON = "parent session cannot be read"
 
 _FILES = StoreFiles(Harness.OMP)

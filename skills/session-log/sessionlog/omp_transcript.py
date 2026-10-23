@@ -22,13 +22,14 @@ count is not kept apart: the model has no field for it.
 A prompt's reply is the last assistant message of its turn whose `stopReason` is `stop`: its text blocks joined by blank lines,
 its time `completedAt` (else the record's own `completedAt`, else the time of the record). A turn without such a message has no
 reply and works no time."""
-import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple, Union
 
-from .json_records import Record, decode_record, parse_moment
+from .json_records import (Record, decode_record, model_label, parse_cost, parse_epoch_milliseconds, parse_moment,
+                           parse_whole_count)
 from .model import Prompt, RequestUsage
+from .prompt_turns import Opening, group_turns
 
 _SESSION = "session"
 _SESSION_INIT = "session_init"
@@ -43,9 +44,6 @@ _STOP = "stop"
 _TEXT_BLOCK = "text"
 _PROMPT_TEXT_SEPARATOR = "\n"
 _REPLY_PARAGRAPH_SEPARATOR = "\n\n"
-_MODEL_SEPARATOR = "/"
-_MAX_TOKENS = 2**63 - 1
-_MILLISECONDS = 1000
 _INPUT_NAMES = ("input", "inputTokens", "input_tokens")
 _OUTPUT_NAMES = ("output", "outputTokens", "output_tokens")
 _CACHE_READ_NAMES = ("cacheRead", "cacheReadTokens", "cache_read")
@@ -81,11 +79,6 @@ class ParentLink(NamedTuple):
     unparsable: bool = False
 
 
-class _Opening(NamedTuple):
-    moment: Optional[datetime]
-    text: str
-
-
 class _Answer(NamedTuple):
     """What an assistant message or a helper request contributes to its turn. `key` is None for a helper request and for a message
     that names no response."""
@@ -98,28 +91,6 @@ class _Answer(NamedTuple):
     moment: Optional[datetime]
 
 
-@dataclass
-class _Turn:
-    opening: _Opening
-    answers: List[_Answer]
-
-    def to_prompt(self) -> Optional[Prompt]:
-        """The prompt of the turn; None when its opening has no usable time. The reply is its last answer that stops the turn."""
-        if self.opening.moment is None:
-            return None
-        stops = [answer for answer in self.answers if answer.is_stop]
-        reply = stops[-1] if stops else None
-        reply_at = max(reply.moment, self.opening.moment) if reply is not None and reply.moment is not None else None
-        return Prompt(
-            submitted_at=self.opening.moment,
-            text=self.opening.text,
-            reply_at=reply_at,
-            reply_text=reply.text if reply is not None else None,
-            working_time=reply_at - self.opening.moment if reply_at is not None else timedelta(0),
-            requests=tuple(answer.request for answer in self.answers if answer.request is not None),
-        )
-
-
 def _text(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
@@ -129,21 +100,9 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _is_finite_number(value: Any) -> bool:
-    """A number that is not `inf` or `nan`; an int of any size is finite (`math.isfinite` would overflow on a huge one)."""
-    return _is_number(value) and (isinstance(value, int) or math.isfinite(value))
-
-
 def _moment(value: Any) -> Optional[datetime]:
     """The time a number of epoch milliseconds or an ISO-8601 text names; None for anything else (a zero or negative number as well)."""
-    if _is_finite_number(value):
-        if value <= 0:
-            return None
-        try:
-            return datetime.fromtimestamp(value / _MILLISECONDS, timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-    return parse_moment(value) if isinstance(value, str) else None
+    return parse_moment(value) if isinstance(value, str) else parse_epoch_milliseconds(value)
 
 
 def _entry_time(record: Record, message: Optional[Record] = None) -> Optional[datetime]:
@@ -155,30 +114,16 @@ def _completed_time(record: Record, message: Record) -> Optional[datetime]:
     return _moment(message.get("completedAt")) or _moment(record.get("completedAt")) or _entry_time(record, message)
 
 
-def _whole(value: Any) -> Optional[int]:
-    """Whole tokens in 0..int64 max; fractions are cut off, anything else is None."""
-    if not _is_finite_number(value) or value < 0:
-        return None
-    return min(int(value), _MAX_TOKENS)
-
-
 def _tokens(usage: Record, names: Tuple[str, ...]) -> int:
     """The first of `names` that holds a valid count; 0 when none does."""
-    return next((count for count in (_whole(usage.get(name)) for name in names) if count is not None), 0)
+    return next((count for count in (parse_whole_count(usage.get(name)) for name in names) if count is not None), 0)
 
 
 def _recorded_cost(usage: Record) -> Optional[float]:
     """The cost OMP recorded for the request: `cost.total`, or `cost` itself when it is a number; None when it is absent or no
     number from zero up, so the price file prices the request instead. A recorded zero is a free request."""
     cost = usage.get("cost")
-    if isinstance(cost, dict):
-        cost = cost.get("total")
-    if not _is_finite_number(cost) or cost < 0:
-        return None
-    try:
-        return float(cost)
-    except OverflowError:
-        return None
+    return parse_cost(cost.get("total") if isinstance(cost, dict) else cost)
 
 
 def _cache_writes(usage: Record) -> Tuple[int, int]:
@@ -189,15 +134,6 @@ def _cache_writes(usage: Record) -> Tuple[int, int]:
     return written - one_hour, one_hour
 
 
-def _model_label(model: Any, provider: Any) -> str:
-    """The model with its provider (`anthropic/claude-opus-5-5`) unless the model already names a path; empty without a model."""
-    if not isinstance(model, str) or not model:
-        return ""
-    if isinstance(provider, str) and provider and _MODEL_SEPARATOR not in model:
-        return provider + _MODEL_SEPARATOR + model
-    return model
-
-
 def _request_of(owner: Record, effort: Optional[str]) -> Optional[RequestUsage]:
     """The request an assistant message or a `model_usage` record makes: `owner` holds its `usage`, `model` and `provider`."""
     usage = owner.get("usage")
@@ -205,7 +141,7 @@ def _request_of(owner: Record, effort: Optional[str]) -> Optional[RequestUsage]:
         return None
     written_5m, written_1h = _cache_writes(usage)
     return RequestUsage(
-        model_name=_model_label(owner.get("model"), owner.get("provider")),
+        model_name=model_label(owner.get("model"), owner.get("provider")),
         input_tokens=_tokens(usage, _INPUT_NAMES),
         output_tokens=_tokens(usage, _OUTPUT_NAMES),
         cache_read_tokens=_tokens(usage, _CACHE_READ_NAMES),
@@ -271,7 +207,7 @@ class _Collector:
         self._last_moment: Optional[datetime] = None
         self._effort: Optional[str] = None
         self._count = 0
-        self._events: List[Union[_Opening, _Answer]] = []
+        self._events: List[Union[Opening, _Answer]] = []
         self._latest_copy: Dict[str, int] = {}
 
     def add(self, record: Record) -> None:
@@ -291,7 +227,7 @@ class _Collector:
         elif kind == _CUSTOM_MESSAGE:
             self._note_activity(_entry_time(record))
             if _is_user_custom_message(record):
-                self._events.append(_Opening(_entry_time(record), _prompt_text(record.get("content"))))
+                self._events.append(Opening(_entry_time(record), _prompt_text(record.get("content"))))
         elif kind == _MODEL_USAGE:
             self._note_activity(_entry_time(record))
             self._events.append(_Answer(index, None, _request_of(record, self._effort), False, None, None))
@@ -307,7 +243,7 @@ class _Collector:
         if role == _USER:
             self._note_activity(start)
             if message.get("attribution") != _AGENT_ATTRIBUTION:
-                self._events.append(_Opening(start, _prompt_text(message.get("content"))))
+                self._events.append(Opening(start, _prompt_text(message.get("content"))))
         elif role == _ASSISTANT:
             completed = _completed_time(record, message)
             self._note_activity(start, completed)
@@ -321,34 +257,20 @@ class _Collector:
         else:
             self._note_activity(start)
 
-    def _is_replaced_copy(self, event: Union[_Opening, _Answer]) -> bool:
+    def _is_replaced_copy(self, event: Union[Opening, _Answer]) -> bool:
         """Whether the event is a streamed copy of a response that a later copy replaced."""
         return isinstance(event, _Answer) and event.key is not None and self._latest_copy[event.key] != event.index
 
-    def _kept_events(self) -> List[Union[_Opening, _Answer]]:
+    def _kept_events(self) -> List[Union[Opening, _Answer]]:
         """The events without the streamed copies that a later copy of the same response replaced."""
         return [event for event in self._events if not self._is_replaced_copy(event)]
 
-    def _turns_and_requests(self) -> Tuple[List[_Turn], Tuple[RequestUsage, ...]]:
-        """The turns, each with the answers that fall under its opening, and every request in file order. Answers before the first
-        opening belong to the first turn."""
-        turns: List[_Turn] = []
-        leading: List[_Answer] = []
-        requests: List[RequestUsage] = []
-        for event in self._kept_events():
-            if isinstance(event, _Opening):
-                turns.append(_Turn(event, []))
-                continue
-            if event.request is not None:
-                requests.append(event.request)
-            (turns[-1].answers if turns else leading).append(event)
-        if turns:
-            turns[0].answers[:0] = leading
-        return turns, tuple(requests)
+    def _prompts_and_requests(self) -> Tuple[Tuple[Prompt, ...], Tuple[RequestUsage, ...]]:
+        """The prompts, each with the answers that fall under its opening, and every request in file order."""
+        return group_turns(self._kept_events())
 
     def transcript(self) -> Transcript:
-        turns, requests = self._turns_and_requests()
-        prompts = (turn.to_prompt() for turn in turns)
+        prompts, requests = self._prompts_and_requests()
         header = self._header or {}
         return Transcript(
             header_id=_text(header.get("id")),
@@ -356,7 +278,7 @@ class _Collector:
             project_dir=_text(header.get("cwd")),
             header_moment=_moment(header.get("timestamp")),
             agent_type=self._agent_type,
-            prompts=tuple(prompt for prompt in prompts if prompt is not None),
+            prompts=prompts,
             requests=requests,
             first_moment=self._first_moment,
             last_moment=self._last_moment,
