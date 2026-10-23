@@ -524,7 +524,7 @@ flowchart LR
     - Tests
         - #unit_test — `test_cursor_hooks_json_five_events_exact_braced_command_nothing_after_it_timeout_30` — S57, Cursor part
         - #unit_test — `test_hook_file_is_git_mode_100755` — skipped without `git`
-- [ ] **T-5** — Cursor launchers and hooks, e2e: sh, zsh, fish and `hook.ps1` under pwsh (fish and pwsh in Docker images built at test time), install path with spaces and an apostrophe, stub `py`/`python3`/`python`; Docker run commands recorded with the tests #tester-role
+- [x] **T-5** — Cursor launchers and hooks, e2e: sh, zsh, fish and `hook.ps1` under pwsh (fish and pwsh in Docker images built at test time), install path with spaces and an apostrophe, stub `py`/`python3`/`python`; Docker run commands recorded with the tests #tester-role
     - — · 5.0h
     - needs FE-2, BE-31, BE-33 · completes S21, S34, S56, S2
     - Tests
