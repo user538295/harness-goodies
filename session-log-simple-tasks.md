@@ -561,7 +561,7 @@ flowchart LR
         - #integration_test — `test_fifo_source_listed_unreadable_not_a_regular_file_and_sync_never_hangs` — S62, per reader
 
 ### Phase 14 · Retire the old live-recording stack *(release 2 cutover: built on its own branch, merged into `main` only when every scenario passes except the post-release Windows run; release 1 edits files this phase deletes, so rebase onto the released `main` first)*
-- [ ] **T-7** — Write `skills/session-log/tests/windows-checklist.md` covering every S31 step, incl. the junction case moved out of [test_portability.py](./skills/session-log/tests/test_portability.py) `:78`; first manual-checklist file in the repo, so the style follows the plan's `- [ ]` steps #tester-role
+- [x] **T-7** — Write `skills/session-log/tests/windows-checklist.md` covering every S31 step, incl. the junction case moved out of [test_portability.py](./skills/session-log/tests/test_portability.py) `:78`; first manual-checklist file in the repo, so the style follows the plan's `- [ ]` steps #tester-role
     - — · 3.0h
     - needs BE-33, BE-35 · completes S31
     - Tests

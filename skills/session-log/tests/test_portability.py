@@ -39,13 +39,8 @@ process_identity = load_module("process_identity")
 
 
 def make_directory_link(target, link):
-    """A link to directory ``target``: a symlink, or on Windows a junction (no admin rights needed)."""
-    if WINDOWS:
-        import _winapi
-
-        _winapi.CreateJunction(str(target), str(link))
-    else:
-        os.symlink(target, link, target_is_directory=True)
+    """A symlink to directory ``target``; the Windows junction case lives in windows-checklist.md (S31), because the suite runs on POSIX."""
+    os.symlink(target, link, target_is_directory=True)
 
 
 def claude_project_key(path):
@@ -75,6 +70,7 @@ class PathsafeTests(TemporaryDirectoryTest):
         with self.assertRaises(SystemExit):
             pathsafe.open_directory(str(self.root) + "/a/../b", create=True)
 
+    @unittest.skipIf(WINDOWS, "the Windows junction case runs by hand: windows-checklist.md (S31)")
     def test_open_directory_refuses_a_linked_component(self):
         real = self.root / "real"
         real.mkdir()
