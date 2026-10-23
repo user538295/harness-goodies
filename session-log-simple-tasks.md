@@ -605,7 +605,7 @@ flowchart LR
     - Presentation · 4.0h
     - needs BE-37, T-8 · completes S58
     - Tests
-- [ ] **FE-5** — Docs, handouts: [skill-session-log.html](./handout/skill-session-log.html) and [skill-session-log-hu.html](./handout/skill-session-log-hu.html) (append → rewrite, common report, no `repair`, dependencies, the example and usage-report sections from the C3 layout), [index.html](./handout/index.html) `:334` and [index-hu.html](./handout/index-hu.html) `:334` ("saved at session start or command, only while on") #frontend-role
+- [x] **FE-5** — Docs, handouts: [skill-session-log.html](./handout/skill-session-log.html) and [skill-session-log-hu.html](./handout/skill-session-log-hu.html) (append → rewrite, common report, no `repair`, dependencies, the example and usage-report sections from the C3 layout), [index.html](./handout/index.html) `:334` and [index-hu.html](./handout/index-hu.html) `:334` ("saved at session start or command, only while on") #frontend-role
     - Presentation · 4.0h
     - needs BE-37, T-8 · completes S58
     - Tests
