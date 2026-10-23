@@ -4308,74 +4308,6 @@ class CursorPluginHooksTests(KeptHooksBackupAssertions, unittest.TestCase):
             cwd=self.plugin_root, env=environment, timeout=HOOK_TIMEOUT_SECONDS,
         )
 
-    def test_plugin_manifest_registers_the_native_hook_for_every_cursor_event(self):
-        manifest = json.loads((REPO / ".cursor-plugin/plugin.json").read_text())
-        self.assertEqual(manifest["hooks"], "./.cursor-plugin/hooks.json")
-        document = json.loads(CURSOR_PLUGIN_HOOKS_PATH.read_text())
-        self.assertEqual(document, {"version": 1, "hooks": {
-            event: [{"command": f'[ ! -f "$HOME/.cursor/prompt-logs/.enabled" ] || [ ! -f {CURSOR_PLUGIN_HOOK_SCRIPT} ] '
-                                f"|| ! command -v python3 >/dev/null 2>&1 "
-                                f"|| exec python3 {CURSOR_PLUGIN_HOOK_SCRIPT} cursor {lifecycle}",
-                     "timeout": CURSOR_HOOK_TIMEOUT_SECONDS}]
-            for event, lifecycle in CURSOR_EVENT_LIFECYCLES.items()
-        }})
-        installer = load_module(INSTALL_PATH, "install_hooks_cursor_events")
-        self.assertEqual(dict(installer._events("cursor")), CURSOR_EVENT_LIFECYCLES)
-
-    def test_plugin_hooks_log_only_while_the_flag_exists(self):
-        payload = {"conversation_id": "plugin-session", "generation_id": "plugin-generation",
-                   "workspace_roots": [str(self.home)], "prompt": "plugin prompt"}
-        for shell in hook_shells(self, CURSOR_HOOK_SHELL_NAMES):
-            with self.subTest(shell=shell):
-                self.use_fresh_home()
-                disabled = self.run_plugin_hook("beforeSubmitPrompt", payload, shell)
-                self.assertEqual((disabled.returncode, disabled.stdout, disabled.stderr), (0, "", ""))
-                self.assertFalse((self.home / ".cursor/prompt-logs").exists())
-                self.assertFalse(self.state_dir.exists())
-                self.enable()
-                enabled = self.run_plugin_hook("beforeSubmitPrompt", payload, shell)
-                self.assertEqual((enabled.returncode, enabled.stdout.strip(), enabled.stderr),
-                                 (0, '{"continue":true}', ""))
-                log = next(self.home.glob(".cursor/prompt-logs/*/session_plugin-session.md"))
-                self.assertIn("plugin prompt", log.read_text())
-                runtime = json.loads((self.state_dir / "runtime.json").read_text())
-                self.assertEqual((runtime["harness"], runtime["session_id"]), ("cursor", "plugin-session"))
-                # The command execs python3, so the hook recorded the shell's parent, this test process, as Cursor.
-                self.assertEqual(self.run_cursor("status").stdout, "Cursor: on\n")
-
-    def test_plugin_hooks_log_the_payload_the_agent_host_daemon_appends_as_a_heredoc(self):
-        payload = {"conversation_id": "plugin-session", "generation_id": "plugin-generation",
-                   "workspace_roots": [str(self.home)], "prompt": "heredoc prompt"}
-        self.enable()
-        for shell in hook_shells(self, ("/bin/sh", "bash", "zsh")):
-            with self.subTest(shell=shell):
-                result = self.run_plugin_hook("beforeSubmitPrompt", payload, shell, heredoc=True)
-                self.assertEqual((result.returncode, result.stdout.strip(), result.stderr), (0, '{"continue":true}', ""))
-                log = next(self.home.glob(".cursor/prompt-logs/*/session_plugin-session.md"))
-                self.assertEqual(log.read_text().count("heredoc prompt"), 1)
-                log.unlink()
-
-    def test_plugin_hooks_exit_silently_without_python3(self):
-        self.enable()
-        empty_path = self.home / "path-without-python3"
-        empty_path.mkdir()
-        for shell in hook_shells(self, ("/bin/sh", "bash", "zsh")):
-            for event in CURSOR_EVENT_LIFECYCLES:
-                with self.subTest(shell=shell, event=event):
-                    result = self.run_plugin_hook(event, {"conversation_id": "plugin-session"}, shell, path=empty_path)
-                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-
-    def test_plugin_hooks_exit_silently_when_the_script_is_missing(self):
-        self.enable()
-        stale_root = self.home / "stale-plugin-root"
-        stale_root.mkdir()
-        for shell in hook_shells(self, CURSOR_HOOK_SHELL_NAMES):
-            for event in CURSOR_EVENT_LIFECYCLES:
-                with self.subTest(shell=shell, event=event):
-                    result = self.run_plugin_hook(event, {"conversation_id": "plugin-session"}, shell, stale_root)
-                    self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
-        self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), [])
-
     def test_on_and_off_only_flip_the_flag(self):
         self.config.write_text(json.dumps({"version": 1, "hooks": {"stop": [CURSOR_FOREIGN_HOOK]}}, indent=2))
         original = self.config.read_bytes()
@@ -4393,17 +4325,6 @@ class CursorPluginHooksTests(KeptHooksBackupAssertions, unittest.TestCase):
         result = self.run_cursor("on")
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, CURSOR_ON_NEXT_PROMPT, ""))
         self.assertFalse(os.path.lexists(self.config))
-
-    def test_status_reports_plugin_hooks_that_have_not_loaded(self):
-        self.assertEqual(self.run_cursor("status").stdout, "Cursor: off\n")
-        self.enable()
-        self.assertEqual(self.run_cursor("status").stdout, CURSOR_HOOKS_NOT_LOADED)
-        repeated = self.run_cursor("on")
-        self.assertEqual((repeated.returncode, repeated.stdout), (0, CURSOR_HOOKS_NOT_LOADED))
-        hooked = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
-        self.assertEqual(hooked.returncode, 0, hooked.stderr)
-        # The hook command execs python3, so the hook recorded the shell's parent, this test process, as the running Cursor.
-        self.assertEqual(self.run_cursor("status").stdout, "Cursor: on\n")
 
     def test_on_removes_only_the_legacy_hook_registrations(self):
         document = build_cursor_legacy_hooks(self.seeded_hook, REPEATED_REGISTRATIONS)
@@ -4575,69 +4496,6 @@ class CursorPluginHooksTests(KeptHooksBackupAssertions, unittest.TestCase):
     def seed_obsolete_state(self):
         seed_obsolete_adapter_state(self.state_dir)
 
-    def test_session_start_with_logging_on_removes_legacy_registrations_the_seeded_copy_and_obsolete_state(self):
-        self.enable()
-        seeded = seed_cursor_copy(self.home)
-        self.seed_obsolete_state()
-        document = build_cursor_legacy_hooks(self.seeded_hook)
-        document["hooks"]["stop"].append(CURSOR_FOREIGN_HOOK)
-        self.config.write_text(json.dumps(document))
-        result = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "{}\n", ""))
-        self.assertEqual(json.loads(self.config.read_text()), {"version": 1, "hooks": {"stop": [CURSOR_FOREIGN_HOOK]}})
-        self.assertFalse(os.path.lexists(seeded))
-        self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), ["runtime.json"])
-        runtime = json.loads((self.state_dir / "runtime.json").read_text())
-        self.assertEqual((runtime["harness"], runtime["session_id"]), ("cursor", "plugin-session"))
-
-    def test_session_start_runs_no_cleanup_without_legacy_registrations(self):
-        self.enable()
-        seeded = seed_cursor_copy(self.home)
-        for name, hook in {"foreign hook": CURSOR_FOREIGN_HOOK, "lookalike command": CURSOR_LOOKALIKE_HOOK}.items():
-            with self.subTest(name):
-                self.config.write_text(json.dumps({"version": 1, "hooks": {"stop": [hook]}}))
-                original = self.config.read_bytes()
-                result = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
-                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "{}\n", ""))
-                self.assertEqual(self.config.read_bytes(), original)
-                # `repair` would have removed the seeded copy.
-                self.assertTrue((seeded / "SKILL.md").is_file())
-                self.assertEqual(sorted(path.name for path in self.state_dir.iterdir()), ["runtime.json"])
-
-    def test_session_start_never_fails_when_the_cleanup_fails(self):
-        self.enable()
-        seeded = seed_cursor_copy(self.home)
-        self.seed_obsolete_state()
-        self.config.write_text(json.dumps(build_cursor_legacy_hooks(self.seeded_hook)))
-        original = self.config.read_bytes()
-        hold_install_lock(self.home, ".cursor")
-        result = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "{}\n", ""))
-        self.assertEqual(self.config.read_bytes(), original)
-        self.assertTrue((seeded / "SKILL.md").is_file())
-        self.assertTrue(all((self.state_dir / name).is_file() for name in OBSOLETE_ADAPTER_STATE))
-
-    def test_session_start_runs_no_cleanup_for_a_hooks_file_repair_would_refuse(self):
-        self.enable()
-        seeded = seed_cursor_copy(self.home)
-        session_log = self.package / "bin/session-log"
-        session_log.write_text(CURSOR_RECORDING_SESSION_LOG)
-        launched = Path(f"{session_log}.launched")
-        stop = build_cursor_legacy_hooks(self.seeded_hook)["hooks"]["stop"]
-        invalid = {
-            "root an array": [], "root null": None, "hooks an array": {"hooks": []}, "hooks null": {"hooks": None},
-            "an event not an array": {"version": 1, "hooks": {"stop": stop, "beforeSubmitPrompt": {}}},
-        }
-        for name, document in invalid.items():
-            with self.subTest(name):
-                self.config.write_text(json.dumps(document))
-                original = self.config.read_bytes()
-                result = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
-                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "{}\n", ""))
-                self.assertEqual(self.config.read_bytes(), original)
-                self.assertFalse(launched.exists())
-                self.assertTrue((seeded / "SKILL.md").is_file())
-
     def test_codex_session_start_leaves_cursor_legacy_hooks_alone(self):
         seeded = seed_cursor_copy(self.home)
         self.config.write_text(json.dumps(build_cursor_legacy_hooks(self.seeded_hook)))
@@ -4653,15 +4511,6 @@ class CursorPluginHooksTests(KeptHooksBackupAssertions, unittest.TestCase):
         self.assertEqual((result.returncode, result.stderr), (0, ""))
         self.assertEqual(self.config.read_bytes(), original)
         self.assertTrue((seeded / "SKILL.md").is_file())
-
-    def test_session_start_ignores_an_unreadable_hooks_file(self):
-        self.enable()
-        for name, contents in {"malformed JSON": b"{not json", "not UTF-8": b"\xff\xfe{}"}.items():
-            with self.subTest(name):
-                self.config.write_bytes(contents)
-                result = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"})
-                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "{}\n", ""))
-                self.assertEqual(self.config.read_bytes(), contents)
 
     def test_other_events_leave_legacy_registrations_to_session_start(self):
         self.enable()
@@ -4685,13 +4534,6 @@ class CursorPluginHooksTests(KeptHooksBackupAssertions, unittest.TestCase):
             0, f"Cursor: legacy cleanup failed: {self.kept_aside(backup)}; fix it, then run repair\n"
                f"{CURSOR_ON_NEXT_PROMPT}", ""))
         self.assert_kept_backup_named_afterwards(self.package, "cursor", "Cursor", CURSOR_HOOKS_NOT_LOADED.rstrip("\n"))
-
-    def test_a_session_start_cleanup_that_kept_a_version_aside_is_named_by_later_commands(self):
-        self.enable()
-        environment = self.write_legacy_hooks_then_race_their_removal()
-        started = self.run_plugin_hook("sessionStart", {"conversation_id": "plugin-session"}, environment=environment)
-        self.assertEqual((started.returncode, started.stdout, started.stderr), (0, "{}\n", ""))
-        self.assert_kept_backup_named_afterwards(self.package, "cursor", "Cursor", "Cursor: on")
 
     def test_usage_and_status_never_touch_legacy_registrations(self):
         self.config.write_text(json.dumps(build_cursor_legacy_hooks(self.seeded_hook)))

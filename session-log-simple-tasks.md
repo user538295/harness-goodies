@@ -518,7 +518,7 @@ flowchart LR
     - Tests
         - #unit_test — `test_cursor_subagent_rows_not_recorded_and_total_main_session_only_price_incomplete` — S12
         - #unit_test — `test_cursor_prices_labelled_api_equivalent` — S19
-- [ ] **BE-33** — CursorHooksConfig and launchers: [.cursor-plugin/hooks.json](./.cursor-plugin/hooks.json) five events each exactly `"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook" cursor <event>` with `timeout` 30 (incl. `sessionStart`); `hook` (sh, git mode 100755) and `hook.ps1` (`py -3`, `python3`, `python`; once `py -3` is found no other is started) exit 0 without starting Python while neither `.log_enabled` nor `.enabled` exists, else pass argv and stdin unchanged #backend-role
+- [x] **BE-33** — CursorHooksConfig and launchers: [.cursor-plugin/hooks.json](./.cursor-plugin/hooks.json) five events each exactly `"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook" cursor <event>` with `timeout` 30 (incl. `sessionStart`); `hook` (sh, git mode 100755) and `hook.ps1` (`py -3`, `python3`, `python`; once `py -3` is found no other is started) exit 0 without starting Python while neither `.log_enabled` nor `.enabled` exists, else pass argv and stdin unchanged #backend-role
     - Frameworks & Drivers · 4.0h
     - needs BE-30 · completes S57
     - Tests

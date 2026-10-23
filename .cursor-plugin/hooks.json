@@ -3,31 +3,31 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "[ ! -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || [ ! -f \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" ] || ! command -v python3 >/dev/null 2>&1 || exec python3 \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" cursor session-start",
+        "command": "\"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook\" cursor sessionStart",
         "timeout": 30
       }
     ],
     "beforeSubmitPrompt": [
       {
-        "command": "[ ! -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || [ ! -f \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" ] || ! command -v python3 >/dev/null 2>&1 || exec python3 \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" cursor user-prompt",
+        "command": "\"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook\" cursor beforeSubmitPrompt",
         "timeout": 30
       }
     ],
     "afterAgentResponse": [
       {
-        "command": "[ ! -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || [ ! -f \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" ] || ! command -v python3 >/dev/null 2>&1 || exec python3 \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" cursor assistant-response",
+        "command": "\"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook\" cursor afterAgentResponse",
         "timeout": 30
       }
     ],
     "subagentStop": [
       {
-        "command": "[ ! -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || [ ! -f \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" ] || ! command -v python3 >/dev/null 2>&1 || exec python3 \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" cursor subagent-stop",
+        "command": "\"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook\" cursor subagentStop",
         "timeout": 30
       }
     ],
     "stop": [
       {
-        "command": "[ ! -f \"$HOME/.cursor/prompt-logs/.enabled\" ] || [ ! -f \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" ] || ! command -v python3 >/dev/null 2>&1 || exec python3 \"$CURSOR_PLUGIN_ROOT/skills/session-log/adapters/native/session_log_hook.py\" cursor stop",
+        "command": "\"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook\" cursor stop",
         "timeout": 30
       }
     ]
