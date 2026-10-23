@@ -21,7 +21,7 @@ HOOK_ARGUMENT = "hook"
 LATEST_FLAG = "--latest"
 OPTION_PREFIX = "--"
 COMMANDS = ("on", "off", "status", "usage")
-SUPPORTED_HARNESS_ROOTS = {"claude": ".claude", "codex": ".codex"}
+SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "omp": (".omp", "agent")}
 LOG_FOLDER_NAME = "prompt-logs"
 PRICE_FILE_NAME = "prices.json"
 SKILL_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -114,6 +114,9 @@ def _build_reader(harness, root):
     if harness == "codex":
         from sessionlog.codex_reader import CodexReader
         return CodexReader(root)
+    if harness == "omp":
+        from sessionlog.omp_reader import OmpReader
+        return OmpReader(root)
     raise RuntimeFailure("no reader for harness '%s'" % harness)
 
 
@@ -156,7 +159,7 @@ def _compose(harness, environment):
     from pathlib import Path
 
     path_module = environment.path_module
-    root = path_module.join(_home_folder(environment), SUPPORTED_HARNESS_ROOTS[harness])
+    root = path_module.join(_home_folder(environment), *SUPPORTED_HARNESS_ROOTS[harness])
     log_root = path_module.join(root, LOG_FOLDER_NAME)
     price_book = PriceFile(Path(PRICE_FILE_PATH))
     archive = LogUsageWriter(log_root, environment.to_local, path_module)

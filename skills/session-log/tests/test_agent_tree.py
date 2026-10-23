@@ -2,7 +2,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from sessionlog.agent_tree import build_tree, depths_of, parent_indexes
+from sessionlog.agent_tree import build_tree, depths_of, nodes_entering_a_loop, parent_indexes
 from sessionlog.model import SubAgent
 
 BASE = datetime(2026, 9, 11, 8, 0, 0, tzinfo=timezone.utc)
@@ -25,6 +25,26 @@ class ParentIndexesTest(unittest.TestCase):
 
     def test_an_agent_that_names_itself_stays_at_the_top_level(self):
         self.assertEqual({}, parent_indexes(["a"], ["a"]))
+
+
+class NodesEnteringALoopTest(unittest.TestCase):
+    def test_the_members_of_a_loop_a_node_that_is_its_own_parent_and_every_node_hanging_from_one_enter_a_loop(self):
+        parent_of = {"a": "b", "b": "a", "below": "a", "deeper": "below", "self": "self", "top": None, "chain": "top", "lost": "gone"}
+        self.assertEqual({"a", "b", "below", "deeper", "self"}, nodes_entering_a_loop(parent_of))
+
+    def test_a_longer_loop_is_found_whatever_the_order_of_the_nodes(self):
+        for rotation in range(4):
+            with self.subTest(rotation=rotation):
+                names = "abcd"[rotation:] + "abcd"[:rotation]
+                self.assertEqual(set("abcd"), nodes_entering_a_loop({name: "abcd"[("abcd".index(name) + 1) % 4] for name in names}))
+
+    def test_a_forest_without_a_loop_and_no_nodes_at_all_have_none(self):
+        self.assertEqual(set(), nodes_entering_a_loop({"a": None, "b": "a", "c": "b", "d": "missing"}))
+        self.assertEqual(set(), nodes_entering_a_loop({}))
+
+    def test_a_node_judged_once_gives_its_verdict_to_a_chain_that_ends_at_it(self):
+        parent_of = {"x": "y", "y": "x", **{"n%d" % number: "n%d" % (number + 1) for number in range(50)}, "n50": "x"}
+        self.assertEqual({"x", "y"} | {"n%d" % number for number in range(51)}, nodes_entering_a_loop(parent_of))
 
 
 class DepthAndTreeTest(unittest.TestCase):

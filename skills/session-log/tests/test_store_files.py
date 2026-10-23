@@ -109,6 +109,53 @@ class RegularFileUnitTest(StoreFilesTestCase):
                 self.assertIsNone(FILES.regular_file_unit(StatEntry("/x/a.jsonl", file_stat), "k", _fingerprint))
 
 
+class CollectFilesTest(StoreFilesTestCase):
+    def _tree(self):
+        """`a.jsonl`, `sub/b.jsonl` and `sub/deeper/c.jsonl`, with files and folders that are no `.jsonl` file beside them."""
+        paths = [self._write("a.jsonl")]
+        for name in ("sub", os.path.join("sub", "deeper")):
+            os.makedirs(os.path.join(self.folder, name), exist_ok=True)
+        paths += [self._write(os.path.join("sub", "b.jsonl")), self._write(os.path.join("sub", "deeper", "c.jsonl"))]
+        self._write("notes.txt")
+        self._write("a.jsonl.gz")
+        os.mkdir(os.path.join(self.folder, "dir.jsonl"))
+        return paths
+
+    def test_the_files_with_the_suffix_at_any_depth_are_units_keyed_by_path_and_nothing_else_is(self):
+        paths = self._tree()
+        units, problems = FILES.collect_files(self.folder, ".jsonl", _fingerprint)
+        self.assertEqual((sorted(paths), []), (sorted(unit.key for unit in units), problems))
+        self.assertEqual({"3:%d" % os.stat(path).st_mtime_ns for path in paths}, {unit.fingerprint for unit in units})
+
+    @unittest.skipIf(os.name == "nt", "needs POSIX symlinks")
+    def test_a_link_to_a_folder_is_not_walked_but_a_link_to_a_file_is_listed_and_a_dangling_one_is_not(self):
+        paths = self._tree()
+        os.symlink(self.folder, os.path.join(self.folder, "loop"))
+        target = self._write("target.txt")
+        os.symlink(target, os.path.join(self.folder, "link.jsonl"))
+        os.symlink(os.path.join(self.folder, "nowhere"), os.path.join(self.folder, "dangling.jsonl"))
+        units, problems = FILES.collect_files(self.folder, ".jsonl", _fingerprint)
+        self.assertEqual((sorted(paths + [os.path.join(self.folder, "link.jsonl")]), []), (sorted(unit.key for unit in units), problems))
+
+    def test_a_missing_folder_gives_nothing_and_an_unlistable_one_is_a_problem_while_the_rest_is_collected(self):
+        paths = self._tree()
+        self.assertEqual(([], []), FILES.collect_files(os.path.join(self.folder, "missing"), ".jsonl", _fingerprint))
+        locked = os.path.join(self.folder, "sub", "deeper")
+        with scandir_wrapping(fail={locked: PermissionError()}):
+            units, problems = FILES.collect_files(self.folder, ".jsonl", _fingerprint)
+        self.assertEqual((sorted(paths[:2]), [UnreadableSource(Harness.OMP, locked, CANNOT_BE_LISTED_REASON)]), (sorted(unit.key for unit in units), problems))
+
+    def test_a_file_that_cannot_be_examined_is_a_problem_under_its_path_and_a_vanished_one_or_folder_is_skipped(self):
+        paths = self._tree()
+        locked = FakeEntry(os.path.join(self.folder, "locked.jsonl"), PermissionError())
+        gone_file = FakeEntry(os.path.join(self.folder, "gone.jsonl"), FileNotFoundError())
+        gone_folder = FakeEntry(os.path.join(self.folder, "gone"), FileNotFoundError())
+        denied_folder = FakeEntry(os.path.join(self.folder, "denied"), PermissionError())
+        with scandir_wrapping({self.folder: [locked, gone_file, gone_folder, denied_folder]}):
+            units, problems = FILES.collect_files(self.folder, ".jsonl", _fingerprint)
+        self.assertEqual((sorted(paths), sorted([locked.path, denied_folder.path])), (sorted(unit.key for unit in units), sorted(p.path for p in problems)))
+
+
 class ParseFileTest(StoreFilesTestCase):
     @staticmethod
     def _parse(lines):

@@ -1,6 +1,6 @@
 """Codex adapter of the C2 reader port: finds rollouts under `<root>/sessions/**` and `<root>/archived_sessions/**` as
 `*.jsonl` or compressed `*.jsonl.zst`, and maps file-system problems to unreadable sources; `codex_rollout` parses what is
-inside and `codex_subagents` makes the threads, nests the child ones and splits an orphan family.
+inside, `codex_subagents` makes the threads and `agent_family` nests the child ones and splits an orphan family.
 
 A unit's key is the rollout's path without `.zst` and its fingerprint is the mtime alone, because compressing a rollout keeps
 its mtime (codex `rollout/src/compression.rs`): a rollout compressed after a sync is neither a new nor a changed unit.
@@ -13,8 +13,9 @@ listed unreadable (`PARENT_UNREADABLE_REASON`) instead of being archived as orph
 import os
 from typing import AbstractSet, Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, TextIO, Tuple, Union
 
+from .agent_family import Thread, nest_threads, split_orphan_family
 from .codex_rollout import Rollout, RolloutMeta, parse_rollout, parse_session_meta
-from .codex_subagents import Thread, copy_rank, nest_threads, split_orphan_family, thread_of_rollout
+from .codex_subagents import copy_rank, thread_of_rollout
 from .model import Harness, Session, is_safe_id
 from .reader_port import (UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key,
                           root_id_of)

@@ -1,10 +1,12 @@
-"""Pure nesting of the sub-agents of one session, shared by the harness readers: who is whose parent, how deep, and the tree
-built deepest first; no file access."""
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+"""Pure nesting of the sub-agents of one session, shared by the harness readers: who is whose parent, which parents loop, how deep,
+and the tree built deepest first; no file access."""
+from typing import Callable, Dict, Hashable, List, Optional, Sequence, Set, Tuple, TypeVar
 
 from .model import SubAgent
 
 UNKNOWN_TYPE = "unknown"
+
+_Node = TypeVar("_Node", bound=Hashable)
 
 
 def _is_in_parent_loop(start: int, parent_of: Dict[int, int]) -> bool:
@@ -19,6 +21,24 @@ def _is_in_parent_loop(start: int, parent_of: Dict[int, int]) -> bool:
         seen.add(node)
         node = parent_of.get(node)
     return False
+
+
+def nodes_entering_a_loop(parent_of: Dict[_Node, Optional[_Node]]) -> Set[_Node]:
+    """The nodes whose chain of parents comes back to a node already passed: those in a loop (also a node that is its own parent) and
+    every node hanging from one. `parent_of` names the parent of each node; a parent that is no node of it, or None, ends a chain.
+    Each node is judged once: a chain ends at a node already judged."""
+    verdict: Dict[_Node, bool] = {}
+    for start in parent_of:
+        path: List[_Node] = []
+        passed: Set[_Node] = set()
+        node: Optional[_Node] = start
+        while node in parent_of and node not in verdict and node not in passed:
+            path.append(node)
+            passed.add(node)
+            node = parent_of[node]
+        enters_loop = node in passed or verdict.get(node, False)
+        verdict.update((member, enters_loop) for member in path)
+    return {node for node, enters_loop in verdict.items() if enters_loop}
 
 
 def parent_indexes(ids: Sequence[str], parent_ids: Sequence[Optional[str]]) -> Dict[int, int]:

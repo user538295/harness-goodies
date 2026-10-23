@@ -471,7 +471,7 @@ flowchart LR
         - #integration_test — `test_compressed_rollout_keeps_key_and_fingerprint_and_no_zst_file_opened_twice` — S47, opens counted by wrapping `compression.zstd.open`
 
 ### Phase 10 · Log OMP sessions
-- [ ] **BE-27** — OmpReader: `sessions/*.jsonl` and `archive/sessions/*.jsonl.gz`, root id = stem after the first `_`, `parentSession` linked by stem in either folder, orphan child labelled `sub-agent of <id> (parent not found)`, parent cycle listed unreadable, reply = last `stopReason=="stop"` message with `completedAt`, effort from `thinking_level_change`, recorded cost, `custom_message` prompts per Q25, moved files read at most once; ported from [session_log_usage.ts](./skills/session-log/adapters/omp/session_log_usage.ts); wired into the composition root #backend-role
+- [x] **BE-27** — OmpReader: `sessions/*.jsonl` and `archive/sessions/*.jsonl.gz`, root id = stem after the first `_`, `parentSession` linked by stem in either folder, orphan child labelled `sub-agent of <id> (parent not found)`, parent cycle listed unreadable, reply = last `stopReason=="stop"` message with `completedAt`, effort from `thinking_level_change`, recorded cost, `custom_message` prompts per Q25, moved files read at most once; ported from [session_log_usage.ts](./skills/session-log/adapters/omp/session_log_usage.ts); wired into the composition root #backend-role
     - Interface Adapters · 5.0h
     - needs BE-9, BE-14 · completes S10, S42, S47
     - Tests

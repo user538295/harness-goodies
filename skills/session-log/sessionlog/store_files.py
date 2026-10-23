@@ -1,5 +1,6 @@
 """What every reader of a file-based harness store shares: directory and file queries that map file-system problems to
-unreadable sources, the unit of a regular file, and the open/decode/parse mapping of one file. Nothing here knows a harness's
+unreadable sources, the unit of a regular file, the walk of a folder tree for the units of one file suffix (for the readers
+whose files sit at any depth), and the open/decode/parse mapping of one file. Nothing here knows a harness's
 folder layout or record format."""
 import os
 from datetime import datetime, timezone
@@ -77,6 +78,34 @@ class StoreFiles:
         except (OverflowError, OSError, ValueError):
             return None
         return SourceUnit(key=key, fingerprint=fingerprint_of(file_stat), modified_at=modified_at)
+
+    def collect_files(self, folder: str, suffix: str, fingerprint_of: Callable[[os.stat_result], str]
+                      ) -> Tuple[List[SourceUnit], List[UnreadableSource]]:
+        """The units of the regular files whose names end in `suffix`, anywhere below `folder`, keyed by path, and the problems met on
+        the way. A link or junction to a folder is not walked into (no tree is walked twice or in a loop), nor is a folder named like
+        a file; a folder or file that vanished is skipped, and a folder that cannot be listed is a problem."""
+        units: List[SourceUnit] = []
+        problems: List[UnreadableSource] = []
+        pending = [folder]
+        while pending:
+            listing = self.list_dir(pending.pop())
+            if isinstance(listing, UnreadableSource):
+                problems.append(listing)
+                continue
+            for entry in listing:
+                if entry.name.endswith(suffix):
+                    source = self.regular_file_unit(entry, entry.path, fingerprint_of)
+                    if isinstance(source, SourceUnit):
+                        units.append(source)
+                    elif source:
+                        problems.append(source)
+                    continue
+                is_dir = self.is_real_dir(entry)
+                if isinstance(is_dir, UnreadableSource):
+                    problems.append(is_dir)
+                elif is_dir:
+                    pending.append(entry.path)
+        return units, problems
 
     def parse_file(self, path: str, parse: Callable[[Iterable[str]], _P], opener: FileOpener = PLAIN_FILES) -> Union[_P, UnreadableSource]:
         """What `parse` makes of the file's lines, or the unreadable source the file is. A problem is reported under `path`, the
