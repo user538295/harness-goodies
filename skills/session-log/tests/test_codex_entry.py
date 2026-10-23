@@ -132,5 +132,41 @@ class CodexEntryTest(CodexEntryTestCase):
         self.assertEqual(2, len(self.archived_files(".md")))
 
 
+class CodexLatestEntryTest(CodexEntryTestCase):
+    """`usage` without a target (S37): once synced, the session with the newest prompt, else the newest activity, among root sessions."""
+
+    def write_rollout(self, session_id, at, prompt_at=None, parent=None):
+        """A rollout of `session_id` started at `at` (a UTC timestamp text) with one prompt at `prompt_at`; a `parent` makes it a sub-agent."""
+        payload = {"id": session_id, "session_id": parent or session_id, "timestamp": at, "cwd": CWD}
+        if parent:
+            payload.update(parent_thread_id=parent, source={"subagent": {"thread_spawn": {"parent_thread_id": parent, "depth": 1}}})
+        records = [{"timestamp": at, "type": "session_meta", "payload": payload}]
+        if prompt_at:
+            records.append({"timestamp": prompt_at, "type": "event_msg", "payload": {"type": "item_completed", "item": {
+                "type": "UserMessage", "content": [{"type": "text", "text": "prompt of " + session_id}]}}})
+        with open(os.path.join(self.day, "rollout-%s-%s.jsonl" % (at[:19].replace(":", "-"), session_id)), "w", encoding="utf-8") as handle:
+            handle.write("".join(json.dumps(record) + "\n" for record in records))
+
+    def synced_usage_header(self):
+        self.assertEqual(0, self.run_main(["codex", "on"])[0])
+        code, stdout, stderr = self.run_main(["codex", "usage"])
+        self.assertEqual((0, ""), (code, stderr))
+        return stdout.splitlines()[0]
+
+    def test_the_newest_prompt_wins_over_a_newer_start_a_promptless_session_and_a_newer_sub_agent_prompt(self):
+        streaming = "1a00000c-0000-7000-8000-00000000000c"
+        self.write_rollout(streaming, "2026-09-10T08:00:00.000Z", prompt_at="2026-09-12T10:00:00.000Z")  # old start, newest prompt
+        self.write_rollout(OTHER_ID, "2026-09-12T08:00:00.000Z", prompt_at="2026-09-12T08:00:01.000Z")  # newer start, older prompt
+        self.write_rollout("1a00000a-0000-7000-8000-00000000000a", "2026-09-13T08:00:00.000Z")  # newest activity, no prompt
+        self.write_rollout("1a00000b-0000-7000-8000-00000000000b", "2026-09-14T08:00:00.000Z", prompt_at="2026-09-14T08:00:01.000Z", parent=OTHER_ID)
+        self.assertEqual("session: %s" % streaming, self.synced_usage_header())
+
+    def test_without_any_prompt_the_newest_activity_wins_whatever_the_ids(self):
+        newest = "1a00000a-0000-7000-8000-00000000000a"
+        self.write_rollout(newest, "2026-09-12T08:00:00.000Z")
+        self.write_rollout("1a00000b-0000-7000-8000-00000000000b", "2026-09-10T08:00:00.000Z")
+        self.assertEqual("session: %s" % newest, self.synced_usage_header())
+
+
 if __name__ == "__main__":
     unittest.main()

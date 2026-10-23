@@ -565,7 +565,7 @@ flowchart LR
     - — · 3.0h
     - needs BE-33, BE-35 · completes S31
     - Tests
-- [ ] **BE-37** — Remove the old stack after porting: `bin/`, `lib/`, `install.sh`, `adapters/claude`, `adapters/native`, `adapters/codex`, `adapters/cursor`, `adapters/omp`, `adapters/opencode` under `skills/session-log/` (the plan's In Scope shorthand `omp/` and `opencode/` means these adapter directories, per the brief's Release 2 list), `test_universal_session_log.sh`, `test_prompt_log_hooks.sh`, both restart-status tests, `test_python_adapters.py`, `test_portability.py`, `test_prompt_log_usage.sh` and the `fixtures/pre_plugin_claude_scripts` blobs; first audit that every regression listed in the plan's Backend "Tests" item has landed (S37, S40, S41, S52, S53, S63, S62, S51, S39, S11, S42, S64) #backend-role
+- [x] **BE-37** — Remove the old stack after porting: `bin/`, `lib/`, `install.sh`, `adapters/claude`, `adapters/native`, `adapters/codex`, `adapters/cursor`, `adapters/omp`, `adapters/opencode` under `skills/session-log/` (the plan's In Scope shorthand `omp/` and `opencode/` means these adapter directories, per the brief's Release 2 list), `test_universal_session_log.sh`, `test_prompt_log_hooks.sh`, both restart-status tests, `test_python_adapters.py`, `test_portability.py`, `test_prompt_log_usage.sh` and the `fixtures/pre_plugin_claude_scripts` blobs; first audit that every regression listed in the plan's Backend "Tests" item has landed (S37, S40, S41, S52, S53, S63, S62, S51, S39, S11, S42, S64) #backend-role
     - Frameworks & Drivers · 3.0h
     - needs T-7, BE-13, BE-18, BE-20, BE-22, BE-23, BE-25, BE-26, BE-29, BE-32, BE-33, BE-35, BE-36 · completes S58
     - Tests

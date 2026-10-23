@@ -120,6 +120,16 @@ class OmpEntryTest(OmpEntryTestCase):
         self.assertIn(TOTAL_TOKENS, stdout)
         self.assertFalse(os.path.exists(self.log_root))
 
+    def test_usage_id_is_the_session_id_and_a_sub_agent_id_or_the_whole_stem_names_no_session(self):
+        self.run_main(["omp", "on"])
+        (saved,) = self.archived_files(".usage.txt")
+        self.assertEqual((0, read_text(saved), ""), self.run_main(["omp", "usage", FIXTURE_ROOT_ID]))
+        self.assertEqual((0, read_text(saved), ""), self.run_main(["omp", "usage", FIXTURE_ROOT_ID[:8]]))
+        for target in (FIXTURE_ROOT_STEM, FIXTURE_CHILD_ID):
+            code, stdout, stderr = self.run_main(["omp", "usage", target])
+            self.assertEqual((1, ""), (code, stdout), target)
+            self.assertIn("no session has the id '%s'" % target, stderr)
+
     def test_an_omp_command_reads_only_the_omp_root_and_writes_under_it(self):
         project = os.path.join(self.home, ".claude", "projects", "-work-proj")
         os.makedirs(project)

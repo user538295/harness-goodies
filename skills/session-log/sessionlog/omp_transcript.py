@@ -1,6 +1,6 @@
 """Pure parsing of an OMP session transcript (its JSON lines) into the session header, the prompts with their replies and requests
 and the times of its activity; no file access. Unknown record types, lines that do not parse and records of a known type whose
-parts are not what is expected are skipped without a report. Ported from the old `adapters/omp/session_log_usage.ts`.
+parts are not what is expected are skipped without a report.
 
 The header is the first `session` record, wherever it stands (a `title` record may precede it). Prompts are `message` records
 whose `message.role` is `user` and whose `attribution` is not `agent` (a sub-agent's task text is such an agent message), and
@@ -14,7 +14,7 @@ Requests are the assistant `message` records that carry a `usage` object and the
 makes beside the conversation); a request belongs to the prompt it falls under, and those before the first prompt to the first.
 Streamed copies of one response (the same `responseId`, else `messageId`, `id` or `timestamp` of the message) count once, as the
 last copy, which also decides the prompt the response falls under. Tokens are OMP's `input`, `output`, `cacheRead` and `cacheWrite`
-(the camel-case and snake-case spellings of the old adapter are read too), the recorded cost is `usage.cost.total` (or a plain
+(the camel-case and snake-case spellings are read too), the recorded cost is `usage.cost.total` (or a plain
 `usage.cost`), and cache writes split into 1h and 5m by `usage.cttl.ephemeral1h`. Effort is the last non-empty
 `thinking_level_change.thinkingLevel`, carried forward, unless the message names its own `thinkingLevel` or `effort`. A reasoning
 count is not kept apart: the model has no field for it.

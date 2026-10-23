@@ -2,7 +2,7 @@
 and the end of its activity; no database access. The rows are `(type, data text)` pairs in `seq` order. A row whose `data` is no JSON
 object is skipped without a report, and so is an assistant row without a `tokens` object as a request (it still ends a turn and carries
 a reply). Rows of a type this reader does not use (`system`, `synthetic`, `shell`, `compaction`, `idle`, `model-switched`) open no
-prompt and make no request, but their times still count as activity. Ported from the old `adapters/opencode/session_log_usage.sh`.
+prompt and make no request, but their times still count as activity.
 
 A `user` row opens a prompt: its text is `data.text` and its time `data.time.created` (epoch milliseconds); a prompt with no usable time
 is dropped with its replies and the requests under it, as in the other readers (`Transcript.requests`, which a sub-agent

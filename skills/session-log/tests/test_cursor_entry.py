@@ -79,6 +79,22 @@ class CursorEntryTest(CursorEntryTestCase):
         self.assertEqual((0, ""), (code, stderr))
         self.assertIn("second prompt", self.read_text(self.archived_files(".md")[0]))
 
+    def test_usage_from_a_project_subfolder_reports_the_nearest_parent_conversation_not_the_newest_one(self):
+        self.install_conversation()
+        for conversation, root, seconds in (("conv-2", "/work/other", 20), ("conv-3", "/work", 30)):  # newer, one outside and one above /work/proj
+            self.record("beforeSubmitPrompt", seconds, prompt_input("g9", "prompt", conversation_id=conversation, workspace_roots=[root]),
+                        conversation=conversation)
+            self.record("afterAgentResponse", seconds + 1, response_input("g9", "reply", conversation_id=conversation), conversation=conversation)
+            self.record("stop", seconds + 2, stop_input("g9", conversation_id=conversation, **TOKENS), conversation=conversation)
+        self.run_main(["cursor", "on"])
+        self.assertEqual(3, len(self.archived_files(".usage.txt")))
+        (proj_report,) = [path for path in self.archived_files(".usage.txt") if "conv-1" in path]
+        code, stdout, stderr = self.run_main(["cursor", "usage"], get_cwd=lambda: "/work/proj/src/deep")
+        self.assertEqual((0, ""), (code, stderr))
+        self.assertEqual(self.read_text(proj_report), stdout)
+        self.assertEqual((1, "", "session-log: no session for this project (/elsewhere/nothing)\n"),
+                         self.run_main(["cursor", "usage"], get_cwd=lambda: "/elsewhere/nothing"))
+
     def test_usage_of_a_conversation_never_archived_is_computed_from_its_records(self):
         self.install_conversation()
         code, stdout, stderr = self.run_main(["cursor", "usage", "conv-1"])
