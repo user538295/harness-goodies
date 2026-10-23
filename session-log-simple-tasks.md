@@ -541,7 +541,7 @@ flowchart LR
         - #manual_test — Cursor with claude-goodies imported starts a chat normally with and without `session_log.py`, prints nothing, records whether exec form is honoured and the start delay — S59 (non-automatable: needs the Cursor app importing the plugin)
 
 ### Phase 13 · Keep logs private and refuse unsafe or relocated roots
-- [ ] **BE-34** — Archive and StateStore safe writes: new folders 0700, every written file 0600 incl. a rewritten one, existing folder modes kept; nothing written through a symlink or Windows junction — a symlinked slug folder, log file, `.records` or conversation folder is skipped and named in `status` #backend-role
+- [x] **BE-34** — Archive and StateStore safe writes: new folders 0700, every written file 0600 incl. a rewritten one, existing folder modes kept; nothing written through a symlink or Windows junction — a symlinked slug folder, log file, `.records` or conversation folder is skipped and named in `status` #backend-role
     - Interface Adapters · 3.0h
     - needs BE-15, BE-30 · completes S50, S62
     - Tests

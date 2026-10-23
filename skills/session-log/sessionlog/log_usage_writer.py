@@ -1,4 +1,5 @@
-"""C3 adapter: renders the log and the usage report and writes them atomically; owns every archive path rule."""
+"""C3 adapter: renders the log and the usage report and writes them atomically; owns every archive path rule. New folders are 0700 and every
+written file 0600; a slug folder, log or report that is a symbolic link or junction is skipped, never written through (`safe_paths`)."""
 import hashlib
 import os
 import re
@@ -9,6 +10,7 @@ from typing import Callable, List, Optional
 from .archive_port import WriteOutcome
 from .model import Session
 from .pricing import PARTIAL, PRICED, UNKNOWN, Price, UsageReport
+from .safe_paths import FOLDER_LINK_REASON, LINK_REASON, is_link, make_real_folders
 from .temp_files import STALE_TEMP_TAIL, publish, remove_stale_temps, temp_name
 
 CENTS_PER_DOLLAR = 100
@@ -178,23 +180,26 @@ class LogUsageWriter:
     def _remove_stale_temps(self, folder: str) -> None:
         remove_stale_temps(folder, _STALE_TEMP, self._clock())
 
-    def _replace_with(self, path: str, text: str) -> None:
-        publish(self._temp_path(path), path, _text(text).encode("utf-8", errors="replace"))
+    def _write_file(self, path: str, text: str) -> WriteOutcome:
+        """Writes `path` whole; a link in its place is left alone and named as the reason."""
+        if is_link(path):
+            return WriteOutcome(path, False, LINK_REASON)
+        try:
+            publish(self._temp_path(path), path, _text(text).encode("utf-8", errors="replace"))
+        except OSError as error:
+            return WriteOutcome(path, False, _reason(error))
+        return WriteOutcome(path, True)
 
     def write(self, log_path: str, log_text: str, report_text: str) -> WriteOutcome:
         folder = self._path.dirname(log_path)
         try:
-            os.makedirs(folder, exist_ok=True)
+            if not make_real_folders(folder):
+                return WriteOutcome(log_path, False, FOLDER_LINK_REASON)
         except OSError as error:
             return WriteOutcome(log_path, False, _reason(error))
         self._remove_stale_temps(folder)
-        failure: Optional[WriteOutcome] = None
-        for path, text in ((log_path, log_text), (self._report_path(log_path), report_text)):
-            try:
-                self._replace_with(path, text)
-            except OSError as error:
-                failure = failure or WriteOutcome(path, False, _reason(error))
-        return failure or WriteOutcome(log_path, True)
+        outcomes = [self._write_file(path, text) for path, text in ((log_path, log_text), (self._report_path(log_path), report_text))]
+        return next((outcome for outcome in outcomes if not outcome.written), WriteOutcome(log_path, True))
 
     def read_report(self, log_path: str) -> Optional[str]:
         try:

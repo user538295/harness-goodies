@@ -379,6 +379,7 @@ class GateTests(CursorHookCase):
         for failure in (OSError("disk"), RuntimeError("boom"), MemoryError(), KeyboardInterrupt()):
             for name, owner in steps:
                 with self.subTest(failure=type(failure).__name__, step=name):
+                    shutil.rmtree(self.records, ignore_errors=True)  # the folders are created again, so `mkdir` is reached
                     with mock.patch.object(owner, name, side_effect=failure) as step:
                         self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("stop", payload(conversation_id=CONVERSATION)))
                     step.assert_called()

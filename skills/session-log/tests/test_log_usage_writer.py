@@ -13,6 +13,7 @@ from unittest.mock import patch
 from sessionlog.log_usage_writer import LogUsageWriter
 from sessionlog.model import Harness, Prompt, RequestUsage, Session, SubAgent
 from sessionlog.pricing import PARTIAL, PRICED, Price, PricingRules, PromptRow, Rates, Total, UsageReport
+from sessionlog.safe_paths import FOLDER_LINK_REASON, LINK_REASON
 
 UTC = timezone.utc
 START = datetime(2026, 8, 28, 10, 0, 0, tzinfo=UTC)
@@ -20,6 +21,7 @@ HASH_LENGTH = 12
 SHIFT_AT = datetime(2026, 8, 28, 11, 0, 0)
 SLUG_MAX = 64
 POSIX_ONLY = unittest.skipIf(os.name == "nt", "POSIX file modes")
+LINKS_ONLY = unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks")
 STALE_SECONDS = 3600
 MILLION = 1_000_000
 NOW = 100000.0
@@ -471,7 +473,7 @@ class WriteTests(unittest.TestCase):
 
     def test_empty_error_message_still_gives_a_reason_naming_the_error_type(self):
         path = self.out.new_log_path(session())
-        with patch("sessionlog.log_usage_writer.os.makedirs", side_effect=OSError()):
+        with patch("sessionlog.log_usage_writer.make_real_folders", side_effect=OSError()):
             self.assertEqual(self.out.write(path, "l\n", "r\n").reason, "OSError")
         with patch("sessionlog.log_usage_writer.os.replace", side_effect=OSError()):
             outcome = self.out.write(path, "l\n", "r\n")
@@ -625,6 +627,62 @@ class WriteTests(unittest.TestCase):
         self.assertEqual(seen, [(0o600, b"log\n"), (0o600, b"report\n")])
         for target in (path, path[:-3] + ".usage.txt"):
             self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
+
+    @POSIX_ONLY
+    def test_new_folders_are_0700_under_umask_022_and_an_existing_one_keeps_its_mode(self):
+        self.addCleanup(os.umask, os.umask(0o022))
+        path = self.out.new_log_path(session())
+        slug = os.path.dirname(path)
+        self.assertTrue(self.out.write(path, "l\n", "r\n").written)
+        self.assertEqual(stat.S_IMODE(os.stat(slug).st_mode), 0o700)
+        os.chmod(slug, 0o750)
+        self.assertTrue(self.out.write(path, "l\n", "r\n").written)
+        self.assertEqual(stat.S_IMODE(os.stat(slug).st_mode), 0o750)
+
+    @LINKS_ONLY
+    def test_symlinked_slug_folder_is_not_written_through_and_named_by_the_log_path(self):
+        path = self.out.new_log_path(session())
+        target = os.path.join(self.root, "target")
+        os.mkdir(target)
+        os.symlink(target, os.path.dirname(path), target_is_directory=True)
+        outcome = self.out.write(path, "l\n", "r\n")
+        self.assertEqual((outcome.written, outcome.path, outcome.reason), (False, path, FOLDER_LINK_REASON))
+        self.assertEqual(os.listdir(target), [])
+
+    def test_a_junctioned_slug_folder_is_not_written_through_and_named_by_the_log_path(self):
+        path = self.out.new_log_path(session())
+        folder = os.path.dirname(path)
+        os.makedirs(folder)
+        with patch("sessionlog.safe_paths.os.path.isjunction", side_effect=lambda candidate: candidate == folder):
+            outcome = self.out.write(path, "l\n", "r\n")
+        self.assertEqual((outcome.written, outcome.path, outcome.reason), (False, path, FOLDER_LINK_REASON))
+        self.assertEqual(os.listdir(folder), [])
+
+    @LINKS_ONLY
+    def test_symlinked_log_is_skipped_and_the_report_beside_it_is_still_written(self):
+        path = self.out.new_log_path(session())
+        os.makedirs(os.path.dirname(path))
+        target = os.path.join(self.root, "target.md")
+        Path(target).write_text("keep\n")
+        os.symlink(target, path)
+        outcome = self.out.write(path, "l\n", "r\n")
+        self.assertEqual((outcome.written, outcome.path, outcome.reason), (False, path, LINK_REASON))
+        self.assertEqual(Path(target).read_text(), "keep\n")
+        self.assertTrue(os.path.islink(path))
+        self.assertEqual(Path(path[:-3] + ".usage.txt").read_text(), "r\n")
+        self.assertEqual(self.temps(path), [])
+
+    @LINKS_ONLY
+    def test_dangling_symlinked_report_is_not_created_through_and_named_after_the_log_is_written(self):
+        path = self.out.new_log_path(session())
+        report = path[:-3] + ".usage.txt"
+        os.makedirs(os.path.dirname(path))
+        missing = os.path.join(self.root, "missing.txt")
+        os.symlink(missing, report)
+        outcome = self.out.write(path, "l\n", "r\n")
+        self.assertEqual((outcome.written, outcome.path, outcome.reason), (False, report, LINK_REASON))
+        self.assertEqual(Path(path).read_text(), "l\n")
+        self.assertFalse(os.path.exists(missing))
 
     def test_read_report_absent_is_none(self):
         self.assertIsNone(self.out.read_report(os.path.join(self.root, "none", "session_x.md")))

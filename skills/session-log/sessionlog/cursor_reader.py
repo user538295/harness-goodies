@@ -2,7 +2,9 @@
 (`hook_records`, format in `cursor_records`), and this reader turns the folders of those records into sessions.
 
 A unit is one conversation folder `<records>/<conversation id>/` (only a real folder named by a safe id; anything else directly under the
-records folder is ignored). Its key is the folder's path and its fingerprint the number of its record files and the newest record's name,
+records folder is ignored, except a link named like a conversation folder or `.invalid`, which is listed unreadable: the hook writes nothing
+through a link. A `.records` that is a link is listed unreadable alone and not read). A unit's key is the folder's path and its
+fingerprint the number of its record files and the newest record's name,
 so a new record, a repeated one too, makes the conversation read again; it is modified at the arrival of that newest record. A scan
 only lists names: no record is opened. A file counts as a record when its name is `<arrival_ns>-<event>-<pid>.json` and it is a regular
 file; temps, other files and anything that is no regular file are left out (a FIFO is never opened).
@@ -23,6 +25,7 @@ from .cursor_records import INVALID_FOLDER, RECORD_FILE_NAME, HookRecord, moment
 from .model import Harness, is_safe_id
 from .reader_port import (CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource,
                           build_session_key, root_id_of)
+from .safe_paths import LINK_REASON, is_link
 from .store_files import StoreFiles, open_text
 
 INVALID_CALLS_REASON = "hook calls without a usable conversation id: %d"
@@ -43,6 +46,11 @@ def _is_regular_file(entry: os.DirEntry) -> bool:
         return entry.is_file()
     except OSError:
         return False
+
+
+def _names_folder(name: str) -> bool:
+    """Whether a hook could write the records folder `name`: a conversation's or `.invalid`."""
+    return name == INVALID_FOLDER or is_safe_id(name)
 
 
 def _record_files(listing: List[os.DirEntry]) -> List[_RecordFile]:
@@ -67,6 +75,8 @@ class CursorReader:
         self._records = records_folder
 
     def scan(self) -> ScanResult:
+        if is_link(self._records):
+            return ScanResult(unreadable=(_FILES.unreadable(self._records, LINK_REASON),))
         listing = _FILES.list_dir(self._records)
         if isinstance(listing, UnreadableSource):
             return ScanResult(unreadable=(listing,))
@@ -76,6 +86,8 @@ class CursorReader:
             is_dir = _FILES.is_real_dir(entry)
             if isinstance(is_dir, UnreadableSource):
                 problems.append(is_dir)
+            elif not is_dir and _names_folder(entry.name) and is_link(entry.path):
+                problems.append(_FILES.unreadable(entry.path, LINK_REASON))
             elif is_dir and entry.name == INVALID_FOLDER:
                 problems.extend(self._invalid_calls(entry))
             elif is_dir and is_safe_id(entry.name):
@@ -154,6 +166,8 @@ class CursorHookActivity:
 
     def recorded_since(self, moment: datetime) -> Optional[bool]:
         floor = nanoseconds_of(moment)
+        if is_link(self._records):
+            return None
         listing = _FILES.list_dir(self._records)
         if isinstance(listing, UnreadableSource):
             return None

@@ -2,6 +2,7 @@
 import json
 import os
 import multiprocessing
+from stat import S_IMODE, S_ISREG
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
+from sessionlog.safe_paths import LINK_REASON
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 
@@ -36,6 +38,60 @@ class StateTests(unittest.TestCase):
         self.store.delete_on_flag()
         self.store.delete_on_flag()
         self.assertIsNone(self.store.read_on_flag())
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes")
+    def test_new_root_and_its_new_parents_are_0700_under_umask_022_and_state_files_0600(self):
+        self.addCleanup(os.umask, os.umask(0o022))
+        root = self.root / 'new-parent' / 'prompt-logs'
+        store = FileStateStore(root)
+        store.write_on_flag(OnFlag(datetime(2026, 1, 1, tzinfo=timezone.utc)))
+        store.save_sync(store.load_sync())
+        modes = {path: S_IMODE(path.stat().st_mode) for path in [root.parent, root, *root.iterdir()]}
+        self.assertEqual(['.log_enabled', '.sync.json', '.sync.lock'], sorted(path.name for path in root.iterdir()))
+        self.assertTrue(all(mode == (0o700 if path.is_dir() else 0o600) for path, mode in modes.items()), modes)
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks")
+    def test_symlinked_sync_lock_is_refused_naming_it_and_nothing_is_created_through_it(self):
+        target = self.root / 'elsewhere.lock'
+        lock = self.root / '.sync.lock'
+        lock.symlink_to(target)
+        with self.assertRaises(OSError) as raised:
+            self.store.save_sync(self.store.load_sync())
+        self.assertEqual('%s %s' % (lock, LINK_REASON), str(raised.exception))
+        self.assertFalse(target.exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks")
+    def test_dangling_log_enabled_link_is_refused_and_a_valid_one_is_a_flag_read_through(self):
+        target = self.root / 'elsewhere.flag'
+        flag = self.root / '.log_enabled'
+        flag.symlink_to(target)
+        with self.assertRaises(OSError) as raised:
+            self.store.write_on_flag(OnFlag(MOMENT))
+        self.assertEqual('%s %s' % (flag, LINK_REASON), str(raised.exception))
+        self.assertFalse(target.exists())
+        flag.unlink()
+        target.write_text(MOMENT.isoformat() + '\n')
+        flag.symlink_to(target)
+        self.store.write_on_flag(OnFlag(LATER_MOMENT))
+        self.assertEqual(self.store.read_on_flag().on_at, MOMENT)
+        self.assertEqual(target.read_text(), MOMENT.isoformat() + '\n')
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks")
+    def test_dangling_log_enabled_link_keeps_the_old_enabled_flag_so_logging_is_not_switched_off(self):
+        (self.root / '.log_enabled').symlink_to(self.root / 'elsewhere.flag')
+        (self.root / '.enabled').write_text('old\n')
+        with self.assertRaises(OSError):
+            self.store.migrate_enabled()
+        self.assertTrue((self.root / '.enabled').exists())
+
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks")
+    def test_symlinked_sync_json_is_replaced_by_a_regular_file_and_its_target_is_left_alone(self):
+        target = self.root / 'elsewhere.json'
+        target.write_text('{"units": {}, "sessions": {}}\n')
+        (self.root / '.sync.json').symlink_to(target)
+        self.store.save_sync(self.store.load_sync())
+        self.assertTrue(S_ISREG((self.root / '.sync.json').lstat().st_mode))
+        self.assertEqual(target.read_text(), '{"units": {}, "sessions": {}}\n')
 
     def test_unparsable_log_enabled_falls_back_to_file_time(self):
         flag = self.root / '.log_enabled'

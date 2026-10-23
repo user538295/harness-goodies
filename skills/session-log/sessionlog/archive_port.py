@@ -39,8 +39,9 @@ class Archive(Protocol):
 
     def write(self, log_path: str, log_text: str, report_text: str) -> WriteOutcome:
         """Writes the log and the report beside it, each independently: a failure of one never skips the other.
-        Never raises for file-system errors. When every file is written: `WriteOutcome(log_path, True)`.
-        Otherwise `written` is false, `path` names the first file that failed (the log before the report)
+        On POSIX new folders are 0700 and every written file 0600; a slug folder, log or report that is a symbolic link or junction is
+        not written through and counts as that file failing. Never raises for file-system errors. When every file is written:
+        `WriteOutcome(log_path, True)`. Otherwise `written` is false, `path` names the first file that failed (the log before the report)
         and `reason` is always set."""
         ...
 

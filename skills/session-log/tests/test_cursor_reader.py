@@ -17,9 +17,10 @@ from sessionlog.cursor_records import INVALID_FOLDER, record_fields
 from sessionlog.model import Harness, Prompt, RequestUsage, SubAgent
 from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource,
                                     build_session_key)
+from sessionlog.safe_paths import LINK_REASON
 from tests.cursor_record_files import (CONVERSATION, WORKSPACE, at_ns, moment, prompt_input, response_input, stop_input, subagent_input,
                                        write_record)
-from tests.store_fakes import scandir_wrapping
+from tests.store_fakes import JunctionEntry, scandir_wrapping
 
 MODEL = "claude-opus-5-5"
 TOKENS = {"input_tokens": 1000, "output_tokens": 200, "cache_read_tokens": 300, "cache_write_tokens": 100, "model": MODEL}
@@ -138,6 +139,61 @@ class ScanTest(CursorReaderTestCase):
         self.write("stop", 1, stop_input("g1"))
         unit = self.reader.scan().units[0]
         self.assertEqual("cursor:" + CONVERSATION, self.reader.session_of(unit))
+
+
+@unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "needs symlinks")
+class LinkedFoldersTest(CursorReaderTestCase):
+    def link(self, link, target):
+        os.makedirs(target, exist_ok=True)
+        os.symlink(target, link, target_is_directory=True)
+
+    def test_a_links_records_folder_is_listed_unreadable_alone_and_not_read_through(self):
+        target = os.path.join(self.folder, "target")
+        write_record(target, "stop", 1, stop_input("g1"))
+        os.symlink(target, self.records, target_is_directory=True)
+        scan = self.reader.scan()
+        self.assertEqual(((), (UnreadableSource(Harness.CURSOR, self.records, LINK_REASON),)), (scan.units, scan.unreadable))
+
+    def test_links_named_like_a_conversation_folder_or_invalid_are_listed_unreadable_and_other_links_ignored(self):
+        kept = self.write("stop", 1, stop_input("g1"), conversation="conv-2")
+        os.makedirs(self.records, exist_ok=True)
+        for name in (CONVERSATION, INVALID_FOLDER, "a.b"):
+            self.link(os.path.join(self.records, name), os.path.join(self.folder, "target-" + name))
+        scan = self.reader.scan()
+        self.assertEqual([os.path.dirname(kept)], [unit.key for unit in scan.units])
+        self.assertEqual([(os.path.join(self.records, name), LINK_REASON) for name in (INVALID_FOLDER, CONVERSATION)],
+                         [(source.path, source.reason) for source in scan.unreadable])
+
+    def test_a_dangling_link_named_like_a_conversation_folder_is_listed_unreadable(self):
+        os.makedirs(self.records)
+        dangling = os.path.join(self.records, CONVERSATION)
+        os.symlink(os.path.join(self.folder, "missing"), dangling)
+        scan = self.reader.scan()
+        self.assertEqual(((), (UnreadableSource(Harness.CURSOR, dangling, LINK_REASON),)), (scan.units, scan.unreadable))
+
+    def test_hook_activity_is_open_while_records_is_a_link_and_reads_nothing_through_it(self):
+        target = os.path.join(self.folder, "target")
+        write_record(target, "stop", 1, stop_input("g1"))
+        os.symlink(target, self.records, target_is_directory=True)
+        self.assertIsNone(CursorHookActivity(self.records).recorded_since(moment(0)))
+
+
+class JunctionTest(CursorReaderTestCase):
+    def test_a_junction_named_like_a_conversation_folder_is_listed_unreadable_and_no_unit(self):
+        os.makedirs(self.records)
+        junction = os.path.join(self.records, CONVERSATION)
+        with scandir_wrapping({self.records: [JunctionEntry(junction)]}), \
+                mock.patch.object(cursor_reader.os.path, "isjunction", side_effect=lambda path: path == junction):
+            scan = self.reader.scan()
+        self.assertEqual(((), (UnreadableSource(Harness.CURSOR, junction, LINK_REASON),)), (scan.units, scan.unreadable))
+
+    def test_a_junctioned_records_folder_is_listed_unreadable_alone_and_hook_activity_stays_open(self):
+        self.write("stop", 1, stop_input("g1"))
+        with mock.patch.object(cursor_reader.os.path, "isjunction", side_effect=lambda path: path == self.records):
+            scan = self.reader.scan()
+            recorded = CursorHookActivity(self.records).recorded_since(moment(0))
+        self.assertEqual(((), (UnreadableSource(Harness.CURSOR, self.records, LINK_REASON),)), (scan.units, scan.unreadable))
+        self.assertIsNone(recorded)
 
 
 class HookActivityTest(CursorReaderTestCase):

@@ -2,6 +2,9 @@
 
 Sync documents use the contract's JSON field names. Each store tracks the last loaded snapshot to detect competing writes; create one store per sync run.
 The persistent .sync.lock serializes re-read/merge/replace across processes and is released by the OS on exit. sync_reset stays true for the run after rebuilding corrupt state.
+New folders are 0700 and every file written is 0600 (`safe_paths`, `temp_files`; `.sync.json` gets 0600 from `tempfile.mkstemp`).
+Nothing is written through a link: a `.sync.lock`, or a `.log_enabled` that is a dangling link, fails the write with an error naming it.
+`.sync.json` is always replaced whole, so a link in its place is replaced by a regular file and its target is left alone. Reading through a link stays allowed.
 `migrate_enabled` converts an old release's `.enabled` flag; commands and hooks run it before they read the flag, which stays a pure read. Flag fallback is reported by OnFlag.from_file_time; reading never repairs the flag.
 """
 import copy
@@ -14,9 +17,12 @@ from pathlib import Path
 from stat import S_ISREG
 from typing import Callable, Optional
 
+from .safe_paths import make_folders, require_no_link
+from .temp_files import FILE_MODE
 from .state_port import OnFlag
 
 MAX_INT32 = 2**31 - 1
+NO_FOLLOW = getattr(os, 'O_NOFOLLOW', 0)  # where it exists, it closes the gap between the link check and the open of `.sync.lock`
 
 
 def _utc_now():
@@ -68,7 +74,9 @@ def _validate_state(state):
 @contextmanager
 def _sync_lock(root):
     """OS lock released on process exit; never unlink the shared lock inode."""
-    fd = os.open(root / '.sync.lock', os.O_RDWR | os.O_CREAT, 0o600)
+    lock = root / '.sync.lock'
+    require_no_link(lock)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | NO_FOLLOW, FILE_MODE)
     with os.fdopen(fd, 'r+b') as stream:
         if os.name == 'nt':
             import msvcrt
@@ -134,10 +142,13 @@ class FileStateStore:
         on_at = flag.on_at
         if on_at.utcoffset() is None:
             raise ValueError('on-time must have a timezone')
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_folders(self.root)
+        flag_path = self.root / '.log_enabled'
         try:
-            fd = os.open(self.root / '.log_enabled', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = os.open(flag_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
         except FileExistsError:
+            if not flag_path.exists():
+                require_no_link(flag_path)  # a dangling link is no flag, and nothing is written through it
             return
         with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
             stream.write(on_at.isoformat() + '\n')
@@ -167,7 +178,7 @@ class FileStateStore:
 
     def save_sync(self, state):
         _validate_state(state)
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        make_folders(self.root)
         with _sync_lock(self.root):
             self._save_locked(state)
 
@@ -187,7 +198,6 @@ class FileStateStore:
                 merged[section][key] = result
         if 'lastSyncAt' in state:
             merged['lastSyncAt'] = state['lastSyncAt']
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd, name = tempfile.mkstemp(prefix='.sync-', suffix='.tmp', dir=self.root)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:

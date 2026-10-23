@@ -9,24 +9,16 @@ call records nothing. Callers swallow every failure; this module raises on them.
 """
 import json
 import os
-import stat
 import time
 from typing import Callable, Iterator, Optional
 
 from .cursor_records import HOOK_CONVERSATION_ID_KEY, INVALID_FOLDER, RECORDS_FOLDER, STALE_RECORD_TEMP, record_fields, record_file_name
 from .model import is_safe_id
+from .safe_paths import is_real_folder, make_real_folders
 from .temp_files import publish, remove_stale_temps, temp_name
 
 NANOSECONDS_PER_SECOND = 10 ** 9
 BYTE_ORDER_MARK = "\ufeff"
-
-
-def _is_real_folder(path: str) -> bool:
-    """A folder that is neither a symlink nor a junction."""
-    try:
-        return stat.S_ISDIR(os.lstat(path).st_mode) and not os.path.isjunction(path)
-    except OSError:
-        return False
 
 
 def _conversation_id(text: str) -> Optional[str]:
@@ -71,18 +63,12 @@ class HookRecords:
             remove_stale_temps(folder, STALE_RECORD_TEMP, now_seconds)
 
     def _folder(self, name: str) -> Optional[str]:
-        """`.records/<name>`, created when missing; None when it or `.records` is a link."""
-        for folder in (self._records, os.path.join(self._records, name)):
-            try:
-                os.mkdir(folder)
-            except FileExistsError:
-                pass
-            if not _is_real_folder(folder):
-                return None
-        return folder
+        """`.records/<name>`, created when missing; None when it or `.records` is a link. A file in the place of a folder raises."""
+        folder = os.path.join(self._records, name)
+        return folder if make_real_folders(self._records) and make_real_folders(folder) else None
 
     def _folders(self) -> Iterator[str]:
-        if not _is_real_folder(self._records):
+        if not is_real_folder(self._records):
             return
         try:
             names = os.listdir(self._records)
@@ -90,5 +76,5 @@ class HookRecords:
             return
         for name in names:
             path = os.path.join(self._records, name)
-            if _is_real_folder(path):
+            if is_real_folder(path):
                 yield path
