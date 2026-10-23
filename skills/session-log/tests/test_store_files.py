@@ -1,5 +1,6 @@
 """What every file-based reader shares: queries mapped to unreadable sources, the unit of a regular file and the
 open/decode/parse mapping of one file."""
+import io
 import os
 import shutil
 import tempfile
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 from sessionlog.model import Harness
 from sessionlog.reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON,
                                     CANNOT_BE_PARSED_REASON, SourceUnit, UnreadableSource)
-from sessionlog.store_files import StoreFiles
+from sessionlog.store_files import FileOpener, StoreFiles
 from tests.store_fakes import FakeEntry, JunctionEntry, StatEntry, scandir_wrapping
 
 ONE_SECOND_NS = 1_000_000_000
@@ -132,6 +133,25 @@ class ParseFileTest(StoreFilesTestCase):
                                     (text, lambda lines: SimpleNamespace(unparsable=True), CANNOT_BE_PARSED_REASON)):
             with self.subTest(reason=reason):
                 self.assertEqual(UnreadableSource(Harness.OMP, path, reason), FILES.parse_file(path, parse))
+
+    def test_the_openers_open_gives_the_lines_and_its_decode_errors_are_undecodable_under_the_path(self):
+        path = os.path.join(self.folder, "unit.jsonl")
+        opened = []
+
+        def reading(key):
+            opened.append(key)
+            return io.StringIO("one\ntwo\n")
+
+        self.assertEqual(2, FILES.parse_file(path, self._parse, FileOpener(reading)).count)
+        self.assertEqual([path], opened)
+
+        def failing(key):
+            raise KeyError(key)
+
+        self.assertEqual(UnreadableSource(Harness.OMP, path, CANNOT_BE_DECODED_REASON),
+                         FILES.parse_file(path, self._parse, FileOpener(failing, (KeyError,))))
+        self.assertEqual(UnreadableSource(Harness.OMP, path, CANNOT_BE_OPENED_REASON),
+                         FILES.parse_file(path, self._parse, FileOpener(lambda key: open(key + ".none"))))
 
 
 if __name__ == "__main__":

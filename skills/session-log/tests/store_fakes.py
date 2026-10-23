@@ -1,7 +1,27 @@
-"""Fakes for the file-system side of reader tests: directory entries whose queries fail or answer as chosen, and a `scandir` that
-lists extra entries, fails for chosen folders or lists in reverse order."""
+"""Fakes for the file-system side of reader tests: directory entries whose queries fail or answer as chosen, a `scandir` that
+lists extra entries, fails for chosen folders or lists in reverse order, and zstd files made from text at test time."""
 import os
 from unittest import mock
+
+
+def write_compressed(path, text, mtime_ns=None):
+    """Writes `text` as a zstd file at `path`, made at test time (no fixture is committed), with the modification time
+    `mtime_ns` when given."""
+    from compression import zstd
+    with open(path, "wb") as handle:
+        handle.write(zstd.compress(text.encode("utf-8")))
+    if mtime_ns is not None:
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+
+
+def compress_in_place(path):
+    """What Codex does to a rollout after a sync: a `.zst` file made from the text at `path`, with its modification time, replaces
+    it. Returns the compressed path."""
+    with open(path, encoding="utf-8", newline="") as handle:
+        text = handle.read()
+    write_compressed(path + ".zst", text, os.stat(path).st_mtime_ns)
+    os.remove(path)
+    return path + ".zst"
 
 
 class FakeEntry:

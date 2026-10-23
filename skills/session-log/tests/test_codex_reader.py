@@ -299,7 +299,7 @@ class CodexSessionOfTest(CodexReaderTestCase):
         os.remove(path)
         self.assertIsNone(self.reader.session_of(unit))
 
-    def test_session_of_a_compressed_only_rollout_is_none(self):
+    def test_session_of_a_compressed_rollout_that_is_not_zstd_data_is_none(self):
         self._write("rollout-x.jsonl.zst", "compressed")
         self.assertIsNone(self.reader.session_of(self._unit()))
 
@@ -455,10 +455,10 @@ class CodexReadTest(CodexReaderTestCase):
         result = self.reader.read("codex:" + ROOT_ID, (unit,))
         self.assertEqual((None, (UnreadableSource(Harness.CODEX, path, CANNOT_BE_OPENED_REASON),)), (result.session, result.unreadable))
 
-    def test_read_of_a_compressed_only_rollout_is_unreadable_as_not_openable(self):
+    def test_read_of_a_compressed_rollout_that_is_not_zstd_data_is_unreadable_as_not_decodable(self):
         compressed = self._write("rollout-x-%s.jsonl.zst" % ROOT_ID, "compressed")
         result = self.reader.read("codex:" + ROOT_ID, (self._unit(),))
-        self.assertEqual((None, (UnreadableSource(Harness.CODEX, compressed[: -len(".zst")], CANNOT_BE_OPENED_REASON),)),
+        self.assertEqual((None, (UnreadableSource(Harness.CODEX, compressed[: -len(".zst")], CANNOT_BE_DECODED_REASON),)),
                          (result.session, result.unreadable))
 
     def test_read_builds_the_session_and_lists_a_candidate_unit_that_cannot_be_read(self):

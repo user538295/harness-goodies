@@ -18,7 +18,7 @@ from sessionlog.model import Harness, Prompt, RequestUsage
 from sessionlog.pricing import PricingRules
 from sessionlog.reader_port import CANNOT_BE_OPENED_REASON, UnreadableSource
 from sessionlog.sync import UNKNOWN_SESSION_REASON
-from tests.store_fakes import FakeEntry, scandir_wrapping
+from tests.store_fakes import FakeEntry, compress_in_place, scandir_wrapping
 from tests.test_claude_subagents import _Book
 from tests.test_codex_entry import CodexEntryTestCase
 from tests.test_codex_reader import CWD, ROOT_FIXTURE, CodexReaderTestCase
@@ -508,7 +508,7 @@ class CodexOrphanTest(_FamilyReaderTestCase):
         self._put(SECOND, parent=MISSING, start=30)
         self.assertEqual(ROOT, self._read().session.orphan_of_parent_id)
 
-    def test_a_fresh_reader_that_never_scanned_still_lists_a_child_unreadable_when_its_root_rollout_is_compressed(self):
+    def test_a_fresh_reader_that_never_scanned_still_lists_a_child_unreadable_when_its_root_rollout_is_a_corrupt_zst(self):
         self._write(_name(ROOT) + ".zst", "not zstd at all")
         child = self._put(CHILD, parent=ROOT, start=20, records=[_prompt(21, "child ask")])
         (child_unit,) = [unit for unit in CodexReader(self.root).scan().units if unit.key == child]  # another reader scanned: this one never did
@@ -669,18 +669,17 @@ class CodexSubAgentSyncTest(CodexEntryTestCase):
         # D: a real forked child whose root rollout was deleted
         with open(CHILD_FIXTURE, encoding="utf-8") as handle:
             self.install("1a200002-0000-7000-8000-000000000002", handle.read(), datetime(2026, 8, 7, 14, 0, tzinfo=timezone.utc))
-        # E: a child whose parent is a rollout that cannot be read (compressed)
+        # E: a child whose parent is a rollout that cannot be read (a `.zst` that is no zstd data)
         parent_e = self.install(root_e, "not zstd at all", old)
         os.rename(parent_e, parent_e + ".zst")
         broken = self.install(child_e, _rollout(child_e, root=root_e, parent=root_e, start=active, records=[_prompt(active + ONE_SECOND, "orphaned by error")]), active)
         with open(COUNT_ONLY_FIXTURE, encoding="utf-8") as handle:
             self.install(COUNT_ONLY_ID, handle.read(), datetime(2026, 3, 5, 13, 0, tzinfo=timezone.utc))
-        # G: an active parent whose old child is compressed. Reading a compressed rollout is BE-26: until then the child is linked to no
-        # session (listed unreadable) and the parent is archived without it.
+        # G: an active parent whose old child is compressed (read with compression.zstd, linked from its first line like a plain one)
         self.install(root_g, _rollout(root_g, root=root_g, start=before_old, records=[
             _prompt(before_old + ONE_SECOND, "first g prompt"), _prompt(active + ONE_SECOND, "active g prompt")]), active)
         child_g_path = self.install(child_g, _rollout(child_g, root=root_g, parent=root_g, start=old, records=[_used(old + ONE_SECOND, 5, 1)]), old)
-        os.rename(child_g_path, child_g_path + ".zst")
+        child_g_path = compress_in_place(child_g_path)
 
         code, stdout, stderr = self.run_main(["codex", "on"])
         self.assertEqual((0, ""), (code, stderr))
@@ -712,9 +711,9 @@ class CodexSubAgentSyncTest(CodexEntryTestCase):
         with self.subTest("F: an older rollout with only `token_count` events: the growth of the total is its tokens"):
             self.assertEqual(_report_numbers(COUNT_ONLY_FINAL_TOTAL), self._estimates(self.archived_text(COUNT_ONLY_ID, ".usage.txt"))[-1])
 
-        with self.subTest("G: an active parent is archived without its compressed old child"):
+        with self.subTest("G: an active parent is archived with its compressed old child"):
             self.assertIn("active g prompt", self.archived_text(root_g, ".md"))
-            self.assertNotIn("sub-agent:", self.archived_text(root_g, ".usage.txt"))
+            self.assertIn("sub-agent: unknown (%s)" % child_g, self.archived_text(root_g, ".usage.txt"))
 
         with self.subTest("the rows add up to TOTAL"):
             for session_id in (ROOT_FIXTURE_ID, root_b, root_c, CHILD_FIXTURE_ROOT_ID, COUNT_ONLY_ID, root_g):
@@ -729,7 +728,7 @@ class CodexSubAgentSyncTest(CodexEntryTestCase):
             self.assertIn("Archived sessions: 6", stdout)
             self.assertIn("  %s: %s\n" % (broken, PARENT_UNREADABLE_REASON), stdout)
             self.assertIn("  %s: %s\n" % (parent_e, UNKNOWN_SESSION_REASON), stdout)
-            self.assertIn("  %s: %s\n" % (child_g_path, UNKNOWN_SESSION_REASON), stdout)
+            self.assertNotIn(child_g_path[: -len(".zst")], stdout)
 
     def test_two_children_of_an_unlearned_root_rollout_are_both_unreadable_and_neither_is_archived_as_an_orphan(self):
         self.install(ROOT, "not zstd at all", self.OLD)

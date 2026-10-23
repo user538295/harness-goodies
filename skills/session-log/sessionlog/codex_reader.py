@@ -5,22 +5,25 @@ inside and `codex_subagents` makes the threads, nests the child ones and splits 
 A unit's key is the rollout's path without `.zst` and its fingerprint is the mtime alone, because compressing a rollout keeps
 its mtime (codex `rollout/src/compression.rs`): a rollout compressed after a sync is neither a new nor a changed unit.
 
-Reading compressed rollouts is not implemented yet: `session_of` of one gives None, so sync links it to no session and lists
-it unreadable, and `read` lists it as not openable; sync retries it on every sync; `_parse_unit` is the one place that opens a
-unit. The family is built without it: a compressed child is missing from its session; a plain grandchild of a compressed
-middle thread cannot be nested under it and sits at the top level of the session; when the root's own rollout is gone and
-the root's or a middle thread's rollout is compressed (or otherwise not learned) the whole family is listed unreadable
-(`PARENT_UNREADABLE_REASON`) instead of being archived as orphans. Once compressed rollouts can be opened they give their
-session, threads and prompts and let their children nest under them; only rollouts that really fail then stay listed."""
+`_parse_unit` is the one place that opens a unit: the plain file at the key, else the compressed one beside it, read with
+`compression.zstd`; a compressed rollout that cannot be decompressed is listed as one that cannot be decoded. A compressed
+rollout gives its session, threads and prompts like a plain one, and children nest under it. When the root's own rollout is
+gone and the root's or a middle thread's rollout cannot be learned (it is corrupt, or could not be opened) the whole family is
+listed unreadable (`PARENT_UNREADABLE_REASON`) instead of being archived as orphans."""
 import os
-from typing import AbstractSet, Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
+from typing import AbstractSet, Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, TextIO, Tuple, Union
 
 from .codex_rollout import Rollout, RolloutMeta, parse_rollout, parse_session_meta
 from .codex_subagents import Thread, copy_rank, nest_threads, split_orphan_family, thread_of_rollout
 from .model import Harness, Session, is_safe_id
 from .reader_port import (UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key,
                           root_id_of)
-from .store_files import StoreFiles
+from .store_files import FILE_ENCODING, FileOpener, StoreFiles, open_text
+
+try:
+    from compression import zstd
+except ImportError:  # a Python built without zstd still reads plain rollouts; a compressed one is then not openable
+    zstd = None
 
 PARENT_UNREADABLE_REASON = "parent rollout cannot be read"
 
@@ -68,9 +71,24 @@ def _source_of(entry: os.DirEntry) -> Union[SourceUnit, UnreadableSource, None]:
     return _FILES.regular_file_unit(entry, _key_of(entry.path), lambda file_stat: str(file_stat.st_mtime_ns))
 
 
+def _open_rollout(key: str) -> TextIO:
+    """The unit's rollout as text: the plain file when the key is one, else the compressed file beside it. The plain file is
+    asked for first by a stat, never opened blindly: a listed `.zst` can sit beside a plain entry that is no regular file (and
+    so was never listed) which opening would block on or fail."""
+    if os.path.isfile(key):
+        return open_text(key)
+    if zstd is None:
+        raise OSError("this Python has no compression.zstd")
+    return zstd.open(key + _COMPRESSED_SUFFIX, "rt", encoding=FILE_ENCODING)
+
+
+# `ZstdError` for data that is no zstd stream, `EOFError` for one that ends early
+_ROLLOUTS = FileOpener(_open_rollout, (zstd.ZstdError, EOFError) if zstd is not None else ())
+
+
 def _parse_unit(unit: SourceUnit, parse: Callable[[Iterable[str]], Any]) -> Any:
-    """What `parse` makes of the lines of the unit's rollout, or the unreadable source it is."""
-    return _FILES.parse_file(unit.key, parse)
+    """What `parse` makes of the lines of the unit's rollout, plain or compressed, or the unreadable source it is."""
+    return _FILES.parse_file(unit.key, parse, _ROLLOUTS)
 
 
 def _list_folder(path: str) -> _Folder:
@@ -167,9 +185,10 @@ def _orphan_session(root_id: str, found: Sequence[_Found]) -> Optional[Session]:
 
 
 class CodexReader:
-    """Reads the rollouts below the Codex home `root`; each rollout file is one unit. `session_of` reads the beginning of
-    the rollout up to its first non-blank line (a buffered chunk is decoded, so bad bytes right after the header can still
-    fail it), whose `session_meta` names the root session (`session_id`, which a grandchild shares with its root); a unit it
+    """Reads the rollouts below the Codex home `root`; each rollout file is one unit, plain or compressed (the plain file wins when
+    both exist). `session_of` reads the beginning of the rollout up to its first non-blank line (a buffered chunk is decoded, so
+    bad bytes right after the header can still fail it), whose `session_meta` names the root session (`session_id`, which a
+    grandchild shares with its root); a unit it
     cannot learn that from (an empty rollout, one whose first line is no `session_meta`, one that cannot be opened or
     decoded) gives None.
 
@@ -183,8 +202,8 @@ class CodexReader:
     Without the root's own rollout the family is an orphan and is archived alone (`split_orphan_family`), unless a parent
     cannot be told from unreadable: a unit of the session that cannot be read, or a rollout named after the root id or after
     the `parent_thread_id` of a child that is no thread of the family (see `_is_named_after`) that is not one of the session's
-    units, although the last `scan` found it (listed, or listed as a problem): it could not be learned, as a compressed one
-    cannot yet. Then no session is built and `read` lists one unit unreadable, the newest of the session's units; sync marks
+    units, although the last `scan` found it (listed, or listed as a problem): it could not be learned, as a corrupt compressed one
+    cannot. Then no session is built and `read` lists one unit unreadable, the newest of the session's units; sync marks
     every other unit of the session with that first reason (`_mark`), so no family is archived as an orphan by mistake.
     `read` relies on the last `scan` for that (`_scanned_paths`), and runs one itself when none has run on this
     reader yet."""

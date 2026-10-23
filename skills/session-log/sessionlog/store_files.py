@@ -3,7 +3,7 @@ unreadable sources, the unit of a regular file, and the open/decode/parse mappin
 folder layout or record format."""
 import os
 from datetime import datetime, timezone
-from typing import Callable, Iterable, List, Protocol, TypeVar, Union
+from typing import Callable, Iterable, List, NamedTuple, Protocol, TextIO, Tuple, Type, TypeVar, Union
 
 from .model import Harness
 from .reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON,
@@ -20,6 +20,22 @@ class _Parsed(Protocol):
 
 _T = TypeVar("_T")
 _P = TypeVar("_P", bound=_Parsed)
+
+
+def open_text(path: str) -> TextIO:
+    """The file at `path` as text, as every reader decodes it (a BOM is dropped)."""
+    return open(path, encoding=FILE_ENCODING)
+
+
+class FileOpener(NamedTuple):
+    """How a reader opens a file as text: `open` and the errors reading it raises besides `UnicodeDecodeError` that mean its
+    content cannot be decoded (a compressed file that is corrupt)."""
+
+    open: Callable[[str], TextIO]
+    decode_errors: Tuple[Type[Exception], ...] = ()
+
+
+PLAIN_FILES = FileOpener(open_text)
 
 
 class StoreFiles:
@@ -62,12 +78,14 @@ class StoreFiles:
             return None
         return SourceUnit(key=key, fingerprint=fingerprint_of(file_stat), modified_at=modified_at)
 
-    def parse_file(self, path: str, parse: Callable[[Iterable[str]], _P]) -> Union[_P, UnreadableSource]:
-        """What `parse` makes of the file's lines, or the unreadable source the file is."""
+    def parse_file(self, path: str, parse: Callable[[Iterable[str]], _P], opener: FileOpener = PLAIN_FILES) -> Union[_P, UnreadableSource]:
+        """What `parse` makes of the file's lines, or the unreadable source the file is. A problem is reported under `path`, the
+        key of the unit, even when `opener` opened another file for it. The `opener`'s decode errors are those of the whole
+        open-and-parse step: `parse` is a pure function of the lines and raises none of them itself."""
         try:
-            with open(path, encoding=FILE_ENCODING) as handle:
+            with opener.open(path) as handle:
                 parsed = parse(handle)
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError,) + opener.decode_errors:
             return self.unreadable(path, CANNOT_BE_DECODED_REASON)
         except OSError:
             return self.unreadable(path, CANNOT_BE_OPENED_REASON)

@@ -463,13 +463,12 @@ flowchart LR
         - #unit_test — `test_children_and_grandchild_nest_as_subagents_of_root_and_are_in_total` — S8
         - #unit_test — `test_active_child_archives_parent_whole_old_child_linked_from_first_line_orphan_archived_alone_labelled` — S43, fixtures cut from real rollouts
         - #integration_test — `test_old_child_of_active_parent_pulled_in_on_second_sync_identical_output` — S13 Codex part
-- [ ] **BE-26** — `ZstdDecoder` implementations: `compression.zstd` (3.14+) → `zstd -dc` → skip and record; skipped rollouts counted with the fix for `status`; re-read after a decoder appears although the fingerprint did not change; compression keeps the key and fingerprint #backend-role
-    - Interface Adapters · 3.0h
+- [x] **BE-26** — Compressed Codex rollouts: `.jsonl.zst` read with `compression.zstd`, a corrupt one listed unreadable; compression keeps the key and fingerprint #backend-role
+    - Interface Adapters · 1.0h
     - needs BE-24 · completes S9, S47
     - Tests
-        - #unit_test — `test_decoder_chain_reads_with_module_then_cli_then_skips_and_records` — S9, injected decoders; `.zst` fixtures generated at test time
-        - #integration_test — `test_zst_read_on_homebrew_python_with_zstd_and_retried_after_decoder_installed` — S9
-        - #integration_test — `test_compressed_rollout_keeps_key_and_fingerprint_and_no_first_line_decoded_twice` — S47
+        - #unit_test — `test_zst_rollout_read_like_plain_and_corrupt_zst_listed_unreadable` — S9, `.zst` fixtures generated at test time with `compression.zstd`
+        - #integration_test — `test_compressed_rollout_keeps_key_and_fingerprint_and_no_zst_file_opened_twice` — S47, opens counted by wrapping `compression.zstd.open`
 
 ### Phase 10 · Log OMP sessions
 - [ ] **BE-27** — OmpReader: `sessions/*.jsonl` and `archive/sessions/*.jsonl.gz`, root id = stem after the first `_`, `parentSession` linked by stem in either folder, orphan child labelled `sub-agent of <id> (parent not found)`, parent cycle listed unreadable, reply = last `stopReason=="stop"` message with `completedAt`, effort from `thinking_level_change`, recorded cost, `custom_message` prompts per Q25, moved files read at most once; ported from [session_log_usage.ts](./skills/session-log/adapters/omp/session_log_usage.ts); wired into the composition root #backend-role
