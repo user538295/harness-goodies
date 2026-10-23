@@ -601,7 +601,7 @@ flowchart LR
     - Tests
         - #e2e_test — `test_omp_packaged_plugin_ships_no_session_log_extension` — inspect the installed plugin directory
         - #manual_test — OMP starts with no session-log extension; `/skill:session-log status` runs the new script — S28
-- [ ] **FE-4** — Docs, [README.md](./README.md): Windows/Git Bash claim `:200`, Bash/jq/sqlite3/Bun requirements `:201-203`, Cursor on Windows and the imported hook `:113`, OpenCode `:154,160`; new commands, skill invocation per harness from T-8, no live logging, `usage` computes a live unsaved report for a session never archived, upgrade note to move aside an old seeded `skills/session-log` copy (`:160,170`, without naming `install.sh`), every harness "not yet tested" on native Windows (Q1); further stale lines found in grounding (`:70,72,74,87,109,134,136,144,146,164,167,199`) #frontend-role
+- [x] **FE-4** — Docs, [README.md](./README.md): Windows/Git Bash claim `:200`, Bash/jq/sqlite3/Bun requirements `:201-203`, Cursor on Windows and the imported hook `:113`, OpenCode `:154,160`; new commands, skill invocation per harness from T-8, no live logging, `usage` computes a live unsaved report for a session never archived, upgrade note to move aside an old seeded `skills/session-log` copy (`:160,170`, without naming `install.sh`), every harness "not yet tested" on native Windows (Q1); further stale lines found in grounding (`:70,72,74,87,109,134,136,144,146,164,167,199`) #frontend-role
     - Presentation · 4.0h
     - needs BE-37, T-8 · completes S58
     - Tests
