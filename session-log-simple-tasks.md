@@ -575,7 +575,7 @@ flowchart LR
     - Tests
         - #unit_test — `test_package_json_has_no_omp_extensions` — S28, S57
         - #unit_test — `test_plugin_test_expects_new_skill_description_and_no_marker` — `bun test`
-- [ ] **BE-39** — Release guard cutover: delete `skills/session-log/VERSION` and its guard in [release.sh](./release.sh) (`:14-24,61-73,141-165,198`); in [test_release.sh](./test_release.sh) delete the guard cases `:124-234` and rewrite the `main` test `:236-245` as a `--dry-run` in a /tmp fixture repo with `assert_on_main`, `assert_clean_tree` and `find_last_valid_tag` stubbed; keep [.codex-plugin/hooks.json](./.codex-plugin/hooks.json) #backend-role
+- [x] **BE-39** — Release guard cutover: delete `skills/session-log/VERSION` and its guard in [release.sh](./release.sh) (`:14-24,61-73,141-165,198`); in [test_release.sh](./test_release.sh) delete the guard cases `:124-234` and rewrite the `main` test `:236-245` as a `--dry-run` in a /tmp fixture repo with `assert_on_main`, `assert_clean_tree` and `find_last_valid_tag` stubbed; keep [.codex-plugin/hooks.json](./.codex-plugin/hooks.json) #backend-role
     - Frameworks & Drivers · 3.0h
     - needs BE-10, BE-37 · completes S35
     - Tests
