@@ -1,0 +1,214 @@
+"""C6 filesystem adapter. Callers supply a checked prompt-logs root.
+
+Sync documents use the contract's JSON field names. Each store tracks the last loaded snapshot to detect competing writes; create one store per sync run.
+The persistent .sync.lock serializes re-read/merge/replace across processes and is released by the OS on exit. sync_reset stays true for the run after rebuilding corrupt state.
+New folders are 0700 and every file written is 0600 (`safe_paths`, `temp_files`; `.sync.json` gets 0600 from `tempfile.mkstemp`).
+Nothing is written through a link: a `.sync.lock`, or a `.log_enabled` that is a dangling link, fails the write with an error naming it.
+`.sync.json` is always replaced whole, so a link in its place is replaced by a regular file and its target is left alone. Reading through a link stays allowed.
+`migrate_enabled` converts an old release's `.enabled` flag; commands and hooks run it before they read the flag, which stays a pure read. Flag fallback is reported by OnFlag.from_file_time; reading never repairs the flag.
+"""
+import copy
+import json
+import os
+import tempfile
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from stat import S_ISREG
+from typing import Callable, Optional
+
+from .safe_paths import make_folders, require_no_link
+from .temp_files import FILE_MODE
+from .state_port import OnFlag
+
+MAX_INT32 = 2**31 - 1
+NO_FOLLOW = getattr(os, 'O_NOFOLLOW', 0)  # where it exists, it closes the gap between the link check and the open of `.sync.lock`
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _empty_state():
+    return {'units': {}, 'sessions': {}}
+
+
+def _timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError('invalid timestamp')
+    moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if moment.utcoffset() is None:
+        raise ValueError('missing timezone')
+
+
+def _validate_state(state):
+    if not isinstance(state, dict):
+        raise ValueError('not an object')
+    if 'lastSyncAt' in state:
+        _timestamp(state['lastSyncAt'])
+    for section in ('units', 'sessions'):
+        if not isinstance(state.get(section), dict):
+            raise ValueError('missing entry map')
+        for entry in state[section].values():
+            if not isinstance(entry, dict):
+                raise ValueError('invalid entry')
+            allowed = ('read', 'inactive', 'unreadable') if section == 'units' else ('written', 'skipped')
+            if entry.get('state') not in allowed:
+                raise ValueError('invalid entry state')
+            for field in ('fingerprint', 'sessionKey', 'reason', 'projectDir'):
+                if field in entry and not isinstance(entry[field], str):
+                    raise ValueError('invalid ' + field)
+            if section == 'sessions':
+                if not isinstance(entry.get('logPath'), str) or not entry['logPath']:
+                    raise ValueError('missing log path')
+                _timestamp(entry.get('lastActivityAt'))
+                if 'lastPromptAt' in entry:
+                    _timestamp(entry['lastPromptAt'])
+                if type(entry.get('orphan')) is not bool:
+                    raise ValueError('invalid orphan flag')
+                for field in ('renderVersion', 'unitCount'):
+                    if type(entry.get(field)) is not int or not 0 <= entry[field] <= MAX_INT32:
+                        raise ValueError('invalid ' + field)
+
+
+@contextmanager
+def _sync_lock(root):
+    """OS lock released on process exit; never unlink the shared lock inode."""
+    lock = root / '.sync.lock'
+    require_no_link(lock)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | NO_FOLLOW, FILE_MODE)
+    with os.fdopen(fd, 'r+b') as stream:
+        if os.name == 'nt':
+            import msvcrt
+            if os.fstat(fd).st_size == 0:
+                stream.write(b'\\0')
+                stream.flush()
+            stream.seek(0)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+class FileStateStore:
+    """Exclusive on flag (with the one-time `.enabled` conversion) and replace-based, key-merged sync state."""
+
+    def __init__(self, root, now: Callable[[], datetime] = _utc_now):
+        """`now` returns a timezone-aware datetime: the on-time of a migrated flag."""
+        self.root = Path(root)
+        self.sync_reset = False
+        self._baseline = _empty_state()
+        self._now = now
+
+    def migrate_enabled(self) -> None:
+        """`.enabled` -> `.log_enabled`, once and for good. Only a regular file counts, not a directory, a FIFO or a link: that is
+        what an old release created, and a link is never followed. The conversion is `write_on_flag`'s exclusive create (a
+        `.log_enabled` that already exists, and its on-time, win), then the removal of `.enabled`, which another run may have
+        done first. A failed creation leaves `.enabled` in place, so logging is never switched off; a failed removal raises with
+        the new flag in place: an `.enabled` that stays keeps the old release's hooks logging beside the new sync."""
+        legacy = self.root / '.enabled'
+        try:
+            if not S_ISREG(legacy.lstat().st_mode):
+                return
+        except FileNotFoundError:
+            return
+        self.write_on_flag(OnFlag(self._now()))
+        legacy.unlink(missing_ok=True)
+
+    def read_on_flag(self) -> Optional[OnFlag]:
+        try:
+            with (self.root / '.log_enabled').open(encoding='utf-8') as stream:
+                stat = os.fstat(stream.fileno())
+                try:
+                    moment = datetime.fromisoformat(stream.read().strip().replace('Z', '+00:00'))
+                    if moment.utcoffset() is None:
+                        raise ValueError('missing timezone')
+                    return OnFlag(moment)
+                except (ValueError, UnicodeError):
+                    return OnFlag(datetime.fromtimestamp(stat.st_mtime, timezone.utc), True)
+        except FileNotFoundError:
+            return None
+
+    def write_on_flag(self, flag: OnFlag):
+        on_at = flag.on_at
+        if on_at.utcoffset() is None:
+            raise ValueError('on-time must have a timezone')
+        make_folders(self.root)
+        flag_path = self.root / '.log_enabled'
+        try:
+            fd = os.open(flag_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
+        except FileExistsError:
+            if not flag_path.exists():
+                require_no_link(flag_path)  # a dangling link is no flag, and nothing is written through it
+            return
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
+            stream.write(on_at.isoformat() + '\n')
+
+    def delete_on_flag(self):
+        try:
+            (self.root / '.log_enabled').unlink()
+        except FileNotFoundError:
+            pass
+
+    def _read_sync(self):
+        try:
+            with (self.root / '.sync.json').open(encoding='utf-8') as stream:
+                state = json.load(stream)
+            _validate_state(state)
+            return state
+        except FileNotFoundError:
+            return _empty_state()
+        except (ValueError, UnicodeError):
+            self.sync_reset = True
+            return _empty_state()
+
+    def load_sync(self):
+        state = self._read_sync()
+        self._baseline = copy.deepcopy(state)
+        return state
+
+    def save_sync(self, state):
+        _validate_state(state)
+        make_folders(self.root)
+        with _sync_lock(self.root):
+            self._save_locked(state)
+
+    def _save_locked(self, state):
+        latest = self._read_sync()
+        merged = copy.deepcopy(latest)
+        for section in ('units', 'sessions'):
+            for key, entry in state[section].items():
+                result = copy.deepcopy(entry)
+                current = latest[section].get(key)
+                baseline = self._baseline[section].get(key)
+                if section == 'units' and current != baseline and current is not None:
+                    if current.get('fingerprint') != entry.get('fingerprint'):
+                        result.pop('fingerprint', None)
+                if section == 'sessions' and current is not None and 'logPath' in current:
+                    result['logPath'] = current['logPath']
+                merged[section][key] = result
+        if 'lastSyncAt' in state:
+            merged['lastSyncAt'] = state['lastSyncAt']
+        fd, name = tempfile.mkstemp(prefix='.sync-', suffix='.tmp', dir=self.root)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
+                json.dump(merged, stream, ensure_ascii=False, allow_nan=False)
+                stream.write('\n')
+            os.replace(name, self.root / '.sync.json')
+        finally:
+            try:
+                os.unlink(name)
+            except FileNotFoundError:
+                pass
+        self._baseline = copy.deepcopy(merged)
+        state.clear()
+        state.update(merged)

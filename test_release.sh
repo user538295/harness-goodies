@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for release.sh pure functions. Run: bash test_release.sh
+# Tests for release.sh: its pure functions and a --dry-run of main. Run: bash test_release.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -121,131 +121,63 @@ UPDATE_COMMANDS=("${_orig_cmds[@]}")
 discard "$_log"
 assert_eq "covers claude, omp, codex, opencode" "4" "$(printf '%s\n' "${UPDATE_COMMANDS[@]}" | grep -cE '^(claude|omp|codex|opencode) ')"
 
-# ── session_log_version_stale ─────────────────────────────────────────────────
-echo "=== session_log_version_stale ==="
-assert_exits_0 "package changed, VERSION not" session_log_version_stale $'skills/session-log/bin/session-log'
-assert_exits_1 "package and VERSION changed"  session_log_version_stale $'skills/session-log/bin/session-log\nskills/session-log/VERSION'
-assert_exits_1 "only VERSION changed"         session_log_version_stale $'skills/session-log/VERSION'
-assert_exits_1 "nothing changed"              session_log_version_stale ""
-assert_exits_1 "another skill changed"        session_log_version_stale $'skills/commit/SKILL.md'
-assert_exits_1 "a lookalike directory"        session_log_version_stale $'skills/session-logger/SKILL.md'
-for _file in "${SESSION_LOG_WIRING_FILES[@]}" "${JSON_WIRING_FIELDS[@]}"; do
-  assert_exits_0 "$_file changed, VERSION not" session_log_version_stale "$_file"
-  assert_exits_1 "$_file and VERSION changed"  session_log_version_stale "$_file"$'\nskills/session-log/VERSION'
-done
-assert_exits_1 "a lookalike hook manifest"    session_log_version_stale $'other/hooks/hooks.json'
-assert_exits_1 "package.json changed only"    session_log_version_stale $'package.json'
-for _field in "package.json:.omp.extensions" "package.json:.exports" ".cursor-plugin/plugin.json:.hooks" ".codex-plugin/plugin.json:.hooks"; do
-  assert_eq "guards the wiring field $_field" "1" "$(printf '%s\n' "${JSON_WIRING_FIELDS[@]}" | grep -cxF "$_field")"
-done
-
-# ── assert_session_log_version_bumped ─────────────────────────────────────────
-echo "=== assert_session_log_version_bumped ==="
-# The fixture repository must not run the developer's commit signing, hooks, or other global settings.
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-fixture_git() { git -C "$REPO_ROOT" -c user.name=test -c user.email=test@example.com "$@"; }
-# write_package_json <version> <omp extension> [exports] → the fixture's package.json
-write_package_json() {
-  printf '{\n  "version": "%s",\n  "exports": "%s",\n  "omp": {\n    "extensions": [\n      "%s"\n    ]\n  }\n}\n' \
-    "$1" "${3:-./index.js}" "$2" > "$REPO_ROOT/package.json"
-}
-# write_plugin_json <harness> <version> <hooks pointer> → the fixture's .<harness>-plugin/plugin.json
-write_plugin_json() {
-  mkdir -p "$REPO_ROOT/.$1-plugin"
-  printf '{\n  "version": "%s",\n  "hooks": "%s"\n}\n' "$2" "$3" > "$REPO_ROOT/.$1-plugin/plugin.json"
-}
-_orig_root="$REPO_ROOT"
-REPO_ROOT="$(mktemp -d)"
-fixture_git init -q
-fixture_git commit -q --allow-empty -m base
-mkdir -p "$REPO_ROOT/skills/session-log" "$REPO_ROOT/hooks"
-printf '1.0.0\n' > "$REPO_ROOT/skills/session-log/VERSION"
-printf 'one\n' > "$REPO_ROOT/skills/session-log/SKILL.md"
-printf '{}\n' > "$REPO_ROOT/hooks/hooks.json"
-write_package_json 1.0.0 ./one.js
-write_plugin_json cursor 1.0.0 ./one.json
-write_plugin_json codex 1.0.0 ./one.json
-fixture_git add -A
-fixture_git commit -q -m release
-fixture_git tag v1.0.0
-assert_exits_0 "nothing changed since the tag" assert_session_log_version_bumped v1.0.0
-printf 'two\n' > "$REPO_ROOT/skills/session-log/SKILL.md"
-fixture_git commit -q -am change
-assert_exits_1 "package changed without a VERSION bump" assert_session_log_version_bumped v1.0.0
-assert_eq "names VERSION in the refusal" "1" \
-  "$(assert_session_log_version_bumped v1.0.0 2>&1 >/dev/null | grep -c 'skills/session-log/VERSION')"
-printf '1.0.1\n' > "$REPO_ROOT/skills/session-log/VERSION"
-fixture_git commit -q -am bump
-assert_exits_0 "package changed with a VERSION bump" assert_session_log_version_bumped v1.0.0
-fixture_git tag v1.0.1
-printf '{"hooks": {}}\n' > "$REPO_ROOT/hooks/hooks.json"
-fixture_git commit -q -am hooks
-assert_exits_1 "hook manifest changed without a VERSION bump" assert_session_log_version_bumped v1.0.1
-printf '1.0.2\n' > "$REPO_ROOT/skills/session-log/VERSION"
-fixture_git commit -q -am bump
-fixture_git tag v1.0.2
-write_package_json 2.0.0 ./one.js
-fixture_git commit -q -am release
-assert_exits_0 "only the release version of package.json changed" assert_session_log_version_bumped v1.0.2
-write_package_json 2.0.0 ./two.js
-fixture_git commit -q -am extension
-assert_exits_1 "omp.extensions changed without a VERSION bump" assert_session_log_version_bumped v1.0.2
-printf '1.0.3\n' > "$REPO_ROOT/skills/session-log/VERSION"
-fixture_git commit -q -am bump
-fixture_git tag v1.0.3
-write_plugin_json cursor 2.0.0 ./one.json
-write_plugin_json codex 2.0.0 ./one.json
-fixture_git commit -q -am release
-assert_exits_0 "only the release version of the plugin manifests changed" assert_session_log_version_bumped v1.0.3
-for _harness in cursor codex; do
-  write_plugin_json "$_harness" 2.0.0 ./two.json
-  fixture_git commit -q -am "$_harness hooks pointer"
-  assert_exits_1 "$_harness plugin.json hooks pointer changed without a VERSION bump" \
-    assert_session_log_version_bumped v1.0.3
-  write_plugin_json "$_harness" 2.0.0 ./one.json
-  fixture_git commit -q -am "restore $_harness hooks pointer"
-done
-# shellcheck disable=SC2016 # the inner script expands its own positional arguments
-_jq_absent=$(bash -c 'source "$1"; REPO_ROOT="$2"; PATH=/nonexistent
-  assert_session_log_version_bumped v1.0.3 2>&1 || echo "exit $?"' _ "$SCRIPT_DIR/release.sh" "$REPO_ROOT")
-assert_eq "fails closed, naming jq, when jq is not installed" \
-  $'Error: jq is required to check the session-log VERSION bump\nexit 1' "$_jq_absent"
-# Only .exports changes: omp.extensions stays ./two.js as at v1.0.3.
-write_package_json 2.0.0 ./two.js ./other.js
-fixture_git commit -q -am exports
-assert_exits_1 "exports changed without a VERSION bump" assert_session_log_version_bumped v1.0.3
-printf '1.0.4\n' > "$REPO_ROOT/skills/session-log/VERSION"
-fixture_git rm -q .codex-plugin/plugin.json
-fixture_git commit -q -am "bump, drop the codex manifest"
-fixture_git tag v1.0.4
-assert_eq "a manifest absent at the revision reads as null" "null" "$(json_field_at v1.0.4 .codex-plugin/plugin.json .hooks)"
-write_plugin_json codex 2.0.0 ./one.json
-fixture_git add -A
-fixture_git commit -q -m "codex manifest added"
-assert_exits_1 "a hooks pointer added since the last tag without a VERSION bump" assert_session_log_version_bumped v1.0.4
-# The VERSION bump makes the guard pass on everything but the unreadable manifest itself.
-printf '1.0.5\n' > "$REPO_ROOT/skills/session-log/VERSION"
-printf '{ not json\n' > "$REPO_ROOT/package.json"
-fixture_git commit -q -am broken
-assert_exits_1 "fails closed when a wiring manifest is not valid JSON" assert_session_log_version_bumped v1.0.4
-assert_eq "names the unreadable manifest" "1" \
-  "$(assert_session_log_version_bumped v1.0.4 2>&1 >/dev/null | grep -cxF 'Error: cannot read .omp.extensions from package.json at HEAD')"
-discard "$REPO_ROOT"
-REPO_ROOT="$_orig_root"
-
 # ── main ──────────────────────────────────────────────────────────────────────
 echo "=== main ==="
-assert_eq "stops on the session-log guard, checked against the last tag" "guard v9.9.9" "$(
+# test_release_dry_run_without_version_guard_prints_plan_exits_0_pushes_nothing_runs_no_update_command (S35):
+# --dry-run in a /tmp fixture repo with a bare origin prints the plan, exits 0, pushes nothing and runs no
+# update command. The fixture repositories must not run the developer's commit signing, hooks, or other
+# global settings.
+_isolated_git() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }
+_fixture="$(mktemp -d /tmp/release-fixture.XXXXXX)"
+_origin="$(mktemp -d /tmp/release-origin.XXXXXX)"
+_fixture_git() { _isolated_git -C "$_fixture" -c user.name=test -c user.email=test@example.com "$@"; }
+_git_calls="$(mktemp)"
+_update_marker="$(mktemp)"
+_isolated_git init -q --bare "$_origin"
+_fixture_git init -q
+_fixture_git remote add origin "$_origin"
+mkdir -p "$_fixture/.claude-plugin"
+printf '{\n  "version": "1.2.3"\n}\n' > "$_fixture/.claude-plugin/plugin.json"
+_fixture_git add -A
+_fixture_git commit -q -m release
+_fixture_git tag v1.2.3
+mkdir -p "$_fixture/skills/new"
+printf 'new\n' > "$_fixture/skills/new/SKILL.md"
+_fixture_git add -A
+_fixture_git commit -q -m "new skill"
+_head_before="$(_fixture_git rev-parse HEAD)"
+_rc=0
+_out=$(
   set -e
+  REPO_ROOT="$_fixture"
+  PLUGIN_JSON="$_fixture/.claude-plugin/plugin.json"
+  # shellcheck disable=SC2030 # the fixture's file list must stay inside this subshell
+  VERSION_FILES=("$PLUGIN_JSON")
+  UPDATE_COMMANDS=("echo updated >> $_update_marker")
+  git() { printf '%s\n' "$*" >> "$_git_calls"; command git "$@"; }
   assert_on_main() { :; }
   assert_clean_tree() { :; }
-  find_last_valid_tag() { echo v9.9.9; }
-  assert_session_log_version_bumped() { echo "guard $1"; return 1; }
-  main --dry-run 2>/dev/null
-)"
+  find_last_valid_tag() { echo v1.2.3; }
+  main --dry-run -y 2>&1 < /dev/null
+) || _rc=$?
+assert_eq "dry-run exits 0" "0" "$_rc"
+assert_eq "dry-run names the current version" "1" "$(grep -c '^Current version *: 1\.2\.3$' <<< "$_out")"
+assert_eq "dry-run names the last tag" "1" "$(grep -c '^Last tag *: v1\.2\.3$' <<< "$_out")"
+assert_eq "dry-run names the next version (a new skill bumps the minor)" "1" "$(grep -c '^Next version *: 1\.3\.0$' <<< "$_out")"
+assert_eq "dry-run prints the release plan" "1 7" "$(grep -c '^\[dry-run\] Would execute:' <<< "$_out") $(grep -cE '^  [1-7]\. ' <<< "$_out")"
+assert_eq "dry-run plans the tag and both pushes" "3" "$(grep -cE '^  (4\. git tag -a v1\.3\.0 |5\. git push origin main$|6\. git push origin v1\.3\.0$)' <<< "$_out")"
+assert_eq "dry-run lists the update command" "1" "$(grep -c 'echo updated' <<< "$_out")"
+assert_eq "the git stub saw the diff against the last tag" "1" "$(grep -c -- 'diff --name-status v1.2.3..HEAD' "$_git_calls")"
+assert_eq "dry-run runs no git push" "0" "$(grep -cE '(^| )push( |$)' "$_git_calls")"
+assert_eq "dry-run leaves the origin empty" "" "$(_isolated_git -C "$_origin" for-each-ref)"
+assert_eq "dry-run runs no update command" "0" "$(wc -l < "$_update_marker" | tr -d ' ')"
+assert_eq "dry-run leaves HEAD and tags alone" "$_head_before v1.2.3" "$(_fixture_git rev-parse HEAD) $(_fixture_git tag)"
+assert_eq "dry-run leaves the plugin version alone" "1.2.3" "$(version_in "$_fixture/.claude-plugin/plugin.json")"
+discard "$_fixture" "$_origin" "$_git_calls" "$_update_marker"
 
 # ── shipped versions agree ────────────────────────────────────────────────────
 echo "=== shipped versions agree ==="
+# shellcheck disable=SC2031 # reads the real list; the fixture's override above lived only in its subshell
 for _file in "${VERSION_FILES[@]}"; do
   assert_eq "${_file#"$SCRIPT_DIR"/} matches plugin.json" "$(current_version)" "$(version_in "$_file")"
 done

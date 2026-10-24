@@ -1,0 +1,552 @@
+{
+  "models": [
+    {
+      "prefixes": [
+        "claude-opus-5-5"
+      ],
+      "in": 4,
+      "out": 20,
+      "cache_read": 0.2,
+      "cache_write_5m": 5,
+      "cache_write_1h": 8,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21",
+      "fast": {
+        "in": 8,
+        "out": 40,
+        "cache_read": 0.4,
+        "cache_write_5m": 10,
+        "cache_write_1h": 16
+      }
+    },
+    {
+      "prefixes": [
+        "claude-opus-5",
+        "claude-opus-4-8"
+      ],
+      "in": 5,
+      "out": 25,
+      "cache_read": 0.5,
+      "cache_write_5m": 6.25,
+      "cache_write_1h": 10,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21",
+      "fast": {
+        "in": 10,
+        "out": 50,
+        "cache_read": 1,
+        "cache_write_5m": 12.5,
+        "cache_write_1h": 20
+      }
+    },
+    {
+      "prefixes": [
+        "claude-opus-5-5-fast"
+      ],
+      "in": 8,
+      "out": 40,
+      "cache_read": 0.4,
+      "cache_write_5m": 10,
+      "cache_write_1h": 16,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21",
+      "fast": {
+        "in": 8,
+        "out": 40,
+        "cache_read": 0.4,
+        "cache_write_5m": 10,
+        "cache_write_1h": 16
+      }
+    },
+    {
+      "prefixes": [
+        "claude-opus-5-fast",
+        "claude-opus-4-8-fast"
+      ],
+      "in": 10,
+      "out": 50,
+      "cache_read": 1,
+      "cache_write_5m": 12.5,
+      "cache_write_1h": 20,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21",
+      "fast": {
+        "in": 10,
+        "out": 50,
+        "cache_read": 1,
+        "cache_write_5m": 12.5,
+        "cache_write_1h": 20
+      }
+    },
+    {
+      "prefixes": [
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5"
+      ],
+      "in": 5,
+      "out": 25,
+      "cache_read": 0.5,
+      "cache_write_5m": 6.25,
+      "cache_write_1h": 10,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "claude-sonnet-5-5"
+      ],
+      "in": 2,
+      "out": 10,
+      "cache_read": 0.1,
+      "cache_write_5m": 2.5,
+      "cache_write_1h": 4,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "claude-sonnet-5"
+      ],
+      "in": 2,
+      "out": 10,
+      "cache_read": 0.2,
+      "cache_write_5m": 2.5,
+      "cache_write_1h": 4,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4"
+      ],
+      "in": 3,
+      "out": 15,
+      "cache_read": 0.3,
+      "cache_write_5m": 3.75,
+      "cache_write_1h": 6,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "claude-fable-5-1",
+        "claude-mythos-5-1"
+      ],
+      "in": 10,
+      "out": 50,
+      "cache_read": 0.25,
+      "cache_write_5m": 12.5,
+      "cache_write_1h": 20,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "claude-fable-5",
+        "claude-mythos-5"
+      ],
+      "in": 10,
+      "out": 50,
+      "cache_read": 1,
+      "cache_write_5m": 12.5,
+      "cache_write_1h": 20,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "claude-haiku-4-5"
+      ],
+      "in": 1,
+      "out": 5,
+      "cache_read": 0.1,
+      "cache_write_5m": 1.25,
+      "cache_write_1h": 2,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-6-astra"
+      ],
+      "in": 10,
+      "out": 50,
+      "cache_read": 1,
+      "cache_write_5m": 12.5,
+      "cache_write_1h": 25,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-6.1-sol"
+      ],
+      "in": 2,
+      "out": 10,
+      "cache_read": 0.1,
+      "cache_write_5m": 2.5,
+      "cache_write_1h": 5,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-6-sol"
+      ],
+      "in": 2,
+      "out": 10,
+      "cache_read": 0.2,
+      "cache_write_5m": 2.5,
+      "cache_write_1h": 5,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-6-luna"
+      ],
+      "in": 0.1,
+      "out": 0.5,
+      "cache_read": 0.01,
+      "cache_write_5m": 0.125,
+      "cache_write_1h": 0.25,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.6-sol"
+      ],
+      "in": 4,
+      "out": 20,
+      "cache_read": 0.4,
+      "cache_write_5m": 5,
+      "cache_write_1h": 10,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.6-terra"
+      ],
+      "in": 2,
+      "out": 12,
+      "cache_read": 0.2,
+      "cache_write_5m": 2.5,
+      "cache_write_1h": 5,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.6-luna"
+      ],
+      "in": 0.2,
+      "out": 1.2,
+      "cache_read": 0.02,
+      "cache_write_5m": 0.25,
+      "cache_write_1h": 0.5,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.5"
+      ],
+      "in": 5,
+      "out": 30,
+      "cache_read": 0.5,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.5-pro"
+      ],
+      "in": 30,
+      "out": 180,
+      "cache_read": 30,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.4"
+      ],
+      "in": 2.5,
+      "out": 15,
+      "cache_read": 0.25,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.4-pro"
+      ],
+      "in": 30,
+      "out": 180,
+      "cache_read": 30,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.4-mini"
+      ],
+      "in": 0.75,
+      "out": 4.5,
+      "cache_read": 0.075,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.4-nano"
+      ],
+      "in": 0.2,
+      "out": 1.25,
+      "cache_read": 0.02,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.2"
+      ],
+      "in": 1.75,
+      "out": 14,
+      "cache_read": 0.175,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.2-pro"
+      ],
+      "in": 21,
+      "out": 168,
+      "cache_read": 21,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.1"
+      ],
+      "in": 1.25,
+      "out": 10,
+      "cache_read": 0.125,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5"
+      ],
+      "in": 1.25,
+      "out": 10,
+      "cache_read": 0.125,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5-pro"
+      ],
+      "in": 15,
+      "out": 120,
+      "cache_read": 15,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5-mini"
+      ],
+      "in": 0.25,
+      "out": 2,
+      "cache_read": 0.025,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5-nano"
+      ],
+      "in": 0.05,
+      "out": 0.4,
+      "cache_read": 0.005,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5-codex",
+        "gpt-5.1-codex"
+      ],
+      "in": 1.25,
+      "out": 10,
+      "cache_read": 0.125,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://cursor.com/docs/models-and-pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.1-codex-mini"
+      ],
+      "in": 0.25,
+      "out": 2,
+      "cache_read": 0.025,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://cursor.com/docs/models-and-pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.2-codex",
+        "gpt-5.3-codex"
+      ],
+      "in": 1.75,
+      "out": 14,
+      "cache_read": 0.175,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://cursor.com/docs/models-and-pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "composer-2.5"
+      ],
+      "in": 0.5,
+      "out": 2.5,
+      "cache_read": 0.2,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://cursor.com/docs/models-and-pricing",
+      "as_of": "2026-10-21",
+      "fast": {
+        "in": 3,
+        "out": 15,
+        "cache_read": 0.5,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0
+      }
+    },
+    {
+      "prefixes": [
+        "composer-2.5-fast"
+      ],
+      "in": 3,
+      "out": 15,
+      "cache_read": 0.5,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://cursor.com/docs/models-and-pricing",
+      "as_of": "2026-10-21",
+      "fast": {
+        "in": 3,
+        "out": 15,
+        "cache_read": 0.5,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0
+      }
+    },
+    {
+      "prefixes": [
+        "claude-opus-4-7-fast"
+      ],
+      "in": 30,
+      "out": 150,
+      "cache_read": 3,
+      "cache_write_5m": 37.5,
+      "cache_write_1h": 60,
+      "source": "https://cursor.com/docs/models-and-pricing",
+      "as_of": "2026-10-21",
+      "fast": {
+        "in": 30,
+        "out": 150,
+        "cache_read": 3,
+        "cache_write_5m": 37.5,
+        "cache_write_1h": 60
+      }
+    },
+    {
+      "prefixes": [
+        "gpt-5.6-cyber"
+      ],
+      "in": 12.5,
+      "out": 75,
+      "cache_read": 1.25,
+      "cache_write_5m": 15.625,
+      "cache_write_1h": 31.25,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5.5-cyber"
+      ],
+      "in": 12.5,
+      "out": 75,
+      "cache_read": 1.25,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-5-fast",
+        "gpt-5-high-fast",
+        "gpt-5-low-fast"
+      ],
+      "in": 2.5,
+      "out": 20,
+      "cache_read": 0.25,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "source": "https://cursor.com/docs/models-and-pricing",
+      "as_of": "2026-10-21",
+      "fast": {
+        "in": 2.5,
+        "out": 20,
+        "cache_read": 0.25,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0
+      }
+    }
+  ]
+}

@@ -1,86 +1,34 @@
 ---
 name: session-log
-description: Manage session prompt logging and usage totals (on / off / status / usage / repair)
+description: Manage session prompt logging and usage totals (on / off / status / usage)
 ---
-<!-- universal-session-log: managed -->
 
-This skill supports exactly five host identities: `claude`, `codex`, `cursor`, `opencode` (OpenCode V2), and `omp`.
+This skill runs the bundled script `session_log.py`, which turns prompt logging on or off, reports its status, and prints the token and price report of a session. It needs Python 3.14 or newer and recognizes exactly five host identities: `claude`, `codex`, `cursor`, `opencode` (OpenCode V2), and `omp`. Session-log does not log in OpenCode until the next release: every command is unavailable there.
 
-Select the identity of the host that loaded this skill from runtime/system context. Never infer it from paths, processes, or environment variables. Set `harness` below to that literal identity. Set `BASE` first to the skill directory announced by the host. Set `arguments` to the exact invocation arguments, or to `status` when none were supplied.
+## Run it
 
-```bash
-harness='<claude|codex|cursor|opencode|omp: choose the current host>'
-BASE='<the skill directory announced by the current host, or empty>'
-arguments='<exact invocation arguments, or status>'
-case "$harness" in claude|codex|cursor|opencode|omp) supported=true ;; *) supported=false ;; esac
-if [ ! -f "$BASE/install.sh" ]; then
-  BASE=""; for d in "${SESSION_LOG_HOME:-}" .agents/skills/session-log .claude/skills/session-log .cursor/skills/session-log .opencode/skills/session-log .codex/skills/session-log ~/.agents/skills/session-log ~/.claude/skills/session-log ~/.cursor/skills/session-log ~/.config/opencode/skills/session-log ~/.omp/agent/skills/session-log ~/.codex/skills/session-log "$(ls -d ~/.claude/plugins/cache/*/claude-goodies/*/skills/session-log 2>/dev/null | sort -V | tail -1)" "$(ls -d ~/.omp/plugins/cache/plugins/*___omp-goodies___*/skills/session-log 2>/dev/null | sort -V | tail -1)" "$(ls -d ~/.codex/plugins/cache/*/codex-goodies/*/skills/session-log 2>/dev/null | sort -V | tail -1)" "$(ls -dt ~/.cursor/plugins/cache/*/cursor-goodies/*/skills/session-log 2>/dev/null | head -1)" "$(ls -dt ~/.cache/opencode/npm/*/*/node_modules/opencode-goodies/skills/session-log 2>/dev/null | head -1)"; do [ -n "$d" ] && [ -f "$d/SKILL.md" ] && { BASE="$d"; break; }; done
-fi
-if [ "$supported" = false ]; then
-  printf 'session-log: unsupported host identity: %s\n' "$harness" >&2
-  false
-elif [ -z "$BASE" ]; then
-  printf 'session-log: complete package not found in any known skills root — set SESSION_LOG_HOME=<skill dir>\n' >&2
-  false
-elif [ ! -f "$BASE/install.sh" ]; then
-  printf 'session-log: %s is not a complete package (no install.sh) — set SESSION_LOG_HOME=<skill dir>\n' "$BASE" >&2
-  false
-else
-  bash "$BASE/install.sh" --harness "$harness" --arguments "$arguments"
-fi
+1. Select the identity of the host that loaded this skill from runtime/system context. Never infer it from paths, processes, or environment variables. It replaces `<harness>` below. If the host is not one of the five, or you cannot tell, stop and tell the user. If the host is OpenCode, do not run the script and do not retry with another identity: tell the user that session-log does not log in OpenCode until the next release, and stop.
+2. Take the skill directory the host announced when it loaded this skill (Claude Code and OpenCode print `Base directory for this skill: <path>`, omp prints `[Skill directory: <path>]`; in Cursor and Codex it is the directory of this SKILL.md; a `file://` URL stands for the filesystem path it names). It replaces `<skill dir>` below.
+3. If the host announced no directory: on macOS and Linux run the locator below in bash, which only prints the directory, and use that path; on native Windows the locator cannot run (it is bash), so ask the user to set `SESSION_LOG_HOME` to the skill directory and to tell you its value, and use that value.
+4. Set `<arguments>` to the invocation arguments, or to `status` when none were supplied. Accept only `on`, `off`, `status`, `usage`, `usage --latest`, or `usage <session-id>` (a session id holds only letters, digits, `_` and `-`); for anything else stop and tell the user, because the line below is parsed by a shell.
+5. Run this one line, keeping the double quotes around the directory:
+
+```
+python3 "<skill dir>/session_log.py" <harness> <arguments>
 ```
 
-Keep arguments exact and shell-quote the assignment as one data value; never evaluate invocation text as shell syntax. For example, forward `usage --latest` as both words and preserve quoted values.
+On Windows only: if `python3` cannot be started (it is missing, or only the Microsoft Store stand-in answers, and no `session-log:` line appears on stderr), run the same line with `py -3` in place of `python3`, and if that cannot be started either, with `python`; if none of the three can be started, tell the user that Python 3.14 or newer is required (python.org/downloads) and stop. Once the script has run, a `session-log:` message on stderr is its own answer: report it as it is and try no other interpreter.
 
-## Filesystem permissions and activation
+## Locator
 
-The session-log CLI requires Bash 4+ on `PATH`; stock macOS Bash 3.2 is insufficient.
+Run it in bash only when the host announced no skill directory (macOS and Linux). It tries `SESSION_LOG_HOME` first, then project-level roots, then the user-level roots of every supported host, then the plugin-cache copy (the newest version, or the most recently installed copy for Cursor and OpenCode), and takes the first directory that holds `session_log.py`. A project-level hit prints a path relative to the current directory:
 
-`on`, `off`, and `repair` write user configuration or state outside the project workspace. `status` and `usage` can also write when repairing an enabled adapter, as described below. If the host sandbox denies access, use that host's permission mechanism for the reported path before retrying. Do not use `sudo` or bypass the sandbox.
+```bash
+BASE=""; for d in "${SESSION_LOG_HOME:-}" .agents/skills/session-log .claude/skills/session-log .cursor/skills/session-log .opencode/skills/session-log .codex/skills/session-log ~/.agents/skills/session-log ~/.claude/skills/session-log ~/.cursor/skills/session-log ~/.config/opencode/skills/session-log ~/.omp/agent/skills/session-log ~/.codex/skills/session-log "$(ls -d ~/.claude/plugins/cache/*/claude-goodies/*/skills/session-log 2>/dev/null | sort -V | tail -1)" "$(ls -d ~/.omp/plugins/cache/plugins/*___omp-goodies___*/skills/session-log 2>/dev/null | sort -V | tail -1)" "$(ls -d ~/.codex/plugins/cache/*/codex-goodies/*/skills/session-log 2>/dev/null | sort -V | tail -1)" "$(ls -dt ~/.cursor/plugins/cache/*/cursor-goodies/*/skills/session-log 2>/dev/null | head -1)" "$(ls -dt ~/.cache/opencode/npm/*/*/node_modules/opencode-goodies/skills/session-log 2>/dev/null | head -1)"; do [ -n "$d" ] && [ -f "$d/session_log.py" ] && { BASE="$d"; break; }; done; [ -n "$BASE" ] && echo "$BASE" || { echo "ERROR: session-log not found in any known skills root — set SESSION_LOG_HOME=<skill dir>" >&2; false; }
+```
 
-When preparing private state fails, the command exits nonzero and reports the operation, target path, and OS reason without a Python traceback. Report the failure; do not say logging is on after a failed command. After a successful `on`, preserve any approval or restart instruction in its output. Confirm active logging with `status` after the host's hooks or handlers have written the runtime marker; an enable flag alone does not confirm activation.
+On success it prints the directory; on failure it prints the not-found error to stderr and exits non-zero. Report that error and its `SESSION_LOG_HOME` hint to the user.
 
-## What each host reports
+## Results
 
-In Claude Code, Cursor, OMP, and OpenCode the harness plugin registers the session-log hooks from its own package. They log nothing until `on` creates the enable flag. `on` and `off` register nothing: `on` creates that flag (after the legacy cleanup below), `off` removes it together with the runtime markers (except OMP's, which its loaded extension keeps), and `status` only reads the flag together with the runtime marker the hooks of a running session write.
-
-Claude Code:
-- The claude-goodies plugin's `hooks/hooks.json` registers the hooks.
-- When Cursor imports the enabled plugin and runs them, only the session-start hook runs the legacy cleanup; none of them logs, nor writes or removes Claude runtime markers.
-
-Cursor:
-- The cursor-goodies plugin's `.cursor-plugin/hooks.json` registers the hooks. Cursor loads them only while its "Include Third-Party Plugins, Skills, and Other Configs" setting is on (and its server-side plugin import gate allows it).
-- The hooks run with no prompt, through the user's `$SHELL -c`. Each command checks the enable flag first, so while logging is off they exit immediately without starting Python, and they exit silently when the plugin's hook script or `python3` is missing. Legacy `~/.cursor/hooks.json` entries still run the older code until the cleanup removes them.
-- The commands are tested with sh, bash, zsh, and fish. Shells with another syntax (for example nushell, xonsh, or PowerShell) fail on every event, which Cursor records only in Cursor Settings → Hooks (no notification). Native Windows is not supported for these hooks (Cursor runs them through PowerShell there), so use Cursor under WSL.
-- The first `on` reports `on — logging starts with the next prompt once the cursor-goodies hooks run; run status after it to confirm`.
-- When logging is on but no hook of this cursor-goodies version has run, `status` reports `on — no hook of this cursor-goodies version has run` and names the plugin install or update, that setting, and a restart. It counts only hooks of the same package `VERSION` as this skill; failing hook runs are listed in Cursor Settings → Hooks.
-- `usage` prints Claude Code's per-request layout and price estimate from the parent agent's token counts recorded by Cursor `stop` hooks while logging is on, then lists each subagent with only its final context size from Cursor's local state (not added to TOTAL). It fails rather than inventing totals when none exist.
-
-OMP:
-- The omp-goodies plugin registers the session-log extension, which reads the enable flag at every prompt. It still writes its runtime marker and starts the legacy cleanup when it loads, so `on` reports `on — restart required` until a restarted omp has loaded it.
-- A failed background cleanup is reported once on omp's stderr (a transient one, exit status 75, is not); `repair` names the cause.
-
-OpenCode:
-- The opencode-goodies plugin registers the session-log handlers and the `/session-log` command. That command runs this package's CLI directly and shows its output as a session notice.
-
-Codex:
-- `on` requires the codex-goodies plugin installed from the `user538295` marketplace. Without it, `status` reports `on — codex-goodies plugin not installed`.
-- `on` adds `~/.codex/hooks.json` commands that run the plugin's newest package. Until a Codex session has run them, `on` and `status` report `on — approve the session-log hooks in /hooks, or restart Codex and choose 'Trust all and continue' if it shows the 'Hooks need review' screen`.
-- Approving in `/hooks` takes effect in the running session. `codex exec` and other non-interactive runs run only hooks already trusted, so trust them once in the interactive TUI.
-- The commands name no package path or version, so plugin updates never change them, and they stay trusted as long as the entries keep their place in `hooks.json`.
-- `status` compares the runtime marker with the running package's `VERSION`, so run it through the plugin's skill; a checkout with another `VERSION` keeps reporting the trust instruction.
-
-## `repair` and the legacy cleanup
-
-`repair` removes duplicate and stale session-log hook registrations and the leftovers of older releases for the current host, and reports what it changed:
-- Codex: the `hooks.json` entries, restoring the missing ones of a partial set and, while the codex-goodies plugin is installed, replacing the entries older releases registered by package path. The package copy older releases seeded into `~/.codex/skills` goes only when proven unchanged (as in Claude Code). It is kept, without its SKILL.md, while `~/.codex/hooks.json` names its hook or cannot be read, because Codex sessions started earlier keep running that hook: restart Codex before the next `on` or `repair`, which then removes it, since neither can tell whether Codex restarted. Without the plugin `repair` keeps it and says to install the plugin, then run `on`. `status` and `usage` run the same cleanup when they repair an enabled adapter.
-- Cursor: every session-log entry older releases put in `~/.cursor/hooks.json`, the package copy they seeded into `~/.cursor/skills` (only when its ownership manifest proves every file unchanged; otherwise `repair` names it; move it aside), and their adapter state files. Each Cursor session start while logging is on runs `repair` when `~/.cursor/hooks.json` still holds such entries, for at most 20 seconds; a timeout, or a cleanup that cannot start, is named on the hook's stderr, which Cursor logs.
-- OMP: the `~/.omp/agent/extensions/session-log.js` link, the package copy older releases seeded into `~/.omp/agent/skills/session-log`, and its usage link. The OMP standalone extension copy and the `session-log-omp` files of pre-universal releases go silently; a foreign (unmarked) file or link at that extension path stays, and the rest of the cleanup still runs. Each omp start runs the cleanup in the background once per change of this package (its location or `VERSION`) or of the leftovers present, and stamps it in `~/.omp/agent/session-log/legacy-cleanup.stamp` after every attempt except a transient one (exit status 75) or one that never finished (timed out after 120 seconds, killed, or could not start), which runs again at the next start (an unfinished one is also reported on omp's stderr). A failed attempt is stamped too and runs again only when one of those changes: its failure, like a kept copy, is reported once, and `repair` shows it.
-- OpenCode: the adapter links and marked copies, the markdown `/session-log` command (which overrides the plugin's; a foreign one is named instead), and the package copy older releases installed under `~/.config/opencode`. The plugin runs the cleanup in the background once per installed package (its location or `VERSION`) and again when the markdown command, the seeded copy, or the adapter link appears or goes, and stamps it after every attempt except a transient one (exit status 75) or one that never finished (timed out after 120 seconds, killed, or could not start), which runs again at the next start; a failed attempt is stamped too, and `repair` shows the failure. It writes its report or failure to OpenCode's log.
-- Claude Code: every session-log hook in `settings.json`, the legacy prompt_log scripts the pre-plugin install copied into `~/.claude/scripts` and their hooks, and the package copy (or a skill-root link into the plugin cache) older releases left under `~/.claude/skills`; a copy goes only when its ownership manifest proves every file unchanged, otherwise `repair` names it so you can move it aside. An edited legacy script keeps the scripts and their hooks, and `repair` then fails naming it. Each Claude Code startup runs the cleanup silently, once per change of `settings.json`, the session-log package (its location or `VERSION`), or the presence of that seeded copy or those scripts, and stamps it after every attempt that finishes except a transient one (exit status 75), which runs again at the next startup, as does one a signal ended before it finished; a failed attempt (for example on an edited legacy script) is stamped too, and `repair` shows the failure.
-
-Every package copy the cleanup keeps loses the SKILL.md files its manifest proves unchanged, so no harness loads it as a skill and its older code can no longer be invoked to register its hooks again; only a copy whose SKILL.md itself changed stays loadable. A listed SKILL.md that cannot be removed is reported as `kept the SKILL.md of legacy package copy <path>: <reason>; it may still be loaded as a skill` for a copy kept for running sessions' hooks, and as `kept legacy package copy <path>: <reason>; cannot remove <file>: <error>, so it may still be loaded as a skill; move it aside` for a copy its manifest cannot prove unchanged.
-
-`on` first names the kept versions described below, then runs the cleanup and prints its report lines (such as a `removed …` line), as `repair` does; in Claude Code, Cursor, OMP, and OpenCode it still turns logging on when the cleanup fails, which it reports as `legacy cleanup failed: <reason>; fix it, then run repair` (or `legacy cleanup failed; run repair to see why` when the cleanup names no reason), or is skipped for a transient reason (exit status 75, below), which it reports as `legacy cleanup skipped: <reason>`; either line comes before the `on` line. Exit status 75 means a transient condition: running the same command again is safe and can succeed, and the reports earlier steps printed (such as a `removed …` line) stand. It happens when another session-log command holds the install lock (`another session-log command is already in progress for <harness>`), or the Claude Code cleanup met another writer of `settings.json` and left no file of its own behind (`Claude settings changed during the legacy cleanup; run repair again`): `settings.json` changed or went away before the cleanup moved it to its backup, which leaves it as the other writer left it, or, while the cleanup was putting its new version in place, other programs recreated `settings.json` and then removed both it and that backup, which leaves nothing to clean. Any other clash with another writer of `settings.json` is a failure (exit status 1), not exit 75, including every other one that recreates `settings.json` while the cleanup's backup stands in for it: `Claude settings changed while the legacy cleanup was replacing it; another version is kept in <file>` names the conflict or backup file that holds the version not left in place, and `Claude settings changed while the legacy cleanup was replacing it; another program removed settings.json, so the cleanup restored it from its backup; review it` means the cleanup put the version it started from back as `settings.json` after another program removed it. A Codex or Cursor write of `hooks.json` (Codex `on`, `repair`, and the adapter repair of `status` and `usage`; the Cursor cleanup) that clashes with another writer fails the same way (exit status 1) with `<path> changed while session-log was replacing it; another version is kept in <file>`, and any other error writing it with `cannot update hooks file <path>: <error>`, or, when the write could not put its backup back as `hooks.json` either, `cannot update hooks file <path>: <error>; a version is kept in <file>`. A kept file stays until you delete it: beside `settings.json`, `.session-log-backup.<pid>.<attempt>` or that name plus `.conflict.<suffix>`; beside `hooks.json`, `.session-log-backup.<pid>.<8 hex digits>.<attempt>` (or that name plus `.conflict.<suffix>`) or `.hooks.json.<pid>.<8 hex digits>.conflict.<suffix>`. Claude Code, Codex, and Cursor `on`, `repair`, and `status` name each one as `<label>: another version of <name> is kept in <file>; review it, then delete it`, or, while `<name>` (`settings.json` or `hooks.json`) itself is missing and the kept file may be its only copy, as `<label>: <name> is missing; another version of it is kept in <file>; review it and copy back what you still need`, so a clash the silent session-start cleanup hit is reported too. `on`, `repair`, and `status` print these lines before anything else, so a failing `repair`, or a Codex `status` whose adapter repair fails or rebuilds a missing `hooks.json`, still names them. Codex and Cursor name no kept `hooks.json` version while `~/.codex` or `~/.cursor` is a directory session-log does not trust (no sticky bit, and writable by group or others or owned by another user), because session-log leaves its backup there after every `hooks.json` write; Claude Code names kept `settings.json` versions in any directory, since its cleanup deletes its own backup after every write that succeeds. In Claude Code, Cursor, OMP, and OpenCode `off` never waits for that lock.
-
-On native Windows the Claude Code plugin runs under Git Bash: its hooks and every command work there with a Windows `python3` and `jq` on the PATH. The other harnesses need WSL on Windows.
+Print the script's stdout to the user as it is. A nonzero exit status is a failure: report the `session-log:` message on stderr and do not say logging is on.
