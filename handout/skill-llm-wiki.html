@@ -44,7 +44,7 @@
       <p>The skill determines which mode to run:</p>
       <ul>
         <li><strong>No <code>llm-wiki/</code> directory exists</strong> → runs <strong>Setup</strong> (Step 1): creates the full directory tree, copies templates, adapts <code>schema.md</code> to the project, and offers pointer injection into <code>CLAUDE.md</code>/<code>AGENTS.md</code>.</li>
-        <li><strong><code>llm-wiki/</code> exists and is complete</strong> (contains <code>schema.md</code> and full layer tree) → runs the requested <strong>Operation</strong> (Step 2): ingest, create topic page, draft, query, lint, archive, evolve schema, or watcher commands.</li>
+        <li><strong><code>llm-wiki/</code> exists and is complete</strong> (contains <code>schema.md</code> and full layer tree) → runs the requested <strong>Operation</strong> (Step 2): ingest, create topic page, draft, query, lint, archive, evolve schema, or status.</li>
         <li><strong><code>llm-wiki/</code> exists but is incomplete</strong> → runs <strong>Repair</strong> (Step 1b): fills in missing pieces without overwriting existing files.</li>
       </ul>
       <p>Operations available once the wiki is set up:</p>
@@ -54,8 +54,7 @@
         <li><code>draft a document</code> — write a <code>drafts/&lt;name&gt;.md</code></li>
         <li><code>query</code> — read <code>index.md</code>, find pages, synthesize answer with citations</li>
         <li><code>lint</code> — health-check the wiki (orphans, missing citations, contradictions)</li>
-        <li><code>watcher on</code> / <code>watcher off</code> — enable/disable and start/stop the filesystem watcher for <code>raw/</code> (desired state persists across restarts)</li>
-        <li><code>watcher</code> — report watcher liveness plus the files that need ingesting, and offer to ingest them. Ingest state is owned by a script ledger (<code>catalog.py</code>) that diffs <code>raw/</code> into <code>new</code> / <code>changed</code> / <code>current</code> / <code>missing</code>; the watcher is opt-in observability only.</li>
+        <li><code>status</code> — report the files that need ingesting and offer to ingest them. Ingest state is owned by a script ledger (<code>catalog.py</code>) that diffs <code>raw/</code> into <code>new</code> / <code>changed</code> / <code>current</code> / <code>missing</code> by sha256.</li>
       </ul>
     </section>
 

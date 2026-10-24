@@ -82,8 +82,8 @@ def _raw_dir(project_root: Path) -> Path:
 
 
 def _catalog_path(project_root: Path) -> Path:
-    # Committed (not under gitignored .watcher/) so a fresh clone keeps the
-    # ingest history instead of re-ingesting the whole corpus.
+    # Committed so a fresh clone keeps the ingest history instead of
+    # re-ingesting the whole corpus.
     return Path(project_root) / "llm-wiki" / "catalog.json"
 
 

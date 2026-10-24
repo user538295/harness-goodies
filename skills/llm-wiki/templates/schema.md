@@ -32,7 +32,7 @@ llm-wiki/
 `raw/` has no required subdirectories — categorization is the wiki's job, not raw/'s. You may
 organize your own sub-folders inside `raw/` if you find them useful (the skill won't stop you),
 and you may **symlink** external directories or files into `raw/` to include them in the corpus
-without copying. Symlinked files and directories are followed by the catalog and watcher.
+without copying. Symlinked files and directories are followed by the catalog.
 
 Additional `wiki/` subdirectories (e.g. `wiki/methods/`, `wiki/people/`,
 `wiki/timelines/`) may emerge as the wiki grows. **Add them via the Evolve schema operation —
@@ -109,7 +109,7 @@ wiki page — do not silently choose one.
     even though it cannot *write* one.
 - Filename convention: `YYYY-MM-DD_short-description.<ext>`
 - `raw/` has no required subdirectories. Sub-folders and **symlinks** (files or directories)
-  are fully supported — the catalog and watcher follow them. Citations use the full relative
+  are fully supported — the catalog follows them. Citations use the full relative
   path (e.g. `raw/linked-corpus/paper.md`).
 
 ### wiki/ — Compiled knowledge (LLM writes)
@@ -159,23 +159,14 @@ chapter 3 given two conflicting interpretations."
 
 ## Pre-flight check
 
-**Run this check before every operation.** It reconciles the watcher and surfaces raw files
-that need ingesting. Crash safety is automatic: a file is recorded in the catalog
+**Run this check before every operation.** It surfaces raw files that need ingesting. Crash
+safety is automatic: a file is recorded in the catalog
 (`catalog.py add`) only *after* its wiki pages are written, so an interrupted batch simply
 leaves the remaining files showing as `new`/`changed` next time — there is no separate
 processing-queue to recover.
 
 `catalog.py` and its resolved path are defined in `SKILL.md` (Step 2). It is the single
-authority for ingest state; the watcher holds none.
-
-### Step PF-1 — Watcher reconciliation
-
-If `llm-wiki/.watcher/` does not exist, skip this step. Otherwise run the **Watcher
-reconciliation** procedure from `SKILL.md`: if the watcher is enabled (`desired` = `on`) but
-not running, restart it and tell the user; if it is running but turned off, ask whether to
-stop it (never auto-stop).
-
-### Step PF-2 — Surface files needing ingest
+authority for ingest state.
 
 Run `catalog.py status <project-root>`.
 
@@ -189,14 +180,6 @@ Run `catalog.py status <project-root>`.
     snooze needed).
 - If `missing` is non-empty (catalogued files no longer in `raw/`), mention it once as
   informational — usually a superseded source; no action required.
-
-### Watcher health warning (non-blocking)
-
-During Step PF-1's liveness check, if the watcher directory exists:
-- Heartbeat age **90s–300s**: warn "watcher heartbeat is stale — it may be hung" but do
-  not block the operation.
-- Heartbeat age **> 300s** or PID file absent while `desired` = `on`: warn "watcher is not
-  running — run `watcher on` to resume monitoring" but do not block the operation.
 
 ### Log line format
 

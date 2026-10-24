@@ -44,7 +44,7 @@
       <p>A skill maga dönti el, melyik módban fusson:</p>
       <ul>
         <li><strong>Nincs <code>llm-wiki/</code> könyvtár</strong> → <strong>Setup</strong> fut (1. lépés): létrehozza a teljes könyvtárfát, bemásolja a sablonokat, a <code>schema.md</code>-t hozzáigazítja a projekthez, és felajánlja a pointer beillesztését a <code>CLAUDE.md</code>/<code>AGENTS.md</code> fájlba.</li>
-        <li><strong>Létezik a <code>llm-wiki/</code> és teljes</strong> (tartalmaz <code>schema.md</code>-t és a teljes rétegfát) → a kért <strong>Operation</strong> fut (2. lépés): ingest, topic page létrehozása, draft, query, lint, archiválás, séma evolúció vagy watcher parancsok.</li>
+        <li><strong>Létezik a <code>llm-wiki/</code> és teljes</strong> (tartalmaz <code>schema.md</code>-t és a teljes rétegfát) → a kért <strong>Operation</strong> fut (2. lépés): ingest, topic page létrehozása, draft, query, lint, archiválás, séma evolúció vagy status.</li>
         <li><strong>Létezik a <code>llm-wiki/</code>, de hiányos</strong> → <strong>Repair</strong> fut (1b. lépés): a hiányzó részeket pótolja a meglévő fájlok felülírása nélkül.</li>
       </ul>
       <p>A wiki beállítása után elérhető műveletek:</p>
@@ -54,8 +54,7 @@
         <li><code>draft a document</code> — megír egy <code>drafts/&lt;name&gt;.md</code> dokumentumot</li>
         <li><code>query</code> — beolvassa az <code>index.md</code>-t, megkeresi az oldalakat, hivatkozásokkal együtt szintetizál választ</li>
         <li><code>lint</code> — egészségellenőrzést végez a wikin (árva oldalak, hiányzó hivatkozások, ellentmondások)</li>
-        <li><code>watcher on</code> / <code>watcher off</code> — a <code>raw/</code> fájlrendszer-figyelő be-/kikapcsolása és indítása/leállítása (a kívánt állapot újraindításokon át megmarad)</li>
-        <li><code>watcher</code> — jelenti a figyelő élő állapotát és az ingestre váró fájlokat, majd felajánlja azok ingestjét. Az ingest-állapotot egy script-vezérelt nyilvántartás (<code>catalog.py</code>) birtokolja, amely a <code>raw/</code>-ot <code>new</code> / <code>changed</code> / <code>current</code> / <code>missing</code> kategóriákra bontja; a figyelő csak opcionális megfigyelés.</li>
+        <li><code>status</code> — jelenti az ingestre váró fájlokat, majd felajánlja azok ingestjét. Az ingest-állapotot egy script-vezérelt nyilvántartás (<code>catalog.py</code>) birtokolja, amely a <code>raw/</code>-ot sha256 alapján <code>new</code> / <code>changed</code> / <code>current</code> / <code>missing</code> kategóriákra bontja.</li>
       </ul>
     </section>
 

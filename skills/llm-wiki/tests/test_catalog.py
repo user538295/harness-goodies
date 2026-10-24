@@ -94,7 +94,7 @@ def test_store_save_atomic_no_tmp_left(tmp_path):
 
 
 def test_store_save_creates_parent_dir(tmp_path):
-    path = tmp_path / ".watcher" / "catalog.json"
+    path = tmp_path / "nested" / "catalog.json"
     CatalogStore.save(path, {"a.md": CatalogEntry(sha256="x", ingested_at="t")})
     assert path.exists()
 
