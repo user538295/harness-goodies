@@ -1,0 +1,8 @@
+[
+  { "skill": "/da-review" },
+  { "skill": "/clean-code-review" },
+  { "skill": "/brooks-review" },
+  { "skill": "/open-code-review" },
+  { "tool": "markdownlint" },
+  { "tool": "shellcheck" }
+]
