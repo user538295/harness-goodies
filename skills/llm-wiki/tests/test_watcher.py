@@ -206,6 +206,8 @@ def test_main_missing_llm_wiki_raw_exits_1(tmp_path):
 
 # --- Integration test ---
 
+# Windows has no SIGTERM delivery: send_signal() calls TerminateProcess (exit code 1).
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX SIGTERM")
 def test_watcher_process_journals_and_exits_cleanly(tmp_path):
     project_root = tmp_path
     raw_dir = project_root / "llm-wiki" / "raw"
