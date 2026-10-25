@@ -14,7 +14,13 @@ _MODEL_SEPARATOR = "/"
 
 
 def decode_record(line: str) -> Optional[Record]:
-    """The JSON object of one line; None for anything else (torn, too deeply nested, not an object)."""
+    """The JSON object of one line; None for anything else (torn, too deeply nested, not an object, or holding a lone surrogate:
+    a byte of the file that was no UTF-8)."""
+    if not line.isascii():
+        try:
+            line.encode("utf-8")
+        except UnicodeEncodeError:
+            return None
     try:
         record = json.loads(line)
     except (ValueError, RecursionError):

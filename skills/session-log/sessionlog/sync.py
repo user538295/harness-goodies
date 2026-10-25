@@ -6,7 +6,9 @@ render-version rewrite, nor holding an unreadable unit) is not read, and a chang
 cannot hold activity since it. A session whose id is not a safe id is never read: its units are unreadable with that reason
 (a reader checks it too, so a session built without sync is safe as well). A candidate session is read whole from all its
 units, and when it has activity since the on-time its log and report are rewritten whole through `Archive`. Progress is
-saved after each session (C6), so a killed run loses at most the session in progress.
+saved after each session (C6) while the state is small; a large one is saved in batches (`_checkpoint_due`), so the first sync
+costs time linear in the number of sessions, and a killed run loses at most the session in progress plus one batch.
+One session that raises is recorded unreadable with the error and the sync goes on with the others.
 
 Partly gone: a rewrite never replaces the files of an archived session with a report built from fewer units than the last
 write counted. Its entry changes only in `state` and `reason` (skipped, "source partly gone (N of M units)", N being the
@@ -18,8 +20,9 @@ one is not noticed. A scan that could not list a folder makes its units look gon
 complete scan heals it (the label is transiently off, nothing is dropped). A skipped session whose sources are all gone is
 not retried and stays listed: nothing can heal it and its files are stale.
 
-Retiring: an unreadable unit that left a complete scan can never be retried, so it is recorded inactive and no longer
-listed; with an incomplete scan (a folder that could not be listed) no unit is retired.
+Vanished units: a unit entry whose source left a complete scan is dropped, so `.sync.json` and the cost of saving it do not grow
+with how long logging has been on; this includes an unreadable unit, which can never be retried and so is no longer listed.
+With an incomplete scan (a folder that could not be listed) no unit is dropped. Session entries are never dropped.
 
 Render version: each session entry records the `RENDER_VERSION` of the installed copy that wrote its files. A session whose
 entry has a lower version is a candidate on every sync until it is rewritten, whatever its units did, and is rewritten even
@@ -56,6 +59,8 @@ SESSION_WRITTEN = "written"
 SESSION_SKIPPED = "skipped"
 UNKNOWN_SESSION_REASON = "session cannot be determined"
 PARTLY_GONE_REASON = "source partly gone (%d of %d units)"
+CHECKPOINT_FREE_ENTRIES = 500  # up to this many `.sync.json` entries, every session is saved as soon as it is done
+CHECKPOINT_FRACTION = 50  # beyond that, a save is due once the sessions done since the last one reach 1/50 of the entries
 
 _Units = Tuple[SourceUnit, ...]
 
@@ -99,7 +104,8 @@ class SyncUseCase:
         raises its OSError: `usage` ranks the sessions from that file, so a state that cannot be saved cannot serve it
         either. The old file is kept with no temp file, the files of the sessions written meanwhile stay, and the next sync
         redoes the work lost with the save; a session written whose entry was not saved gets its log path computed again
-        then (a lost `.sync.json` can give a session a second log)."""
+        then (a lost `.sync.json` can give a session a second log, a killed run in a large store several: the path is
+        computed from the session alone, so it is the same file unless the session's first record or cwd now reads differently)."""
         started_at = self._now()
         flag = self._state.read_on_flag()
         if flag is None:
@@ -116,23 +122,48 @@ class SyncUseCase:
                 version_only.append((session_key, units))
             else:
                 candidates.append((session_key, units))
-        # An unlistable folder makes live units look gone, so nothing is retired then.
+        # An unlistable folder makes live units look gone, so no unit is dropped then.
         if not scan.unreadable:
-            # Before the first save on purpose: retiring needs no read.
-            self._retire_vanished_unreadable_units(state, scan.units)
+            # Before the first save on purpose: dropping needs no read.
+            self._drop_vanished_units(state, scan.units)
         self._save(state)
         unsaved: Dict[str, str] = {}
+        unsaved_sessions = 0
         for session_key, units in candidates + version_only:
             if self._budget_spent(started_at, budget_seconds):
                 break
-            report_text = self._archive_session(state, session_key, units, on_at)
+            report_text = self._archive_isolated(state, session_key, units, on_at)
             if report_text is not None:
                 unsaved[session_key] = report_text
+            unsaved_sessions += 1
+            if self._checkpoint_due(state, unsaved_sessions):
+                self._save(state)
+                unsaved_sessions = 0
+        if unsaved_sessions:
             self._save(state)
         return SyncOutcome(unsaved, scan.unreadable)
 
     def _budget_spent(self, started_at: datetime, budget_seconds: Optional[float]) -> bool:
         return budget_seconds is not None and (self._now() - started_at).total_seconds() >= budget_seconds
+
+    @staticmethod
+    def _checkpoint_due(state: dict, unsaved_sessions: int) -> bool:
+        """A save writes the whole state, so a save per session makes the first sync of a large store quadratic (5000 sessions
+        took minutes). Up to `CHECKPOINT_FREE_ENTRIES` entries every session is saved at once; beyond that a save is due once
+        the sessions done since the last one reach 1/`CHECKPOINT_FRACTION` of the entries. That bounds the work a killed run
+        loses, and the time all saves take together stays a fixed multiple of the state's size."""
+        entries = len(state["units"]) + len(state["sessions"])
+        return entries <= CHECKPOINT_FREE_ENTRIES or unsaved_sessions * CHECKPOINT_FRACTION >= entries
+
+    def _archive_isolated(self, state: dict, session_key: str, units: _Units, on_at: datetime) -> Optional[str]:
+        """`_archive_session`, except that a session that raises (a reader defect, a time that cannot be compared) must not stop the
+        rest: its units are recorded unreadable with the error, so `status` names them and every sync retries them. Only an
+        `Exception` is caught: an interrupt still ends the run."""
+        try:
+            return self._archive_session(state, session_key, units, on_at)
+        except Exception as error:
+            self._mark(state, session_key, units, UNIT_UNREADABLE, failed=dict.fromkeys((unit.key for unit in units), _reason(error)))
+            return None
 
     def _learn_and_group(self, state: dict, scan_units: _Units) -> Dict[str, _Units]:
         """Units per session key, asking the reader only for units without a recorded key. A newly learned key is recorded
@@ -155,14 +186,13 @@ class SyncUseCase:
         return {session_key: tuple(units) for session_key, units in grouped.items()}
 
     @staticmethod
-    def _retire_vanished_unreadable_units(state: dict, scan_units: _Units) -> None:
-        """A unit recorded unreadable that is not in the scan any more is recorded inactive, keeping its session key. Units
-        in any other state are left alone: a scan gap must not lose their fingerprints and keys."""
+    def _drop_vanished_units(state: dict, scan_units: _Units) -> None:
+        """A unit entry whose source is not in the scan any more is dropped, whatever its state: an unreadable unit that left
+        the scan can never be retried, so it is no longer listed, and an entry kept for every source that ever existed would
+        make `.sync.json`, and the cost of every save, grow with how long logging has been on. Session entries are never dropped."""
         scanned = {unit.key for unit in scan_units}
-        for key, entry in state["units"].items():
-            if entry["state"] == UNIT_UNREADABLE and key not in scanned:
-                entry.pop("reason", None)
-                entry["state"] = UNIT_INACTIVE
+        for key in [key for key in state["units"] if key not in scanned]:
+            del state["units"][key]
 
     @staticmethod
     def _changed(state: dict, unit: SourceUnit) -> bool:

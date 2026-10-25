@@ -13,6 +13,7 @@ from .reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CAN
                           NOT_A_REGULAR_FILE_REASON, SourceUnit, UnreadableSource)
 
 FILE_ENCODING = "utf-8-sig"
+FILE_ERRORS = "surrogateescape"  # a byte that is no UTF-8 reads as a lone surrogate, which `decode_record` rejects: the line is skipped
 _SOCKET_OPEN_ERRORS = (errno.ENXIO, errno.EOPNOTSUPP)  # what opening a socket fails with (Linux, macOS)
 _NOT_REGULAR = object()  # what the stat of a file that is a FIFO, a socket or a device is reported as
 
@@ -58,10 +59,11 @@ def _open_without_blocking(path: str, flags: int) -> int:
 
 
 def open_text(path: str) -> TextIO:
-    """The file at `path` as text, as every reader decodes it (a BOM is dropped). A FIFO or another special file is never waited on:
+    """The file at `path` as text, as every reader decodes it (a BOM is dropped, a byte that is no UTF-8 becomes a lone surrogate, see
+    `FILE_ERRORS`). A FIFO or another special file is never waited on:
     the path is opened without blocking and its kind asked of the open descriptor, so a file swapped for a FIFO after a scan cannot hang
     the run either (`NotARegularFileError`). A folder fails as `open` does."""
-    return open(path, encoding=FILE_ENCODING, opener=_open_without_blocking)
+    return open(path, encoding=FILE_ENCODING, errors=FILE_ERRORS, opener=_open_without_blocking)
 
 
 class FileOpener(NamedTuple):

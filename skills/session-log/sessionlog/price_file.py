@@ -20,6 +20,10 @@ MODELS_KEY = "models"
 CLAUDE_MARKER = "claude-"
 SOURCE_SCHEMES = ("https", "http")
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+PROVIDER_SEPARATOR = "/"
+SUFFIX_OPENERS = "[:@"
+EFFORT_WORDS = frozenset(("minimal", "low", "medium", "high", "xhigh", "max"))
+SNAPSHOT_DATE = re.compile(r"-(\d{8}|\d{4}-\d{2}-\d{2})(?![0-9])")
 
 
 class Tariff(NamedTuple):
@@ -134,8 +138,27 @@ def _load(path: Path) -> Tuple[Tuple[str, Tariff], ...]:
     return tuple(sorted(tariffs.items(), key=lambda item: len(item[0]), reverse=True))
 
 
+def _ends_at_model_boundary(rest: str, is_claude: bool) -> bool:
+    """Whether what follows a matched prefix is a variant of that model, not a different model.
+
+    Variants: a snapshot date, `[1m]` / `:medium` / `@date` markers, a reasoning-effort word
+    (`-high`) and, for Claude ids, any other platform word (`-v1:0`). A further version number
+    (`-6`, `.5`) or sibling word (`-mini`) on a non-Claude id names another model.
+    """
+    if not rest:
+        return True
+    if rest[0] in SUFFIX_OPENERS:
+        return True
+    if rest[0] != "-":
+        return False
+    if rest[1:2].isdigit():
+        return SNAPSHOT_DATE.match(rest) is not None
+    word = re.split(r"[-.:\[@]", rest[1:], maxsplit=1)[0]
+    return is_claude or word in EFFORT_WORDS
+
+
 class PriceFile:
-    """Load once; longest prefix wins after stripping a Claude provider prefix."""
+    """Load once; longest prefix wins at a model-name boundary after stripping a provider prefix."""
 
     def __init__(self, path: Path):
         self._tariffs = ()  # type: Tuple[Tuple[str, Tariff], ...]
@@ -146,12 +169,15 @@ class PriceFile:
             self._problem = "{}: {}".format(path, error)
 
     def rate_for(self, model_name: str, fast: bool) -> Optional[Rates]:
-        """Rates of the longest matching prefix; None when nothing matches or fast has no rates."""
+        """Rates of the longest prefix ending at a model-name boundary; None when nothing matches or fast has no rates."""
         start = model_name.find(CLAUDE_MARKER)
-        if start >= 0:
+        is_claude = start >= 0
+        if is_claude:
             model_name = model_name[start:]
+        else:
+            model_name = model_name.rpartition(PROVIDER_SEPARATOR)[2]
         for prefix, tariff in self._tariffs:
-            if model_name.startswith(prefix):
+            if model_name.startswith(prefix) and _ends_at_model_boundary(model_name[len(prefix):], is_claude):
                 return tariff.fast if fast else tariff.normal
         return None
 

@@ -53,7 +53,7 @@ FIX_HINTS = {
 NOT_PARSEABLE_BY_PYTHON_3_4 = (ast.JoinedStr, ast.AnnAssign, ast.AsyncFunctionDef, ast.Await, ast.AsyncFor, ast.AsyncWith,
                                ast.NamedExpr, ast.Match, ast.TypeAlias, ast.TryStar, ast.MatMult)
 TRAILING_COMMA_AFTER_UNPACKING = re.compile(r"\*\*?\w+\s*,\s*\)")
-MODULE_LEVEL_IMPORTS = frozenset(("os", "sys", "datetime"))
+MODULE_LEVEL_IMPORTS = frozenset(("os", "signal", "sys", "datetime"))
 FUNCTION_LEVEL_IMPORTS = frozenset(("sessionlog", "pathlib"))
 UNPARENTHESIZED_EXCEPT = re.compile(r"except\s+[\w.]+\s*,")
 SUBPROCESS_ENV_NAMES = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT")

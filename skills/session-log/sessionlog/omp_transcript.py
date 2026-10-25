@@ -4,8 +4,9 @@ parts are not what is expected are skipped without a report.
 
 The header is the first `session` record, wherever it stands (a `title` record may precede it). Prompts are `message` records
 whose `message.role` is `user` and whose `attribution` is not `agent` (a sub-agent's task text is such an agent message), and
-`custom_message` records whose `attribution` is `user` or whose `customType` is `skill-prompt` (Q25); other `custom_message` types
-are skipped: they open no turn, so the replies to them belong to the prompt before them. A prompt's time is `message.timestamp`
+`custom_message` records whose `attribution` is `user` or whose `customType` is `skill-prompt` (Q25), except the notices OMP writes
+beside the user's own message (`image-attachment`, `ultrathink-notice`: they are user-attributed, not prompts); other `custom_message`
+types are skipped: they open no turn, so the replies to them belong to the prompt before them. A prompt's time is `message.timestamp`
 (epoch milliseconds; a number of milliseconds written as text is no time), else the record's ISO `timestamp`; a prompt with no usable
 time is dropped from the prompts with its replies and the requests under it, as in the other readers (`Transcript.requests`, which
 a sub-agent reports, still holds them).
@@ -19,9 +20,10 @@ last copy, which also decides the prompt the response falls under. Tokens are OM
 `thinking_level_change.thinkingLevel`, carried forward, unless the message names its own `thinkingLevel` or `effort`. A reasoning
 count is not kept apart: the model has no field for it.
 
-A prompt's reply is the last assistant message of its turn whose `stopReason` is `stop`: its text blocks joined by blank lines,
-its time `completedAt` (else the record's own `completedAt`, else the time of the record). A turn without such a message has no
-reply and works no time."""
+A prompt's reply is the last assistant message of its turn whose `stopReason` is `stop`: its text blocks joined by blank lines. A
+turn works from its prompt to the last assistant message it completed, whatever its `stopReason` (`toolUse` when a steering prompt cut
+the run, `aborted`, `error`): that message's `completedAt` (else the record's own `completedAt`, else the time of the record). A turn
+without such a message has no reply time and works no time."""
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple, Union
@@ -40,6 +42,7 @@ _MODEL_USAGE = "model_usage"
 _USER, _ASSISTANT = "user", "assistant"
 _AGENT_ATTRIBUTION, _USER_ATTRIBUTION = "agent", "user"
 _SKILL_PROMPT = "skill-prompt"
+_USER_NOTICES = ("image-attachment", "ultrathink-notice")
 _STOP = "stop"
 _TEXT_BLOCK = "text"
 _PROMPT_TEXT_SEPARATOR = "\n"
@@ -81,7 +84,7 @@ class ParentLink(NamedTuple):
 
 class _Answer(NamedTuple):
     """What an assistant message or a helper request contributes to its turn. `key` is None for a helper request and for a message
-    that names no response."""
+    that names no response. `began` and `asked_at` stay unset: the user's wait on OMP's `ask` tool counts as work, as in the old script."""
 
     index: int
     key: Optional[str]
@@ -89,6 +92,8 @@ class _Answer(NamedTuple):
     is_stop: bool
     text: Optional[str]
     moment: Optional[datetime]
+    began: Optional[datetime] = None
+    asked_at: Optional[datetime] = None
 
 
 def _text(value: Any) -> Optional[str]:
@@ -194,7 +199,10 @@ def _reply_text(content: Any) -> Optional[str]:
 
 
 def _is_user_custom_message(record: Record) -> bool:
-    return record.get("attribution") == _USER_ATTRIBUTION or record.get("customType") == _SKILL_PROMPT
+    custom_type = record.get("customType")
+    if custom_type in _USER_NOTICES:
+        return False
+    return record.get("attribution") == _USER_ATTRIBUTION or custom_type == _SKILL_PROMPT
 
 
 class _Collector:

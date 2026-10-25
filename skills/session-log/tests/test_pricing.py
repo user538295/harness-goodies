@@ -77,13 +77,13 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(result.prompts[0].total_tokens, 17)
         self.assertTrue(result.total.price_incomplete)
 
-    def test_rows_rounded_half_up_mixed_row_incomplete_total_is_sum_of_rows(self):
+    def test_rows_rounded_half_up_mixed_row_incomplete_total_rounds_the_exact_sum_once(self):
         result = report((request(recorded_cost_usd=0.005),),
                         (request(recorded_cost_usd=0.005), request("unknown")),
                         (request("unknown"),))
         self.assertEqual([row.price.cents for row in result.prompts], [1, 1, 0])
         self.assertEqual([row.price.status for row in result.prompts], ["priced", "partial", "unknown"])
-        self.assertEqual(result.total.price_cents, 2)
+        self.assertEqual(result.total.price_cents, 1)  # $0.005 + $0.005 = $0.01 exactly, not 1 + 1 cents
         self.assertTrue(result.total.price_incomplete)
 
     def test_recorded_cost_including_free_overrides_unknown_model(self):
@@ -140,7 +140,7 @@ class PricingTests(unittest.TestCase):
         result = report((request(recorded_cost_usd=0.005, input_tokens=2),), agents=(parent,))
         self.assertEqual([(a.agent_id, a.depth) for a in result.sub_agents], [("parent", 0), ("child", 1)])
         self.assertEqual(result.total.total_tokens, 12)
-        self.assertEqual(result.total.price_cents, 3)
+        self.assertEqual(result.total.price_cents, 2)  # $0.015 exactly rounds half-up once, not 1 + 1 + 1 cents
         self.assertEqual(result.total.sub_agent_count, 2)
         missing = SubAgent(agent_id="missing", type="worker", started_at=NOW, tokens_not_recorded=True)
         result = report((request(recorded_cost_usd=0),), harness=Harness.CURSOR, agents=(missing,))
@@ -159,7 +159,7 @@ class PricingTests(unittest.TestCase):
         rows = (*result.prompts, *result.sub_agents)
         self.assertEqual([row.price.cents for row in rows], [1, 1, 1])
         self.assertEqual((result.total.total_tokens, result.total.price_cents, result.total.request_count,
-                          result.total.sub_agent_count), (12, 3, 1, 2))
+                          result.total.sub_agent_count), (12, 2, 1, 2))
         self.assertEqual(result.total.working_time, timedelta(seconds=4))
         self.assertFalse(result.total.price_incomplete)
 

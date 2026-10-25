@@ -190,15 +190,15 @@ class OmpRequestTest(unittest.TestCase):
 
 
 class OmpReplyTest(unittest.TestCase):
-    def test_the_reply_is_the_last_stop_message_of_the_turn_with_its_completion_time_and_later_messages_do_not_count(self):
+    def test_the_reply_is_the_last_stop_message_of_the_turn_with_its_completion_time_and_later_messages_count_for_the_time_only(self):
         records = [assistant_record(11, "working", stop="toolUse"), assistant_record(20, "first answer", done=3), assistant_record(30, "second answer", done=5),
                    assistant_record(40, "after stop", stop="toolUse")]
         (prompt,) = prompts_of(user_record(10, "ask"), *records)
-        self.assertEqual(("second answer", at(35), timedelta(seconds=25)), (prompt.reply_text, prompt.reply_at, prompt.working_time))
+        self.assertEqual(("second answer", at(40), timedelta(seconds=30)), (prompt.reply_text, prompt.reply_at, prompt.working_time))
 
-    def test_a_turn_without_a_stop_message_has_no_reply_and_works_no_time(self):
+    def test_a_turn_without_a_stop_message_has_no_reply_but_works_until_its_last_message(self):
         (prompt,) = prompts_of(user_record(10, "ask"), assistant_record(11, "partial", stop="toolUse"), assistant_record(12, "cut", stop="aborted"))
-        self.assertEqual((None, None, timedelta(0)), (prompt.reply_text, prompt.reply_at, prompt.working_time))
+        self.assertEqual((None, at(12), timedelta(seconds=2)), (prompt.reply_text, prompt.reply_at, prompt.working_time))
 
     def test_a_reply_is_its_text_blocks_that_are_not_blank_joined_by_blank_lines_and_empty_text_is_no_reply_text(self):
         message = assistant_record(11, usage=usage_of(), done=2)

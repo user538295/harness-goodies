@@ -1,4 +1,4 @@
-"""Release 1 gate (S27, S66): the OpenCode plugin loads on OpenCode 2.0.4+, and the docs say session-log does not log there.
+"""Release 1 gate (S27): the OpenCode plugin loads on OpenCode 2.0.4+ and starts nothing; plus the OpenCode wording of the docs.
 
 `test_isolated_opencode_serve_reports_plugin_active_with_all_skills_and_agent` runs a real `opencode serve` (OpenCode 2.0.4 or
 newer, found on `PATH`) in a scratch `HOME` and scratch XDG folders on its own free port, with this repository's
@@ -10,13 +10,14 @@ A `bash` stub first on `PATH` records any call, because the old handlers started
 2.0.4 or newer is installed, unless `RELEASE1_GATE_REQUIRE_OPENCODE=1`, which turns that skip into a failure. Being a `test_*.py`
 file it also runs in a full `discover` on a machine with OpenCode, and then costs a few seconds.
 
-All tests here pin release 1 only. Release 2 changes the OpenCode wording and the logging behavior, so this file is deleted there.
+The wording tests (`OpenCodeEnabledWording`) pin release 2: OpenCode is a supported identity of SKILL.md and no document refuses it.
 
 From the repository root:
 
     python3 -m unittest discover -s skills/session-log/tests -t skills/session-log -p "test_release1_gate.py" -v
 """
 import base64
+import html
 import json
 import os
 import re
@@ -36,6 +37,8 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 REPO = SKILL_DIR.parents[1]
 SKILL_MD = SKILL_DIR / "SKILL.md"
 README = REPO / "README.md"
+HANDOUT_EN = REPO / "handout" / "skill-session-log.html"
+HANDOUT_HU = REPO / "handout" / "skill-session-log-hu.html"
 PACKAGE_JSON = REPO / "package.json"
 PLUGIN_DIR = REPO / ".opencode-plugin"
 PLUGIN_ENTRY = "./.opencode-plugin/index.js"
@@ -54,12 +57,9 @@ REQUEST_TIMEOUT_SECONDS = 10
 LOG_TAIL_CHARACTERS = 3000
 REJECTED_HTTP_CODES = (400, 401, 403)
 SESSION_LOG_ARTIFACTS = ("prompt-logs", ".log_enabled", ".sync.json")
-NOT_LOGGING = "does not log in OpenCode until the next release"
-NEGATION = re.compile(r"(?i)\b(?:not|no|nothing|never)\b")
-SENTENCE_END = re.compile(r"(?<=\.)\s+")
-LOGGING_CLAIM = re.compile(r"(?i)\b(?:logs?|logged|logging|records?|archives?|registers|hooks?)\b")
-CODE_SPAN = re.compile(r"`[^`]*`")
-SESSION_LOG_NAME = re.compile(r"\S*session-log\S*")
+REFUSAL_MARKERS = ("until the next release", "do not run the script", "so do not run it there", "still refuses to run in OpenCode",
+                   "not usable through the skill in OpenCode")
+HANDOUT_REFUSAL_MARKERS = ("Not usable through the skill", "következő kiadásig", "A skillen keresztül nem használható")
 SETTLE_SECONDS = 1
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -112,23 +112,6 @@ def _write_bash_stub(scratch):
     stub.write_text('#!/bin/sh\necho called "$@" >> "%s"\nexit 0\n' % calls, encoding="utf-8")
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
     return calls
-
-
-def _prose_sentences(text):
-    """`(line number, sentence)` of the prose of Markdown `text`, fenced code blocks skipped."""
-    fenced = False
-    for number, line in enumerate(text.splitlines(), 1):
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-        elif not fenced:
-            for sentence in SENTENCE_END.split(line):
-                yield number, sentence
-
-
-def _claims_session_log_logging_in_opencode(sentence):
-    """True when a sentence names OpenCode and session-log and uses a logging verb outside code, names and links."""
-    claim_words = SESSION_LOG_NAME.sub("", CODE_SPAN.sub("", sentence))
-    return bool(re.search(r"(?i)opencode", sentence) and re.search(r"(?i)session-log", sentence) and LOGGING_CLAIM.search(claim_words))
 
 
 class IsolatedOpenCodeServe(unittest.TestCase):
@@ -250,23 +233,49 @@ class IsolatedOpenCodeServe(unittest.TestCase):
         )
 
 
-class OpenCodeWording(unittest.TestCase):
-    def test_skill_md_and_readme_say_opencode_does_not_log_until_next_release(self):
+class OpenCodeEnabledWording(unittest.TestCase):
+    """Release 2 logs OpenCode sessions (S30, S66 replaced): no document may still tell the model or the reader to refuse there."""
+
+    def test_skill_md_lists_opencode_as_a_supported_identity_and_has_no_refusal(self):
         skill = SKILL_MD.read_text(encoding="utf-8")
-        readme = README.read_text(encoding="utf-8")
-        self.assertIn(NOT_LOGGING, skill, "SKILL.md")
-        self.assertIn("If the host is OpenCode, do not run the script", skill, "SKILL.md")
-        self.assertIn(NOT_LOGGING, readme, "README.md")
-        self.assertIn("so do not run it there", readme, "README.md")
-        self.assertIn("registers no `/session-log` command", readme, "README.md")
-        self.assertTrue(_claims_session_log_logging_in_opencode("session-log logs every prompt in OpenCode."))
-        self.assertFalse(_claims_session_log_logging_in_opencode("Cursor logs every prompt."))
-        for name, text in (("SKILL.md", skill), ("README.md", readme)):
-            claims = [(n, s) for n, s in _prose_sentences(text) if _claims_session_log_logging_in_opencode(s)]
-            self.assertTrue(claims, "%s has no sentence that the scan checks" % name)
-            for number, sentence in claims:
-                with self.subTest(file=name, line=number):
-                    self.assertRegex(sentence, NEGATION, "an OpenCode session-log sentence without a negation: " + sentence[:120])
+        self.assertIn("`claude`, `codex`, `cursor`, `opencode` (OpenCode V2), and `omp`", skill)
+        self.assertIn('python3 "<skill dir>/session_log.py" <harness> <arguments>', skill)
+        for refusal in REFUSAL_MARKERS:
+            self.assertNotIn(refusal.lower(), skill.lower(), "SKILL.md")
+        step_one = [line for line in skill.splitlines() if line.startswith("1. ")]
+        self.assertEqual(1, len(step_one))
+        self.assertNotRegex(step_one[0], r"(?i)opencode")
+
+    def test_readme_and_both_handouts_do_not_say_opencode_is_refused(self):
+        for path in (README, HANDOUT_EN, HANDOUT_HU):
+            text = path.read_text(encoding="utf-8")
+            for refusal in REFUSAL_MARKERS + HANDOUT_REFUSAL_MARKERS:
+                self.assertNotIn(refusal.lower(), text.lower(), "%s says %r" % (path.name, refusal))
+
+    def test_readme_still_says_the_plugin_registers_no_session_log_command(self):
+        self.assertIn("registers no `/session-log` command", README.read_text(encoding="utf-8"))
+
+
+class KeptDeviationsDocumented(unittest.TestCase):
+    """Facts of the new release that differ from the old one and are kept: each must be written where a user looks."""
+
+    ENGLISH_FACTS = ("est. used token", "switched:", "sub-agent finished", "**Session file:**", "**Resume:**", "--- separators",
+                     "older than 3.14", ".log_enabled", "transcript path", "final context", "user_email", "0600", "prunes",
+                     "session-log-old", "may still load", "SESSION_LOG_OWNER=universal-session-log", "between the plugin update")
+    HUNGARIAN_FACTS = ("est. used token", "switched:", "sub-agent finished", "**Session file:**", "**Resume:**", "--- elválasztók",
+                       "3.14-nél régebbi", ".log_enabled", "átirat-útvonalat", "final context", "user_email", "0600", "nem törli",
+                       "session-log-old", "betölti a rendszer", "SESSION_LOG_OWNER=universal-session-log", "első új")
+
+    @staticmethod
+    def _plain(path):
+        """The text of a document without Markdown code ticks and HTML tags, so one fact string fits README and handouts alike."""
+        return html.unescape(re.sub(r"<[^>]+>", "", path.read_text(encoding="utf-8")).replace("`", ""))
+
+    def test_each_kept_deviation_is_written_in_the_readme_and_in_the_matching_handout(self):
+        for path, facts in ((README, self.ENGLISH_FACTS), (HANDOUT_EN, self.ENGLISH_FACTS), (HANDOUT_HU, self.HUNGARIAN_FACTS)):
+            text = self._plain(path)
+            for fact in facts:
+                self.assertIn(fact, text, "%s does not mention %r" % (path.name, fact))
 
 
 if __name__ == "__main__":

@@ -408,7 +408,7 @@ class RequestSourceTest(unittest.TestCase):
                            (8592, 3825, 232448, 0), (7785, 128, 37888, 0)], [(65446, 4529, 0, 0)]],
                          _shapes(_fixture(TOKEN_USAGE_RECORDS)))
         self.assertEqual([[(4397, 617, 8448, 0)], [(147, 199, 12800, 0), (7833, 557, 12928, 0)]], _shapes(_fixture(TOKEN_COUNT_ONLY)))
-        self.assertEqual([[(25476, 423, 6912, 0), (4470, 396, 31488, 0), (1473, 78, 34944, 0), (2399, 213, 35968, 0), (357, 837, 38272, 0),
+        self.assertEqual([[(357, 837, 38272, 0),
                            (19630, 281, 13056, 0), (8514, 121, 32512, 0), (4170, 283, 40704, 0), (8630, 277, 43776, 0),
                            (8711, 744, 51968, 0), (9265, 1513, 60160, 0), (2598, 219, 68352, 0)]], _shapes(_fixture(FORKED_CHILD)))
 
@@ -421,13 +421,15 @@ class RequestSourceTest(unittest.TestCase):
         self.assertIn((8592, 3825, 232448, 0), [shape for shapes in _shapes(rollout) for shape in shapes])
 
     def test_growth_requests_add_up_to_the_final_total_less_the_starting_total(self):
-        """Counting-only rollout: the starting total is zero. Forked child: it is the total of the first event, before `task_started`."""
+        """Counting-only rollout: the starting total is zero. Forked child: it is the total at the end of the turn that replays its
+        parent's history, the fifth event of the fixture (the first one comes before `task_started`)."""
+        replay_end = 4
         counted, forked = _totals(TOKEN_COUNT_ONLY), _totals(FORKED_CHILD)
         for field in USAGE_FIELDS:
             with self.subTest(field=field, rollout="counting only"):
                 self.assertEqual(counted[-1][field], _sum_of(_fixture(TOKEN_COUNT_ONLY), field))
             with self.subTest(field=field, rollout="forked child"):
-                self.assertEqual(forked[-1][field] - forked[0][field], _sum_of(_fixture(FORKED_CHILD), field))
+                self.assertEqual(forked[-1][field] - forked[replay_end][field], _sum_of(_fixture(FORKED_CHILD), field))
 
     def test_token_count_events_are_ignored_once_the_rollout_has_a_token_usage_record(self):
         records = [_started(2), _user(2), _count(3, _usage(10, output=5)), _recorded(4, _usage(7, output=1)), _count(5, _usage(99, output=99))]
@@ -582,7 +584,7 @@ class ForkedTotalTest(unittest.TestCase):
         self.assertEqual([(100, 10, 0, 20)], [_shape(request) for request in prompt.requests])
 
     def test_a_fork_with_no_inherited_total_before_its_first_task_started_counts_its_replay_as_its_own_requests(self):
-        """The documented limit: nothing tells the replayed records of a fork apart, so without an inherited starting total they count."""
+        """The documented limit: a replay that carries no mark (`rollout-<n>` turn id, `started_at` before the header) and no inherited starting total counts."""
         rollout = self._fork([_started(2), _count(3, _usage(1000, output=100)), _count(4, _usage(3000, output=300))])
         self.assertEqual([(1000, 100, 0, 0), (2000, 200, 0, 0)], [_shape(request) for request in rollout.requests])
 

@@ -10,7 +10,7 @@ from sessionlog.command_error import CommandError
 from sessionlog.commands import CommandUseCases
 from sessionlog.model import Harness, Prompt, Session
 from sessionlog.pricing import PricingRules
-from sessionlog.reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, ReadResult, ScanResult, SourceUnit,
+from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_PARSED_REASON, ReadResult, ScanResult, SourceUnit,
                                     UnreadableSource, build_session_key, root_id_of)
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import SyncUseCase
@@ -65,17 +65,13 @@ class LatestInStoreTest(UsageTargetTestCase):
         self._install_sub_agent("main-older", "child", BEFORE_ON)  # its file is touched at NOW, newer than every main file
         self.assertEqual(self._text(), _report("main-older"))
 
-    def test_an_archived_session_of_the_project_wins_over_a_newer_never_archived_one_and_the_store_is_not_read(self):
+    def test_a_newer_archived_session_of_the_project_wins_over_a_never_archived_one_with_an_older_prompt(self):
         self._install("archived", prompts=[ON_AT + ONE_DAY])
-        self._never_archived("newer-file", NOW + ONE_DAY)
+        self._never_archived("newer-file", NOW + ONE_DAY)  # the newest file, but its prompt is older than the archived one's
         self._turn_on_and_sync()  # the newer file holds activity before the on-time: it is not archived
         self.assertEqual(set(self.state.load_sync()["sessions"]), {"claude:archived"})
         self.state.delete_on_flag()
-        scans = []
-        real_scan = self.reader.scan
-        self.reader.scan = lambda: scans.append(1) or real_scan()
         self.assertEqual(self._text(), _report("archived"))
-        self.assertEqual(scans, [])
 
     def test_latest_is_decided_per_project_an_archived_session_elsewhere_does_not_hide_the_store(self):
         self._install("elsewhere", cwd=OTHER_PROJECT, prompts=[ON_AT + ONE_DAY])
@@ -115,7 +111,7 @@ class LatestInStoreTest(UsageTargetTestCase):
             handle.write(INVALID_UTF8)
         os.utime(path, (BEFORE_ON.timestamp(), BEFORE_ON.timestamp()))
         for target in (None, "broken"):
-            with self.assertRaisesRegex(CommandError, "%s: %s" % (path, CANNOT_BE_DECODED_REASON)):
+            with self.assertRaisesRegex(CommandError, "%s: %s" % (path, CANNOT_BE_PARSED_REASON)):
                 self._text(target)
         self.assertEqual(self._text("fine"), _report("fine"))
 
@@ -206,20 +202,17 @@ class LatestInStoreTest(UsageTargetTestCase):
         with open(newer, "wb") as handle:
             handle.write(INVALID_UTF8)
         os.utime(newer, (BEFORE_ON.timestamp(),) * 2)
-        with self.assertRaisesRegex(CommandError, "%s: %s" % (newer, CANNOT_BE_DECODED_REASON)):
+        with self.assertRaisesRegex(CommandError, "%s: %s" % (newer, CANNOT_BE_PARSED_REASON)):
             self._text()
 
-    def test_an_archived_session_in_a_parent_project_folder_is_the_project_and_the_store_is_not_scanned(self):
+    def test_a_never_archived_session_of_the_exact_folder_beats_an_archived_session_of_a_parent_folder(self):
         self._install("archived", cwd="/work", prompts=[ON_AT + ONE_DAY])
         self._never_archived("newer-here", NOW + ONE_DAY, cwd=PROJECT + "/src")
         self._turn_on_and_sync()
         self.assertEqual(set(self.state.load_sync()["sessions"]), {"claude:archived"})
         self.state.delete_on_flag()
-        scans = []
-        real_scan = self.reader.scan
-        self.reader.scan = lambda: scans.append(1) or real_scan()
-        self.assertEqual(self._text(cwd=PROJECT + "/src"), _report("archived"))
-        self.assertEqual(scans, [])
+        self.assertEqual(self._text(cwd=PROJECT + "/src"), _report("newer-here"))
+        self.assertEqual(self._text(cwd="/work"), _report("archived"))
 
     def test_a_never_archived_session_is_read_exactly_once_for_latest(self):
         self._never_archived("solo", BEFORE_ON)
@@ -249,12 +242,12 @@ class LatestInStoreTest(UsageTargetTestCase):
 
     def test_a_session_with_an_unreadable_sub_agent_file_exits_1_naming_it_for_its_id(self):
         path = self._install_with_unreadable_sub_agent("parent")
-        with self.assertRaisesRegex(CommandError, "%s: %s" % (path, CANNOT_BE_DECODED_REASON)):
+        with self.assertRaisesRegex(CommandError, "%s: %s" % (path, CANNOT_BE_PARSED_REASON)):
             self._text("parent")
 
     def test_a_session_with_an_unreadable_sub_agent_file_exits_1_naming_it_for_latest(self):
         path = self._install_with_unreadable_sub_agent("parent")
-        with self.assertRaisesRegex(CommandError, "%s: %s" % (path, CANNOT_BE_DECODED_REASON)):
+        with self.assertRaisesRegex(CommandError, "%s: %s" % (path, CANNOT_BE_PARSED_REASON)):
             self._text()
 
 
@@ -355,14 +348,14 @@ class EntryLiveReportTest(SandboxCase):
         for argv in (["claude", "usage", "abc123"], ["claude", "usage"]):
             code, stdout, stderr = self.run_main(argv)
             self.assertEqual((1, ""), (code, stdout))
-            self.assertEqual("session-log: session abc123 cannot be read (%s: %s)\n" % (path, CANNOT_BE_DECODED_REASON), stderr)
+            self.assertEqual("session-log: session abc123 cannot be read (%s: %s)\n" % (path, CANNOT_BE_PARSED_REASON), stderr)
         self.assertFalse(os.path.exists(self.log_root))  # logging was never turned on
 
         self.set_on_time(AFTER_ALL_ACTIVITY)
         for argv in (["claude", "usage", "abc123"], ["claude", "usage"]):
             code, stdout, stderr = self.run_main(argv)
             self.assertEqual((1, ""), (code, stdout))
-            self.assertEqual("session-log: session abc123 cannot be read (%s: %s)\n" % (path, CANNOT_BE_DECODED_REASON), stderr)
+            self.assertEqual("session-log: session abc123 cannot be read (%s: %s)\n" % (path, CANNOT_BE_PARSED_REASON), stderr)
         self.assertEqual(sorted(os.listdir(self.log_root)), sorted([ON_FLAG, SYNC_LOCK, SYNC_STATE]))
 
 

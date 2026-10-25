@@ -20,6 +20,7 @@ On Linux in Docker, from the repository root (the Linux floor image; the reposit
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -71,7 +72,7 @@ TEST_ZONE_OFFSET = "+0530"
 HOSTILE_CONSOLE_ENV = {"TZ": TEST_TIME_ZONE, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0", "LC_ALL": "C", "LANG": "C",
                        "PYTHONDONTWRITEBYTECODE": "1"}
 UNREADABLE_HEADING = "Unreadable or skipped items:"
-UNDECODABLE_REASON = "cannot be decoded"
+UNDECODABLE_REASON = "cannot be parsed"
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
 EXECUTABLE_MODE = 0o755
 PYTHON_COMMANDS = ("python3", "python", "py", "python3.14")
@@ -236,7 +237,10 @@ class OnTests(SkeletonCase):
         os.makedirs(os.path.dirname(old_script))
         with open(old_script, "w", encoding="utf-8") as handle:
             handle.write("old")
-        expected = "  %s: move it aside" % old_script
+        kept = os.path.join(self.claude, "session-log-old", "scripts", "prompt_log_save.sh")
+        expected = ("  %s: move it outside the skills folders: `mkdir -p %s && mv %s %s` "
+                    "(a copy moved inside a skills folder may still load)"
+                    % (old_script, shlex.quote(os.path.dirname(kept)), shlex.quote(old_script), shlex.quote(kept)))
 
         for command in ("on", "status"):
             lines = self.run_ok(command).splitlines()
@@ -262,7 +266,9 @@ class OffTests(SkeletonCase):
         self.write_session(NEWER_SESSION, NEWER_PROMPT_AT)
         self.assertEqual(["Session logging is off.", "Log root: %s" % self.log_root, "Last sync: %s" % shown(parse_time(synced_at)),
                           "Archived sessions: 1"], self.run_ok("status").splitlines())
-        self.assertEqual(self.saved_reports()[ACTIVE_SESSION], self.run_ok("usage"))  # the saved report of the archived session
+        self.assertEqual(self.saved_reports()[ACTIVE_SESSION], self.run_ok("usage", ACTIVE_SESSION))  # the saved report of an archived one
+        live = self.run_ok("usage")  # the newest prompt of the project is the never-archived session: computed live, saved nowhere
+        self.assertIn(NEWER_SESSION, live)
         self.assertEqual(kept, self.log_tree())
         self.assertEqual("Session logging is already off.\nLogs under %s are kept.\n" % self.log_root, self.run_ok("off"))
         self.assertEqual(kept, self.log_tree())
@@ -270,6 +276,7 @@ class OffTests(SkeletonCase):
         # only turning logging on again syncs again
         self.run_ok("on")
         self.assertEqual({ACTIVE_SESSION, NEWER_SESSION}, set(self.saved_reports()))
+        self.assertEqual(live, self.saved_reports()[NEWER_SESSION])  # the live report is the one a sync saves
         self.assert_python_never_called()
 
 

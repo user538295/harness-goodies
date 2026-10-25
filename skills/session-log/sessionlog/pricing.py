@@ -1,6 +1,6 @@
 """Use-case-owned report data and pricing port (C3/C4); no file or rendering dependencies."""
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Protocol, Tuple
@@ -10,6 +10,9 @@ from .model import Harness, RequestUsage, Session
 TOKENS_PER_MILLION = Decimal(1000000)
 CENTS_PER_DOLLAR = Decimal(100)
 PROMPT_HEAD_LENGTH = 60
+_TAG = re.compile(r"<[^>]*>")
+_LINE_BREAKS_AND_TABS = re.compile(r"[\r\n\t]")
+_SPACE_RUN = re.compile(r" +")
 PRICED = "priced"
 PARTIAL = "partial"
 UNKNOWN = "unknown"
@@ -20,7 +23,14 @@ def _whole_seconds(span: timedelta) -> timedelta:
 
 
 def _prompt_head(text: str) -> str:
-    return re.sub(r"[\r\n\t]+", " ", text)[:PROMPT_HEAD_LENGTH]
+    """The prompt as the old report showed it: every `<...>` tag and every line break or tab becomes a space, runs of spaces collapse,
+    and the first 60 characters are kept without the spaces at either end."""
+    spaced = _SPACE_RUN.sub(" ", _LINE_BREAKS_AND_TABS.sub(" ", _TAG.sub(" ", text)))
+    return spaced.lstrip(" ")[:PROMPT_HEAD_LENGTH].rstrip(" ")
+
+
+def _cents(amount: Decimal) -> int:
+    return int((amount * CENTS_PER_DOLLAR).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 @dataclass(frozen=True)
@@ -48,10 +58,12 @@ class PriceBook(Protocol):
 
 @dataclass(frozen=True)
 class Price:
-    """Half-up whole cents of the known subtotal, with priced/partial/unknown status."""
+    """Half-up whole cents of the known subtotal, with priced/partial/unknown status. `exact` is that subtotal in USD, unrounded, so a
+    total can add exact amounts and round once."""
 
     cents: int
     status: str
+    exact: Decimal = field(default=Decimal(0), compare=False)
 
 
 @dataclass(frozen=True)
@@ -89,7 +101,8 @@ class SubAgentRow(Usage):
 
 @dataclass(frozen=True)
 class Total:
-    """Sum of displayed row cents and tokens; main durations only, in the whole seconds the rows show; explicit incomplete/API flags."""
+    """Tokens summed over the rows; the price is the exact sum of the rows rounded once; main durations only, in the whole seconds the
+    rows show; explicit incomplete/API flags."""
 
     total_tokens: int
     price_cents: int
@@ -162,12 +175,12 @@ class PricingRules:
         return dict(input_tokens=input_tokens, output_tokens=output_tokens,
                     cache_read_tokens=cache_read, cache_write_tokens=cache_write,
                     total_tokens=None if missing else input_tokens + output_tokens + cache_read + cache_write,
-                    price=Price(int((amount * CENTS_PER_DOLLAR).quantize(Decimal(1), rounding=ROUND_HALF_UP)), status),
+                    price=Price(_cents(amount), status, amount),
                     model_names="+".join(sorted({r.model_name + (":fast" if r.fast else "") for r in requests if r.model_name})) or "-",
                     effort="+".join(sorted({r.effort for r in requests if r.effort})) or None)
 
     def build(self, session: Session) -> UsageReport:
-        """Prefer recorded costs; round each row once, then sum rows without repricing."""
+        """Prefer recorded costs; round each row once for display, and the total once from the rows' exact amounts, not their cents."""
         prompts = tuple(PromptRow(
             **self._usage(prompt.requests), at=prompt.submitted_at,
             working_time=_whole_seconds(prompt.working_time or timedelta(0)) if prompt.reply_at is not None else timedelta(0),
@@ -185,7 +198,7 @@ class PricingRules:
         rows = (*prompts, *agents)
         cursor = session.harness == Harness.CURSOR
         total = Total(total_tokens=sum(row.total_tokens or 0 for row in rows),
-                      price_cents=sum(row.price.cents for row in rows),
+                      price_cents=_cents(sum((row.price.exact for row in rows), Decimal(0))),
                       price_incomplete=cursor or any(row.price.status != PRICED for row in rows),
                       api_equivalent=session.harness in (Harness.CODEX, Harness.CURSOR),
                       working_time=sum((row.working_time for row in prompts), timedelta(0)),

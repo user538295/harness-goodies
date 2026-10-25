@@ -11,8 +11,8 @@ from sessionlog.claude_transcript import MessageRequest
 from sessionlog.log_usage_writer import LogUsageWriter
 from sessionlog.model import Harness, RequestUsage
 from sessionlog.pricing import PricingRules, Rates
-from sessionlog.reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON,
-                                    CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource)
+from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON,
+                                    SourceUnit, UnreadableSource)
 from tests.test_claude_reader import (ONE_SECOND_NS, PROJECT, SID, STAMP, ClaudeReaderTestCase, _FakeEntry, _answer, _at,
                                       _on_model, _plain_user, _typed, _usage)
 
@@ -429,7 +429,7 @@ class ClaudeSubAgentReadTest(ClaudeSubAgentTestCase):
         result = self.reader.read("claude:" + SID, units)
         self.assertEqual([agent.agent_id for agent in result.session.sub_agents], ["agent-a1"])
         self.assertEqual(result.unreadable, (
-            UnreadableSource(Harness.CLAUDE, undecodable, CANNOT_BE_DECODED_REASON),
+            UnreadableSource(Harness.CLAUDE, undecodable, CANNOT_BE_PARSED_REASON),
             UnreadableSource(Harness.CLAUDE, unparsable, CANNOT_BE_PARSED_REASON),
             UnreadableSource(Harness.CLAUDE, vanished, CANNOT_BE_OPENED_REASON)))
         self.assertTrue(os.path.exists(good))

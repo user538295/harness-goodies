@@ -35,7 +35,7 @@ class ClaudeSubAgentReportTest(ClaudeSubAgentTestCase):
         Prompt 2: sonnet-5-5 in 2, out 10 -> 1.00 + 0.10 = 1.10. Prompt 3 has no reply: no requests, 0.00.
         a1 haiku-4-5 in 1, out 5 -> 0.20 + 0.50 = 0.70; a2 sonnet-5-5 cache read 0.1 -> 0.20 + 0.20 + 0.015 = 0.415 (42 cents);
         b1 haiku-4-5 -> 0.01 + 0.005 = 0.015 (2 cents); w1 opus-5-5 fast -> 0.80 + 0.40 = 1.20.
-        Rows 1100 + 110 + 0 + 70 + 42 + 2 + 120 = 1444 cents; the exact sum (1443) differs, so rows are summed after rounding.
+        Rows 1100 + 110 + 0 + 70 + 42 + 2 + 120 = 1444 cents; the exact sum is 1443 and the TOTAL is that sum rounded once, not the rows.
         """
         self._main([
             _typed(1, "ask one"),
@@ -54,7 +54,7 @@ class ClaudeSubAgentReportTest(ClaudeSubAgentTestCase):
                     {"agentType": "workflow-step"}, where=("workflows", "wf_x"))
         self._agent("b1", [_agent_user(11, "b1"), _reply(15, "s3", "claude-haiku-4-5", _tokens(10000, 1000))], {"agentType": "Plan"})
 
-    def test_claude_report_equals_golden_file_byte_for_byte_and_total_equals_sum_of_rows(self):
+    def test_claude_report_equals_golden_file_byte_for_byte_and_total_is_the_exact_sum_rounded_once(self):
         self._write_session()
         result = self._session()
         self.assertEqual(result.unreadable, ())
@@ -65,8 +65,8 @@ class ClaudeSubAgentReportTest(ClaudeSubAgentTestCase):
         self.assertEqual(len(rows), 7)
         for column in SUMMED_COLUMNS:
             self.assertEqual(sum(int(row[column]) for row in rows), int(total[column]), column)
-        self.assertEqual(sum(int(row["dollars"]) * CENTS_PER_DOLLAR + int(row["cents"]) for row in rows),
-                         int(total["dollars"]) * CENTS_PER_DOLLAR + int(total["cents"]))
+        self.assertEqual(1444, sum(int(row["dollars"]) * CENTS_PER_DOLLAR + int(row["cents"]) for row in rows))
+        self.assertEqual(1443, int(total["dollars"]) * CENTS_PER_DOLLAR + int(total["cents"]))
 
 
 if __name__ == "__main__":

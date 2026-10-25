@@ -362,11 +362,11 @@ class CodexReadTest(CodexReaderTestCase):
         self.assertEqual((None, (UnreadableSource(Harness.CODEX, gone, CANNOT_BE_OPENED_REASON),
                                  UnreadableSource(Harness.CODEX, broken, CANNOT_BE_PARSED_REASON))), (result.session, result.unreadable))
 
-    def test_read_lists_a_renamed_root_whose_header_is_right_but_whose_content_cannot_be_decoded(self):
+    def test_read_of_a_renamed_root_whose_header_is_right_and_whose_content_has_an_undecodable_line_gives_its_session(self):
         filler = b'{"type":"future_record"}\n' * 20000
-        path = self._write_bytes("rollout-renamed.jsonl", _meta_line().encode("utf-8") + filler + b"\xff\xfe\n")
+        self._write_bytes("rollout-renamed.jsonl", _meta_line().encode("utf-8") + filler + b"\xff\xfe\n")
         result = self.reader.read("codex:" + ROOT_ID, self.reader.scan().units)
-        self.assertEqual((None, (UnreadableSource(Harness.CODEX, path, CANNOT_BE_DECODED_REASON),)), (result.session, result.unreadable))
+        self.assertEqual((ROOT_ID, ()), (result.session.session_id, result.unreadable))
 
     def test_read_skips_an_empty_unit_while_looking_for_a_renamed_root_in_any_unit_order(self):
         empty = self._write("rollout-empty.jsonl", "")
@@ -443,10 +443,10 @@ class CodexReadTest(CodexReaderTestCase):
         result = self.reader.read("codex:" + ROOT_ID, (self._unit(path),))
         self.assertEqual((None, (UnreadableSource(Harness.CODEX, path, CANNOT_BE_PARSED_REASON),)), (result.session, result.unreadable))
 
-    def test_read_of_an_undecodable_root_is_unreadable(self):
-        path = self._write_bytes("rollout-x-%s.jsonl" % ROOT_ID, _meta_line().encode("utf-8") + b"\xff\xfe\n")
-        result = self.reader.read("codex:" + ROOT_ID, (self._unit(path),))
-        self.assertEqual((None, (UnreadableSource(Harness.CODEX, path, CANNOT_BE_DECODED_REASON),)), (result.session, result.unreadable))
+    def test_read_of_a_root_with_an_undecodable_line_skips_the_line(self):
+        self._write_bytes("rollout-x-%s.jsonl" % ROOT_ID, _meta_line().encode("utf-8") + b"\xff\xfe\n")
+        result = self.reader.read("codex:" + ROOT_ID, (self._unit(),))
+        self.assertEqual((ROOT_ID, ()), (result.session.session_id, result.unreadable))
 
     def test_read_of_a_vanished_file_is_unreadable_as_not_openable(self):
         path = self._install()

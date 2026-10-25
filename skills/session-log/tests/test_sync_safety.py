@@ -11,7 +11,7 @@ from sessionlog.commands import CommandUseCases, UnreadableItem
 from sessionlog.log_usage_writer import LogUsageWriter
 from sessionlog.model import Harness
 from sessionlog.pricing import PricingRules
-from sessionlog.reader_port import CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, UnreadableSource
+from sessionlog.reader_port import CANNOT_BE_LISTED_REASON, CANNOT_BE_PARSED_REASON, UnreadableSource
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
 from sessionlog.sync import RENDER_VERSION, SyncUseCase
@@ -303,7 +303,7 @@ class PartlyGoneTest(SafetyTestCase):
         entry = self._entry("partial")
         self.assertEqual((entry["state"], entry["reason"], entry["unitCount"]), ("skipped", PARTLY_GONE, UNITS_WITH_AGENT))
         self.assertEqual(self._commands().status().unreadable,
-                         (UnreadableItem(agent, CANNOT_BE_DECODED_REASON), UnreadableItem(log_path, PARTLY_GONE)))
+                         (UnreadableItem(agent, CANNOT_BE_PARSED_REASON), UnreadableItem(log_path, PARTLY_GONE)))
         self._agent_file("partial")
         self._sync()
         entry = self._entry("partial")
@@ -521,10 +521,10 @@ class VanishedUnreadableUnitTest(SafetyTestCase):
         os.unlink(bad)
         self.assertEqual(self._commands().status().unreadable, ())
         units = self._saved()["units"]
-        self.assertEqual(units[agent], {"sessionKey": self._key("ok"), "state": "inactive"})
-        self.assertEqual(units[bad], {"sessionKey": self._key("bad"), "state": "inactive"})
-        for kept in (healthy, gone):
-            self.assertEqual(units[kept], before[kept])
+        self.assertNotIn(agent, units)  # a unit whose source left a complete scan is dropped, whatever its state
+        self.assertNotIn(bad, units)
+        self.assertNotIn(gone, units)
+        self.assertEqual(units[healthy], before[healthy])
         self.assertEqual(before[gone]["state"], "read")
         self.reader.read_keys.clear()
         self._install("bad", _transcript(NOW), NOW)
@@ -532,7 +532,7 @@ class VanishedUnreadableUnitTest(SafetyTestCase):
         self.assertEqual(self.reader.read_keys, [self._key("bad")])
         self.assertEqual((self._entry("bad")["state"], self._saved()["units"][bad]["state"]), ("written", "read"))
 
-    def test_incomplete_scan_does_not_retire_unreadable_units_that_seem_gone(self):
+    def test_incomplete_scan_keeps_unreadable_units_that_seem_gone(self):
         bad = os.path.join(self.folder, "bad.jsonl")
         self._corrupt(bad)
         self._sync()
@@ -543,7 +543,7 @@ class VanishedUnreadableUnitTest(SafetyTestCase):
         self.assertEqual([item.path for item in self._commands().status().unreadable], [bad, self.reader._projects])  # the folder it could not list too
         self.reader = CountingReader(self.root)
         self._sync()
-        self.assertEqual(self._saved()["units"][bad], {"sessionKey": self._key("bad"), "state": "inactive"})
+        self.assertNotIn(bad, self._saved()["units"])  # the complete scan drops it: it can never be retried
 
 
 if __name__ == "__main__":

@@ -93,11 +93,18 @@ class CommandUseCases:
     def on(self) -> OnResult:
         flag = self._state.read_on_flag()
         already_on = flag is not None
+        created_here = False
         if flag is None:
             fresh = OnFlag(self._now())
             self._state.write_on_flag(fresh)
             flag = self._state.read_on_flag() or fresh  # a concurrent `on` keeps the time it wrote
-        self._sync.sync()
+            created_here = flag.on_at == fresh.on_at
+        try:
+            self._sync.sync()
+        except BaseException:  # an `on` that fails or is killed must not leave logging on; a flag that was already there stays
+            if created_here:
+                self._state.delete_on_flag()
+            raise
         return OnResult(already_on, flag.on_at, self._log_root, self._leftover_scan.scan(), self._python_probe.check())
 
     def off(self) -> OffResult:
@@ -129,8 +136,8 @@ class CommandUseCases:
             probe=self._python_probe.check())
 
     def usage_latest(self, cwd: str) -> UsageResult:
-        """`usage` and `usage --latest`: the report of the root session of the project of `cwd` with the newest prompt; the
-        store is read only when the project has no archived session."""
+        """`usage` and `usage --latest`: the report of the root session of the project of `cwd` with the newest prompt, among
+        the archived sessions and the never-archived ones of the store (the nearest folder with any session wins)."""
         return self._usage(lambda state: self._targets.latest(state, cwd))
 
     def usage_of(self, target: str) -> UsageResult:

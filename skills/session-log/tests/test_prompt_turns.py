@@ -29,18 +29,18 @@ class GroupTurnsTest(unittest.TestCase):
         self.assertEqual(("two", "second", timedelta(seconds=3)), (second.text, second.reply_text, second.working_time))
         self.assertEqual(4, len(requests))
 
-    def test_a_reply_is_the_last_stopping_answer_even_when_answers_that_do_not_stop_come_after_it(self):
+    def test_a_reply_is_the_last_stopping_answer_even_when_answers_that_do_not_stop_come_after_it_and_the_turn_works_to_the_last_answer(self):
         (prompt,), _ = group_turns([Opening(at(10), "ask"), stop("reply", 12), Answer(request(1), False, None, at(20))])
-        self.assertEqual(("reply", at(12)), (prompt.reply_text, prompt.reply_at))
+        self.assertEqual(("reply", at(20), timedelta(seconds=10)), (prompt.reply_text, prompt.reply_at, prompt.working_time))
 
     def test_answers_before_the_first_opening_fall_under_the_first_prompt(self):
         prompts, requests = group_turns([stop("early", 5, tokens=7), Opening(at(10), "ask"), stop("late", 12, tokens=8)])
         self.assertEqual(([7, 8], "late"), ([r.input_tokens for r in prompts[0].requests], prompts[0].reply_text))
         self.assertEqual(2, len(requests))
 
-    def test_a_turn_without_a_stopping_answer_has_no_reply_and_works_no_time(self):
+    def test_a_turn_without_a_stopping_answer_has_no_reply_but_works_until_its_last_answer(self):
         (prompt,), _ = group_turns([Opening(at(10), "ask"), Answer(request(1), False, None, at(11))])
-        self.assertEqual((None, None, timedelta(0), 1), (prompt.reply_at, prompt.reply_text, prompt.working_time, len(prompt.requests)))
+        self.assertEqual((None, at(11), timedelta(seconds=1), 1), (prompt.reply_text, prompt.reply_at, prompt.working_time, len(prompt.requests)))
 
     def test_a_reply_before_its_prompt_is_dated_by_the_prompt_and_a_reply_without_time_has_no_reply_time(self):
         (early, timeless), _ = group_turns([Opening(at(30), "a"), stop("r", 11), Opening(at(40), "b"), Answer(None, True, "no time", None)])

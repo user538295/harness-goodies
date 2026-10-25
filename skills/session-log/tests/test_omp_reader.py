@@ -354,7 +354,8 @@ class OmpReadSessionsTest(OmpReaderTestCase):
         self._check_cyclic_pair_listed_unreadable()
 
     def _check_reply_time_and_effort_rules(self):
-        """The root id is the stem after its first `_`, equal to the header id; the reply is the last `stop` message with its `completedAt`."""
+        """The root id is the stem after its first `_`, equal to the header id; the reply is the last `stop` message, and a turn works until
+        its last message completed (an aborted one included)."""
         stem, root_id = root_of(1)
         self._store(stem, records=[header_record(root_id), effort_record(5, "low"), user_record(10, "ask one"),
                                    assistant_record(11, "working", stop="toolUse", usage=usage_of(1, 1)),
@@ -366,9 +367,10 @@ class OmpReadSessionsTest(OmpReaderTestCase):
             session = self._read_session(root_id, self._path(stem)).session
             one, two, three = session.prompts
             self.assertEqual(root_id, session.session_id)
-            self.assertEqual(("answer", at(23), timedelta(seconds=13), ["low", "low", "low"]),
+            self.assertEqual(("answer", at(30), timedelta(seconds=20), ["low", "low", "low"]),
                              (one.reply_text, one.reply_at, one.working_time, [r.effort for r in one.requests]))
-            self.assertEqual((None, None, timedelta(0), ["high"]), (two.reply_text, two.reply_at, two.working_time, [r.effort for r in two.requests]))
+            self.assertEqual((None, at(50), timedelta(seconds=10), ["high"]),
+                             (two.reply_text, two.reply_at, two.working_time, [r.effort for r in two.requests]))
             self.assertEqual(("last words", at(61)), (three.reply_text, three.reply_at))  # no `completedAt`: the record time
 
     def _check_parent_link_by_stem_in_either_folder(self):
@@ -434,17 +436,17 @@ class OmpReadSessionsTest(OmpReaderTestCase):
         broken = self._store_bytes(stem, "Broken", data=b"\xff\xfe not utf-8 \xff")
         leaf = self._store(stem, "Broken", "Leaf", records=[header_record("leaf", parent=self._parent(stem, "Broken")), assistant_record(13, usage=usage_of(1, 1))])
         result = self._read_session(session_id, broken, leaf)
-        self.assertEqual((None, [(broken, CANNOT_BE_DECODED_REASON)]), (result.session, [(s.path, s.reason) for s in result.unreadable]))
+        self.assertEqual((None, [(broken, CANNOT_BE_PARSED_REASON)]), (result.session, [(s.path, s.reason) for s in result.unreadable]))
         root = self._store(stem, records=[header_record(session_id), user_record(10, "ask")])
         result = self._read_session(session_id, root, broken, leaf)
-        self.assertEqual((["ask"], [(broken, CANNOT_BE_DECODED_REASON)]), ([p.text for p in result.session.prompts], [(s.path, s.reason) for s in result.unreadable]))
+        self.assertEqual((["ask"], [(broken, CANNOT_BE_PARSED_REASON)]), ([p.text for p in result.session.prompts], [(s.path, s.reason) for s in result.unreadable]))
 
     def test_a_root_that_cannot_be_read_gives_no_session_even_with_readable_children(self):
         stem, session_id = root_of(1)
         root = self._store_bytes(stem, data=b"\xff\xfe")
         child = self._store(stem, "Task", records=[header_record("t", parent=self._parent(stem)), assistant_record(13, usage=usage_of(1, 1))])
         result = self._read_session(session_id, root, child)
-        self.assertEqual((None, [(root, CANNOT_BE_DECODED_REASON)]), (result.session, [(s.path, s.reason) for s in result.unreadable]))
+        self.assertEqual((None, [(root, CANNOT_BE_PARSED_REASON)]), (result.session, [(s.path, s.reason) for s in result.unreadable]))
 
     def test_a_root_without_a_start_gives_no_session_and_no_problem_whatever_its_children(self):
         stem, session_id = root_of(1)
@@ -595,7 +597,7 @@ class OmpRootLoopTest(OmpReaderTestCase):
         loop_a = self._store(stem, "A", records=[header_record("a", parent=self._parent(stem, "B")), assistant_record(13, usage=usage_of(1, 1))])
         loop_b = self._store(stem, "B", records=[header_record("b", parent=self._parent(stem, "A")), assistant_record(14, usage=usage_of(1, 1))])
         result = self._read_root(first_id, first, broken, loop_a, loop_b)
-        self.assertEqual((None, sorted([(broken, CANNOT_BE_DECODED_REASON), (first, PARENT_CYCLE_REASON), (loop_a, PARENT_CYCLE_REASON), (loop_b, PARENT_CYCLE_REASON)])),
+        self.assertEqual((None, sorted([(broken, CANNOT_BE_PARSED_REASON), (first, PARENT_CYCLE_REASON), (loop_a, PARENT_CYCLE_REASON), (loop_b, PARENT_CYCLE_REASON)])),
                          (result.session, sorted((source.path, source.reason) for source in result.unreadable)))
 
     def test_an_ancestor_that_vanished_since_the_scan_ends_the_chain_so_no_loop_is_seen(self):
@@ -730,7 +732,7 @@ class OmpReadErrorsTest(OmpReaderTestCase):
         path = self._store_bytes(stem, data=b"\xff\xfe\xfd")
         unit = self._unit(path)
         result = self.reader.read("omp:" + session_id, (unit,))
-        self.assertEqual((None, (UnreadableSource(Harness.OMP, path, CANNOT_BE_DECODED_REASON),)), (result.session, result.unreadable))
+        self.assertEqual((None, (UnreadableSource(Harness.OMP, path, CANNOT_BE_PARSED_REASON),)), (result.session, result.unreadable))
         os.remove(path)
         result = self.reader.read("omp:" + session_id, (unit,))
         self.assertEqual((None, (UnreadableSource(Harness.OMP, path, CANNOT_BE_OPENED_REASON),)), (result.session, result.unreadable))

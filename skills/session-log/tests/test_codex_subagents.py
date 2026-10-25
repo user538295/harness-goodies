@@ -47,9 +47,10 @@ FILE_SECOND = 1_700_000_000  # a file time (2023-11-14 22:13:20 UTC) that no rec
 # scratch script); every total below is (input including cached input, cached input, output).
 ROOT_FIXTURE_TOTAL = (688467, 559744, 9814)  # `root_with_token_usage_records.jsonl`: the sum of its 7 `token_usage_record` usages
 COUNT_ONLY_FINAL_TOTAL = (46553, 34176, 1373)  # `root_with_token_count_only.jsonl`: its last `token_count` total, none comes before its first `task_started`
-# `forked_child_with_inherited_total.jsonl`: the total of its `token_count` before the first `task_started` is inherited from the parent
-# and its last total is the end of its own work, so its own tokens are the growth between the two.
-FORK_INHERITED_TOTAL = (8170838, 7931904, 38984)
+# `forked_child_with_inherited_total.jsonl`: its first turn replays its parent's history (`turn_id` `rollout-4`) and its `token_count`
+# events carry the parent's totals; the total at the end of that turn is the starting total and its last total is the end of its own
+# work, so its own tokens are the growth between the two.
+FORK_INHERITED_TOTAL = (8313968, 8041216, 40094)
 FORK_FINAL_TOTAL = (8724643, 8390016, 44369)
 # Usages the test writes itself, (input, output) and (input, output, cached input).
 PARENT_USED = (20, 2)

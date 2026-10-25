@@ -4,15 +4,19 @@ object is skipped without a report, and so is an assistant row without a `tokens
 a reply). Rows of a type this reader does not use (`system`, `synthetic`, `shell`, `compaction`, `idle`, `model-switched`) open no
 prompt and make no request, but their times still count as activity.
 
-A `user` row opens a prompt: its text is `data.text` and its time `data.time.created` (epoch milliseconds); a prompt with no usable time
-is dropped with its replies and the requests under it, as in the other readers (`Transcript.requests`, which a sub-agent
-reports, still holds them). An `assistant` row is a request when `data.tokens` is an
-object: `input`, `output`, `cache.read` and `cache.write` are its tokens, `reasoning` counts as output (the model has no field for it),
+A `user` row opens a prompt: its text is `data.text` trimmed and its time `data.time.created` (epoch milliseconds); a row with no text
+opens none (its answers fall under the prompt before it); a prompt with no usable time is dropped with its replies and the requests
+under it, as in the other readers (`Transcript.requests`, which a sub-agent reports, still holds them). An `assistant` row is a
+request when `data.tokens` is an object: `input`, `output`, `cache.read` and `cache.write` are its tokens, `reasoning` counts as
+output (the model has no field for it),
 the recorded cost is `data.cost` (0 means free; an absent or invalid cost is left to the price file), the model is `data.model`'s
 `providerID/id`. OpenCode records no effort. A request falls under the prompt before it, and those before the first prompt under the first.
 
 A prompt's reply is the last assistant row of its turn (up to the next `user` row) whose `finish` is `stop`: its text blocks joined by
-blank lines, its time `data.time.completed` (else `data.time.created`). A turn without such a row has no reply and works no time."""
+blank lines, its time `data.time.completed` (else `data.time.created`). A turn works from its prompt to the `data.time.completed` of
+its last assistant row, whatever its `finish` (`error`, `length`, an unfinished row), but not while the user was asked: a row with a
+`question`, `confirm` or `ask` tool block asked at its `data.time.streamed` (else `created`), and the user's wait lasts until the
+next row starts (as the old script counted it). A turn without a completed row has no reply time and works no time."""
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable, List, Optional, Tuple, Union
@@ -24,6 +28,8 @@ from .prompt_turns import Answer, Opening, group_turns
 
 _USER, _ASSISTANT = "user", "assistant"
 _STOP = "stop"
+_TOOL_BLOCK = "tool"
+_WAIT_TOOLS = ("question", "confirm", "ask")
 _TEXT_BLOCK = "text"
 _REPLY_PARAGRAPH_SEPARATOR = "\n\n"
 
@@ -81,10 +87,22 @@ def _reply_text(content: Any) -> Optional[str]:
     return _REPLY_PARAGRAPH_SEPARATOR.join(text for text in texts if isinstance(text, str) and text.strip()) or None
 
 
+def _asked_at(data: Record) -> Optional[datetime]:
+    """When the row put a question to the user (its `question`, `confirm` or `ask` tool call was streamed), else None."""
+    content = data.get("content")
+    blocks = content if isinstance(content, list) else []
+    if not any(isinstance(block, dict) and block.get("type") == _TOOL_BLOCK and block.get("name") in _WAIT_TOOLS for block in blocks):
+        return None
+    return _time_of(data, "streamed") or _time_of(data, "created")
+
+
 def _answer_of(data: Record) -> Answer:
+    """A row ends its work at its completion; a stopping row that never completed is dated by its start, and a row that did not stop
+    and never completed (still running) has no end."""
     is_stop = data.get("finish") == _STOP
-    return Answer(_request_of(data), is_stop, _reply_text(data.get("content")) if is_stop else None,
-                   _time_of(data, "completed") or _time_of(data, "created"))
+    started_at = _time_of(data, "created")
+    ended_at = _time_of(data, "completed") or (started_at if is_stop else None)
+    return Answer(_request_of(data), is_stop, _reply_text(data.get("content")) if is_stop else None, ended_at, started_at, _asked_at(data))
 
 
 def _events_of(rows: Iterable[Tuple[str, str]]) -> Tuple[List[_Event], Optional[datetime]]:
@@ -100,7 +118,9 @@ def _events_of(rows: Iterable[Tuple[str, str]]) -> Tuple[List[_Event], Optional[
         last_moment = max((moment for moment in row_moments if moment is not None), default=None)
         if kind == _USER:
             body = data.get("text")
-            events.append(Opening(started_at, body if isinstance(body, str) else ""))
+            text = body.strip() if isinstance(body, str) else ""
+            if text:
+                events.append(Opening(started_at, text))
         elif kind == _ASSISTANT:
             events.append(_answer_of(data))
     return events, last_moment

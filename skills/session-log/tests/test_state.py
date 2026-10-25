@@ -243,7 +243,9 @@ class StateTests(unittest.TestCase):
                 self.assertTrue(self.store.sync_reset)
                 self.assertEqual(state, {'units': {}, 'sessions': {}})
                 self.store.save_sync(state)
-                self.assertEqual(json.loads((self.root / '.sync.json').read_text()), state)
+                saved = json.loads((self.root / '.sync.json').read_text())
+                self.assertEqual(saved.pop('logRoot'), str(self.root))  # the root the log paths of the file belong to
+                self.assertEqual(saved, state)
 
     def test_merge_keeps_other_keys_invalidates_conflicts_and_preserves_path(self):
         initial = {'units': {'u': {'fingerprint': 'old', 'state': 'read'}},

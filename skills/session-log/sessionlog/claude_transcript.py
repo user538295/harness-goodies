@@ -27,6 +27,10 @@ _INJECTED_HEAD = "<task-notification>"
 _SYNTHETIC_MODEL = "<synthetic>"
 _TAG = re.compile(r"<[^>]*>")
 _WHITESPACE = re.compile(r"\s+")
+_COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
+_COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+_FORKED_FROM = "forkedFrom"
+_COMMAND_PART_SEPARATOR = " "
 _TEXT_BLOCK = "text"
 _REPLY_PARAGRAPH_SEPARATOR = "\n\n"
 _PROMPT_TEXT_SEPARATOR = "\n"
@@ -39,8 +43,8 @@ _MessageKey = Union[str, int]
 
 @dataclass(frozen=True)
 class Transcript:
-    """`started_at` and `project_dir` are taken from records of any type. `message_ids` are the ids of the assistant
-    messages whose requests the prompts count.
+    """`started_at` and `project_dir` are taken from the session's own records of any type, not from a fork's replayed
+    history. `message_ids` are the ids of the assistant messages whose requests the prompts count.
     `unparsable`: the text has lines, none of them a JSON object."""
 
     started_at: Optional[datetime]
@@ -113,6 +117,17 @@ def _without_tags(text: str) -> str:
     return _WHITESPACE.sub(" ", _TAG.sub(" ", text)).strip()
 
 
+def _command_text(text: str) -> str:
+    """A slash command as the user typed it: `<command-name>` (it holds the slash) and, when given, `<command-args>` as they
+    are; `<command-message>` only repeats the name without it. A command with no name tag falls back to the tag-stripped text."""
+    name = _COMMAND_NAME.search(text)
+    if name is None:
+        return _without_tags(text)
+    args = _COMMAND_ARGS.search(text)
+    typed = [name.group(1).strip(), args.group(1).strip() if args else ""]
+    return _COMMAND_PART_SEPARATOR.join(part for part in typed if part)
+
+
 def _user_opening(record: Record) -> Optional[_Opening]:
     """`promptSource` is one of the prompt sources (a real prompt), absent or null (a plain entry), or anything else
     (not a prompt). A plain entry is a slash command by its tags; else a remote prompt unless it only reports local
@@ -125,7 +140,7 @@ def _user_opening(record: Record) -> Optional[_Opening]:
     if source is not None:
         return None
     if text.startswith(_COMMAND_HEADS):
-        return _Opening(_Kind.COMMAND, _without_tags(text))
+        return _Opening(_Kind.COMMAND, _command_text(text))
     if not texts or text.startswith(_NOT_A_PROMPT_HEADS):
         return None
     return _Opening(_Kind.REMOTE, text)
@@ -150,6 +165,12 @@ def _opening_of(record: Record) -> Optional[_Opening]:
     else:
         return None
     return None if opening is None or opening.text.startswith(_INJECTED_HEAD) else opening
+
+
+def _is_replayed(record: Record) -> bool:
+    """`/branch` and `--fork-session` copy the parent's history into the new session's file, each record under the new
+    session id but marked with a `forkedFrom` object that names the parent; those records belong to the parent's log."""
+    return isinstance(record.get(_FORKED_FROM), dict)
 
 
 def _is_synthetic(record: Record) -> bool:
@@ -302,7 +323,7 @@ def _fold(folder: _F, lines: Iterable[str]) -> _F:
 
 class _Folder(_RecordFolder):
     """Folds the lines of one session into turns: assistant entries go to the latest turn, a bridge-session record
-    switches the session to Remote Control."""
+    switches the session to Remote Control. Records replayed from a forked-from session (`_is_replayed`) are skipped."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -312,6 +333,8 @@ class _Folder(_RecordFolder):
         self._turns: List[_Turn] = []
 
     def _add_record(self, line_number: int, record: Record) -> None:
+        if _is_replayed(record):
+            return
         moment = _moment(record)
         self._started_at = _earliest(self._started_at, moment)
         self._project_dir = self._project_dir or _cwd(record)

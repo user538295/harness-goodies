@@ -23,8 +23,16 @@ from typing import Any, Dict, Iterator, List, Tuple
 from .leftover_port import Leftover
 from .model import Harness
 
-FIX_MOVE_ASIDE = "move it aside"
-FIX_REMOVE_HOOK_ENTRIES = "remove its old session-log hook entries"
+OLD_RELEASE_FOLDER = "session-log-old"
+# One line each. A move goes to <root>/session-log-old/<same relative path>: outside every skills folder (a copy moved inside one may
+# still load), and two leftovers named alike (the seeded copy and the old state folder are both `session-log`) never collide.
+FIX_MOVE = ("move it outside the skills folders: `mkdir -p {parent} && mv {path} {destination}` "
+            "(a copy moved inside a skills folder may still load)")
+# Names exactly what `_is_old_hook_command` recognizes, so the user deletes the entries the scan found and no others.
+FIX_REMOVE_HOOK_ENTRIES = ('delete from its "hooks" every entry whose "command" starts with SESSION_LOG_OWNER=universal-session-log '
+                           'or names skills/session-log/adapters/claude/claude_hook.sh, '
+                           'skills/session-log/adapters/native/session_log_hook.py or .claude/scripts/prompt_log_*, '
+                           'and keep the other entries')
 
 HOOK_FILES: Dict[Harness, str] = {Harness.CLAUDE: "settings.json", Harness.CODEX: "hooks.json", Harness.CURSOR: "hooks.json"}
 # Paths (relative to the harness root) that are leftovers whenever they exist, even as a dangling link.
@@ -163,11 +171,16 @@ class LeftoverScan:
         self._root = root
 
     def scan(self) -> Tuple[Leftover, ...]:
-        found = [Leftover(path, FIX_MOVE_ASIDE) for path in self._paths_to_move_aside()]
+        found = [Leftover(path, self._move_fix(path)) for path in self._paths_to_move_aside()]
         hook_file = HOOK_FILES.get(self._harness)
         if hook_file is not None and _holds_old_hook_entry(self._path(hook_file)):
             found.append(Leftover(self._path(hook_file), FIX_REMOVE_HOOK_ENTRIES))
         return tuple(sorted(found, key=lambda leftover: leftover.path))
+
+    def _move_fix(self, path: str) -> str:
+        destination = os.path.join(self._root, OLD_RELEASE_FOLDER, os.path.relpath(path, self._root))
+        return FIX_MOVE.format(parent=shlex.quote(os.path.dirname(destination)), path=shlex.quote(path),
+                               destination=shlex.quote(destination))
 
     def _path(self, *parts: str) -> str:
         return os.path.join(self._root, *parts)

@@ -9,17 +9,24 @@ prompt's reply is the last `AgentMessage` of its turn marked `final_answer`, els
 whose `total_token_usage` grew is one request with the growth as its tokens. `last_token_usage` is never summed, because
 events repeat it, and a `token_count` before the rollout's first `task_started` (a forked thread's inherited total) only sets
 the starting total. Input tokens exclude `cached_input_tokens`, which count as cache read; `cache_write_input_tokens` count as
-cache write.
+cache write. The part of `total_tokens` that input and output do not account for is counted as input tokens: a `token_count` of
+a rollout imported from another agent has `input_tokens` and `output_tokens` 0 and only `total_tokens`, whose split is unknown
+(the same rule reads a `token_usage_record` usage); such a rollout names no model, so its tokens are never priced.
 
 Limits of the growth path (a rollout without `token_usage_record` lines): a compaction call is in no running total, so its
 tokens are missing. A fork (a thread with a `parent_thread_id` or `forked_from_id`) never lets its total fall below the highest
 one seen, in any field, so the replayed history of its parent, whose totals lie under the inherited starting total, adds no
-request; a fork whose replay has no inherited `token_count` before its first `task_started` still counts the replay as its own
-(records of a fork carry no mark that tells replayed ones apart; a timestamp rule was checked against the local rollouts and
-misfires on a file whose records all share one time).
+request. A fork also replays that history as turns, and two marks tell a replayed turn from the fork's own: its `turn_id` is
+`rollout-<n>` (the wrapper the replay is written in) or its `started_at` lies before the second of the header. From such a
+`task_started` to the next one that has neither mark, no `UserMessage`, `AgentMessage`, `token_usage_record` or request is the
+fork's: the totals in it only raise the starting total. A fork whose replay shows neither mark (no replayed turn, or turns
+written like its own) still counts the replay as its own; a timestamp rule was checked against the local rollouts and misfires
+on a file whose records all share one time.
 
 A prompt is dropped, with its replies and requests, when its record has no usable time (as in the Claude reader), and a
 rollout without any prompt has no rows. Requests before the first prompt belong to it; replies before it belong to none."""
+import math
+import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -48,6 +55,10 @@ _CACHED = "cached_input_tokens"
 _CACHE_WRITE = "cache_write_input_tokens"
 _OUTPUT = "output_tokens"
 _USAGE_FIELDS = (_INPUT, _CACHED, _CACHE_WRITE, _OUTPUT)
+_TOTAL_TOKENS = "total_tokens"
+_UNSPLIT = "unsplit_tokens"  # what `total_tokens` holds beyond input and output; counted as input, its split is unknown
+_COUNTED = _USAGE_FIELDS + (_UNSPLIT,)
+_REPLAY_TURN_ID = re.compile(r"rollout-[0-9]+")
 _MAX_TOKENS = 2**63 - 1
 
 _Tokens = Dict[str, int]
@@ -124,8 +135,15 @@ def _tokens(value: Any) -> int:
     return value if _is_tokens(value) else 0
 
 
+def _unsplit(total_tokens: Any, fields: _Tokens) -> int:
+    """What the usable `total_tokens` holds beyond the `fields` input and output; none when it holds no more or is no number."""
+    return max(0, total_tokens - fields[_INPUT] - fields[_OUTPUT]) if _is_tokens(total_tokens) else 0
+
+
 def _token_fields(usage: Dict[str, Any]) -> _Tokens:
-    return {name: _tokens(usage.get(name)) for name in _USAGE_FIELDS}
+    fields = {name: _tokens(usage.get(name)) for name in _USAGE_FIELDS}
+    fields[_UNSPLIT] = _unsplit(usage.get(_TOTAL_TOKENS), fields)
+    return fields
 
 
 def _object_or_empty(value: Any) -> Dict[str, Any]:
@@ -147,6 +165,17 @@ def _agent_type(payload: Record) -> Optional[str]:
     return _text(payload.get("agent_role")) or _text(spawn.get("agent_role")) or _text(subagent.get("other"))
 
 
+def _parent_of(payload: Record) -> Optional[str]:
+    """The thread that spawned this one: the header's `parent_thread_id`, else the parent its spawn source names (an older Codex
+    writes only that, with the thread's own id as `session_id`), else, for a sub-agent, the thread it was forked from (a guardian
+    review is forked from the thread it reviews; where a header has both, they name the same thread). A fork that is no
+    sub-agent has no parent: it is a session of its own."""
+    subagent = _object_or_empty(_object_or_empty(payload.get("source")).get("subagent"))
+    spawn = _object_or_empty(subagent.get("thread_spawn"))
+    parent = _text(payload.get("parent_thread_id")) or _text(spawn.get("parent_thread_id"))
+    return parent or (_text(payload.get("forked_from_id")) if subagent else None)
+
+
 def _meta_of(record: Optional[Record]) -> Optional[RolloutMeta]:
     if record is None or record.get("type") != _SESSION_META or not isinstance(record.get("payload"), dict):
         return None
@@ -154,11 +183,12 @@ def _meta_of(record: Optional[Record]) -> Optional[RolloutMeta]:
     thread_id = _text(payload.get("id"))
     if thread_id is None:
         return None
-    parent_thread_id = _text(payload.get("parent_thread_id"))
-    root_id = _text(payload.get("session_id")) or parent_thread_id or thread_id
+    parent_thread_id = _parent_of(payload)
+    session_id = _text(payload.get("session_id"))
+    root_id = session_id if session_id not in (None, thread_id) else parent_thread_id or thread_id
     started_at = parse_moment(payload.get("timestamp")) or parse_moment(record.get("timestamp"))
     return RolloutMeta(root_id=root_id, thread_id=thread_id, parent_thread_id=parent_thread_id, agent_type=_agent_type(payload),
-                       forked=parent_thread_id is not None or _text(payload.get("forked_from_id")) is not None,
+                       forked=_text(payload.get("parent_thread_id")) is not None or _text(payload.get("forked_from_id")) is not None,
                        started_at=started_at, project_dir=_text(payload.get("cwd")))
 
 
@@ -170,14 +200,17 @@ def parse_session_meta(line: str) -> Optional[RolloutMeta]:
 class _Collector:
     """Gathers, in file order, every opening, reply and request of a rollout, the newest record time and the oldest one after
     the header line; `prompts` then lays the openings out by position. `forked` rollouts never let a total fall below the
-    highest one seen (see `_take_count`). The first record added is the header."""
+    highest one seen (see `_take_count`), and what a forked rollout replays from its parent is no opening, reply or request
+    (see `_is_replay`). The first record added is the header."""
 
-    def __init__(self, forked: bool) -> None:
+    def __init__(self, forked: bool, started_at: Optional[datetime]) -> None:
         self._forked = forked
+        self._header_second = math.floor(started_at.timestamp()) if started_at is not None else None
+        self._replaying = False
         self._model = ""
         self._effort: Optional[str] = None
         self._task_started = False
-        self._total: _Tokens = dict.fromkeys(_USAGE_FIELDS, 0)
+        self._total: _Tokens = dict.fromkeys(_COUNTED, 0)
         self._items = _Track()
         self._events = _Track()
         self._recorded: List[_IndexedRequest] = []
@@ -198,7 +231,7 @@ class _Collector:
         kind = record.get("type")
         if kind == _TURN_CONTEXT:
             self._take_context(payload)
-        elif kind == _TOKEN_USAGE_RECORD:
+        elif kind == _TOKEN_USAGE_RECORD and not self._replaying:
             self._take_recorded(index, payload.get("usage"))
         elif kind == _EVENT:
             self._take_event(index, moment, payload)
@@ -216,7 +249,7 @@ class _Collector:
         cached = tokens[_CACHED]
         return RequestUsage(
             model_name=self._model,
-            input_tokens=max(0, tokens[_INPUT] - cached),
+            input_tokens=max(0, tokens[_INPUT] - cached) + tokens[_UNSPLIT],
             output_tokens=tokens[_OUTPUT],
             cache_read_tokens=cached,
             cache_write_5m_tokens=tokens[_CACHE_WRITE],
@@ -228,12 +261,25 @@ class _Collector:
         if isinstance(usage, dict):
             self._recorded.append(_IndexedRequest(index, self._request_of(_token_fields(usage))))
 
+    def _is_replay(self, payload: Record) -> bool:
+        """Whether a `task_started` opens a turn that a forked rollout replays from its parent: the wrapper turn `rollout-<n>`,
+        or one that started before the second of the header."""
+        turn_id = payload.get("turn_id")
+        started = payload.get("started_at")
+        if isinstance(turn_id, str) and _REPLAY_TURN_ID.fullmatch(turn_id):
+            return True
+        return (self._header_second is not None and isinstance(started, int) and not isinstance(started, bool)
+                and started < self._header_second)
+
     def _take_event(self, index: int, moment: Optional[datetime], payload: Record) -> None:
         event = payload.get("type")
         if event == _TASK_STARTED:
             self._task_started = True
+            self._replaying = self._forked and self._is_replay(payload)
         elif event == _TOKEN_COUNT:
             self._take_count(index, _object_or_empty(payload.get("info")))
+        elif self._replaying:
+            return
         elif event == _ITEM_COMPLETED:
             self._take_item(index, moment, _object_or_empty(payload.get("item")))
         elif event == _USER_MESSAGE_EVENT and isinstance(payload.get("message"), str):
@@ -256,20 +302,22 @@ class _Collector:
 
     def _take_count(self, index: int, info: Record) -> None:
         """A request is the growth of the running total since the previous event. The total before the first `task_started`
-        is inherited from a parent thread: it is the starting total, not a request. A total that shrinks is the new
-        baseline and never a negative request, except in a fork: there no field of the total falls below the highest value
-        seen, because totals under the inherited one are the replayed history of its parent, not its own work. A field of
-        the total that is not a usable number keeps its baseline, so it is neither a request nor counted twice later; an
-        event without any usable field changes nothing."""
+        is inherited from a parent thread: it is the starting total, not a request, and neither is the total of a replayed
+        turn. A total that shrinks is the new baseline and never a negative request, except in a fork: there no field of the
+        total falls below the highest value seen, because totals under the inherited one are the replayed history of its
+        parent, not its own work. A field of the total that is not a usable number keeps its baseline, so it is neither a
+        request nor counted twice later; an event without any usable field changes nothing. `total_tokens` is not a field of
+        its own: what it holds beyond input and output is the `_UNSPLIT` field."""
         total = info.get("total_token_usage")
-        if not isinstance(total, dict) or not any(_is_tokens(total.get(name)) for name in _USAGE_FIELDS):
+        if not isinstance(total, dict) or not any(_is_tokens(total.get(name)) for name in _USAGE_FIELDS + (_TOTAL_TOKENS,)):
             return
         current = {name: total[name] if _is_tokens(total.get(name)) else self._total[name] for name in _USAGE_FIELDS}
+        current[_UNSPLIT] = _unsplit(total.get(_TOTAL_TOKENS), current) if _is_tokens(total.get(_TOTAL_TOKENS)) else self._total[_UNSPLIT]
         if self._forked:
-            current = {name: max(current[name], self._total[name]) for name in _USAGE_FIELDS}
-        growth = {name: max(0, current[name] - self._total[name]) for name in _USAGE_FIELDS}
+            current = {name: max(current[name], self._total[name]) for name in _COUNTED}
+        growth = {name: max(0, current[name] - self._total[name]) for name in _COUNTED}
         self._total = current
-        if self._task_started and any(growth.values()):
+        if self._task_started and not self._replaying and any(growth.values()):
             self._grown.append(_IndexedRequest(index, self._request_of(growth)))
 
     def prompts(self) -> Tuple[Prompt, ...]:
@@ -325,7 +373,7 @@ def parse_rollout(lines: Iterable[str]) -> Rollout:
             meta = _meta_of(record)
             if meta is None:
                 return Rollout(meta=None, prompts=(), unparsable=True)
-            collector = _Collector(meta.forked)
+            collector = _Collector(meta.forked, meta.started_at)
         if record is not None:
             collector.add(index, record)
     if collector is None:

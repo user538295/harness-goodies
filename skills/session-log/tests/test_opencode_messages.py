@@ -45,9 +45,9 @@ class PromptsAndRepliesTest(unittest.TestCase):
         (prompt,) = parse_messages([row("user", user_data(10)), row("assistant", assistant_data(12, "r", done=None))]).prompts
         self.assertEqual((at(12), timedelta(seconds=2)), (prompt.reply_at, prompt.working_time))
 
-    def test_a_turn_without_a_stopping_row_has_no_reply_and_works_no_time(self):
+    def test_a_turn_without_a_stopping_row_has_no_reply_but_works_until_its_last_completed_row(self):
         (prompt,) = parse_messages([row("user", user_data(10)), row("assistant", assistant_data(11, finish=None, tokens=(1, 1)))]).prompts
-        self.assertEqual((None, None, timedelta(0), 1), (prompt.reply_at, prompt.reply_text, prompt.working_time, len(prompt.requests)))
+        self.assertEqual((at(12), None, timedelta(seconds=2), 1), (prompt.reply_at, prompt.reply_text, prompt.working_time, len(prompt.requests)))
 
     def test_a_user_row_without_a_usable_time_is_dropped_with_its_replies_and_requests(self):
         transcript = parse_messages([row("user", {"text": "no time"}), row("assistant", assistant_data(11, "lost", tokens=(1, 1))),
@@ -81,11 +81,11 @@ class PromptsAndRepliesTest(unittest.TestCase):
         (prompt,) = parse_messages([row("user", user_data(10)), row("assistant", reply)]).prompts
         self.assertEqual(("timeless", None, timedelta(0)), (prompt.reply_text, prompt.reply_at, prompt.working_time))
 
-    def test_a_reply_content_that_is_no_list_has_no_text_and_a_user_text_that_is_no_text_is_empty(self):
+    def test_a_reply_content_that_is_no_list_has_no_text_and_a_user_text_that_is_no_text_opens_no_prompt(self):
         reply = assistant_data(11, tokens=(1, 1))
         reply["content"] = "just a string"
-        (prompt,) = parse_messages([row("user", {"text": 7, "time": {"created": ms(10)}}), row("assistant", reply)]).prompts
-        self.assertEqual(("", None), (prompt.text, prompt.reply_text))
+        (prompt,) = parse_messages([row("user", {"text": 7, "time": {"created": ms(9)}}), row("user", user_data(10)), row("assistant", reply)]).prompts
+        self.assertEqual(("ask", None), (prompt.text, prompt.reply_text))
 
     def test_the_requests_of_a_session_without_any_prompt_are_kept_for_a_sub_agent_that_reports_them(self):
         transcript = parse_messages([row("assistant", assistant_data(11, "x", tokens=(5, 6)))])

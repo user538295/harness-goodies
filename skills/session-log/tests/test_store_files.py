@@ -185,11 +185,10 @@ class ParseFileTest(StoreFilesTestCase):
         FILES.parse_file(path, lambda lines: seen.extend(lines) or SimpleNamespace(unparsable=False))
         self.assertEqual(["one\n"], seen)
 
-    def test_an_undecodable_a_missing_and_an_unparsable_file_are_unreadable_with_their_reason(self):
-        undecodable = self._write("bad.jsonl", b"\xff\xfe\n")
+    def test_a_missing_and_an_unparsable_file_are_unreadable_with_their_reason(self):
         missing = os.path.join(self.folder, "missing.jsonl")
         text = self._write("text.jsonl")
-        for path, parse, reason in ((undecodable, self._parse, CANNOT_BE_DECODED_REASON), (missing, self._parse, CANNOT_BE_OPENED_REASON),
+        for path, parse, reason in ((missing, self._parse, CANNOT_BE_OPENED_REASON),
                                     (self.folder, self._parse, CANNOT_BE_OPENED_REASON),
                                     (text, lambda lines: SimpleNamespace(unparsable=True), CANNOT_BE_PARSED_REASON)):
             with self.subTest(reason=reason):

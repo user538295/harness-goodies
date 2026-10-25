@@ -8,8 +8,8 @@ from unittest import mock
 
 from sessionlog.claude_reader import ClaudeReader
 from sessionlog.model import Harness, RequestUsage
-from sessionlog.reader_port import (CANNOT_BE_DECODED_REASON, CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON,
-                                    CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON, SourceUnit, UnreadableSource)
+from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON,
+                                    SourceUnit, UnreadableSource)
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "claude", "main_session.jsonl")
 PROJECT = "-work-proj"
@@ -288,7 +288,7 @@ class ClaudeSessionIdentityTest(ClaudeReaderTestCase):
             handle.write(b"\xff\xfe\n")
         (unit,) = self.reader.scan().units
         result = self.reader.read("claude:broken", (unit,))
-        self.assertEqual((result.session, result.unreadable), (None, (UnreadableSource(Harness.CLAUDE, path, CANNOT_BE_DECODED_REASON),)))
+        self.assertEqual((result.session, result.unreadable), (None, (UnreadableSource(Harness.CLAUDE, path, CANNOT_BE_PARSED_REASON),)))
 
     def test_claude_unopenable_file_is_unreadable(self):
         path = self._install()
@@ -564,7 +564,7 @@ class ClaudeRulesTest(ClaudeReaderTestCase):
         prompts = self._prompts(records)
         self.assertEqual([p.text for p in prompts], [
             "typed one", "queued one", "sdk one", "accepted", "from the phone", "attached",
-            "iterative-review is running /x:iterative-review"])
+            "/x:iterative-review"])
         self.assertEqual((prompts[0].requests[0].model_name, prompts[0].requests[0].effort), ("claude-haiku-4-5", None))
         self.assertEqual(prompts[1].requests[0].effort, "high")
         self.assertEqual([p.reply_text for p in prompts], ["haiku reply", "r2", "r3", "r4", "r5", "r6", "r7"])
@@ -644,11 +644,11 @@ class ClaudeRulesTest(ClaudeReaderTestCase):
         self.assertEqual([(p.text, p.submitted_at) for p in prompts], [("mid-turn ask", _at(1)), ("blocks", _at(4))])
         self.assertEqual(prompts[1].reply_text, "r")
 
-    def test_claude_read_slash_command_needs_a_reply_and_loses_its_tags(self):
+    def test_claude_read_slash_command_needs_a_reply_and_is_logged_as_typed(self):
         records = [_plain_user(1, "<command-name>/clear</command-name>"), _typed(2, "ask"), _answer(3, "m1", _usage(), "r"),
                    _plain_user(4, "<command-name>/x</command-name>\n<command-args>a  b</command-args>"), _answer(5, "m2", _usage(), "r2"),
                    _plain_user(6, "<command-message>m</command-message>"), _typed(7, "last")]
-        self.assertEqual([p.text for p in self._prompts(records)], ["ask", "/x a b", "last"])
+        self.assertEqual([p.text for p in self._prompts(records)], ["ask", "/x a  b", "last"])
 
     def test_claude_read_task_notification_is_never_a_prompt_whatever_its_source(self):
         text = "<task-notification>\n<task-id>a</task-id>\n</task-notification>"
@@ -688,7 +688,7 @@ class ClaudeRulesTest(ClaudeReaderTestCase):
     def test_claude_read_slash_command_keeps_a_reply_that_arrives_after_a_plain_entry(self):
         records = [_plain_user(1, COMMAND_TEXT), _plain_user(2, "plain"), _answer(3, "m1", _usage(), "r")]
         (prompt,) = self._prompts(records)
-        self.assertEqual((prompt.text, prompt.reply_text), ("iterative-review is running /x:iterative-review", "r"))
+        self.assertEqual((prompt.text, prompt.reply_text), ("/x:iterative-review", "r"))
 
     def test_claude_read_slash_command_followed_by_a_reply_without_usage_is_a_prompt(self):
         (prompt,) = self._prompts([_plain_user(1, COMMAND_TEXT), _answer(2, "m1", None, "done")])

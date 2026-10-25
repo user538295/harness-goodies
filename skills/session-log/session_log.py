@@ -8,9 +8,12 @@ version check. It is the composition root (every adapter is built here) and the 
 command: it is told apart before any argument parsing, always exits 0 and never prints.
 """
 import os
+import signal
 import sys
 from datetime import datetime
 
+TERMINATION_SIGNALS = ("SIGTERM", "SIGHUP")
+TERMINATION_EXIT_BASE = 128
 MINIMUM_PYTHON = (3, 14)
 MINIMUM_TEXT = "%d.%d" % MINIMUM_PYTHON
 EXIT_OK = 0
@@ -429,5 +432,22 @@ def main(argv, environment=None):
     return code
 
 
+def _exit_on_termination(signum, frame):
+    """Signal handler: ends the run as an exception unwinds it, so the `finally` of `off` still switches logging off, a sync
+    releases its lock and cleans its temp files. The exit code is the shell's 128 + signal number."""
+    raise SystemExit(TERMINATION_EXIT_BASE + signum)
+
+
+def _translate_termination_signals():
+    """SIGTERM and SIGHUP (a closed terminal) end a command like SIGINT does: as an exception. A hook keeps the default
+    handling. SIGKILL cannot be caught, so a killed `off` can still leave logging on."""
+    for name in TERMINATION_SIGNALS:
+        number = getattr(signal, name, None)
+        if number is not None:
+            signal.signal(number, _exit_on_termination)
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] != [HOOK_ARGUMENT]:
+        _translate_termination_signals()
     sys.exit(main(sys.argv[1:]))

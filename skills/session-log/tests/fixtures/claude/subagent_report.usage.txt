@@ -21,4 +21,4 @@ est. used token: input: 100000, output: 10000, cache_create: 0, cache_read: 0, t
 
 TOTAL (3 requests, 4 sub-agents)
 working time: 00:00:06
-est. used token: input: 2010000, output: 291000, cache_create: 300000, cache_read: 1150000, total_tokens: 3751000, price: $14.44, model: claude-haiku-4-5+claude-opus-5-5+claude-opus-5-5:fast+claude-sonnet-5-5, effort: high+low+max
+est. used token: input: 2010000, output: 291000, cache_create: 300000, cache_read: 1150000, total_tokens: 3751000, price: $14.43, model: claude-haiku-4-5+claude-opus-5-5+claude-opus-5-5:fast+claude-sonnet-5-5, effort: high+low+max

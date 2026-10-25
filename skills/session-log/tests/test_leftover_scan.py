@@ -4,7 +4,10 @@ Every test runs in a sandbox `HOME` made with `tempfile`; nothing here reads or 
 """
 import json
 import os
+import re
+import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -24,8 +27,12 @@ from sessionlog.usage_target import UsageTargetResolver
 from tests.test_commands import ReportKeepingArchive
 from tests.test_sync import NOW, NoLeftovers, NoProbe, _NoPrices
 
-MOVE_ASIDE = "move it aside"
-REMOVE_HOOK_ENTRIES = "remove its old session-log hook entries"
+REMOVE_HOOK_ENTRIES = ('delete from its "hooks" every entry whose "command" starts with SESSION_LOG_OWNER=universal-session-log '
+                       'or names skills/session-log/adapters/claude/claude_hook.sh, '
+                       'skills/session-log/adapters/native/session_log_hook.py or .claude/scripts/prompt_log_*, '
+                       'and keep the other entries')
+OLD_RELEASE_FOLDER = "session-log-old"
+ANY_FIX = "any fix text"
 MARKER = "universal-session-log: managed"
 OLD_CLAUDE_HOOK = "bash /home/u/.claude/skills/session-log/adapters/claude/claude_hook.sh session-start"
 OLD_PROMPT_LOG_HOOK = "bash $HOME/.claude/scripts/prompt_log_save.sh"
@@ -115,6 +122,14 @@ class SandboxCase(unittest.TestCase):
     def hooks_document(*commands: str, key: str = "command") -> dict:
         return {"hooks": {"Stop": [{"hooks": [{"type": "command", key: command} for command in commands]}]}}
 
+    def moved(self, harness: Harness, path: str) -> Tuple[str, str]:
+        """The `(path, fix)` the scan reports for an old file or folder: the literal move command into `<root>/session-log-old/`,
+        which is outside every skills folder, keeping the path under the root so two leftovers named alike cannot collide."""
+        destination = os.path.join(self.root(harness), OLD_RELEASE_FOLDER, os.path.relpath(path, self.root(harness)))
+        return path, ("move it outside the skills folders: `mkdir -p %s && mv %s %s` "
+                      "(a copy moved inside a skills folder may still load)"
+                      % (shlex.quote(os.path.dirname(destination)), shlex.quote(path), shlex.quote(destination)))
+
     def write_json(self, harness: Harness, name: str, document: dict) -> str:
         path = self.path(harness, name)
         _write(path, json.dumps(document))
@@ -130,11 +145,11 @@ class SandboxCase(unittest.TestCase):
             for name in ("prompt_log_lib.sh", "prompt_log_save.sh"):
                 script = self.path(harness, "scripts", name)
                 _write(script)
-                expected.append((script, MOVE_ASIDE))
+                expected.append(self.moved(harness, script))
             _write(self.path(harness, "scripts", "my_own_script.sh"))  # unrelated
             maps = self.path(harness, "session-maps")
             _write(os.path.join(maps, "map"))
-            expected.append((maps, MOVE_ASIDE))
+            expected.append(self.moved(harness, maps))
         if harness is Harness.CODEX:
             hooks = self.write_json(harness, "hooks.json", self.hooks_document(OLD_CODEX_HOOK, UNRELATED_HOOK))
             expected.append((hooks, REMOVE_HOOK_ENTRIES))
@@ -148,23 +163,23 @@ class SandboxCase(unittest.TestCase):
                          "commands/session-log.md", "commands/session-log-omp.md"):
                 leftover = self.path(harness, *name.split("/"))
                 _write(leftover)
-                expected.append((leftover, MOVE_ASIDE))
+                expected.append(self.moved(harness, leftover))
             _write(self.path(harness, "plugins", "other-plugin.js"))  # unrelated
         if harness is Harness.OMP:
             for name in ("extensions/session-log.js", "extensions/session-log-omp.js"):
                 leftover = self.path(harness, *name.split("/"))
                 _write(leftover)
-                expected.append((leftover, MOVE_ASIDE))
+                expected.append(self.moved(harness, leftover))
             skill = self.path(harness, "skills", "session-log-omp")
             _write(os.path.join(skill, "SKILL.md"))
-            expected.append((skill, MOVE_ASIDE))
+            expected.append(self.moved(harness, skill))
             _write(self.path(harness, "extensions", "other.js"))  # unrelated
         seeded = self.path(harness, "skills", "session-log")
         _write(os.path.join(seeded, "install.sh"))
-        expected.append((seeded, MOVE_ASIDE))
+        expected.append(self.moved(harness, seeded))
         state_folder = self.path(harness, "session-log")
         _write(os.path.join(state_folder, "plugin-root"))
-        expected.append((state_folder, MOVE_ASIDE))
+        expected.append(self.moved(harness, state_folder))
         log_root = self.path(harness, "prompt-logs")  # inert files beside old-format logs stay untouched and unreported
         _write(os.path.join(log_root, ".enabled.lock"))
         _write(os.path.join(log_root, ".omp-session.dedupe"))
@@ -222,14 +237,14 @@ class EveryKindTests(SandboxCase):
             self.assertEqual(before, _snapshot(self.home), harness.value)  # no new file, no changed file
 
     def test_status_while_off_and_on_while_already_on_report_the_leftovers_too(self):
-        found = (Leftover("/x/old", MOVE_ASIDE),)
+        found = (Leftover("/x/old", ANY_FIX),)
         use_cases = self.use_cases(Harness.CLAUDE, FixedScan(found))
         self.assertEqual(found, use_cases.status().leftovers)  # off: never turned on
         use_cases.on()
         self.assertEqual(found, use_cases.on().leftovers)  # already on
 
     def test_use_cases_report_what_the_injected_scan_returns(self):
-        found = (Leftover("/x/old", MOVE_ASIDE),)
+        found = (Leftover("/x/old", ANY_FIX),)
         use_cases = self.use_cases(Harness.CLAUDE, FixedScan(found))
         self.assertEqual(found, use_cases.on().leftovers)
         self.assertEqual(found, use_cases.status().leftovers)
@@ -357,7 +372,7 @@ class RecognizerTests(SandboxCase):
         _write(os.path.join(seeded, "adapters", "tool"), "# %s\n" % MARKER)  # a folder the scan does not enter
         self.assertEqual((), self.scan(Harness.CODEX))
         _write(os.path.join(seeded, "bin", "tool"), "# %s\n" % MARKER)
-        self.assertEqual([(seeded, MOVE_ASIDE)], self.reported(Harness.CODEX))
+        self.assertEqual([self.moved(Harness.CODEX, seeded)], self.reported(Harness.CODEX))
 
     def test_a_file_at_the_seeded_copy_path_is_not_a_seeded_copy(self):
         _write(self.path(Harness.CODEX, "skills", "session-log"), "# %s\n" % MARKER)
@@ -368,12 +383,12 @@ class RecognizerTests(SandboxCase):
         _write(os.path.join(seeded, "SKILL.md"), "# a user's own skill\n")
         self.assertEqual((), self.scan(Harness.CODEX))
         _write(os.path.join(seeded, "SKILL.md"), "---\nname: x\n---\n<!-- %s -->\nbody\n" % MARKER)
-        self.assertEqual([(seeded, MOVE_ASIDE)], self.reported(Harness.CODEX))
+        self.assertEqual([self.moved(Harness.CODEX, seeded)], self.reported(Harness.CODEX))
         for name, text in (("lib/common.sh", "# %s\n" % MARKER), ("install.sh", ""),
                            (".universal-session-log.manifest", "format=1\n")):
             shutil.rmtree(seeded)
             _write(os.path.join(seeded, *name.split("/")), text)
-            self.assertEqual([(seeded, MOVE_ASIDE)], self.reported(Harness.CODEX), name)
+            self.assertEqual([self.moved(Harness.CODEX, seeded)], self.reported(Harness.CODEX), name)
 
     def test_marker_must_be_a_whole_line_in_a_recognized_place(self):
         seeded = self.path(Harness.CURSOR, "skills", "session-log")
@@ -388,7 +403,7 @@ class RecognizerTests(SandboxCase):
         for text in ("// %s\n" % MARKER, "%s\n" % MARKER, "#!/bin/sh\n# %s\n" % MARKER):
             _write(os.path.join(seeded, "SKILL.md"), "plain\n")
             _write(os.path.join(seeded, "bin", "tool"), text)
-            self.assertEqual([(seeded, MOVE_ASIDE)], self.reported(Harness.CURSOR), text)
+            self.assertEqual([self.moved(Harness.CURSOR, seeded)], self.reported(Harness.CURSOR), text)
 
     @unittest.skipIf(sys.platform == "win32", "symlinks need privileges on Windows")
     def test_a_symlinked_seeded_copy_is_judged_by_its_target_and_a_dangling_one_holds_nothing(self):
@@ -397,7 +412,7 @@ class RecognizerTests(SandboxCase):
         link = self.path(Harness.CODEX, "skills", "session-log")
         os.makedirs(os.path.dirname(link))
         os.symlink(target, link)
-        self.assertEqual([(link, MOVE_ASIDE)], self.reported(Harness.CODEX))
+        self.assertEqual([self.moved(Harness.CODEX, link)], self.reported(Harness.CODEX))
         os.remove(link)
         os.symlink(os.path.join(self.home, "gone"), link)
         self.assertEqual((), self.scan(Harness.CODEX))
@@ -408,7 +423,7 @@ class RecognizerTests(SandboxCase):
         os.makedirs(os.path.dirname(link))
         os.symlink(os.path.join(self.home, "gone"), link)
         before = _snapshot(self.home)
-        self.assertEqual([(link, MOVE_ASIDE)], self.reported(Harness.OPENCODE))
+        self.assertEqual([self.moved(Harness.OPENCODE, link)], self.reported(Harness.OPENCODE))
         self.assertEqual(before, _snapshot(self.home))
 
     def test_names_that_only_resemble_a_leftover_are_not_reported(self):
@@ -425,6 +440,45 @@ class RecognizerTests(SandboxCase):
         paths = [item.path for item in self.scan(Harness.CLAUDE)]
         self.assertGreater(len(paths), 3)
         self.assertEqual(sorted(paths), paths)
+
+
+class ActionableFixTests(SandboxCase):
+    COMMAND_IN_BACKTICKS = re.compile(r"`([^`]+)`")
+
+    @unittest.skipUnless(all(shutil.which(tool) for tool in ("sh", "mkdir", "mv")), "needs sh, mkdir and mv on PATH")
+    def test_running_the_move_command_of_every_old_file_or_folder_clears_the_leftover_and_loses_nothing(self):
+        for harness in Harness:
+            for root_name in (SUBROOTS[harness], os.path.join("with space", SUBROOTS[harness])):  # a quoted path must still work
+                with self.subTest(harness=harness.value, root=root_name):
+                    self.fresh_home()
+                    root = os.path.join(self.home, root_name)
+                    self.build_every_kind_under(harness, root)
+                    scan = LeftoverScan(harness, root)
+                    moves = [item for item in scan.scan() if item.fix != REMOVE_HOOK_ENTRIES]
+                    self.assertTrue(moves)
+                    for item in moves:  # the seeded copy and the old state folder are both named `session-log`
+                        self.assertIn("may still load", item.fix)
+                        subprocess.run(["sh", "-c", self.COMMAND_IN_BACKTICKS.search(item.fix).group(1)], check=True)
+                        kept = os.path.join(root, OLD_RELEASE_FOLDER, os.path.relpath(item.path, root))
+                        self.assertFalse(os.path.lexists(item.path), item.path)
+                        self.assertTrue(os.path.lexists(kept), kept)
+                    self.assertEqual([], [item for item in scan.scan() if item.fix != REMOVE_HOOK_ENTRIES])
+
+    def test_the_hook_fix_names_the_key_and_every_command_shape_the_scan_recognizes(self):
+        self.write_json(Harness.CURSOR, "hooks.json", self.hooks_document(OLD_NATIVE_HOOK))
+        (item,) = self.scan(Harness.CURSOR)
+        self.assertEqual(REMOVE_HOOK_ENTRIES, item.fix)
+        for named in ('"hooks"', '"command"', "SESSION_LOG_OWNER=universal-session-log", "adapters/claude/claude_hook.sh",
+                      "adapters/native/session_log_hook.py", ".claude/scripts/prompt_log_*"):
+            self.assertIn(named, item.fix)
+
+    def build_every_kind_under(self, harness: Harness, root: str) -> None:
+        """`build_every_kind` for a root other than the default one."""
+        default_root = self.root(harness)
+        self.build_every_kind(harness)
+        if root != default_root:
+            os.makedirs(os.path.dirname(root), exist_ok=True)
+            shutil.move(default_root, root)
 
 
 if __name__ == "__main__":

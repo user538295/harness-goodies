@@ -19,7 +19,7 @@ from .codex_subagents import copy_rank, thread_of_rollout
 from .model import Harness, Session, is_safe_id
 from .reader_port import (UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key,
                           root_id_of)
-from .store_files import FILE_ENCODING, FileOpener, StoreFiles, open_text, require_regular_file
+from .store_files import FILE_ENCODING, FILE_ERRORS, FileOpener, StoreFiles, open_text, require_regular_file
 
 try:
     from compression import zstd
@@ -84,7 +84,7 @@ def _open_rollout(key: str) -> TextIO:
     require_regular_file(compressed)
     if zstd is None:
         raise OSError("this Python has no compression.zstd")
-    return zstd.open(compressed, "rt", encoding=FILE_ENCODING)
+    return zstd.open(compressed, "rt", encoding=FILE_ENCODING, errors=FILE_ERRORS)
 
 
 # `ZstdError` for data that is no zstd stream, `EOFError` for one that ends early
