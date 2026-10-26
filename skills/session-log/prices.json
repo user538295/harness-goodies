@@ -170,6 +170,26 @@
     },
     {
       "prefixes": [
+        "claude-haiku-5-5"
+      ],
+      "in": 0.1,
+      "out": 0.5,
+      "cache_read": 0.01,
+      "cache_write_5m": 0.125,
+      "cache_write_1h": 0.2,
+      "long_prompt": {
+        "over_prompt_tokens": 100000,
+        "in": 0.5,
+        "out": 2.5,
+        "cache_read": 0.05,
+        "cache_write_5m": 0.625,
+        "cache_write_1h": 1
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-10-26"
+    },
+    {
+      "prefixes": [
         "gpt-6-astra"
       ],
       "in": 10,

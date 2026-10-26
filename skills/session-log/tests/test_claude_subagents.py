@@ -611,7 +611,7 @@ class ClaudeSubAgentOutputTest(ClaudeSubAgentTestCase):
 class _Book:
     """A price book that rates every model the same, so a report can be built."""
 
-    def rate_for(self, model_name, fast):
+    def rate_for(self, model_name, fast, prompt_tokens):
         return Rates(10, 20, 1, 12.5, 20)
 
     def problem(self):

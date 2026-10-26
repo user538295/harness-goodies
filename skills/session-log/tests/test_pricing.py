@@ -10,11 +10,13 @@ MILLION = 1000000
 
 
 class Book:
-    def rate_for(self, model_name, fast):
+    def rate_for(self, model_name, fast, prompt_tokens):
         if model_name == "known":
             return Rates(20, 40, 2, 25, 40) if fast else Rates(10, 20, 1, 12.5, 20)
         if model_name == "second" and not fast:
             return Rates(3, 7, 0.5, 4, 6)
+        if model_name == "tiered":
+            return Rates(0, 50, 0, 0, 0) if prompt_tokens > 1000 else Rates(0, 5, 0, 0, 0)
         return None
 
     def problem(self):
@@ -56,6 +58,22 @@ class PricingTests(unittest.TestCase):
                 with self.subTest(model=model, fast=fast, token_class=field):
                     result = report((request(model, fast=fast, **{field: 1000000}),))
                     self.assertEqual(result.prompts[0].price.cents, cents)
+
+    def test_prompt_length_for_the_long_prompt_rates_counts_input_cache_read_and_both_cache_write_classes(self):
+        for name, tokens, cents in (
+                ("input at the threshold", dict(input_tokens=1000), 500),
+                ("input over it", dict(input_tokens=1001), 5000),
+                ("cache read", dict(input_tokens=1, cache_read_tokens=1000), 5000),
+                ("cache writes", dict(cache_write_5m_tokens=600, cache_write_1h_tokens=401), 5000),
+                ("output is no part of the prompt", dict(), 500)):
+            with self.subTest(name):
+                result = report((request("tiered", output_tokens=MILLION, **tokens),))
+                self.assertEqual(result.prompts[0].price.cents, cents)
+
+    def test_each_request_of_a_row_is_priced_at_its_own_prompt_length(self):
+        result = report((request("tiered", output_tokens=MILLION, input_tokens=1000),
+                         request("tiered", output_tokens=MILLION, input_tokens=1001)))
+        self.assertEqual(result.prompts[0].price.cents, 5500)
 
     def test_rounds_after_summing_requests_within_row(self):
         result = report((request(recorded_cost_usd=0.004), request(recorded_cost_usd=0.004)),)

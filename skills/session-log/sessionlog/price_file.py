@@ -14,8 +14,9 @@ from urllib.parse import urlsplit
 from .pricing import Rates
 
 RATE_KEYS = ("in", "out", "cache_read", "cache_write_5m", "cache_write_1h")
-MODEL_KEYS = frozenset(("prefixes", "fast", "source", "as_of") + RATE_KEYS)
-REQUIRED_MODEL_KEYS = MODEL_KEYS - {"fast"}
+THRESHOLD_KEY = "over_prompt_tokens"
+MODEL_KEYS = frozenset(("prefixes", "fast", "long_prompt", "source", "as_of") + RATE_KEYS)
+REQUIRED_MODEL_KEYS = MODEL_KEYS - {"fast", "long_prompt"}
 MODELS_KEY = "models"
 CLAUDE_MARKER = "claude-"
 SOURCE_SCHEMES = ("https", "http")
@@ -26,11 +27,19 @@ EFFORT_WORDS = frozenset(("minimal", "low", "medium", "high", "xhigh", "max"))
 SNAPSHOT_DATE = re.compile(r"-(\d{8}|\d{4}-\d{2}-\d{2})(?![0-9])")
 
 
+class LongPrompt(NamedTuple):
+    """The rates of a request whose whole prompt (input, cache reads and cache writes) is longer than `over_tokens`."""
+
+    over_tokens: int
+    rates: Rates
+
+
 class Tariff(NamedTuple):
-    """One model entry's normal rates and its optional fast-mode rates."""
+    """One model entry's normal rates, its optional fast-mode rates and its optional long-prompt rates."""
 
     normal: Rates
     fast: Optional[Rates]
+    long_prompt: Optional[LongPrompt]
 
 
 def _reject_duplicate_keys(pairs: List[Tuple[str, object]]) -> dict:
@@ -99,6 +108,20 @@ def _parse_fast(model: dict) -> Optional[Rates]:
     return _parse_rates(fast, "fast: ")
 
 
+def _parse_long_prompt(model: dict) -> Optional[LongPrompt]:
+    if "long_prompt" not in model:
+        return None
+    long_prompt = model["long_prompt"]
+    if not isinstance(long_prompt, dict):
+        raise ValueError("long_prompt must be an object")
+    if set(long_prompt) != {THRESHOLD_KEY, *RATE_KEYS}:
+        raise ValueError("long_prompt needs exactly {}".format(", ".join((THRESHOLD_KEY,) + RATE_KEYS)))
+    threshold = long_prompt[THRESHOLD_KEY]
+    if type(threshold) is not int or threshold < 1:
+        raise ValueError("long_prompt: {} must be a positive whole number".format(THRESHOLD_KEY))
+    return LongPrompt(threshold, _parse_rates(long_prompt, "long_prompt: "))
+
+
 def _parse_model(model) -> Tuple[List[str], Tariff]:
     if not isinstance(model, dict):
         raise ValueError("expected an object")
@@ -111,7 +134,7 @@ def _parse_model(model) -> Tuple[List[str], Tariff]:
     _check_prefixes(model["prefixes"])
     _check_source(model["source"])
     _check_as_of(model["as_of"])
-    return model["prefixes"], Tariff(_parse_rates(model), _parse_fast(model))
+    return model["prefixes"], Tariff(_parse_rates(model), _parse_fast(model), _parse_long_prompt(model))
 
 
 def _parse_models(document) -> List[Tuple[int, List[str], Tariff]]:
@@ -168,8 +191,9 @@ class PriceFile:
         except (OSError, ValueError, RecursionError) as error:
             self._problem = "{}: {}".format(path, error)
 
-    def rate_for(self, model_name: str, fast: bool) -> Optional[Rates]:
-        """Rates of the longest prefix ending at a model-name boundary; None when nothing matches or fast has no rates."""
+    def rate_for(self, model_name: str, fast: bool, prompt_tokens: int = 0) -> Optional[Rates]:
+        """Rates of the longest prefix ending at a model-name boundary; None when nothing matches or fast has no rates. A fast request
+        keeps its fast rates at any length; any other request whose prompt is longer than the long-prompt threshold gets those rates."""
         start = model_name.find(CLAUDE_MARKER)
         is_claude = start >= 0
         if is_claude:
@@ -178,7 +202,10 @@ class PriceFile:
             model_name = model_name.rpartition(PROVIDER_SEPARATOR)[2]
         for prefix, tariff in self._tariffs:
             if model_name.startswith(prefix) and _ends_at_model_boundary(model_name[len(prefix):], is_claude):
-                return tariff.fast if fast else tariff.normal
+                if fast:
+                    return tariff.fast
+                long_prompt = tariff.long_prompt
+                return long_prompt.rates if long_prompt and prompt_tokens > long_prompt.over_tokens else tariff.normal
         return None
 
     def problem(self) -> Optional[str]:

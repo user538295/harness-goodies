@@ -130,7 +130,7 @@ So the new design keeps sub-agent tokens and time wherever they exist today and 
   - The report is saved beside the log, so it survives the harness deleting its own data.
 - **Price rules (F6):**
   - Prefer the cost the harness recorded per message (OMP, OpenCode; a recorded 0 means free).
-  - Otherwise use one JSON price file in the skill, read only by the Python script. Each model gets its own `in`, `out`, `cache_read`, `cache_write_5m`, `cache_write_1h` rate, an optional `fast` set of the same five rates, an explicit list of model-name prefixes, a `source` URL and an `as_of` date (team plan C4).
+  - Otherwise use one JSON price file in the skill, read only by the Python script. Each model gets its own `in`, `out`, `cache_read`, `cache_write_5m`, `cache_write_1h` rate, an optional `fast` set of the same five rates, an optional `long_prompt` set (an `over_prompt_tokens` threshold plus the same five rates) for a model priced by prompt length (Claude Haiku 5.5: a request whose whole prompt, input plus cache reads and cache writes, is over 100,000 tokens pays the higher rates, each request on its own), an explicit list of model-name prefixes, a `source` URL and an `as_of` date (team plan C4).
   - An unknown model shows its tokens with `price: unknown`, never $0. A row that mixes it with known models, and a total that includes one, read `≥ $X (incomplete)` (team plan C3).
   - Codex and Cursor prices are labelled "API-equivalent", because subscription billing differs (`developers.openai.com/codex/pricing`).
 - **Readers:**

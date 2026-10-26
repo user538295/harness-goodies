@@ -22,7 +22,7 @@ STEER_SECONDS = 20
 
 
 class Book:
-    def rate_for(self, model_name, fast):
+    def rate_for(self, model_name, fast, prompt_tokens):
         return Rates(2, 10, 0, 0, 0) if model_name == KNOWN else None
 
     def problem(self):

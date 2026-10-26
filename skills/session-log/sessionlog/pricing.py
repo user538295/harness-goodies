@@ -48,8 +48,9 @@ class Rates:
 class PriceBook(Protocol):
     """Model-rate lookup supplied by an adapter; recorded costs bypass this port."""
 
-    def rate_for(self, model_name: str, fast: bool) -> Optional[Rates]:
-        """Return the requested tariff, or None for an unknown model/missing fast rates."""
+    def rate_for(self, model_name: str, fast: bool, prompt_tokens: int) -> Optional[Rates]:
+        """Return the requested tariff, or None for an unknown model/missing fast rates. `prompt_tokens` is the whole prompt of the
+        request (input, cache reads and cache writes): a model priced by prompt length answers with the rates of its length."""
         ...
 
     def problem(self) -> Optional[str]:
@@ -150,7 +151,7 @@ class PricingRules:
     def _cost(self, request: RequestUsage) -> Optional[Decimal]:
         if request.recorded_cost_usd is not None:
             return Decimal(str(request.recorded_cost_usd))
-        rates = self._price_book.rate_for(request.model_name, bool(request.fast))
+        rates = self._price_book.rate_for(request.model_name, bool(request.fast), request.prompt_tokens)
         if rates is None:
             return None
         return sum((Decimal(str(rate)) * tokens for rate, tokens in (

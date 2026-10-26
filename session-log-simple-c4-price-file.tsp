@@ -2,7 +2,7 @@
 // The port and its Rates type belong to PricingRules (Use Cases). The price-file loader (Interface Adapters) implements the port;
 // the file format below reuses Rates, so the file depends on the port's type, not the other way round.
 // File: skills/session-log/prices.json, beside session_log.py (Q4). JSON keys are exactly the property names below (snake_case, as in the brief).
-// Shape: { "models": [ { "prefixes": [...], "in", "out", "cache_read", "cache_write_5m", "cache_write_1h", "fast"?: {same five}, "source", "as_of" } ] }
+// Shape: { "models": [ { "prefixes": [...], "in", "out", "cache_read", "cache_write_5m", "cache_write_1h", "fast"?: {same five}, "long_prompt"?: {"over_prompt_tokens", same five}, "source", "as_of" } ] }
 namespace SessionLogSimple.C4PriceFile;
 
 // ── Port (Use Cases)
@@ -17,8 +17,12 @@ model Rates {
 }
 
 interface PriceBook {
-  /** No match -> no rate (the request is priced unknown, never $0). Recorded harness cost, when present, is used instead and this is not asked. */
-  rateFor(modelName: string, fast: boolean): Rates | void;
+  /**
+   * No match -> no rate (the request is priced unknown, never $0). Recorded harness cost, when present, is used instead and this is not asked.
+   * promptTokens is the request's whole prompt: uncached input, cache reads and both cache writes, never output. A model with `long_prompt`
+   * answers a non-fast request whose prompt is longer than `over_prompt_tokens` with those rates; every other request gets the normal or fast rates.
+   */
+  rateFor(modelName: string, fast: boolean, promptTokens: int64): Rates | void;
 
   /** Missing or invalid prices.json: every model has no rate and this names the problem for status; commands still exit 0. */
   problem(): string | void;
@@ -38,6 +42,12 @@ model ModelPrice {
 
   /** Rates for fast-mode requests, all five classes. Absent: fast requests of this model have no rate. */
   fast?: Rates;
+
+  /**
+   * Rates for a non-fast request whose whole prompt is longer than `over_prompt_tokens` (a whole number of at least 1), all five classes.
+   * Each request is priced on its own prompt length (Claude Haiku 5.5). Absent: one rate set at any length. Fast requests keep `fast` at any length.
+   */
+  long_prompt?: { over_prompt_tokens: int64; ...Rates };
 
   source: url;
   as_of: plainDate;

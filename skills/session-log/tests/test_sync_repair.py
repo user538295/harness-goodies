@@ -129,7 +129,7 @@ class _FlakyPrices(_PricedModels):
 
     broken = False
 
-    def rate_for(self, model_name, fast):
+    def rate_for(self, model_name, fast, prompt_tokens):
         return None if self.broken else RATES
 
     def problem(self):

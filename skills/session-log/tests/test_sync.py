@@ -62,7 +62,7 @@ class NoProbe:
 
 
 class _NoPrices:
-    def rate_for(self, model_name, fast):
+    def rate_for(self, model_name, fast, prompt_tokens):
         return None
 
     def problem(self):

@@ -28,7 +28,7 @@ NOW = 100000.0
 
 
 class Book:
-    def rate_for(self, model_name, fast):
+    def rate_for(self, model_name, fast, prompt_tokens):
         return Rates(10, 20, 1, 12.5, 20) if model_name == "known" else None
 
     def problem(self):

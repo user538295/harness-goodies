@@ -75,6 +75,11 @@ class RequestUsage:
     recorded_cost_usd: Optional[float] = None
     reasoning_tokens: Optional[int] = None
 
+    @property
+    def prompt_tokens(self) -> int:
+        """The request's whole prompt: input, cache reads and both cache writes. Output is no part of it."""
+        return self.input_tokens + self.cache_read_tokens + self.cache_write_5m_tokens + self.cache_write_1h_tokens
+
 
 @dataclass(frozen=True)
 class Prompt:

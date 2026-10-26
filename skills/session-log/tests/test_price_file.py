@@ -11,6 +11,7 @@ from sessionlog.pricing import PricingRules, Rates
 
 SHIPPED = Path(__file__).resolve().parents[1] / "prices.json"
 FAST = {"in": 4, "out": 20, "cache_read": 0.4, "cache_write_5m": 5, "cache_write_1h": 8}
+LONG_PROMPT = {"over_prompt_tokens": 100000, "in": 10, "out": 50, "cache_read": 1, "cache_write_5m": 12.5, "cache_write_1h": 20}
 
 CLAUDE_PAGE = "https://platform.claude.com/docs/en/about-claude/pricing"
 OPENAI_PAGE = "https://developers.openai.com/api/docs/pricing"
@@ -44,6 +45,7 @@ PUBLISHED = {
     "claude-fable-5": ((10, 50, 1, 12.5, 20), None),
     "claude-mythos-5": ((10, 50, 1, 12.5, 20), None),
     "claude-haiku-4-5": ((1, 5, 0.1, 1.25, 2), None),
+    "claude-haiku-5-5": ((0.1, 0.5, 0.01, 0.125, 0.2), None),
     "gpt-6-astra": ((10, 50, 1, 12.5, 25), None),
     "gpt-6.1-sol": ((2, 10, 0.1, 2.5, 5), None),
     "gpt-6-sol": ((2, 10, 0.2, 2.5, 5), None),
@@ -135,6 +137,15 @@ class PriceFileTests(unittest.TestCase):
         self.assertEqual(book.rate_for("fast", True), Rates(4, 20, 0.4, 5, 8))
         self.assertEqual(book.rate_for("fast", False), Rates(2, 10, 0.2, 2.5, 4))
 
+    def test_a_request_whose_prompt_is_over_the_threshold_uses_the_long_prompt_rates(self):
+        book = self.book(entry("plain"), entry("tiered", long_prompt=LONG_PROMPT, fast=FAST))
+        normal, long_rates = Rates(2, 10, 0.2, 2.5, 4), Rates(10, 50, 1, 12.5, 20)
+        for prompt_tokens, expected in ((0, normal), (100000, normal), (100001, long_rates)):
+            with self.subTest(prompt_tokens=prompt_tokens):
+                self.assertEqual(book.rate_for("tiered", False, prompt_tokens), expected)
+        self.assertEqual(book.rate_for("plain", False, 5000000), normal)
+        self.assertEqual(book.rate_for("tiered", True, 5000000), Rates(4, 20, 0.4, 5, 8))  # fast mode keeps its own rates at any length
+
     def test_invalid_entry_invalidates_whole_file_and_names_the_entry(self):
         missing_in = entry("invalid")
         del missing_in["in"]
@@ -164,6 +175,16 @@ class PriceFileTests(unittest.TestCase):
                 ("partial fast", entry("invalid", fast={"in": 2}), "models[1]: fast needs exactly"),
                 ("extra fast key", entry("invalid", fast=dict(FAST, extra=1)), "models[1]: fast needs exactly"),
                 ("null fast", entry("invalid", fast=None), "models[1]: fast must be an object"),
+                ("partial long prompt", entry("invalid", long_prompt={"over_prompt_tokens": 1}), "models[1]: long_prompt needs exactly"),
+                ("extra long prompt key", entry("invalid", long_prompt=dict(LONG_PROMPT, extra=1)), "models[1]: long_prompt needs exactly"),
+                ("null long prompt", entry("invalid", long_prompt=None), "models[1]: long_prompt must be an object"),
+                ("negative long prompt rate", entry("invalid", long_prompt=dict(LONG_PROMPT, out=-1)), "models[1]: long_prompt: out must be"),
+                ("zero threshold", entry("invalid", long_prompt=dict(LONG_PROMPT, over_prompt_tokens=0)),
+                 "models[1]: long_prompt: over_prompt_tokens must be"),
+                ("bool threshold", entry("invalid", long_prompt=dict(LONG_PROMPT, over_prompt_tokens=True)),
+                 "models[1]: long_prompt: over_prompt_tokens must be"),
+                ("fractional threshold", entry("invalid", long_prompt=dict(LONG_PROMPT, over_prompt_tokens=1.5)),
+                 "models[1]: long_prompt: over_prompt_tokens must be"),
                 ("negative fast", entry("invalid", fast=dict(FAST, out=-1)), "models[1]: fast: out must be"),
                 ("non-object model", "text", "models[1]: expected an object")):
             with self.subTest(name):

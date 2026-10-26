@@ -23,7 +23,8 @@ PRICES_FILE = Path(__file__).resolve().parents[1] / "prices.json"
 PRICES_SHA256_BY_RENDER_VERSION = {1: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5",
                                     2: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5",
                                     3: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5",
-                                    4: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5"}
+                                    4: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5",
+                                    5: "2ebe79c70982dfb02fa1f9104ccbb77136eda2803818a71092150876ca3ab1c2"}
 SPEC_HOOK_BUDGET_SECONDS = 20  # S47 and S65 name 20 s
 SESSION_IDS = ("s1", "s2", "s3", "s4")
 WRITE_TAKES_SECONDS = HOOK_SYNC_BUDGET_SECONDS / 2  # two of the four sessions fit in a hook budget
@@ -46,7 +47,7 @@ class Clock:
 
 
 class _PricedModels(_NoPrices):
-    def rate_for(self, model_name, fast):
+    def rate_for(self, model_name, fast, prompt_tokens):
         return RATES
 
 

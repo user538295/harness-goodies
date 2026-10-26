@@ -1,5 +1,4 @@
 """Shipped prices.json: real model ids keep their price, sibling/successor ids stay unknown (S18)."""
-import json
 import unittest
 from pathlib import Path
 
@@ -13,6 +12,8 @@ SONNET_5_5 = Rates(2, 10, 0.1, 2.5, 4)
 SONNET_4 = Rates(3, 15, 0.3, 3.75, 6)
 FABLE_5_1 = Rates(10, 50, 0.25, 12.5, 20)
 HAIKU_4_5 = Rates(1, 5, 0.1, 1.25, 2)
+HAIKU_5_5 = Rates(0.1, 0.5, 0.01, 0.125, 0.2)
+HAIKU_5_5_OVER_100K = Rates(0.5, 2.5, 0.05, 0.625, 1)
 GPT_5 = Rates(1.25, 10, 0.125, 0, 0)
 GPT_5_5 = Rates(5, 30, 0.5, 0, 0)
 GPT_6_SOL = Rates(2, 10, 0.2, 2.5, 5)
@@ -48,7 +49,7 @@ SIBLINGS_AND_SUCCESSORS = (
     "claude-opus-5-6", "claude-sonnet-4-7", "claude-sonnet-5-6", "claude-fable-5-2", "claude-haiku-4-6",
     "gpt-55", "claude-opus-50", "openai-codex/gpt-5.7",
 )
-NEVER_PRICED = ("claude-haiku-5-5", "fable", "opus", "sonnet", "<synthetic>", "codex-auto-review",
+NEVER_PRICED = ("fable", "opus", "sonnet", "<synthetic>", "codex-auto-review",
                 "deepseek-v4-pro", "ollama-cloud/nemotron-3-ultra")
 
 
@@ -72,10 +73,12 @@ class RealStoreModelIdTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNone(self.book.rate_for(name, False))
 
-    def test_haiku_5_5_has_no_flat_row_because_its_price_depends_on_prompt_size(self):
-        shipped = {prefix for model in json.loads(SHIPPED.read_text(encoding="utf-8"))["models"]
-                   for prefix in model["prefixes"]}
-        self.assertNotIn("claude-haiku-5-5", shipped)
+    def test_haiku_5_5_is_priced_by_the_prompt_length_of_each_request(self):
+        for name in ("claude-haiku-5-5", "anthropic/claude-haiku-5-5"):
+            for prompt_tokens, expected in ((0, HAIKU_5_5), (100000, HAIKU_5_5), (100001, HAIKU_5_5_OVER_100K)):
+                with self.subTest(name=name, prompt_tokens=prompt_tokens):
+                    self.assertEqual(self.book.rate_for(name, False, prompt_tokens), expected)
+        self.assertIsNone(self.book.rate_for("claude-haiku-5-5", True, 0))  # Haiku 5.5 has no fast mode
 
 
 if __name__ == "__main__":

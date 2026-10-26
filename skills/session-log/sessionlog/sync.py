@@ -61,7 +61,7 @@ from .state_port import StateStore, recorded_session_key
 
 # Raised by every change that alters log or report text for the same source (readers, model, PricingRules, writer,
 # prices.json); `test_render_version` pins the sha256 of prices.json to it.
-RENDER_VERSION = 4
+RENDER_VERSION = 5
 HOOK_SYNC_BUDGET_SECONDS = 20.0  # below the 30 s hook timeouts; the hook entry passes it to `sync`
 UNIT_READ = "read"
 UNIT_INACTIVE = "inactive"
