@@ -13,10 +13,10 @@ from sessionlog.reader_port import PARENT_CYCLE_REASON
 from tests.opencode_db import BASE, CHILD_ID, CWD, ROOT_ID, OpenCodeDatabase, assistant_data, folder_snapshot, read_text
 
 FIXED_NOW = datetime(2000, 1, 1, tzinfo=timezone.utc)
-FIRST_PROMPT_TOKENS = "input: 10, output: 120, cache_create: 50, cache_read: 200, total_tokens: 380"
-SECOND_PROMPT_TOKENS = "input: 5, output: 30, cache_create: 0, cache_read: 100, total_tokens: 135"
-CHILD_TOKENS = "input: 7, output: 9, cache_create: 3, cache_read: 9, total_tokens: 28"
-TOTAL_TOKENS = "input: 22, output: 159, cache_create: 53, cache_read: 309, total_tokens: 543"
+FIRST_PROMPT_TOKENS = "input: 10, output: 120, reasoning: 20, cache_create: 50, cache_read: 200, total_tokens: 380"
+SECOND_PROMPT_TOKENS = "input: 5, output: 30, reasoning: 0, cache_create: 0, cache_read: 100, total_tokens: 135"
+CHILD_TOKENS = "input: 7, output: 9, reasoning: 1, cache_create: 3, cache_read: 9, total_tokens: 28"
+TOTAL_TOKENS = "input: 22, output: 159, reasoning: 21, cache_create: 53, cache_read: 309, total_tokens: 543"
 
 
 class OpenCodeEntryTestCase(unittest.TestCase):
@@ -108,14 +108,14 @@ class OpenCodeUpdatedInPlaceTest(OpenCodeEntryTestCase):
         log, report = (read_text(self.archived_files(suffix)[0]) for suffix in (".md", ".usage.txt"))
         self.assertIn("streamed prompt", log)
         self.assertNotIn(" response\n", log)  # no reply yet
-        self.assertIn("input: 1, output: 1, cache_create: 0, cache_read: 0, total_tokens: 2", report)
+        self.assertIn("input: 1, output: 1, reasoning: 0, cache_create: 0, cache_read: 0, total_tokens: 2", report)
 
         self.database.replace_data(ROOT_ID, 2, assistant_data(11, "final answer", tokens=(40, 50, 0, 60, 0), cost=0.75, done=9), updated=25)
         self.assertEqual(0, self.run_main(["opencode", "status"])[0])
         (log_path,) = self.archived_files(".md")
         log, report = read_text(log_path), read_text(self.archived_files(".usage.txt")[0])
         self.assertIn("### 2026-10-13 08:42:20 UTC response\nfinal answer\n", log)
-        self.assertIn("input: 40, output: 50, cache_create: 0, cache_read: 60, total_tokens: 150", report)
+        self.assertIn("input: 40, output: 50, reasoning: 0, cache_create: 0, cache_read: 60, total_tokens: 150", report)
         self.assertIn("price: $0.75", report)
 
     def test_a_new_row_in_an_archived_session_is_read_again_and_an_unchanged_database_is_not_rewritten(self):

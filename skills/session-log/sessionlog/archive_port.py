@@ -1,6 +1,6 @@
 """Use-case-owned C3 archive boundary; the writer adapter implements it and owns every path rule."""
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import NamedTuple, Optional, Protocol
 
 from .model import Session
 from .pricing import UsageReport
@@ -15,6 +15,17 @@ class WriteOutcome:
     path: str
     written: bool
     reason: Optional[str] = None
+
+
+class ArchiveFiles(NamedTuple):
+    """Whether the log and the report beside it are on disk."""
+
+    log: bool
+    report: bool
+
+    @property
+    def complete(self) -> bool:
+        return self.log and self.report
 
 
 class Archive(Protocol):
@@ -47,4 +58,10 @@ class Archive(Protocol):
 
     def read_report(self, log_path: str) -> Optional[str]:
         """The saved report beside the log; None when it is absent or cannot be read as UTF-8 text."""
+        ...
+
+    def files_present(self, log_path: str) -> ArchiveFiles:
+        """Whether the log and the report beside it exist: one stat each, nothing is read, never raises. Only a file that is
+        known to be absent counts as absent: one that cannot be examined (a folder without access) counts as present, so
+        sync does not try to recreate files that may be there."""
         ...

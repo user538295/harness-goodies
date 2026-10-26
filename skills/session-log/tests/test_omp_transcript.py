@@ -5,8 +5,8 @@ import unittest
 from datetime import timedelta
 
 from sessionlog.omp_transcript import ParentLink, Transcript, parse_parent_link, parse_transcript
-from tests.omp_records import (assistant_record, at, custom_record, effort_record, header_record, helper_record, init_record, iso, jsonl, ms, parse,
-                               usage_of, user_record)
+from tests.omp_records import (assistant_record, at, chained, custom_record, effort_record, header_record, helper_record, init_record, iso, jsonl, ms,
+                               parse, usage_of, user_record)
 
 SESSION_ID = "01a10000-0000-7000-8000-000000000001"
 
@@ -105,14 +105,21 @@ class OmpPromptTest(unittest.TestCase):
                    user_record(15, "no message time", timestamp=None)]
         self.assertEqual([at(11), at(12), at(14), at(15)], [p.submitted_at for p in prompts_of(*records)])
 
-    def test_a_prompt_without_a_usable_time_is_dropped_with_its_replies_and_requests(self):
+    def test_a_prompt_without_a_usable_time_is_dropped_with_its_replies_and_its_requests_fall_under_no_prompt(self):
         timeless = {"type": "custom_message", "customType": "skill-prompt", "content": "timeless", "attribution": "user"}
-        prompts = prompts_of(user_record(10, "first"), timeless, assistant_record(13, "late reply", usage=usage_of(5, 5)), user_record(20, "next"))
-        self.assertEqual([("first", 0, None), ("next", 0, None)], [(p.text, len(p.requests), p.reply_text) for p in prompts])
+        transcript = parse(header_record(SESSION_ID), user_record(10, "first"), timeless,
+                           assistant_record(13, "late reply", usage=usage_of(5, 5)), user_record(20, "next"))
+        self.assertEqual([("first", 0, None), ("next", 0, None)], [(p.text, len(p.requests), p.reply_text) for p in transcript.prompts])
+        self.assertEqual([5], [request.input_tokens for request in transcript.unprompted_requests])
 
-    def test_a_session_without_prompts_has_none_and_keeps_its_requests_and_agent_type(self):
-        transcript = parse(header_record("s"), init_record("task"), assistant_record(11, usage=usage_of(1, 1)))
-        self.assertEqual(((), 1, "task"), (transcript.prompts, len(transcript.requests), transcript.agent_type))
+    def test_a_session_without_prompts_has_none_and_keeps_its_requests_which_fall_under_no_prompt_and_its_agent_type(self):
+        transcript = parse(header_record("s"), init_record("task"), helper_record(10, usage_of(2, 2, cost=2.5)), assistant_record(11, usage=usage_of(1, 1, cost=1.0)))
+        self.assertEqual(((), 2, [2.5, 1.0], "task"), (transcript.prompts, len(transcript.requests),
+                                                       [request.recorded_cost_usd for request in transcript.unprompted_requests], transcript.agent_type))
+
+    def test_requests_that_fall_under_a_prompt_are_not_unprompted(self):
+        transcript = parse(header_record("s"), helper_record(9, usage_of(2, 2)), user_record(10, "ask"), assistant_record(11, usage=usage_of(1, 1)))
+        self.assertEqual((2, ()), (len(transcript.prompts[0].requests), transcript.unprompted_requests))
 
 
 class OmpRequestTest(unittest.TestCase):
@@ -163,6 +170,14 @@ class OmpRequestTest(unittest.TestCase):
         bad = {"input": -1, "output": True, "cacheRead": "5", "cacheWrite": None, "cost": {"total": 0.1}}
         first, second = requests_of(assistant_record(11, stop="toolUse", usage=odd), assistant_record(12, stop="toolUse", usage=bad))
         self.assertEqual(((7, 3, 2, 4, 0), (0, 0, 0, 0, 0)), (tokens_of(first), tokens_of(second)))
+
+    def test_a_reasoning_count_is_kept_apart_under_any_name_and_stays_inside_the_output(self):
+        """OMP's `totalTokens` leaves `reasoning` out, so it is part of `output`: shown, never added to the tokens or the price."""
+        usages = [usage_of(output_tokens=50, reasoning=20), usage_of(reasoning_tokens=3.9), usage_of(reasoningTokens=4), usage_of(), usage_of(reasoning=-1)]
+        records = [assistant_record(11 + number, stop="toolUse", usage=usage) for number, usage in enumerate(usages)]
+        requests = requests_of(*records)
+        self.assertEqual([20, 3, 4, 0, 0], [r.reasoning_tokens for r in requests])
+        self.assertEqual(50, requests[0].output_tokens)
 
     def test_a_count_that_is_too_large_or_not_finite_is_clamped_or_zero_and_never_raises(self):
         huge = {"input": 10**400, "output": float("inf"), "cacheRead": float("nan"), "cacheWrite": 2**70, "cost": {"total": 10**400}}
@@ -234,6 +249,75 @@ class OmpReplyTest(unittest.TestCase):
     def test_every_prompt_has_its_own_turn(self):
         records = [user_record(10, "one"), assistant_record(11, "a one", done=1), user_record(20, "two"), assistant_record(21, "a two", done=2), user_record(30, "three")]
         self.assertEqual([("one", "a one"), ("two", "a two"), ("three", None)], [(p.text, p.reply_text) for p in prompts_of(*records)])
+
+
+class OmpSessionTreeTest(unittest.TestCase):
+    """The log follows the active branch of the session tree (`id`/`parentId`; the leaf is the last entry written); what the
+    abandoned branches spent still counts, charged to the prompt that replaced them."""
+
+    @staticmethod
+    def inputs(prompt):
+        return [request.input_tokens for request in prompt.requests]
+
+    def first_turn(self):
+        """The root branch: a prompt `first` answered by the stop reply at second 11 (the entry the later branches hang from)."""
+        return chained(None, user_record(10, "first"), assistant_record(11, "reply one", usage=usage_of(100, 1), done=1))
+
+    def test_an_aborted_attempt_the_user_retried_from_before_the_prompt_is_not_a_prompt_and_its_tokens_go_to_the_retry(self):
+        aborted = chained("a11", user_record(20, "same ask"), assistant_record(21, "", stop="aborted", usage=usage_of(7, 1), done=1))
+        retry = chained("a11", user_record(30, "same ask"), assistant_record(31, "done", usage=usage_of(9, 1), done=2))
+        transcript = parse(header_record(SESSION_ID), *self.first_turn(), *aborted, *retry)
+        self.assertEqual([("first", "reply one", [100]), ("same ask", "done", [7, 9])],
+                         [(p.text, p.reply_text, self.inputs(p)) for p in transcript.prompts])
+        self.assertEqual(([100, 7, 9], ()), ([r.input_tokens for r in transcript.requests], transcript.unprompted_requests))
+
+    def test_the_abandoned_branch_of_an_earlier_message_loses_its_prompts_and_replies_but_keeps_its_tokens_and_the_active_prompt_keeps_its_own_reply_and_time(self):
+        old = chained("a11", user_record(20, "second"), assistant_record(21, "old second", usage=usage_of(7, 1), done=1), user_record(30, "third"),
+                      assistant_record(31, "old third", usage=usage_of(8, 1), done=1))
+        new = chained("a11", user_record(40, "second again"), assistant_record(41, "new second", usage=usage_of(9, 1), done=3))
+        transcript = parse(header_record(SESSION_ID), *self.first_turn(), *old, *new)
+        self.assertEqual([("first", [100]), ("second again", [7, 8, 9])], [(p.text, self.inputs(p)) for p in transcript.prompts])
+        active = transcript.prompts[1]
+        self.assertEqual(("new second", at(44), timedelta(seconds=4)), (active.reply_text, active.reply_at, active.working_time))
+
+    def test_a_second_reply_to_the_same_prompt_is_the_reply_and_the_first_one_counts_in_that_prompt(self):
+        regenerated = chained("u10", assistant_record(12, "new reply", usage=usage_of(7, 1), done=1))
+        transcript = parse(header_record(SESSION_ID), *chained(None, user_record(10, "ask"), assistant_record(11, "old reply", usage=usage_of(6, 1), done=1)),
+                           *regenerated)
+        self.assertEqual([("ask", "new reply", [6, 7])], [(p.text, p.reply_text, self.inputs(p)) for p in transcript.prompts])
+
+    def test_a_helper_request_beside_the_active_reply_stays_in_its_turn_even_when_it_is_the_last_entry(self):
+        records = [*self.first_turn(), {**helper_record(12, usage_of(5, 1)), "parentId": "a11"}, *chained("a11", user_record(20, "two"),
+                  assistant_record(21, "reply two", usage=usage_of(7, 1), done=1)), {**helper_record(30, usage_of(3, 1)), "parentId": "a11"}]
+        transcript = parse(header_record(SESSION_ID), *records)
+        self.assertEqual([("first", [100, 5]), ("two", [7, 3])], [(p.text, self.inputs(p)) for p in transcript.prompts])
+
+    def test_a_helper_request_written_last_for_a_branch_that_was_left_does_not_bring_that_branch_back(self):
+        old = chained("a11", user_record(20, "old second"), assistant_record(21, "old reply", usage=usage_of(7, 1), done=1))
+        new = chained("a11", user_record(40, "new second"), assistant_record(41, "new reply", usage=usage_of(9, 1), done=1))
+        late_helper = {**helper_record(50, usage_of(3, 1)), "parentId": "a21"}
+        transcript = parse(header_record(SESSION_ID), *self.first_turn(), *old, *new, late_helper)
+        self.assertEqual([("first", [100]), ("new second", [7, 9, 3])], [(p.text, self.inputs(p)) for p in transcript.prompts])
+
+    def test_a_file_whose_entries_are_one_chain_reads_as_it_did_without_the_links(self):
+        records = [user_record(10, "one"), assistant_record(11, "a one", usage=usage_of(6, 1), done=1), helper_record(12, usage_of(5, 1)),
+                   user_record(20, "two"), assistant_record(21, "a two", usage=usage_of(7, 1), done=1)]
+        self.assertEqual(parse(header_record(SESSION_ID), *records), parse(header_record(SESSION_ID), *chained(None, *records)))
+
+    def test_entries_without_links_are_read_one_after_the_other(self):
+        branch = chained("a11", user_record(20, "second"), assistant_record(21, "a second", usage=usage_of(7, 1), done=1))
+        unlinked = [user_record(30, "third"), assistant_record(31, "a third", usage=usage_of(8, 1), done=1)]
+        transcript = parse(header_record(SESSION_ID), *self.first_turn(), *branch, *unlinked)
+        self.assertEqual(["first", "second", "third"], [p.text for p in transcript.prompts])
+
+    def test_a_parent_that_is_not_in_the_file_or_a_loop_of_parents_leaves_every_prompt_in_the_log(self):
+        looped = [{**user_record(10, "one"), "parentId": "a11"}, {**assistant_record(11, "a one", usage=usage_of(6, 1), done=1), "parentId": "u10"},
+                  {**user_record(20, "two"), "parentId": "u20"}]
+        lost = [*chained("nowhere", user_record(10, "one"), assistant_record(11, "a one", usage=usage_of(6, 1), done=1)),
+                *chained(None, user_record(20, "two"))]
+        for name, records in (("loop", looped), ("lost parent", lost)):
+            with self.subTest(name):
+                self.assertEqual(["one", "two"], [p.text for p in parse(header_record(SESSION_ID), *records).prompts])
 
 
 class OmpActivityTest(unittest.TestCase):

@@ -1,9 +1,14 @@
 """Decoding of one JSON-line record, of the ISO-8601 time it carries and of the numbers and labels the usage records of the harnesses share."""
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from sessionlog.json_records import (MAX_WHOLE_COUNT, decode_record, is_finite_number, model_label, parse_cost, parse_epoch_milliseconds,
                                      parse_moment, parse_whole_count, whole_count)
+
+from tests.local_zone import local_zone
 
 
 class DecodeRecordTest(unittest.TestCase):
@@ -14,6 +19,22 @@ class DecodeRecordTest(unittest.TestCase):
                 self.assertIsNone(decode_record(line))
 
 
+class _Unconvertible:
+    """An aware time whose conversion to local time fails the way a platform without that range does."""
+
+    def __init__(self, error):
+        self._error = error
+
+    def utcoffset(self):
+        return timedelta(0)
+
+    def astimezone(self, zone=None):
+        if zone is None:
+            raise self._error
+        return self
+
+
+@unittest.skipUnless(hasattr(time, "tzset"), "needs time.tzset")
 class ParseMomentTest(unittest.TestCase):
     def test_an_aware_iso_time_is_parsed_with_its_offset(self):
         self.assertEqual(datetime(2026, 8, 28, 10, 0, 0, tzinfo=timezone.utc), parse_moment("2026-08-28T10:00:00Z"))
@@ -23,6 +44,23 @@ class ParseMomentTest(unittest.TestCase):
         for value in (None, 5, "", "yesterday", "2026-08-28T10:00:00", "9999-12-31T23:59:59-05:00", "0001-01-01T00:00:00+05:00"):
             with self.subTest(value=value):
                 self.assertIsNone(parse_moment(value))
+
+    def test_a_time_the_local_zone_cannot_hold_is_none_so_one_bad_record_cannot_spoil_a_session(self):
+        for zone, value in (("America/New_York", "0001-01-01T00:00:00Z"), ("Europe/Budapest", "9999-12-31T23:59:59Z")):
+            with self.subTest(zone=zone), local_zone(zone):
+                self.assertIsNone(parse_moment(value))
+                self.assertIsNotNone(parse_moment("2026-08-28T10:00:00Z"))
+
+    def test_an_epoch_time_the_local_zone_cannot_hold_is_none(self):
+        with local_zone("Europe/Budapest"):
+            self.assertIsNone(parse_epoch_milliseconds(253402300799000))
+            self.assertIsNotNone(parse_epoch_milliseconds(1788000000000))
+
+    def test_a_local_conversion_that_fails_on_this_platform_is_none_for_every_error(self):
+        for error in (OverflowError, OSError, ValueError):
+            with self.subTest(error=error.__name__):
+                with patch("sessionlog.json_records.datetime", SimpleNamespace(fromisoformat=lambda value: _Unconvertible(error("x")))):
+                    self.assertIsNone(parse_moment("anything"))
 
 
 class NumberTest(unittest.TestCase):

@@ -1,7 +1,7 @@
 """Use-case-owned C2 reader boundary; one adapter per harness implements it and owns every path and format rule."""
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Protocol, Tuple
+from typing import Optional, Protocol, Tuple, runtime_checkable
 
 from .model import Harness, Session
 
@@ -42,11 +42,13 @@ class SourceUnit:
 class UnreadableSource:
     """A source the reader could not use; `reason` is a short text recorded for status. When the failure concerns a unit
     handed to `read`, `path` equals that unit's `key`: sync marks the units it names unreadable and retries them on every
-    sync (every unit of the session when none could be built)."""
+    sync (every unit of the session when none could be built). `hides_sessions` is False for a finding that cannot hide a session
+    (Cursor's folder of filed-away hook calls): `status` lists it, but a `usage` lookup is not stopped by it."""
 
     harness: Harness
     path: str
     reason: str
+    hides_sessions: bool = True
 
 
 @dataclass(frozen=True)
@@ -86,4 +88,25 @@ class SessionReader(Protocol):
         """Builds the whole session from all its units, which sync has already grouped by session: `read` must not learn
         a unit's session from its content again (sync counts `session_of` calls: a unit is learned once). Never raises
         for file-system or format errors."""
+        ...
+
+
+@runtime_checkable
+class SubAgentNaming(Protocol):
+    """Optional capability of a reader that names a sub-agent by the file of its unit: a lookup of a sub-agent id then reads only the
+    sessions that have such a unit. A reader without it is asked to read every session."""
+
+    def may_hold_sub_agent(self, unit: SourceUnit, agent_id: str) -> bool:
+        """False only when `unit` certainly holds no sub-agent with `agent_id`, known from the unit alone (no read)."""
+        ...
+
+
+@runtime_checkable
+class RankingUnits(Protocol):
+    """Optional capability of a reader whose sub-agent units never change a session's prompts, project folder or orphan state: a lookup
+    that ranks many sessions reads only those units of each, and reads one session whole only once it is picked. A reader without it
+    is asked to read every session whole."""
+
+    def units_for_ranking(self, units: Tuple[SourceUnit, ...]) -> Tuple[SourceUnit, ...]:
+        """The units of one session that alone decide its prompts, project folder and orphan state."""
         ...

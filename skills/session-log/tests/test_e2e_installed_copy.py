@@ -49,7 +49,7 @@ from tests.cursor_record_files import CONVERSATION, prompt_input, response_input
 from tests.omp_records import CHILD_FIXTURE, FIXTURE_ROOT_ID, FIXTURE_ROOT_STEM, PROJECT, ROOT_FIXTURE, read_text
 from tests.opencode_db import OpenCodeDatabase, folder_snapshot
 from tests.test_e2e_claude_hook import NOT_INSTALLED_FOLDERS, SKILL_RELATIVE
-from tests.test_e2e_cursor_launchers import DIRNAME_COMMAND, SH_EXECUTABLE, event_of, shipped_command
+from tests.test_e2e_cursor_launchers import SH_EXECUTABLE, event_of, shipped_command
 from tests.test_e2e_status import AGENT_FILE, agent_transcript
 from tests.test_cursor_hooks_config import EVENTS
 
@@ -197,7 +197,6 @@ class InstalledCopyUsageTests(InstalledCopyCase):
                 self.assert_python_never_called()
 
 
-@unittest.skipUnless(os.path.exists(DIRNAME_COMMAND), "%s is missing on this host" % DIRNAME_COMMAND)
 class InstalledCursorHookTests(InstalledCopyCase):
     def setUp(self):
         super().setUp()
@@ -205,9 +204,8 @@ class InstalledCursorHookTests(InstalledCopyCase):
         # `shipped_command` reads only `install_root` of the launchers file's sandbox
         self.plugin_root = types.SimpleNamespace(install_root=os.path.join(self.home, *INSTALL_ROOTS["cursor"]))
         self.records = os.path.join(self.log_root_of("cursor"), CURSOR_RECORDS)
-        tools = os.path.join(self.home, TOOLS_FOLDER)  # the only commands on `PATH`: what the launcher needs, a Python 3.14+ as `python3`
+        tools = os.path.join(self.home, TOOLS_FOLDER)  # the only command on `PATH`: a Python 3.14+ as `python3`
         os.makedirs(tools)
-        os.symlink(DIRNAME_COMMAND, os.path.join(tools, "dirname"))
         os.symlink(sys.executable, os.path.join(tools, "python3"))
         self.tools = tools
 

@@ -163,6 +163,14 @@ class ClaudeReader:
         owner = self._sub_agent_owner(unit.key)
         return build_session_key(Harness.CLAUDE, owner[1] if owner else _stem(unit.key))
 
+    def may_hold_sub_agent(self, unit: SourceUnit, agent_id: str) -> bool:
+        """Only a sub-agent file named after `agent_id` holds that sub-agent; a main-session file holds none."""
+        return self._sub_agent_owner(unit.key) is not None and _stem(unit.key) == agent_id
+
+    def units_for_ranking(self, units: Tuple[SourceUnit, ...]) -> Tuple[SourceUnit, ...]:
+        """The main-session files: prompts, project folder and the absence of a parent come from them alone."""
+        return tuple(unit for unit in units if self._sub_agent_owner(unit.key) is None)
+
     def read(self, session_key: str, units: Tuple[SourceUnit, ...]) -> ReadResult:
         matching = [unit for unit in units if self.session_of(unit) == session_key]
         mains = [unit for unit in matching if self._sub_agent_owner(unit.key) is None]

@@ -6,6 +6,7 @@ from sessionlog.model import Harness, Prompt, RequestUsage, Session, SubAgent
 from sessionlog.pricing import PricingRules, Rates
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+MILLION = 1000000
 
 
 class Book:
@@ -70,6 +71,27 @@ class PricingTests(unittest.TestCase):
                           result.total.cache_read_tokens, result.total.cache_write_tokens), (2, 7, 3, 16))
         self.assertEqual(result.total.model_names, "known+second")
         self.assertEqual(result.total.effort, "high+low")
+
+    def test_reasoning_is_summed_per_row_agent_and_total_for_omp_and_opencode_only_and_never_priced_or_added(self):
+        agent = SubAgent(agent_id="worker", type="worker", started_at=NOW, requests=(request(output_tokens=MILLION, reasoning_tokens=3),))
+        rows = ((request(output_tokens=MILLION, reasoning_tokens=5), request(output_tokens=MILLION, reasoning_tokens=7)), ())
+        for harness in (Harness.OMP, Harness.OPENCODE):
+            with self.subTest(harness=harness):
+                result = report(*rows, harness=harness, agents=(agent,))
+                self.assertEqual([12, 0], [row.reasoning_tokens for row in result.prompts])
+                self.assertEqual((3, 15), (result.sub_agents[0].reasoning_tokens, result.total.reasoning_tokens))
+                self.assertEqual((3 * MILLION, 6000), (result.total.total_tokens, result.total.price_cents))
+        for harness in (Harness.CLAUDE, Harness.CODEX, Harness.CURSOR):
+            with self.subTest(harness=harness):
+                result = report(*rows, harness=harness, agents=(agent,))
+                self.assertEqual((None, None, None), (result.prompts[0].reasoning_tokens, result.sub_agents[0].reasoning_tokens, result.total.reasoning_tokens))
+
+    def test_the_recorded_transcript_paths_reach_the_report_and_its_agent_rows(self):
+        agents = (SubAgent("a1", "explore", NOW, transcript_path="/t/a1.jsonl"), SubAgent("a2", "explore", NOW))
+        result = PricingRules(Book()).build(Session(harness=Harness.CURSOR, session_id="s", started_at=NOW, transcript_path="/t/main.jsonl",
+                                                    prompts=(Prompt(submitted_at=NOW, text="hello"),), sub_agents=agents))
+        self.assertEqual(("/t/main.jsonl", ["/t/a1.jsonl", None]), (result.transcript_path, [row.transcript_path for row in result.sub_agents]))
+        self.assertIsNone(report(()).transcript_path)
 
     def test_unknown_model_row_unknown_total_incomplete_never_zero(self):
         result = report((request("unknown", input_tokens=17),))

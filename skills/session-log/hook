@@ -2,10 +2,33 @@
 # Cursor hook launcher: `hook cursor <event>` runs `session_log.py hook cursor <event>` with the hook input on stdin. It exits 0
 # without starting Python while logging is off (neither `.log_enabled` nor the old release's `.enabled` exists), when the entry
 # script is missing, or when `python3` is missing, and otherwise exits 0 whatever Python returns, so it never blocks Cursor.
+# It runs no command but shell built-ins, except `readlink` when it is started through a symbolic link, so a minimal PATH makes no noise.
+MAX_LINKS=40  # more than a file system follows when it opens a path: a longer chain here can only be a loop
 logs="${HOME:-}/.cursor/prompt-logs"
 [ -f "$logs/.log_enabled" ] || [ -f "$logs/.enabled" ] || exit 0
-skill_dir=$(dirname -- "$0") || exit 0
-[ -f "$skill_dir/session_log.py" ] || exit 0
+# Sets `folder` to the folder part of the path $1 (`dirname` is a command, and a bare file name has the current folder).
+folder_of() {
+  case $1 in
+    */*) folder=${1%/*} ;;
+    *) folder=. ;;
+  esac
+  folder=${folder:-/}
+}
+# The entry script sits beside the file this launcher really is, not beside a link to it. No `readlink -f`: not every system has it.
+script=$0
+links=0
+while [ -h "$script" ]; do
+  links=$((links + 1))
+  [ "$links" -le "$MAX_LINKS" ] || exit 0
+  command -v readlink >/dev/null 2>&1 || exit 0
+  target=$(readlink "$script" 2>/dev/null) || exit 0
+  case $target in
+    /*) script=$target ;;
+    *) folder_of "$script"; script=$folder/$target ;;
+  esac
+done
+folder_of "$script"
+[ -f "$folder/session_log.py" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
-python3 "$skill_dir/session_log.py" hook "$@"
+python3 "$folder/session_log.py" hook "$@"
 exit 0

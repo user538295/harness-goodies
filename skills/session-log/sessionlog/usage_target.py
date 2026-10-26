@@ -4,7 +4,8 @@ Archived sessions are ranked from the session entries of `.sync.json` alone, so 
 the harness is read only for a session that was never archived. `latest` lists it for those too and, in the nearest folder that
 has a session of either kind, takes the one with the newest prompt (an archived session needs no read). An id is matched
 exactly, else as a unique prefix, over the archived sessions and the sessions of the store together; failing both, it is
-matched exactly against the sub-agent ids of the store's sessions and names the root session that holds it. The store is listed
+matched exactly against the sub-agent ids of the store's sessions and names the root session that holds it (a reader that names its
+sub-agents by unit, `SubAgentNaming`, has only the sessions with such a unit read). The store is listed
 only when no archived session has that exact id, and the reader is asked about a unit `.sync.json` has not recorded. The
 resolver also reads the store sessions it resolves to, so the caller need not. Nothing is written.
 """
@@ -16,7 +17,7 @@ from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple
 
 from .command_error import CommandError
 from .model import Session, SubAgent, is_safe_id
-from .reader_port import ScanResult, SessionReader, SourceUnit, UnreadableSource, root_id_of
+from .reader_port import RankingUnits, ScanResult, SessionReader, SourceUnit, SubAgentNaming, UnreadableSource, root_id_of
 from .state_port import parse_timestamp, recorded_session_key
 
 MAX_LISTED_MATCHES = 5  # an ambiguous prefix names this many matching ids at most
@@ -45,6 +46,9 @@ class _Archived(NamedTuple):
     session_key: str
 
 
+_StoredRank = Tuple[int, datetime, Tuple[datetime, str]]  # nearer folder, newer prompt, newer source unit rank higher
+
+
 class _Stored(NamedTuple):
     """The best never-archived candidate and the folder `level` it was found at."""
 
@@ -70,11 +74,10 @@ class UsageTargetResolver:
         matchers = list(self._project_matchers(cwd))
         archived = self._latest_archived(state["sessions"], matchers)
         scan = self._reader.scan()
-        if scan.unreadable and archived is None:
-            raise self._incomplete_store(scan, "so the latest session cannot be determined")
-        # In the exact folder a store session none of whose units is newer than the archived newest prompt cannot hold a newer one.
-        unit_not_before = archived.at if archived is not None and archived.level == 0 and archived.has_prompt else None
-        stored = self._latest_in_store(state, scan, matchers, unit_not_before, skip_unreadable=archived is not None)
+        hiding = self._hiding_sessions(scan)
+        if hiding and archived is None:
+            raise self._incomplete_store(hiding, "so the latest session cannot be determined")
+        stored = self._latest_in_store(state, scan, matchers, skip_unreadable=archived is not None)
         if archived is None and stored is None:
             raise CommandError("no session for this project (%s)" % cwd)
         if archived is None:
@@ -101,20 +104,28 @@ class UsageTargetResolver:
         stored = {root_id_of(key): key for key in units_of}
         if target in stored:
             return self._resolved(state, units_of, stored[target])
-        if scan.unreadable:
-            raise self._incomplete_store(scan, "so the id %r cannot be resolved" % target)
+        hiding = self._hiding_sessions(scan)
+        if hiding:
+            raise self._incomplete_store(hiding, "so the id %r cannot be resolved" % target)
         known = {**stored, **archived}
         matches = sorted(session_id for session_id in known if session_id.startswith(target))
         if not matches:
             return self._holding_sub_agent(state, units_of, target)
         return self._resolved(state, units_of, known[self._the_only(matches, target)])
 
+    def read_stored(self, state: dict, session_key: str) -> Optional[Session]:
+        """The archived session `session_key` read now from the store, whole, for a report whose saved file is gone; None when
+        none of its sources is left or they hold nothing. An unreadable source raises (see `_read_complete`)."""
+        units = self._store_units(state, self._reader.scan()).get(session_key)
+        return None if units is None else self._read_complete(session_key, units)
+
     def _holding_sub_agent(self, state: dict, units_of: Dict[str, _Units], target: str) -> ResolvedSession:
         """The root session of the store whose sub-agents (nested ones too) include `target`, newest source unit first. Only the
         store tells, as `.sync.json` records no sub-agent ids, so an archived session whose sources are gone is not found. A
-        session that cannot be read may hold the id, so a miss beside one is an error, not "no session"."""
+        session that cannot be read may hold the id, so a miss beside one is an error, not "no session". A session the reader rules out
+        by its units (`_may_hold_sub_agent`) is not read, so it is no such session."""
         first_unreadable: Optional[Tuple[str, UnreadableSource]] = None
-        for session_key in self._newest_first(units_of):
+        for session_key in self._may_hold_sub_agent(units_of, target):
             result = self._reader.read(session_key, units_of[session_key])
             if result.unreadable and first_unreadable is None:
                 first_unreadable = (session_key, result.unreadable[0])
@@ -128,6 +139,14 @@ class UsageTargetResolver:
         if first_unreadable is not None:
             raise CommandError("%s, so the id %r cannot be resolved" % (self._unreadable_session(*first_unreadable), target))
         raise CommandError("no session has the id %r" % target)
+
+    def _may_hold_sub_agent(self, units_of: Dict[str, _Units], agent_id: str) -> List[str]:
+        """The session keys, newest source unit first, whose units may hold a sub-agent `agent_id`: all of them, unless the reader names
+        its sub-agents by unit (`SubAgentNaming`), and then only those with a unit that may."""
+        keys = self._newest_first(units_of)
+        if not isinstance(self._reader, SubAgentNaming):
+            return keys
+        return [key for key in keys if any(self._reader.may_hold_sub_agent(unit, agent_id) for unit in units_of[key])]
 
     @classmethod
     def _has_sub_agent(cls, sub_agents: Tuple[SubAgent, ...], agent_id: str) -> bool:
@@ -155,46 +174,76 @@ class UsageTargetResolver:
         return result.session
 
     @staticmethod
-    def _incomplete_store(scan: ScanResult, consequence: str) -> CommandError:
-        first = scan.unreadable[0]
-        return CommandError("the store could not be read completely (%s: %s), %s" % (first.path, first.reason, consequence))
-
-    def _latest_in_store(self, state: dict, scan: ScanResult, matchers: List[Callable[[str], bool]],
-                         unit_not_before: Optional[datetime], skip_unreadable: bool) -> Optional[_Stored]:
-        """Of the never-archived root sessions of the store that hold a prompt, the first one in the order of the newest source
-        unit (the newest file, not necessarily the newest prompt) in the nearest folder of `matchers` that has one, with its
-        level; None when no folder has one. A winner found only in a parent folder needs every session of the store read (cost
-        accepted). Archived sessions are left out: their saved report is ranked from `.sync.json`. With `unit_not_before`,
-        sessions whose newest unit is older are not read; with `skip_unreadable`, unreadable sessions are passed over."""
-        first_of_folder: List[Optional[_Stored]] = [None] * len(matchers)  # one winner per folder, nearest folder first
-        units_of = {key: units for key, units in self._store_units(state, scan).items() if key not in state["sessions"]}
-        for session_key, session in self._root_sessions_with_prompt(units_of, unit_not_before, skip_unreadable):
-            for level, is_in_folder in enumerate(matchers):
-                if is_in_folder(session.project_dir):
-                    if level == 0:
-                        return _Stored(level, ResolvedSession(session_key, session))  # nothing can be nearer
-                    if first_of_folder[level] is None:
-                        first_of_folder[level] = _Stored(level, ResolvedSession(session_key, session))
-                    break
-        return next((winner for winner in first_of_folder if winner is not None), None)
+    def _hiding_sessions(scan: ScanResult) -> Tuple[UnreadableSource, ...]:
+        """What the scan could not use that may hide a session; a finding for `status` alone (`hides_sessions` False) is left out."""
+        return tuple(source for source in scan.unreadable if source.hides_sessions)
 
     @staticmethod
-    def _newest_first(units_of: Dict[str, _Units]) -> List[str]:
-        return sorted(units_of, key=lambda key: max((unit.modified_at, unit.key) for unit in units_of[key]), reverse=True)
+    def _incomplete_store(hiding: Tuple[UnreadableSource, ...], consequence: str) -> CommandError:
+        first = hiding[0]
+        return CommandError("the store could not be read completely (%s: %s), %s" % (first.path, first.reason, consequence))
+
+    def _latest_in_store(self, state: dict, scan: ScanResult, matchers: List[Callable[[str], bool]], skip_unreadable: bool
+                         ) -> Optional[_Stored]:
+        """Of the never-archived root sessions of the store that hold a prompt, the one with the newest prompt in the nearest folder
+        of `matchers` that has one, with its level; None when no folder has one. A tie goes to the session with the newest source
+        unit. Archived sessions are left out: their saved report is ranked from `.sync.json`. The file times bound nothing: a restored
+        file has an old time and the newest prompt, so every session of the store is read, from the units of `_ranking_units`, and only
+        the one picked is read whole. With `skip_unreadable`, unreadable sessions are passed over, a picked one that cannot be read
+        whole too (the next best is picked then); an unreadable file only a whole read opens (a sub-agent's) ends the lookup only for a
+        session that would win."""
+        units_of = {key: units for key, units in self._store_units(state, scan).items() if key not in state["sessions"]}
+        ranking: List[Tuple[_StoredRank, str]] = []  # every candidate, light; only the best one keeps the session read for it
+        best: Optional[Tuple[_StoredRank, str, Session]] = None
+        for session_key, ranked in self._root_sessions_with_prompt(units_of, skip_unreadable):
+            level = next((level for level, is_in_folder in enumerate(matchers) if is_in_folder(ranked.project_dir)), None)
+            if level is None:
+                continue
+            rank = (-level, self._newest_prompt_at(ranked), self._newest_unit(units_of[session_key]))
+            ranking.append((rank, session_key))
+            if best is None or rank > best[0]:
+                best = (rank, session_key, ranked)
+        for rank, session_key in sorted(ranking, reverse=True):
+            ranked = best[2] if best[1] == session_key else None
+            session = self._whole(session_key, units_of[session_key], ranked, skip_unreadable)
+            if session is not None:
+                return _Stored(-rank[0], ResolvedSession(session_key, session))
+        return None
+
+    @staticmethod
+    def _newest_unit(units: _Units) -> Tuple[datetime, str]:
+        return max((unit.modified_at, unit.key) for unit in units)
+
+    @classmethod
+    def _newest_first(cls, units_of: Dict[str, _Units]) -> List[str]:
+        return sorted(units_of, key=lambda key: cls._newest_unit(units_of[key]), reverse=True)
 
     @staticmethod
     def _newest_prompt_at(session: Session) -> datetime:
         return max(prompt.submitted_at for prompt in session.prompts)
 
-    def _root_sessions_with_prompt(self, units_of: Dict[str, _Units], unit_not_before: Optional[datetime], skip_unreadable: bool
-                                   ) -> Iterator[Tuple[str, Session]]:
-        """The root sessions that hold a prompt and a project folder, newest source unit first, read one at a time; none whose
-        newest unit is older than `unit_not_before`. An unreadable session ends the lookup, unless `skip_unreadable`."""
-        for session_key in self._newest_first(units_of):
-            if unit_not_before is not None and max(unit.modified_at for unit in units_of[session_key]) < unit_not_before:
-                return
+    def _ranking_units(self, units: _Units) -> _Units:
+        """The units that alone rank a session: all of them, unless the reader says fewer do (`RankingUnits`)."""
+        return self._reader.units_for_ranking(units) if isinstance(self._reader, RankingUnits) else units
+
+    def _whole(self, session_key: str, units: _Units, ranked: Optional[Session], skip_unreadable: bool) -> Optional[Session]:
+        """`ranked`, when read from all `units` already (`_ranking_units` are all of them), else the session read from all `units`;
+        None when that read fails and `skip_unreadable`."""
+        if ranked is not None and len(self._ranking_units(units)) == len(units):
+            return ranked
+        try:
+            return self._read_complete(session_key, units)
+        except CommandError:
+            if skip_unreadable:
+                return None
+            raise
+
+    def _root_sessions_with_prompt(self, units_of: Dict[str, _Units], skip_unreadable: bool) -> Iterator[Tuple[str, Session]]:
+        """The root sessions that hold a prompt and a project folder, each read from its ranking units one at a time. An unreadable
+        session ends the lookup, unless `skip_unreadable`."""
+        for session_key, units in units_of.items():
             try:
-                session = self._read_complete(session_key, units_of[session_key])
+                session = self._read_complete(session_key, self._ranking_units(units))
             except CommandError:
                 if skip_unreadable:
                     continue

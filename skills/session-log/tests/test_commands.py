@@ -201,7 +201,7 @@ class OnOffTest(CommandTestCase):
 
         commands = CommandUseCases(Failing(), None, self.archive, self.state, PricingRules(self.prices), lambda: NOW,
                                    self.log_root, NoLeftovers(), NoProbe())
-        with self.assertRaises(OSError):
+        with self.assertRaisesRegex(CommandError, "^cannot archive the sessions before turning logging off: .*: read-only$"):
             commands.off()
         self.assertIsNone(self.state.read_on_flag())
 
@@ -368,12 +368,22 @@ class UsageTest(CommandTestCase):
         os.utime(path, (NOW.timestamp() + 5, NOW.timestamp() + 5))
         self.assertEqual(self.commands.usage_latest(CWD).report_text, "report first (2 requests)")
 
-    def test_usage_names_the_log_when_its_saved_report_cannot_be_read(self):
+    def test_usage_serves_the_live_report_when_its_saved_report_cannot_be_read_and_the_source_is_there(self):
         self._enable()
         self._install("first", ON_AT + ONE_DAY)
         self.commands.status()
         self.archive.reports.clear()
-        with self.assertRaisesRegex(CommandError, "/logs/first.md"):
+        self.assertEqual(self.commands.usage_latest(CWD).report_text, "report first (1 requests)")
+        self.assertEqual(self.commands.usage_of("first").report_text, "report first (1 requests)")
+        self.assertEqual(self.archive.reports, {})  # a live report is saved nowhere
+
+    def test_usage_names_the_log_when_its_saved_report_cannot_be_read_and_the_source_is_gone(self):
+        self._enable()
+        path = self._install("first", ON_AT + ONE_DAY)
+        self.commands.status()
+        self.archive.reports.clear()
+        os.unlink(path)
+        with self.assertRaisesRegex(CommandError, "/logs/first.md cannot be read, and its source is gone"):
             self.commands.usage_latest(CWD)
 
 

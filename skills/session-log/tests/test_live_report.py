@@ -44,7 +44,7 @@ class LatestInStoreTest(UsageTargetTestCase):
     def _never_archived(self, session_id, modified, cwd=PROJECT, prompts=(BEFORE_ON,)):
         return self._install(session_id, cwd=cwd, prompts=list(prompts), modified=modified)
 
-    def test_latest_reads_store_only_without_archived_session_first_root_with_prompt_wins(self):
+    def test_latest_reads_store_only_without_archived_session_the_newest_prompt_of_a_root_wins(self):
         self._never_archived("old", BEFORE_ON - 3 * ONE_DAY, prompts=[BEFORE_ON])  # oldest file, newest prompt
         self._never_archived("file-newest-prompt-oldest", BEFORE_ON - ONE_DAY, prompts=[BEFORE_ON - 5 * ONE_DAY])
         self._install("meta-only", modified=BEFORE_ON)  # a newer file, but no prompt
@@ -52,8 +52,8 @@ class LatestInStoreTest(UsageTargetTestCase):
         state_before = self.state.load_sync()
         sync_file = os.path.join(self.log_root, SYNC_STATE)
         sync_file_existed = os.path.exists(sync_file)
-        self.assertEqual(self._text(), _report("file-newest-prompt-oldest"))  # the newest file wins, not the newest prompt
-        self.assertEqual(self._text(cwd=PROJECT + "/src/deep"), _report("file-newest-prompt-oldest"))  # nearest parent project
+        self.assertEqual(self._text(), _report("old"))  # the newest prompt wins, not the newest file
+        self.assertEqual(self._text(cwd=PROJECT + "/src/deep"), _report("old"))  # nearest parent project
         self.assertEqual(self._text(cwd=OTHER_PROJECT), _report("elsewhere"))
         self.assertEqual((self.sync.calls, self.archive.reports), (0, {}))
         self.assertEqual(self.state.load_sync(), state_before)
@@ -188,13 +188,14 @@ class LatestInStoreTest(UsageTargetTestCase):
         self._never_archived("exact", BEFORE_ON - 2 * ONE_DAY, cwd=PROJECT + "/src/deep")
         self.assertEqual(self._text(cwd=PROJECT + "/src/deep"), _report("exact"))
 
-    def test_a_session_found_in_the_cwd_itself_stops_the_read_so_an_older_unreadable_session_is_never_opened(self):
+    def test_a_session_found_in_the_cwd_itself_does_not_stop_the_read_so_an_older_unreadable_session_of_another_project_is_still_opened(self):
         self._never_archived("here", BEFORE_ON)
         older = self._never_archived("older-elsewhere", BEFORE_ON - ONE_DAY, cwd=OTHER_PROJECT)
         with open(older, "wb") as handle:
             handle.write(INVALID_UTF8)
         os.utime(older, (BEFORE_ON.timestamp() - ONE_DAY.total_seconds(),) * 2)
-        self.assertEqual(self._text(), _report("here"))
+        with self.assertRaisesRegex(CommandError, "%s: %s" % (older, CANNOT_BE_PARSED_REASON)):  # its project is known only from its content
+            self._text()
 
     def test_a_newer_unreadable_session_of_an_unrelated_project_exits_1_naming_it(self):
         self._never_archived("here", BEFORE_ON - ONE_DAY)

@@ -46,6 +46,8 @@ model PromptRow {
   /** Every model of the row, sorted, joined with "+"; fast requests marked ":fast". */
   modelNames: string;
   effort?: string;
+  /** OMP, OpenCode only: shown as `reasoning: N` right after `output`, a part of outputTokens, not added to totalTokens or the price. */
+  reasoningTokens?: int64;
 }
 
 model SubAgentRow {
@@ -59,6 +61,10 @@ model SubAgentRow {
   price: Price;
   modelNames?: string;
   effort?: string;
+  /** Cursor: shown as `, jsonl: <path>` at the end of the sub-agent line. */
+  transcriptPath?: string;
+  /** OMP, OpenCode only: as PromptRow. */
+  reasoningTokens?: int64;
 }
 
 model Total {
@@ -77,6 +83,8 @@ model Total {
   subAgentCount: int32;
   /** Cursor: `tokens: main session only — Cursor does not record sub-agent tokens`. */
   label?: string;
+  /** OMP, OpenCode only: the sum of the rows' reasoningTokens. */
+  reasoningTokens?: int64;
 }
 
 model UsageReport {
@@ -87,6 +95,8 @@ model UsageReport {
   /** Depth-first, each level ordered as C2 SubAgent. */
   subAgents: SubAgentRow[];
   total: Total;
+  /** Cursor: the report's first line reads `session: <transcriptPath>` instead of the session id. */
+  transcriptPath?: string;
 }
 
 model WriteOutcome {
@@ -100,7 +110,7 @@ model WriteOutcome {
  * Archive owns every path rule; the sync use case never builds a path. It asks newLogPath once for a session without a C6 entry,
  * keeps that path in the entry, and passes it back to write and readReport, which derive the report path beside it.
  * Log path: <log root>/<slug>/session_<YYYY-MM-DD_HH-MM-SS UTC>_<session-id>.md (Q6), report session_<ts>_<id>.usage.txt beside it.
- * slug = <basename, each char outside [A-Za-z0-9_-] replaced by "-", cut to 64; empty basename -> "root"; no recorded cwd -> "unknown">
+ * slug = <basename, each char outside [A-Za-z0-9._-] replaced by "-" (the dot stays, as in the old native hook's key), cut to 64; empty basename -> "root"; no recorded cwd -> "unknown">
  *        -<sha256(UTF-8 of normcase(cwd as the harness recorded it))[:12]>, with the injected path module (`os.path`; tests pass `ntpath`).
  * A session keeps the path in its C6 session entry, even if its start time or cwd is later read differently. Paths are never found
  * by searching the log root, so old-format logs (`session_<id>.md`, `session_<ts>_<id>.md`) are never touched (Q13).

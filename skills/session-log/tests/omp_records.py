@@ -91,6 +91,15 @@ def helper_record(second, usage, model="claude-haiku-5", provider="anthropic") -
     return {"type": "model_usage", "id": "h%s" % second, "timestamp": iso(second), "provider": provider, "model": model, "usage": usage}
 
 
+def chained(parent_id, *records) -> list:
+    """The records as one branch of the session tree: the first hangs from the entry `parent_id` (None: a root), each later one from the one before."""
+    linked = []
+    for record in records:
+        linked.append({**record, "parentId": parent_id})
+        parent_id = record["id"]
+    return linked
+
+
 def jsonl(*records) -> str:
     return "".join(json.dumps(record) + "\n" for record in records)
 

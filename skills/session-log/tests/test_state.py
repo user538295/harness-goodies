@@ -277,7 +277,8 @@ class StateTests(unittest.TestCase):
         for field, value in (('lastActivityAt', 'not a time'),
                              ('lastPromptAt', '2026-01-01T00:00:00'),
                              ('projectDir', 12), ('orphan', 0),
-                             ('renderVersion', True), ('unitCount', -1)):
+                             ('renderVersion', True), ('unitCount', -1), ('promptCount', -1), ('subAgentCount', True),
+                             ('priceFileProblem', 1), ('state', 'unknown')):
             with self.subTest(field=field):
                 entry = session_entry('session.md')
                 entry[field] = value
@@ -305,8 +306,15 @@ class StateTests(unittest.TestCase):
                     process.terminate()
                     process.join()
 
+    def test_withheld_entry_with_content_counts_and_price_flag_round_trips_and_a_legacy_entry_without_them_loads(self):
+        withheld = {**session_entry('w.md'), 'state': 'withheld', 'reason': 'source partly gone (1 of 2 units)',
+                    'promptCount': 3, 'subAgentCount': 1, 'priceFileProblem': True}
+        self.store.save_sync({'units': {}, 'sessions': {'w': withheld, 'legacy': session_entry('l.md')}})
+        loaded = FileStateStore(self.root).load_sync()
+        self.assertEqual(loaded['sessions'], {'w': withheld, 'legacy': session_entry('l.md')})
+
     def test_session_integer_metadata_obeys_int32_bounds(self):
-        for field in ('renderVersion', 'unitCount'):
+        for field in ('renderVersion', 'unitCount', 'promptCount', 'subAgentCount'):
             entry = session_entry('session.md')
             entry[field] = 2147483647
             state = {'units': {}, 'sessions': {'s': entry}}

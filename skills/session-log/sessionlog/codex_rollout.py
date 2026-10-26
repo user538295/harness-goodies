@@ -8,9 +8,10 @@ prompt's reply is the last `AgentMessage` of its turn marked `final_answer`, els
 `token_usage_record` lines when the rollout has any (they also cover compaction calls); otherwise each `token_count` event
 whose `total_token_usage` grew is one request with the growth as its tokens. `last_token_usage` is never summed, because
 events repeat it, and a `token_count` before the rollout's first `task_started` (a forked thread's inherited total) only sets
-the starting total. Input tokens exclude `cached_input_tokens`, which count as cache read; `cache_write_input_tokens` count as
-cache write. The part of `total_tokens` that input and output do not account for is counted as input tokens: a `token_count` of
-a rollout imported from another agent has `input_tokens` and `output_tokens` 0 and only `total_tokens`, whose split is unknown
+the starting total. `input_tokens` is the whole prompt, which holds the cached and the cache-write tokens (`total_tokens` is input plus
+output; codex `codex-api` `ResponseCompletedUsage`): input tokens exclude both, `cached_input_tokens` count as cache read and
+`cache_write_input_tokens` as cache write, so no token is counted twice. The part of `total_tokens` that input and output do not
+account for is counted as input tokens: a `token_count` of a rollout imported from another agent has `input_tokens` and `output_tokens` 0 and only `total_tokens`, whose split is unknown
 (the same rule reads a `token_usage_record` usage); such a rollout names no model, so its tokens are never priced.
 
 Limits of the growth path (a rollout without `token_usage_record` lines): a compaction call is in no running total, so its
@@ -19,9 +20,17 @@ one seen, in any field, so the replayed history of its parent, whose totals lie 
 request. A fork also replays that history as turns, and two marks tell a replayed turn from the fork's own: its `turn_id` is
 `rollout-<n>` (the wrapper the replay is written in) or its `started_at` lies before the second of the header. From such a
 `task_started` to the next one that has neither mark, no `UserMessage`, `AgentMessage`, `token_usage_record` or request is the
-fork's: the totals in it only raise the starting total. A fork whose replay shows neither mark (no replayed turn, or turns
+fork's: the totals in it only raise the starting total. The exception is a replayed turn that holds a `token_usage_record` of the
+fork's own thread (its `thread_id` is the fork's `id`; a replayed parent's record names the parent's): a guardian review forked from
+its parent writes its first review turn inside that wrapper, so that turn's `UserMessage`, `AgentMessage` and record are the fork's.
+A fork whose replay shows neither mark (no replayed turn, or turns
 written like its own) still counts the replay as its own; a timestamp rule was checked against the local rollouts and misfires
 on a file whose records all share one time.
+
+A prompt is what the user typed. The IDE puts its context in front of it, as a markdown block that ends with a `## My request for
+Codex:` line (codex `protocol.rs` `USER_MESSAGE_BEGIN`; the Codex desktop app writes `## My request:`, as its local rollouts show); a
+message that opens with a heading (`#`) and holds such a line is read as the text after its first one, trimmed as Codex's
+`strip_user_message_prefix` does. Any other message, also one that only mentions the marker, is read as written.
 
 A prompt is dropped, with its replies and requests, when its record has no usable time (as in the Claude reader), and a
 rollout without any prompt has no rows. Requests before the first prompt belong to it; replies before it belong to none."""
@@ -30,7 +39,7 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from typing import AbstractSet, Any, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
 from .json_records import Record, decode_record, parse_moment
 from .model import Prompt, RequestUsage
@@ -47,6 +56,8 @@ _AGENT_MESSAGE_ITEM = "AgentMessage"
 _USER_MESSAGE_EVENT = "user_message"
 _AGENT_MESSAGE_EVENT = "agent_message"
 _FINAL_ANSWER_PHASE = "final_answer"
+_REQUEST_MARKER = re.compile(r"^## My request(?: for Codex)?:", re.MULTILINE)
+_CONTEXT_HEADING = "#"
 _TEXT_BLOCK = "text"
 _PROMPT_TEXT_SEPARATOR = "\n"
 _REPLY_PARAGRAPH_SEPARATOR = "\n\n"
@@ -68,13 +79,16 @@ _Tokens = Dict[str, int]
 class RolloutMeta:
     """What a rollout's first line says: its own thread id (`id`), the root session it belongs to (`session_id`; without it
     its `parent_thread_id`, else its own `id`), the thread that spawned it (`parent_thread_id`), its role as a sub-agent
-    (`agent_type`), whether it is a fork of another thread (it has a `parent_thread_id` or a `forked_from_id`), when it
-    started and the folder it ran in. `started_at` is None when no timestamp of the line is a usable time."""
+    (`agent_type`), whether it is an internal helper of Codex (`helper`: a sub-agent source that is no `thread_spawn`, as a
+    guardian review; a helper is never a session of the user's own), whether it is a fork of another thread (it has a
+    `parent_thread_id` or a `forked_from_id`), when it started and the folder it ran in. `started_at` is None when no timestamp of
+    the line is a usable time."""
 
     root_id: str
     thread_id: str
     parent_thread_id: Optional[str]
     agent_type: Optional[str]
+    helper: bool
     forked: bool
     started_at: Optional[datetime]
     project_dir: Optional[str]
@@ -100,6 +114,7 @@ class _Opening(NamedTuple):
     index: int
     moment: Optional[datetime]
     text: str
+    replay: Optional[int]  # the replayed turn it was written in, if any (see `_Collector._replay`)
 
 
 class _Reply(NamedTuple):
@@ -107,6 +122,7 @@ class _Reply(NamedTuple):
     moment: Optional[datetime]
     text: str
     final: bool
+    replay: Optional[int]
 
 
 class _IndexedRequest(NamedTuple):
@@ -120,6 +136,11 @@ class _Track:
 
     openings: List[_Opening] = field(default_factory=list)
     replies: List[_Reply] = field(default_factory=list)
+
+    def outside(self, replays: AbstractSet[int]) -> "_Track":
+        """The track without what was written in a replayed turn that is not one of `replays`, the fork's own."""
+        return _Track([opening for opening in self.openings if opening.replay is None or opening.replay in replays],
+                      [reply for reply in self.replies if reply.replay is None or reply.replay in replays])
 
 
 def _text(value: Any) -> Optional[str]:
@@ -150,6 +171,15 @@ def _object_or_empty(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _typed_text(message: str) -> str:
+    """What the user typed in a message: the text after the first request marker line when the message opens with a context
+    heading, else the message as written."""
+    if not message.lstrip().startswith(_CONTEXT_HEADING):
+        return message
+    marker = _REQUEST_MARKER.search(message)
+    return message[marker.end():].strip() if marker else message
+
+
 def _texts_of(content: Any) -> List[str]:
     blocks = content if isinstance(content, list) else []
     texts = [block.get("text") for block in blocks
@@ -163,6 +193,13 @@ def _agent_type(payload: Record) -> Optional[str]:
     subagent = _object_or_empty(_object_or_empty(payload.get("source")).get("subagent"))
     spawn = _object_or_empty(subagent.get("thread_spawn"))
     return _text(payload.get("agent_role")) or _text(spawn.get("agent_role")) or _text(subagent.get("other"))
+
+
+def _is_helper(payload: Record) -> bool:
+    """Whether the header's source is a sub-agent of Codex's own that no agent spawned: a guardian review (`{"other": ...}`), or a
+    compaction or review (a bare kind). A `thread_spawn` is the thread of an agent that did spawn, and it names its parent."""
+    subagent = _object_or_empty(payload.get("source")).get("subagent")
+    return bool(subagent) and not (isinstance(subagent, dict) and "thread_spawn" in subagent)
 
 
 def _parent_of(payload: Record) -> Optional[str]:
@@ -188,6 +225,7 @@ def _meta_of(record: Optional[Record]) -> Optional[RolloutMeta]:
     root_id = session_id if session_id not in (None, thread_id) else parent_thread_id or thread_id
     started_at = parse_moment(payload.get("timestamp")) or parse_moment(record.get("timestamp"))
     return RolloutMeta(root_id=root_id, thread_id=thread_id, parent_thread_id=parent_thread_id, agent_type=_agent_type(payload),
+                       helper=_is_helper(payload),
                        forked=_text(payload.get("parent_thread_id")) is not None or _text(payload.get("forked_from_id")) is not None,
                        started_at=started_at, project_dir=_text(payload.get("cwd")))
 
@@ -201,12 +239,16 @@ class _Collector:
     """Gathers, in file order, every opening, reply and request of a rollout, the newest record time and the oldest one after
     the header line; `prompts` then lays the openings out by position. `forked` rollouts never let a total fall below the
     highest one seen (see `_take_count`), and what a forked rollout replays from its parent is no opening, reply or request
-    (see `_is_replay`). The first record added is the header."""
+    (see `_is_replay`), except in a replayed turn that holds a record of the fork's own thread (see `_take_recorded`). The first
+    record added is the header."""
 
-    def __init__(self, forked: bool, started_at: Optional[datetime]) -> None:
+    def __init__(self, thread_id: str, forked: bool, started_at: Optional[datetime]) -> None:
+        self._thread_id = thread_id
         self._forked = forked
         self._header_second = math.floor(started_at.timestamp()) if started_at is not None else None
-        self._replaying = False
+        self._replay: Optional[int] = None  # the number of the replayed turn being read, None outside one
+        self._replays = 0
+        self._own_replays: Set[int] = set()  # the replayed turns that hold a record of the fork's own thread
         self._model = ""
         self._effort: Optional[str] = None
         self._task_started = False
@@ -231,8 +273,8 @@ class _Collector:
         kind = record.get("type")
         if kind == _TURN_CONTEXT:
             self._take_context(payload)
-        elif kind == _TOKEN_USAGE_RECORD and not self._replaying:
-            self._take_recorded(index, payload.get("usage"))
+        elif kind == _TOKEN_USAGE_RECORD:
+            self._take_recorded(index, payload)
         elif kind == _EVENT:
             self._take_event(index, moment, payload)
 
@@ -249,7 +291,7 @@ class _Collector:
         cached = tokens[_CACHED]
         return RequestUsage(
             model_name=self._model,
-            input_tokens=max(0, tokens[_INPUT] - cached) + tokens[_UNSPLIT],
+            input_tokens=max(0, tokens[_INPUT] - cached - tokens[_CACHE_WRITE]) + tokens[_UNSPLIT],
             output_tokens=tokens[_OUTPUT],
             cache_read_tokens=cached,
             cache_write_5m_tokens=tokens[_CACHE_WRITE],
@@ -257,9 +299,17 @@ class _Collector:
             effort=self._effort,
         )
 
-    def _take_recorded(self, index: int, usage: Any) -> None:
-        if isinstance(usage, dict):
-            self._recorded.append(_IndexedRequest(index, self._request_of(_token_fields(usage))))
+    def _take_recorded(self, index: int, payload: Record) -> None:
+        """A record in a replayed turn is the parent's, unless it names the fork's own thread: then the turn is the fork's own
+        (a guardian fork writes its first review turn in the wrapper that replays its parent's history)."""
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            return
+        if self._replay is not None:
+            if payload.get("thread_id") != self._thread_id:
+                return
+            self._own_replays.add(self._replay)
+        self._recorded.append(_IndexedRequest(index, self._request_of(_token_fields(usage))))
 
     def _is_replay(self, payload: Record) -> bool:
         """Whether a `task_started` opens a turn that a forked rollout replays from its parent: the wrapper turn `rollout-<n>`,
@@ -275,27 +325,29 @@ class _Collector:
         event = payload.get("type")
         if event == _TASK_STARTED:
             self._task_started = True
-            self._replaying = self._forked and self._is_replay(payload)
+            if self._forked and self._is_replay(payload):
+                self._replays += 1
+                self._replay = self._replays
+            else:
+                self._replay = None
         elif event == _TOKEN_COUNT:
             self._take_count(index, _object_or_empty(payload.get("info")))
-        elif self._replaying:
-            return
         elif event == _ITEM_COMPLETED:
             self._take_item(index, moment, _object_or_empty(payload.get("item")))
         elif event == _USER_MESSAGE_EVENT and isinstance(payload.get("message"), str):
-            self._events.openings.append(_Opening(index, moment, payload["message"]))
+            self._events.openings.append(_Opening(index, moment, _typed_text(payload["message"]), self._replay))
         elif event == _AGENT_MESSAGE_EVENT:
             self._take_reply(self._events, index, moment, payload.get("message"), False)
 
-    @staticmethod
-    def _take_reply(track: _Track, index: int, moment: Optional[datetime], text: Any, final: bool) -> None:
+    def _take_reply(self, track: _Track, index: int, moment: Optional[datetime], text: Any, final: bool) -> None:
         if isinstance(text, str) and text.strip():
-            track.replies.append(_Reply(index, moment, text, final))
+            track.replies.append(_Reply(index, moment, text, final, self._replay))
 
     def _take_item(self, index: int, moment: Optional[datetime], item: Record) -> None:
         kind = item.get("type")
         if kind == _USER_MESSAGE_ITEM:
-            self._items.openings.append(_Opening(index, moment, _PROMPT_TEXT_SEPARATOR.join(_texts_of(item.get("content")))))
+            text = _PROMPT_TEXT_SEPARATOR.join(_texts_of(item.get("content")))
+            self._items.openings.append(_Opening(index, moment, _typed_text(text), self._replay))
         elif kind == _AGENT_MESSAGE_ITEM:
             text = _REPLY_PARAGRAPH_SEPARATOR.join(_texts_of(item.get("content")))
             self._take_reply(self._items, index, moment, text, item.get("phase") == _FINAL_ANSWER_PHASE)
@@ -317,12 +369,13 @@ class _Collector:
             current = {name: max(current[name], self._total[name]) for name in _COUNTED}
         growth = {name: max(0, current[name] - self._total[name]) for name in _COUNTED}
         self._total = current
-        if self._task_started and not self._replaying and any(growth.values()):
+        if self._task_started and self._replay is None and any(growth.values()):
             self._grown.append(_IndexedRequest(index, self._request_of(growth)))
 
     def prompts(self) -> Tuple[Prompt, ...]:
         """Each opening with the replies and requests up to the next opening."""
-        track = self._items if self._items.openings else self._events
+        items, events = self._items.outside(self._own_replays), self._events.outside(self._own_replays)
+        track = items if items.openings else events
         if not track.openings:
             return ()
         starts = [opening.index for opening in track.openings]
@@ -373,7 +426,7 @@ def parse_rollout(lines: Iterable[str]) -> Rollout:
             meta = _meta_of(record)
             if meta is None:
                 return Rollout(meta=None, prompts=(), unparsable=True)
-            collector = _Collector(meta.forked, meta.started_at)
+            collector = _Collector(meta.thread_id, meta.forked, meta.started_at)
         if record is not None:
             collector.add(index, record)
     if collector is None:

@@ -14,7 +14,7 @@ from sessionlog.pricing import PricingRules
 from sessionlog.reader_port import CANNOT_BE_LISTED_REASON, CANNOT_BE_PARSED_REASON, UnreadableSource
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
-from sessionlog.sync import RENDER_VERSION, SyncUseCase
+from sessionlog.sync import FEWER_SUB_AGENTS_REASON, RENDER_VERSION, SyncUseCase
 from sessionlog.usage_target import UsageTargetResolver
 from tests.test_log_usage_writer import SHIFT_AT, Shifting
 from tests.test_sync import (FILES_PER_SESSION, NOW, ON_AT, ONE_DAY, PROJECT, CountingReader, NoLeftovers, NoProbe,
@@ -35,6 +35,7 @@ SYNC_FILE = ".sync.json"
 LOCKED = "locked"
 BUSY = "busy"
 UNITS_WITH_AGENT = 2  # a main file and one sub-agent file
+ONE_SUB_AGENT = 1
 PARTLY_GONE = "source partly gone (%d of %d units)" % (UNITS_WITH_AGENT - 1, UNITS_WITH_AGENT)
 BASE = ON_AT + ONE_DAY
 MINUTE = timedelta(minutes=1)
@@ -235,7 +236,7 @@ class TempNameAndMergeTest(SafetyTestCase):
 
 
 class PartlyGoneTest(SafetyTestCase):
-    def test_deleted_source_and_old_format_logs_byte_identical_and_partly_gone_session_not_rewritten(self):
+    def test_deleted_source_and_old_format_logs_byte_identical_and_partly_gone_session_archives_new_prompts_but_keeps_its_report(self):
         gone = self._install("gone", _transcript(BASE), NOW)
         self._install("partial", _transcript(BASE + PARTIAL_OFFSET), NOW)
         agent = self._agent_file("partial")
@@ -251,10 +252,10 @@ class PartlyGoneTest(SafetyTestCase):
         files = self._syncs_through_a_render_version_raise(protected, partial_log, partial_report)
         new_names = sorted(os.path.basename(name) for name in files if name not in protected)  # `active`: a separate new log
         self.assertEqual(new_names, ["session_%s_active%s" % (ACTIVE_LOG_STAMP, suffix) for suffix in (LOG_SUFFIX, REPORT_SUFFIX)])
-        self.assertNotIn(self._key("partial"), self.reader.read_keys)  # withheld without a read, every time
+        self.assertEqual(self.reader.read_keys.count(self._key("partial")), 1)  # read for its new prompt; withheld sessions are not owed a read
         self.assertEqual(self.reader.read_keys.count(self._key("active")), 2)  # new in the first pass, rewritten for the raise
         self.assertEqual(self._entry("active")["renderVersion"], RENDER_VERSION + 1)
-        self.assertEqual(self._entry("partial")["renderVersion"], RENDER_VERSION)  # a rewrite from fewer units is never built
+        self.assertEqual(self._entry("partial")["renderVersion"], RENDER_VERSION)  # its report is still of the old write
         self._agent_file("partial")
         self._sync()
         entry = self._entry("partial")
@@ -276,22 +277,25 @@ class PartlyGoneTest(SafetyTestCase):
 
     def _syncs_through_a_render_version_raise(self, protected, partial_log, partial_report):
         """One plain sync pass and one after a render-version raise (S15 names both). The raise rewrites `active` for its
-        version; `partial` is withheld by the pre-read guard before `_already_written` is asked, so it stays at the old
+        version; `partial` lost a sub-agent file, so its log takes the new prompt, its report stays and it stays at the old
         version, and `gone` has no units and is never a candidate."""
         commands = self._commands()
+        partial_log_name = os.path.relpath(partial_log, self.logs)
+        kept = {name: content for name, content in protected.items() if name != partial_log_name}
         for render_version in (RENDER_VERSION, RENDER_VERSION + 1):
             with patch("sessionlog.sync.RENDER_VERSION", render_version):
                 self._sync()
                 files = self._archived()
-                self.assertEqual({name: files[name] for name in protected}, protected)
+                self.assertEqual({name: files[name] for name in kept}, kept)
+                self.assertIn("prompt 1", files[partial_log_name].decode("utf-8"))  # the prompt added after the sub-agent file went
                 entry = self._entry("partial")
                 self.assertEqual((entry["state"], entry["reason"], entry["unitCount"], entry["logPath"]),
-                                 ("skipped", PARTLY_GONE, UNITS_WITH_AGENT, partial_log))
+                                 ("withheld", PARTLY_GONE, UNITS_WITH_AGENT, partial_log))
                 self.assertEqual(commands.status().unreadable, (UnreadableItem(partial_log, PARTLY_GONE),))
                 self.assertEqual(commands.usage_latest(CWD).report_text, partial_report)
         return files
 
-    def test_counted_subagent_file_present_but_unreadable_withholds_the_rewrite_and_a_valid_file_rewrites_it(self):
+    def test_counted_subagent_file_present_but_unreadable_keeps_the_report_and_a_valid_file_rewrites_it(self):
         self._install("partial", _transcript(BASE), NOW)
         agent = self._agent_file("partial")
         self._sync()
@@ -301,7 +305,7 @@ class PartlyGoneTest(SafetyTestCase):
         self._sync()
         self.assertEqual(self._archived(), before)
         entry = self._entry("partial")
-        self.assertEqual((entry["state"], entry["reason"], entry["unitCount"]), ("skipped", PARTLY_GONE, UNITS_WITH_AGENT))
+        self.assertEqual((entry["state"], entry["reason"], entry["unitCount"]), ("withheld", PARTLY_GONE, UNITS_WITH_AGENT))
         self.assertEqual(self._commands().status().unreadable,
                          (UnreadableItem(agent, CANNOT_BE_PARSED_REASON), UnreadableItem(log_path, PARTLY_GONE)))
         self._agent_file("partial")
@@ -393,23 +397,22 @@ class FailedReplaceTest(SafetyTestCase):
         self.assertEqual(_read_bytes(_report_path(log_path)).decode("utf-8"), handed_back)
         self.assertEqual(len(_session_files(self.logs)), FILES_PER_SESSION)  # the log is there now
 
-    def test_failed_write_that_published_one_file_keeps_the_larger_unit_count_so_a_later_loss_is_withheld(self):
+    def test_failed_write_that_published_one_file_keeps_the_larger_counts_so_a_later_loss_keeps_the_report(self):
         self._install("s1", _transcript(NOW), NOW)
         self._sync()
         log_path = self._entry("s1")["logPath"]
-        self.assertEqual(self._entry("s1")["unitCount"], UNITS_WITH_AGENT - 1)
         agent = self._agent_file("s1")
         with self._replace_blocked(_report_path(log_path)):
             self._sync()  # the log is replaced from both units, the report is not
-        entry = self._entry("s1")
-        self.assertEqual((entry["state"], entry["unitCount"]), ("skipped", UNITS_WITH_AGENT))
+        self.assertEqual(self._entry("s1")["state"], "skipped")
         os.unlink(agent)
         self._grow(REPORT_BLOCKED_TURNS)
-        before = self._archived()
+        report_before = _read_bytes(_report_path(log_path))
         self._sync()
+        self.assertIn("prompt 1", _read_bytes(log_path).decode("utf-8"))
+        self.assertEqual(_read_bytes(_report_path(log_path)), report_before)
         entry = self._entry("s1")
-        self.assertEqual((entry["state"], entry["reason"], entry["unitCount"]), ("skipped", PARTLY_GONE, UNITS_WITH_AGENT))
-        self.assertEqual(self._archived(), before)
+        self.assertEqual((entry["state"], entry["reason"]), ("withheld", FEWER_SUB_AGENTS_REASON % (0, ONE_SUB_AGENT)))
 
     def test_unreplaceable_sync_json_keeps_old_file_and_no_temp_and_next_sync_redoes_the_lost_work(self):
         path = self._install("s1", _transcript(NOW), NOW)

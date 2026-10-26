@@ -3,6 +3,7 @@
 `on` that fails to sync rolls back the flag it created; `off` still switches logging off when SIGTERM or SIGINT ends it during its
 sync (a real subprocess); SIGKILL cannot be caught, so no test (and no code) claims it."""
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -11,6 +12,7 @@ import tempfile
 import time
 import unittest
 
+from sessionlog.command_error import CommandError
 from sessionlog.commands import CommandUseCases
 from sessionlog.pricing import PricingRules
 from tests.test_commands import CommandTestCase
@@ -50,14 +52,14 @@ class FailedOnTest(CommandTestCase):
         return CommandUseCases(sync, None, self.archive, self.state, PricingRules(self.prices), lambda: NOW, self.log_root,
                                NoLeftovers(), NoProbe())
 
-    def test_a_failed_on_leaves_logging_off_and_raises_the_error(self):
-        with self.assertRaisesRegex(OSError, "disk full"):
+    def test_a_failed_on_leaves_logging_off_and_names_the_operation_the_folder_and_the_reason(self):
+        with self.assertRaisesRegex(CommandError, "^cannot archive the sessions: %s: disk full$" % re.escape(self.log_root)):
             self._commands(_FailingSync()).on()
         self.assertIsNone(self.state.read_on_flag())
 
     def test_a_failed_on_keeps_a_flag_that_was_already_there(self):
         self._enable()
-        with self.assertRaisesRegex(OSError, "disk full"):
+        with self.assertRaisesRegex(CommandError, "disk full"):
             self._commands(_FailingSync()).on()
         self.assertEqual(self.state.read_on_flag().on_at, ON_AT)
 

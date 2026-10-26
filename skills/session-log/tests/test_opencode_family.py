@@ -3,9 +3,10 @@ is opened here."""
 import unittest
 from datetime import timedelta
 
-from sessionlog.model import Harness, Prompt
+from sessionlog.model import Harness, Prompt, RequestUsage
 from sessionlog.opencode_family import SessionRow, build_session, root_id_for
 from sessionlog.opencode_messages import Transcript
+from sessionlog.prompt_turns import NO_PROMPT_TEXT
 from tests.opencode_db import BASE
 
 
@@ -17,9 +18,14 @@ def row(session_id, parent=None, created=0, directory="/work/oc", agent=None):
     return SessionRow(session_id, parent, None if created is None else at(created), directory, agent)
 
 
-def transcript(*prompt_texts, last=None, requests=()):
+def request(tokens, cost=None):
+    return RequestUsage(model_name="m", input_tokens=tokens, output_tokens=0, cache_read_tokens=0, cache_write_5m_tokens=0,
+                        cache_write_1h_tokens=0, recorded_cost_usd=cost)
+
+
+def transcript(*prompt_texts, last=None, requests=(), unprompted=()):
     prompts = tuple(Prompt(submitted_at=at(10 + number), text=text) for number, text in enumerate(prompt_texts))
-    return Transcript(prompts=prompts, requests=requests, last_moment=None if last is None else at(last))
+    return Transcript(prompts=prompts, requests=requests, unprompted_requests=unprompted, last_moment=None if last is None else at(last))
 
 
 class RootIdForTest(unittest.TestCase):
@@ -70,6 +76,24 @@ class BuildSessionTest(unittest.TestCase):
 
     def test_a_root_whose_row_holds_no_start_time_gives_no_session(self):
         self.assertIsNone(build_session(row("root", created=None), transcript("ask"), {"root": None}, []))
+
+
+class UnpromptedRequestsTest(unittest.TestCase):
+    def test_requests_that_fall_under_no_prompt_lead_the_prompts_as_a_row_dated_by_the_session_start(self):
+        session = build_session(row("root", created=5), transcript("first", unprompted=(request(1000, 3.5),)), {"root": None}, [])
+        lead, first = session.prompts
+        self.assertEqual((at(5), NO_PROMPT_TEXT, [1000], [3.5], "first"),
+                         (lead.submitted_at, lead.text, [r.input_tokens for r in lead.requests], [r.recorded_cost_usd for r in lead.requests], first.text))
+
+    def test_a_session_with_no_prompt_at_all_still_reports_its_requests(self):
+        requests = (request(1000, 3.5),)
+        session = build_session(row("root", created=5), transcript(requests=requests, unprompted=requests), {"root": None}, [])
+        (lead,) = session.prompts
+        self.assertEqual((NO_PROMPT_TEXT, requests), (lead.text, lead.requests))
+
+    def test_a_session_without_such_requests_has_only_its_own_prompts(self):
+        session = build_session(row("root", created=5), transcript("first"), {"root": None}, [])
+        self.assertEqual(["first"], [prompt.text for prompt in session.prompts])
 
 
 if __name__ == "__main__":

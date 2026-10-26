@@ -4,7 +4,7 @@ run as real subprocesses in a sandbox `HOME`, from a copy of the skill without i
 Claude: the first `status` lists an unreadable sub-agent file, the session it holds back as skipped ("source partly gone") and a price-file
 problem; after `.sync.json` is corrupted the next `status` also says the sync state was rebuilt. Cursor: `status` right after `on` says no
 hook recorded anything; after hook calls (one valid, two without a usable conversation id) that line is gone and `.records/.invalid/` is
-listed once with its call count. The real-Cursor check of the imported Claude hook (S59) is manual and not part of this file.
+listed once with its call count and the note that it can be deleted. The real-Cursor check of the imported Claude hook (S59) is manual and not part of this file.
 
 On macOS, from the repository root:
 
@@ -38,7 +38,7 @@ CURSOR_FOLDER = ".cursor"
 RECORDS_FOLDER = ".records"
 INVALID_FOLDER = ".invalid"
 CURSOR_SILENT_LINE = "Cursor has recorded no hook events since logging was turned on."
-INVALID_REASON = "hook calls without a usable conversation id: %d"
+INVALID_REASON = "hook calls filed here for lack of a usable conversation id: %d; delete this folder to clear them"
 PROMPT_EVENT = "beforeSubmitPrompt"
 CONVERSATION = "conv-1"
 NOT_JSON = b"not json at all"

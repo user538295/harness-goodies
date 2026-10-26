@@ -119,9 +119,9 @@ def _report_lines(session) -> list:
     return writer.render_report(PricingRules(_Book()).build(session)).splitlines()
 
 
-def _header(started_at=BASE, parent=ROOT) -> RolloutMeta:
-    return RolloutMeta(root_id=ROOT, thread_id=CHILD, parent_thread_id=parent, agent_type="worker", forked=True, started_at=started_at,
-                       project_dir="/child")
+def _header(started_at=BASE, parent=ROOT, helper=False) -> RolloutMeta:
+    return RolloutMeta(root_id=ROOT, thread_id=CHILD, parent_thread_id=parent, agent_type="worker", helper=helper, forked=True,
+                       started_at=started_at, project_dir="/child")
 
 
 def _parsed(meta, first=None, last=None, requests=(), prompts=()) -> Rollout:
@@ -136,6 +136,12 @@ class ThreadOfRolloutTest(unittest.TestCase):
         thread = thread_of_rollout(rollout, FILE_TIME)
         self.assertEqual((CHILD, ROOT, "worker", "/child", (_asked("ask"),), (_request(1),)),
                          (thread.thread_id, thread.parent_thread_id, thread.agent_type, thread.project_dir, thread.prompts, thread.requests))
+
+    def test_a_helper_thread_keeps_its_requests_but_has_no_prompts_so_it_can_never_become_the_session(self):
+        rollout = _parsed(_header(helper=True), first=BASE + 5 * ONE_SECOND, last=BASE + 9 * ONE_SECOND, requests=[_request(1)],
+                          prompts=[_asked("review")])
+        thread = thread_of_rollout(rollout, FILE_TIME)
+        self.assertEqual(((), (_request(1),)), (thread.prompts, thread.requests))
 
     def test_a_thread_starts_with_its_first_record_after_the_header_and_works_until_its_newest_record(self):
         thread = thread_of_rollout(_parsed(_header(BASE + 20 * ONE_SECOND), first=BASE + 140 * ONE_SECOND, last=BASE + 150 * ONE_SECOND), FILE_TIME)

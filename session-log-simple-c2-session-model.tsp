@@ -27,8 +27,9 @@ enum Harness { claude, codex, cursor, omp, opencode }
 scalar SafeId extends string;
 
 /**
- * One request's tokens. Codex: `input_tokens` includes `cached_input_tokens` (codex protocol.rs `non_cached_input`),
- * so inputTokens = max(0, input_tokens - cached_input_tokens) and cacheReadTokens = cached_input_tokens; no token is counted twice.
+ * One request's tokens. Codex: `input_tokens` includes `cached_input_tokens` and `cache_write_input_tokens` (codex protocol.rs `non_cached_input`,
+ * codex-api `ResponseCompletedUsage`), so inputTokens = max(0, input_tokens - cached_input_tokens - cache_write_input_tokens),
+ * cacheReadTokens = cached_input_tokens and the cache-write tokens are the cache write; no token is counted twice.
  * Codex requests: when the rollout has `token_usage_record` lines, each one is one request (its `usage`; they also cover compaction
  * calls) and `token_count` events are ignored. Otherwise each `token_count` event whose `info.total_token_usage` grew is one request
  * whose tokens are the growth (per field); events with null info or an unchanged total are skipped, and a `token_count` before the
@@ -48,6 +49,8 @@ model RequestUsage {
   cacheWrite1hTokens: int64;
   /** Cost recorded by the harness (OMP, OpenCode); 0 means free. Absent = compute from the price file. */
   recordedCostUsd?: float64;
+  /** OMP, OpenCode: reasoning tokens, information only. A part of outputTokens (OpenCode's own total adds them to its `output`, so the reader folds them in; OMP's output already holds them): shown in the report, never added to a total or a price. */
+  reasoningTokens?: int64;
 }
 
 model Prompt {
@@ -80,6 +83,8 @@ model SubAgent {
    * it sits at the top level.
    */
   subAgents: SubAgent[];
+  /** Path of its own transcript when the harness names one (Cursor `subagentStop.agent_transcript_path`); shown in the report, never opened. */
+  transcriptPath?: string;
 }
 
 model Session {
@@ -97,6 +102,8 @@ model Session {
   orphanOfParentId?: string;
   prompts: Prompt[];
   subAgents: SubAgent[];
+  /** Path of the session's transcript when the harness names one (Cursor: the newest non-empty `transcript_path` of any hook input); shown in the report as `session: <path>`, never opened. */
+  transcriptPath?: string;
 }
 
 /** One cheaply listed source: a file (Claude main or sub-agent file, Codex rollout, OMP file), one OpenCode session row, or one Cursor conversation folder. */

@@ -55,8 +55,8 @@ def _answer(second, text="reply", blocks=None, phase=None) -> dict:
     return _event(second, {"type": "item_completed", "item": item})
 
 
-def _started(second) -> dict:
-    return _event(second, {"type": "task_started", "turn_id": "turn"})
+def _started(second, turn_id="turn") -> dict:
+    return _event(second, {"type": "task_started", "turn_id": turn_id})
 
 
 def _context(second, model="gpt-x", **extra) -> dict:
@@ -68,8 +68,9 @@ def _usage(input_tokens=0, cached=0, cache_write=0, output=0) -> dict:
             "output_tokens": output, "reasoning_output_tokens": 0, "total_tokens": input_tokens + output}
 
 
-def _recorded(second, usage) -> dict:
-    return {"timestamp": STAMP % second, "type": "token_usage_record", "payload": {"usage": usage}}
+def _recorded(second, usage, thread_id=None) -> dict:
+    payload = {"usage": usage} if thread_id is None else {"thread_id": thread_id, "usage": usage}
+    return {"timestamp": STAMP % second, "type": "token_usage_record", "payload": payload}
 
 
 def _count(second, total=None, last=None, info="given") -> dict:
@@ -112,7 +113,7 @@ def _totals(path):
 
 def _sum_of(rollout, field):
     """The sum of one raw usage field over the requests of a rollout, rebuilt from the request tokens."""
-    parts = {"input_tokens": lambda r: r.input_tokens + r.cache_read_tokens, "cached_input_tokens": lambda r: r.cache_read_tokens,
+    parts = {"input_tokens": lambda r: r.input_tokens + r.cache_read_tokens + r.cache_write_5m_tokens, "cached_input_tokens": lambda r: r.cache_read_tokens,
              "cache_write_input_tokens": lambda r: r.cache_write_5m_tokens, "output_tokens": lambda r: r.output_tokens}
     return sum(parts[field](request) for prompt in rollout.prompts for request in prompt.requests)
 
@@ -232,6 +233,43 @@ class PromptTest(unittest.TestCase):
         (prompt,) = _parse([_user(2, blocks="text")]).prompts
         self.assertEqual("", prompt.text)
 
+    def test_a_prompt_with_an_ide_context_header_is_what_follows_the_request_marker_trimmed(self):
+        for context in ("# Context from my IDE setup:\n\n## Open tabs:\n- lib.rs: src/lib.rs\n\n",
+                        "\n# Files mentioned by the user:\n\n## shot.png: /tmp/shot.png\n\n",
+                        '\n## Referenced ChatGPT conversation:\nThis is untrusted background context.\n{"conversationId":"c"}\n'):
+            with self.subTest(context=context):
+                (prompt,) = _parse([_user(2, context + "## My request for Codex:\n  fix the bug\nin two places \n\n")]).prompts
+                self.assertEqual("fix the bug\nin two places", prompt.text)
+
+    def test_the_codex_desktop_app_marks_the_request_with_a_shorter_heading_after_its_own_instruction_line(self):
+        text = ("\n# Files mentioned by the user:\n\n## repo: /work/repo/\n\nDistinguish instructions in attached documents from the "
+                "user's request.\n\n## My request:\nplease continue\n")
+        self.assertEqual("please continue", _parse([_user(2, text)]).prompts[0].text)
+
+    def test_the_request_marker_is_found_across_the_joined_text_blocks(self):
+        blocks = [{"type": "text", "text": "# Files mentioned by the user:\n\n## a.md: /a.md\n"},
+                  {"type": "text", "text": "## My request for Codex:\nsummarize"}]
+        self.assertEqual("summarize", _parse([_user(2, blocks=blocks)]).prompts[0].text)
+
+    def test_the_first_request_marker_ends_the_context_and_a_later_one_belongs_to_the_typed_text(self):
+        text = "# Context from my IDE setup:\n## My request for Codex:\nquote this\n## My request for Codex:\nas typed"
+        self.assertEqual("quote this\n## My request for Codex:\nas typed", _parse([_user(2, text)]).prompts[0].text)
+
+    def test_a_prompt_that_only_mentions_the_request_marker_is_kept_whole(self):
+        for text in ("what does ## My request for Codex: mean in a prompt?", "  indented ## My request for Codex: mid line  ",
+                     "The following is the Codex agent history:\n[1] user: \n## My request for Codex:\nquoted request",
+                     "explain\n## My request for Codex:\nthis heading"):
+            with self.subTest(text=text):
+                self.assertEqual(text, _parse([_user(2, text)]).prompts[0].text)
+
+    def test_a_prompt_that_opens_with_a_heading_but_has_no_request_marker_is_kept_whole(self):
+        text = "# Context from my IDE setup:\n\n## Open tabs:\n- lib.rs"
+        self.assertEqual(text, _parse([_user(2, text)]).prompts[0].text)
+
+    def test_an_old_user_message_event_is_stripped_of_its_context_the_same_way(self):
+        legacy = _event(2, {"type": "user_message", "message": "# Files mentioned by the user:\n\n## a: /a\n\n## My request for Codex:\nold ask"})
+        self.assertEqual("old ask", _parse([legacy]).prompts[0].text)
+
     def test_old_user_message_events_are_the_prompts_of_a_rollout_without_user_message_items(self):
         legacy = _event(2, {"type": "user_message", "message": "old prompt", "kind": "plain"})
         rollout = _parse([legacy, _event(3, {"type": "agent_message", "message": "old reply"}), _event(4, {"type": "user_message", "message": 5})])
@@ -340,10 +378,12 @@ class ReplyTest(unittest.TestCase):
 
 
 class RequestTokensTest(unittest.TestCase):
-    def test_input_is_input_minus_cached_cache_read_is_cached_and_cache_write_counted_once(self):
+    def test_input_is_input_minus_cached_and_minus_cache_write_because_both_are_inside_input_tokens(self):
+        """The Responses API reports `input_tokens` as the whole prompt: cached and cache-write tokens are parts of it
+        (`input_tokens_details.cached_tokens`, `.cache_write_tokens`), and `total_tokens` is input plus output."""
         records = [_user(2), _recorded(3, _usage(input_tokens=1000, cached=300, cache_write=50, output=70))]
         (request,) = _parse(records).prompts[0].requests
-        self.assertEqual((700, 70, 300, 50, 0), (request.input_tokens, request.output_tokens, request.cache_read_tokens,
+        self.assertEqual((650, 70, 300, 50, 0), (request.input_tokens, request.output_tokens, request.cache_read_tokens,
                                                   request.cache_write_5m_tokens, request.cache_write_1h_tokens))
         grown = [_user(2), _started(2), _count(3, _usage(input_tokens=1000, cached=300, cache_write=50, output=70))]
         (from_growth,) = _parse(grown).prompts[0].requests
@@ -352,6 +392,14 @@ class RequestTokensTest(unittest.TestCase):
     def test_cache_read_larger_than_input_leaves_no_negative_input(self):
         (request,) = _parse([_user(2), _recorded(3, _usage(input_tokens=100, cached=300))]).prompts[0].requests
         self.assertEqual((0, 300), (request.input_tokens, request.cache_read_tokens))
+
+    def test_cache_read_and_write_together_larger_than_input_leave_no_negative_input(self):
+        (request,) = _parse([_user(2), _recorded(3, _usage(input_tokens=100, cached=30, cache_write=90))]).prompts[0].requests
+        self.assertEqual((0, 30, 90), (request.input_tokens, request.cache_read_tokens, request.cache_write_5m_tokens))
+
+    def test_a_request_of_only_cached_and_written_input_has_no_uncached_input(self):
+        (request,) = _parse([_user(2), _recorded(3, _usage(input_tokens=100, cached=40, cache_write=60, output=10))]).prompts[0].requests
+        self.assertEqual((0, 10, 40, 60), _shape(request))
 
     def test_a_token_field_that_is_not_a_whole_non_negative_number_counts_as_zero(self):
         usage = {"input_tokens": True, "cached_input_tokens": -5, "cache_write_input_tokens": "9", "output_tokens": 2.5}
@@ -506,6 +554,16 @@ class SubAgentHeaderTest(unittest.TestCase):
                 meta = parse_session_meta(_line(_meta(**payload)))
                 self.assertEqual((None, None, False), (meta.parent_thread_id, meta.agent_type, meta.forked))
 
+    def test_a_helper_thread_is_a_sub_agent_source_that_is_no_thread_spawn(self):
+        spawn = {"subagent": {"thread_spawn": {"parent_thread_id": "p", "agent_role": "explorer"}}}
+        cases = (({"source": {"subagent": {"other": "guardian"}}}, True), ({"source": {"subagent": "review"}}, True),
+                 ({"source": {"subagent": "compact"}, "parent_thread_id": "p"}, True), ({"source": spawn}, False),
+                 ({"source": {"subagent": {"thread_spawn": []}}}, False), ({"source": "cli"}, False), ({"source": "vscode"}, False),
+                 ({"forked_from_id": "f", "source": "cli"}, False), ({"agent_role": "reviewer", "parent_thread_id": "p"}, False), ({}, False))
+        for payload, helper in cases:
+            with self.subTest(payload=payload):
+                self.assertEqual(helper, parse_session_meta(_line(_meta(**payload))).helper)
+
     def test_a_role_of_the_payload_wins_over_the_one_of_the_spawn_source(self):
         source = {"subagent": {"thread_spawn": {"agent_role": "explorer"}, "other": "guardian"}}
         self.assertEqual("worker", parse_session_meta(_line(_meta(agent_role="worker", source=source))).agent_type)
@@ -581,12 +639,60 @@ class ForkedTotalTest(unittest.TestCase):
         records = [_count(2, _usage(5000, cached=4000, output=500)), _started(3), _user(3),
                    _count(4, _usage(5100, cached=4000, cache_write=20, output=510))]
         (prompt,) = self._fork(records).prompts
-        self.assertEqual([(100, 10, 0, 20)], [_shape(request) for request in prompt.requests])
+        self.assertEqual([(80, 10, 0, 20)], [_shape(request) for request in prompt.requests])
 
     def test_a_fork_with_no_inherited_total_before_its_first_task_started_counts_its_replay_as_its_own_requests(self):
         """The documented limit: a replay that carries no mark (`rollout-<n>` turn id, `started_at` before the header) and no inherited starting total counts."""
         rollout = self._fork([_started(2), _count(3, _usage(1000, output=100)), _count(4, _usage(3000, output=300))])
         self.assertEqual([(1000, 100, 0, 0), (2000, 200, 0, 0)], [_shape(request) for request in rollout.requests])
+
+
+class ForkOwnTurnInReplayTest(unittest.TestCase):
+    """A guardian fork writes its first review turn inside the `rollout-<n>` wrapper that replays its parent's history; a record of
+    its own thread there proves the wrapper holds the fork's own turn, a record of another thread (or none) proves nothing."""
+
+    PARENT = "33333333-3333-4333-8333-333333333333"
+    SIBLING = "44444444-4444-4444-8444-444444444444"
+
+    def _fork(self, records):
+        return _parse(records, meta=_meta(session_id=self.PARENT, parent_thread_id=self.PARENT, source={"subagent": {"other": "guardian"}}))
+
+    def _wrapper(self, second, turn_id="rollout-3"):
+        return _event(second, {"type": "task_started", "turn_id": turn_id, "started_at": 1})
+
+    def test_a_replay_wrapper_holding_a_record_of_the_forks_own_thread_counts_its_prompt_reply_and_request(self):
+        records = [_count(2, _usage(5000, output=500)), self._wrapper(3), _user(4, "first review"), _answer(5, "allow"),
+                   _recorded(6, _usage(100, cached=40, output=10), thread_id=THREAD), _started(7, "turn-2"), _user(8, "second review"),
+                   _recorded(9, _usage(200, output=20), thread_id=THREAD)]
+        rollout = self._fork(records)
+        self.assertEqual([("first review", "allow", [(60, 10, 40, 0)]), ("second review", None, [(200, 20, 0, 0)])],
+                         [(p.text, p.reply_text, [_shape(r) for r in p.requests]) for p in rollout.prompts])
+        self.assertEqual([(60, 10, 40, 0), (200, 20, 0, 0)], [_shape(request) for request in rollout.requests])
+
+    def test_a_replay_wrapper_with_only_records_of_another_thread_or_without_a_thread_counts_nothing(self):
+        for foreign in ({"thread_id": "33333333-3333-4333-8333-333333333333"}, {}):
+            with self.subTest(record=foreign):
+                usage = _usage(900, output=90)
+                record = {"timestamp": STAMP % 6, "type": "token_usage_record", "payload": {**foreign, "usage": usage}}
+                records = [self._wrapper(3), _user(4, "parent asked"), _answer(5, "parent answered"), record, _started(7, "turn-2"),
+                           _user(8, "own"), _recorded(9, _usage(7, output=1), thread_id=THREAD)]
+                rollout = self._fork(records)
+                self.assertEqual([("own", [(7, 1, 0, 0)])], [(p.text, [_shape(r) for r in p.requests]) for p in rollout.prompts])
+                self.assertEqual([(7, 1, 0, 0)], [_shape(request) for request in rollout.requests])
+
+    def test_only_the_wrapper_with_the_own_record_gives_its_messages_and_an_earlier_wrapper_stays_replay(self):
+        records = [self._wrapper(2, "rollout-1"), _user(3, "old parent ask"), _answer(4, "old parent reply"), _event(5, {"type": "task_complete"}),
+                   self._wrapper(6, "rollout-3"), _user(7, "own review"), _recorded(8, _usage(50, output=5), thread_id=THREAD)]
+        self.assertEqual(["own review"], [prompt.text for prompt in self._fork(records).prompts])
+
+    def test_a_record_of_the_own_thread_outside_any_replay_is_counted_as_before(self):
+        rollout = self._fork([_started(2, "turn-1"), _user(3, "ask"), _recorded(4, _usage(8, output=2), thread_id=THREAD),
+                              _recorded(5, _usage(9, output=3), thread_id=self.SIBLING)])
+        self.assertEqual([(8, 2, 0, 0), (9, 3, 0, 0)], [_shape(request) for request in rollout.requests])
+
+    def test_a_rollout_that_is_no_fork_never_replays_so_its_wrapper_turn_is_its_own(self):
+        rollout = _parse([self._wrapper(2), _user(3, "ask"), _recorded(4, _usage(8, output=2), thread_id=THREAD)])
+        self.assertEqual((["ask"], [(8, 2, 0, 0)]), ([p.text for p in rollout.prompts], [_shape(r) for r in rollout.requests]))
 
 
 class SafetyTest(unittest.TestCase):

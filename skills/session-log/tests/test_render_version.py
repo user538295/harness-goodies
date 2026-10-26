@@ -1,7 +1,7 @@
 """Render-version rewrite and hook budget (BE-16; S47, S65): every archived session is rewritten once after a `RENDER_VERSION`
 raise, tracked per session entry, a budget-stopped sync resumes, an older copy rewrites nothing for its version, and a
-rewrite is never built from fewer units than the entry's count. Real `FileStateStore` and real `LogUsageWriter` throughout;
-the clock is injected and moves only when a session is written or the scan runs."""
+rewrite never takes the sub-agent rows out of a saved report (a withheld session is not owed a rewrite for its version). Real
+`FileStateStore` and real `LogUsageWriter` throughout; the clock is injected and moves only when a session is written or the scan runs."""
 import hashlib
 import os
 import unittest
@@ -13,14 +13,16 @@ from sessionlog.archive_port import WriteOutcome
 from sessionlog.pricing import PricingRules, Rates
 from sessionlog.state import FileStateStore
 from sessionlog.state_port import OnFlag
-from sessionlog.sync import (HOOK_SYNC_BUDGET_SECONDS, RENDER_VERSION, SESSION_SKIPPED, SESSION_WRITTEN, UNIT_INACTIVE,
-                             SyncUseCase)
+from sessionlog.sync import (HOOK_SYNC_BUDGET_SECONDS, RENDER_VERSION, SESSION_SKIPPED, SESSION_WITHHELD, SESSION_WRITTEN,
+                             UNIT_INACTIVE, SyncUseCase)
 from tests.test_sync import NOW, ONE_DAY, WRITE_FAILURE, _NoPrices, _transcript
 from tests.test_sync_safety import AGENT, BASE, MINUTE, PARTLY_GONE, UNITS_WITH_AGENT, SafetyTestCase
 
 PRICES_FILE = Path(__file__).resolve().parents[1] / "prices.json"
 # The sha256 of the shipped prices.json (line ends as LF) per RENDER_VERSION: a price change without a raise fails the pin test.
-PRICES_SHA256_BY_RENDER_VERSION = {1: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5"}
+PRICES_SHA256_BY_RENDER_VERSION = {1: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5",
+                                    2: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5",
+                                    3: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5"}
 SPEC_HOOK_BUDGET_SECONDS = 20  # S47 and S65 name 20 s
 SESSION_IDS = ("s1", "s2", "s3", "s4")
 WRITE_TAKES_SECONDS = HOOK_SYNC_BUDGET_SECONDS / 2  # two of the four sessions fit in a hook budget
@@ -237,18 +239,20 @@ class RenderVersionRewriteTest(RenderVersionTestCase):
 
 
 class RenderVersionFewerUnitsTest(RenderVersionTestCase):
-    def test_rewrite_for_the_version_is_withheld_while_a_counted_unit_is_gone_and_done_once_it_is_back(self):
+    def test_rewrite_for_the_version_keeps_the_report_while_a_counted_unit_is_gone_and_is_done_once_it_is_back(self):
         self._install("partial", _transcript(BASE), NOW)
         agent = self._agent_file("partial")
         self._sync_as(OLDER_COPY)
         archived = self._archived()
         os.unlink(agent)
-        for _ in range(2):  # every sync: withheld without a read
-            archive = self._sync_as(NEWER_COPY)
-            entry = self._entry("partial")
-            self.assertEqual((entry["state"], entry["reason"], entry["renderVersion"], entry["unitCount"]),
-                             (SESSION_SKIPPED, PARTLY_GONE, OLDER_COPY, UNITS_WITH_AGENT))
-            self.assertEqual((self.reader.read_keys, archive.written, self._archived()), ([], [], archived))
+        archive = self._sync_as(NEWER_COPY)  # the version rewrite is owed: the read has no sub-agent row, so the report stays
+        entry = self._entry("partial")
+        self.assertEqual((entry["state"], entry["reason"], entry["renderVersion"], entry["unitCount"]),
+                         (SESSION_WITHHELD, PARTLY_GONE, OLDER_COPY, UNITS_WITH_AGENT))
+        self.assertEqual((self.reader.read_keys, self._archived()), (self._session_keys("partial"), archived))
+        self.assertEqual(archive.written, [entry["logPath"]])
+        archive = self._sync_as(NEWER_COPY)  # a withheld session is not read again for its version
+        self.assertEqual((self.reader.read_keys, archive.written, self._archived()), ([], [], archived))
         self._agent_file("partial")
         self._sync_as(NEWER_COPY)
         entry = self._entry("partial")
@@ -258,16 +262,18 @@ class RenderVersionFewerUnitsTest(RenderVersionTestCase):
         self.assertEqual(self._sync_as(NEWER_COPY).written, [])
         self.assertEqual(self.reader.read_keys, [])
 
-    def test_rewrite_for_the_version_is_withheld_while_a_counted_unit_is_unreadable_and_done_once_it_reads(self):
+    def test_rewrite_for_the_version_keeps_the_report_while_a_counted_unit_is_unreadable_and_is_done_once_it_reads(self):
         self._install("partial", _transcript(BASE), NOW)
         agent = self._agent_file("partial")
         self._sync_as(OLDER_COPY)
         archived = self._archived()
         self._corrupt(agent)
-        archive = self._sync_as(NEWER_COPY)
+        self._sync_as(NEWER_COPY)
         entry = self._entry("partial")
-        self.assertEqual((entry["state"], entry["reason"], entry["renderVersion"]), (SESSION_SKIPPED, PARTLY_GONE, OLDER_COPY))
-        self.assertEqual((archive.written, self._archived()), ([], archived))
+        self.assertEqual((entry["state"], entry["reason"], entry["renderVersion"]), (SESSION_WITHHELD, PARTLY_GONE, OLDER_COPY))
+        self.assertEqual(self._archived(), archived)
+        archive = self._sync_as(NEWER_COPY)  # the unreadable unit is read again, and nothing new is written
+        self.assertEqual((self.reader.read_keys, archive.written), (self._session_keys("partial"), []))
         self._agent_file("partial")
         self._sync_as(NEWER_COPY)
         entry = self._entry("partial")

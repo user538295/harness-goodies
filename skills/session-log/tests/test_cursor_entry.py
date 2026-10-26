@@ -70,6 +70,17 @@ class CursorEntryTest(CursorEntryTestCase):
         self.assertEqual((0, ""), (code, stderr))
         self.assertIn("Archived sessions: 1", stdout)
 
+    def test_a_stray_invalid_folder_does_not_turn_a_missing_session_into_a_store_error(self):
+        self.record("stop", 3, {}, conversation=INVALID_FOLDER, raw_input="")  # a call the hook could not file: no conversation
+        self.run_main(["cursor", "on"])
+        for target in ([], ["--latest"]):
+            self.assertEqual((1, "", "session-log: no session for this project (/work/elsewhere)\n"),
+                             self.run_main(["cursor", "usage"] + target, get_cwd=lambda: "/work/elsewhere"))
+        self.assertEqual((1, "", "session-log: no session has the id 'nope'\n"), self.run_main(["cursor", "usage", "nope"]))
+        invalid = os.path.join(self.records, INVALID_FOLDER)
+        _, status, _ = self.run_main(["cursor", "status"])
+        self.assertIn("  %s: hook calls filed here for lack of a usable conversation id: 1; delete this folder to clear them\n" % invalid, status)
+
     def test_a_new_record_changes_the_log_on_the_next_sync(self):
         self.install_conversation()
         self.run_main(["cursor", "on"])

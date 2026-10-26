@@ -174,7 +174,7 @@ class RuntimeErrorTests(SandboxCase):
     def test_os_error_is_a_runtime_error_not_an_internal_error(self):
         self.write_transcript()
         self.turn_logging_on()
-        with mock.patch("sessionlog.sync.SyncUseCase.sync", side_effect=OSError("disk gone")):
+        with mock.patch("sessionlog.commands.CommandUseCases.status", side_effect=OSError("disk gone")):  # not a sync: `status` survives that
             code, stdout, stderr = self.run_main(["claude", "status"])
         self.assertEqual((1, ""), (code, stdout))
         self.assertEqual("session-log: disk gone\n", stderr)

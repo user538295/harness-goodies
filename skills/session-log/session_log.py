@@ -278,7 +278,8 @@ def _compose(harness, environment):
     state.migrate_enabled()
     probe = PythonProbeRunner(environment.platform, run_command if environment.run_probe is None else environment.run_probe)
     return _Composition(sync, UsageTargetResolver(reader, path_module), archive, state, pricing, log_root,
-                        LeftoverScan(Harness(harness), root), probe, _hooks_recorded_since(harness, log_root, path_module))
+                        LeftoverScan(Harness(harness), root, home, environment.platform), probe,
+                        _hooks_recorded_since(harness, log_root, path_module))
 
 
 def _run(harness, command, target, environment):
@@ -299,7 +300,8 @@ def _run(harness, command, target, environment):
             use_cases.usage_latest(environment.get_cwd()) if target is None else use_cases.usage_of(target)),
     }
     try:
-        return EXIT_OK, handlers[command](), ""
+        out_text = handlers[command]()
+        return EXIT_OK, out_text, "".join(_error_text(warning) for warning in use_cases.warnings)
     except CommandError as error:
         return EXIT_RUNTIME_ERROR, "", _error_text(str(error))
 

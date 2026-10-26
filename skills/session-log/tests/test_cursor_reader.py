@@ -117,7 +117,7 @@ class ScanTest(CursorReaderTestCase):
         self.write("stop", 4, stop_input("g1"))
         scan = self.reader.scan()
         self.assertEqual([os.path.join(self.records, CONVERSATION)], [unit.key for unit in scan.units])  # `.invalid` is no unit
-        self.assertEqual((UnreadableSource(Harness.CURSOR, invalid, INVALID_CALLS_REASON % 3),), scan.unreadable)
+        self.assertEqual((UnreadableSource(Harness.CURSOR, invalid, INVALID_CALLS_REASON % 3, hides_sessions=False),), scan.unreadable)
 
     def test_an_empty_invalid_folder_is_not_listed(self):
         os.makedirs(os.path.join(self.records, INVALID_FOLDER))
@@ -162,8 +162,8 @@ class LinkedFoldersTest(CursorReaderTestCase):
             self.link(os.path.join(self.records, name), os.path.join(self.folder, "target-" + name))
         scan = self.reader.scan()
         self.assertEqual([os.path.dirname(kept)], [unit.key for unit in scan.units])
-        self.assertEqual([(os.path.join(self.records, name), LINK_REASON) for name in (INVALID_FOLDER, CONVERSATION)],
-                         [(source.path, source.reason) for source in scan.unreadable])
+        self.assertEqual([(os.path.join(self.records, name), LINK_REASON, name == CONVERSATION) for name in (INVALID_FOLDER, CONVERSATION)],
+                         [(source.path, source.reason, source.hides_sessions) for source in scan.unreadable])  # a linked `.invalid` hides no session
 
     def test_a_dangling_link_named_like_a_conversation_folder_is_listed_unreadable(self):
         os.makedirs(self.records)
@@ -258,6 +258,22 @@ class ReadTest(CursorReaderTestCase):
             SubAgent(agent_id="child-b", type="generalPurpose", started_at=moment(8), working_time=timedelta(seconds=3), tokens_not_recorded=True),
         ), session.sub_agents)
 
+    def test_a_later_response_without_text_never_erases_the_reply_of_its_generation(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1"))
+        self.write("afterAgentResponse", 1, response_input("g1", "real final"))
+        self.write("afterAgentResponse", 2, response_input("g1", ""))
+        self.write("afterAgentResponse", 3, {"conversation_id": CONVERSATION, "generation_id": "g1"})  # no `text` at all
+        self.write("afterAgentResponse", 4, response_input("g1", " \n "))
+        self.write("stop", 5, stop_input("g1"))
+        self.write("beforeSubmitPrompt", 10, prompt_input("g2"))
+        self.write("afterAgentResponse", 11, response_input("g2", "interim"))
+        self.write("afterAgentResponse", 12, response_input("g2", "final"))
+        self.write("stop", 13, stop_input("g2"))
+        self.write("beforeSubmitPrompt", 20, prompt_input("g3"))
+        self.write("afterAgentResponse", 21, response_input("g3", ""))
+        self.write("stop", 22, stop_input("g3"))
+        self.assertEqual(["real final", "final", None], [prompt.reply_text for prompt in self.session().prompts])
+
     def test_cancelled_prompt_lone_stop_duplicates_same_start_order_tmp_ignored_invalid_listed_once(self):
         self.write("beforeSubmitPrompt", 0, prompt_input("g-cancelled", "cancelled prompt"))
         self.write("afterAgentResponse", 1, response_input("g-cancelled", "partial reply", **TOKENS))  # no stop: no reply, no tokens
@@ -283,7 +299,7 @@ class ReadTest(CursorReaderTestCase):
         ), result.session.prompts)
         self.assertEqual([("child-a", moment(16)), ("child-z", moment(16))], [(agent.agent_id, agent.started_at) for agent in result.session.sub_agents])
         invalid = os.path.join(self.records, INVALID_FOLDER)
-        self.assertEqual((UnreadableSource(Harness.CURSOR, invalid, INVALID_CALLS_REASON % 2),), self.reader.scan().unreadable)
+        self.assertEqual((UnreadableSource(Harness.CURSOR, invalid, INVALID_CALLS_REASON % 2, hides_sessions=False),), self.reader.scan().unreadable)
 
     def test_new_record_makes_conversation_read_again(self):
         self.write("beforeSubmitPrompt", 0, prompt_input("g1", "first"))
@@ -339,6 +355,23 @@ class ReadTest(CursorReaderTestCase):
         self.write("beforeSubmitPrompt", 0, prompt_input("g1", workspace_roots=[]))
         self.write("beforeSubmitPrompt", 1, prompt_input("g2", workspace_roots="nope"))
         self.assertIsNone(self.session().project_dir)
+
+    def test_the_transcript_paths_are_the_newest_one_the_hooks_named_for_the_session_and_for_each_subagent(self):
+        """Cursor puts `transcript_path` on every hook input and `agent_transcript_path` on `subagentStop` (cursor.com/docs/hooks)."""
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1", transcript_path="/t/old.jsonl"))
+        self.write("stop", 1, stop_input("g1", transcript_path="/t/new.jsonl"))
+        self.write("beforeSubmitPrompt", 2, prompt_input("g2", transcript_path=None))
+        self.write("stop", 3, stop_input("g2", transcript_path=""))
+        self.write("subagentStop", 4, subagent_input("child-a", agent_transcript_path="/t/subagents/child-a.jsonl"))
+        self.write("subagentStop", 5, subagent_input("child-b", agent_transcript_path=None))
+        self.write("subagentStop", 6, subagent_input("child-c", agent_transcript_path=7))
+        session = self.session()
+        self.assertEqual("/t/new.jsonl", session.transcript_path)
+        self.assertEqual(["/t/subagents/child-a.jsonl", None, None], [agent.transcript_path for agent in session.sub_agents])
+
+    def test_a_session_whose_hooks_named_no_transcript_has_none(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1", transcript_path=5))
+        self.assertIsNone(self.session().transcript_path)
 
     def test_a_subagent_without_type_or_a_duration_keeps_its_row_and_an_unsafe_child_id_is_only_shown(self):
         self.write("beforeSubmitPrompt", 0, prompt_input("g1"))

@@ -20,8 +20,8 @@ file and copies its stdin to a `stdin.<name>` file, so the tests compare the exa
 `STUB_EXIT`; a stub `py` can instead report Python 3.8 (print the version line on stderr, exit 1, read nothing: the worst a too old
 Python does, where the shipped script exits 0 silently). Only what the launcher exits with and prints on stdout is checked then, not
 the interpreter's own stderr. `PATH` holds the stub
-folder and a `tools` folder with `dirname`, the only command `hook` itself needs, so a "Python missing" run (no stub folder) has no
-interpreter at all. The sandbox is one folder: the install, `HOME` (`.cursor/prompt-logs` for the flags), the stub folders and one call
+folder and an empty `tools` folder (`hook` itself runs no command), so a "Python missing" run (no stub folder) has a `PATH` that names a
+folder but holds no interpreter at all. The sandbox is one folder: the install, `HOME` (`.cursor/prompt-logs` for the flags), the stub folders and one call
 log per run. The containers get it mounted at `/sandbox`, run without network and as the host user.
 
 The last test runs the real entry script (the whole skill but its tests, and a `python3` link to the interpreter that runs the suite)
@@ -35,7 +35,7 @@ that ends without one, turns `\\r\\n` into `\\n`, and replaces bytes that are no
 the tests pin it). The Python hook reads only `conversation_id` out of UTF-8 JSON with an optional BOM (brief line 34, S22), so a record keeps the
 text; on Windows, with Cursor's own wrapper and the console code page, the bytes can differ again and S31 (manual) covers that.
 
-The tests skip, naming the reason, for a shell they cannot get: `zsh` not on `PATH`, no `/usr/bin/dirname` on the host, no `docker`
+The tests skip, naming the reason, for a shell they cannot get: `zsh` not on `PATH`, no `docker`
 command, no Docker daemon, or a failed image build (the base images are pulled during the build, so it needs network once). A skipped shell is only a skipped sub-test (a skipped whole test where the test has no shell loop), so a run
 that must prove all of them sets `SESSION_LOG_REQUIRE_LAUNCHER_SHELLS=1`, which turns every such skip into a failure.
 
@@ -89,7 +89,6 @@ OLD_ON_FLAG = ".enabled"
 HOME_FOLDER = "home"
 TOOLS_FOLDER = "tools"
 SANDBOX_MOUNT = "/sandbox"
-DIRNAME_COMMAND = "/usr/bin/dirname"  # on macOS, in the alpine image and in the powershell (Ubuntu) image alike
 RUN_TIMEOUT_SECONDS = 180  # a container may start slowly (the pwsh image runs emulated on an arm64 host)
 BUILD_TIMEOUT_SECONDS = 900
 PROBE_TIMEOUT_SECONDS = 30
@@ -217,7 +216,6 @@ class Sandbox:
         self.counter = 0
         os.makedirs(self.host(HOME_FOLDER))
         os.makedirs(self.host(TOOLS_FOLDER))
-        os.symlink(DIRNAME_COMMAND, self.host(TOOLS_FOLDER, "dirname"))
         self.tools = self.process(TOOLS_FOLDER)
         self.home = self.process(HOME_FOLDER)
         self.install_root = self.process(PLUGIN_FOLDER_WITH_SPACE_AND_APOSTROPHE)
@@ -406,8 +404,6 @@ class LauncherCase(unittest.TestCase):
             return image_problem(CONTAINER_SHELLS[name][0])
         if name == ZSH and shutil.which(ZSH) is None:
             return "zsh is not on PATH"
-        if not os.path.exists(DIRNAME_COMMAND):
-            return "%s is missing on this host" % DIRNAME_COMMAND
         return ""
 
     def run_silently(self, shell, sandbox, event, path_dirs, payload=b"", environment=None):
@@ -417,7 +413,7 @@ class LauncherCase(unittest.TestCase):
         return log
 
 
-@unittest.skipIf(sys.platform == "win32", "the launchers are run through POSIX shells, Docker and /usr/bin/dirname")
+@unittest.skipIf(sys.platform == "win32", "the launchers are run through POSIX shells and Docker")
 class LauncherTests(LauncherCase):
     def test_launcher_exits_0_silently_when_script_or_python_missing_under_sh_zsh_fish_pwsh(self):
         for name in ALL_SHELLS:

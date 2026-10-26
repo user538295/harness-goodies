@@ -3,11 +3,11 @@
 Prompts and stops join by `generation_id`; usage comes from `stop` alone, because `afterAgentResponse` repeats the same totals, and the
 reply text from `afterAgentResponse`. Sub-agents are one flat row per `child_conversation_id`, starting at the arrival of their
 `subagentStop` minus its `duration_ms`; Cursor records no sub-agent tokens. A repeated event of one generation, or of one child, counts
-once and the last record wins. A prompt without a `stop` was cancelled: it shows no reply and no tokens. A `stop` without a prompt is
-shown under `NO_PROMPT_TEXT`, so its tokens reach the TOTAL. A response without a `stop` or a prompt is no turn and is left out.
+once and the last record wins; for the reply that is the last response with text, so a later empty one never erases it. A prompt
+without a `stop` was cancelled: it shows no reply and no tokens. A `stop` without a prompt is shown under `NO_PROMPT_TEXT`, so its tokens reach the TOTAL. A response without a `stop` or a prompt is no turn and is left out.
 """
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from .agent_tree import UNKNOWN_TYPE
 from .cursor_records import HookRecord
@@ -38,6 +38,8 @@ _TOKEN_KEYS = (_INPUT_TOKENS, _OUTPUT_TOKENS, _CACHE_READ_TOKENS, _CACHE_WRITE_T
 _SUBAGENT_TYPE = "subagent_type"
 _DURATION_MS = "duration_ms"
 _WORKSPACE_ROOTS = "workspace_roots"
+_TRANSCRIPT_PATH = "transcript_path"
+_AGENT_TRANSCRIPT_PATH = "agent_transcript_path"
 _FAST_VALUES = {"true": True, "false": False}
 
 _EPOCH = datetime.fromtimestamp(0, timezone.utc)
@@ -48,12 +50,19 @@ def _text(hook_input: Dict[str, Any], key: str) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
-def _last_by_id(records: Sequence[HookRecord], event: str, id_key: str) -> Dict[str, HookRecord]:
-    """The last record of `event` for each id its input names under `id_key`; a record with no such id is left out. In order of first
-    appearance."""
+def _reply_text(hook_input: Dict[str, Any]) -> Optional[str]:
+    """The reply a response carries; None when it has no text or only blank text."""
+    value = hook_input.get(_REPLY_TEXT)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _last_by_id(records: Sequence[HookRecord], event: str, id_key: str,
+                counts: Callable[[HookRecord], bool] = lambda record: True) -> Dict[str, HookRecord]:
+    """The last record of `event` that `counts`, for each id its input names under `id_key`; a record with no such id is left out. In
+    order of first appearance."""
     found: Dict[str, HookRecord] = {}
     for record in records:
-        record_id = _text(record.hook_input, id_key) if record.event == event else None
+        record_id = _text(record.hook_input, id_key) if record.event == event and counts(record) else None
         if record_id is not None:
             found[record_id] = record
     return found
@@ -85,13 +94,13 @@ def _answered(submitted_at: datetime, text: str, stop: Optional[HookRecord], res
         return Prompt(submitted_at=submitted_at, text=text, working_time=timedelta(0))
     working_time = max(timedelta(0), stop.received_at - submitted_at)
     return Prompt(submitted_at=submitted_at, text=text, reply_at=submitted_at + working_time,
-                  reply_text=None if response is None else _text(response.hook_input, _REPLY_TEXT), working_time=working_time,
+                  reply_text=None if response is None else _reply_text(response.hook_input), working_time=working_time,
                   requests=_requests_of(stop.hook_input))
 
 
 def _prompts_of(records: Sequence[HookRecord]) -> Tuple[Prompt, ...]:
     prompts = _last_by_id(records, _PROMPT_EVENT, _GENERATION_ID)
-    responses = _last_by_id(records, _RESPONSE_EVENT, _GENERATION_ID)
+    responses = _last_by_id(records, _RESPONSE_EVENT, _GENERATION_ID, lambda record: _reply_text(record.hook_input) is not None)
     stops = _last_by_id(records, _STOP_EVENT, _GENERATION_ID)
     turns = [(generation, _answered(prompt.received_at, _text(prompt.hook_input, _PROMPT_TEXT) or "", stops.get(generation),
                                     responses.get(generation))) for generation, prompt in prompts.items()]
@@ -117,7 +126,12 @@ def _sub_agent_of(child_id: str, record: HookRecord) -> SubAgent:
     duration = _duration_of(record)
     started_at = record.received_at if duration is None else record.received_at - duration
     return SubAgent(agent_id=child_id, type=_text(record.hook_input, _SUBAGENT_TYPE) or UNKNOWN_TYPE, started_at=started_at,
-                    working_time=duration, tokens_not_recorded=True)
+                    working_time=duration, tokens_not_recorded=True, transcript_path=_text(record.hook_input, _AGENT_TRANSCRIPT_PATH))
+
+
+def _transcript_path_of(records: Sequence[HookRecord]) -> Optional[str]:
+    """The newest `transcript_path` any hook input names: Cursor puts it on every hook, and null when transcripts are off."""
+    return next((path for path in (_text(record.hook_input, _TRANSCRIPT_PATH) for record in reversed(records)) if path), None)
 
 
 def _project_dir_of(records: Sequence[HookRecord]) -> Optional[str]:
@@ -136,4 +150,5 @@ def build_session(conversation_id: str, records: Sequence[HookRecord]) -> Option
         return None
     sub_agents = tuple(_sub_agent_of(child_id, record) for child_id, record in _last_by_id(records, _SUBAGENT_EVENT, _CHILD_ID).items())
     return Session(harness=Harness.CURSOR, session_id=conversation_id, started_at=records[0].received_at,
-                   project_dir=_project_dir_of(records), prompts=_prompts_of(records), sub_agents=sub_agents)
+                   project_dir=_project_dir_of(records), prompts=_prompts_of(records), sub_agents=sub_agents,
+                   transcript_path=_transcript_path_of(records))

@@ -74,7 +74,7 @@ def _validate_state(state):
         for entry in state[section].values():
             if not isinstance(entry, dict):
                 raise ValueError('invalid entry')
-            allowed = ('read', 'inactive', 'unreadable') if section == 'units' else ('written', 'skipped')
+            allowed = ('read', 'inactive', 'unreadable') if section == 'units' else ('written', 'skipped', 'withheld')
             if entry.get('state') not in allowed:
                 raise ValueError('invalid entry state')
             for field in ('fingerprint', 'sessionKey', 'reason', 'projectDir'):
@@ -91,6 +91,11 @@ def _validate_state(state):
                 for field in ('renderVersion', 'unitCount'):
                     if type(entry.get(field)) is not int or not 0 <= entry[field] <= MAX_INT32:
                         raise ValueError('invalid ' + field)
+                for field in ('promptCount', 'subAgentCount'):
+                    if field in entry and (type(entry[field]) is not int or not 0 <= entry[field] <= MAX_INT32):
+                        raise ValueError('invalid ' + field)
+                if 'priceFileProblem' in entry and type(entry['priceFileProblem']) is not bool:
+                    raise ValueError('invalid priceFileProblem')
 
 
 @contextmanager

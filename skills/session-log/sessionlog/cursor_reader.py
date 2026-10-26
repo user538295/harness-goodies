@@ -10,14 +10,16 @@ only lists names: no record is opened. A file counts as a record when its name i
 file; temps and other files are left out, and an entry named like a record that is no regular file (a FIFO, a device) is listed unreadable
 as "not a regular file" and never opened, the rest of the conversation staying a unit.
 
-`.records/.invalid/` holds the calls the hook could not file under a conversation; it is no unit, and a scan lists it once as unreadable,
-naming how many calls it holds (none, no entry).
+`.records/.invalid/` holds the calls the hook could not file under a conversation; it is no unit, and a scan lists it once, naming how many
+calls it holds (none, no entry), for `status` to show. It hides no session, so what is listed for it (a link, an unreadable listing too)
+is a source with `hides_sessions` False: it never stops a `usage` lookup.
 
 `read` opens every record of the conversation once, in order of arrival (`cursor_conversation` joins them). A record that cannot be
 decoded or parsed is skipped, as a torn line of another harness's file is, unless no record of the conversation can be (it is then
 unreadable as "cannot be parsed"); one that cannot be opened makes the conversation unreadable
 under its folder, so sync retries it, and no session is built from a part of it. Nothing raises."""
 import os
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import List, NamedTuple, Optional, Tuple, Union
 
@@ -29,7 +31,8 @@ from .reader_port import (CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, NOT_
 from .safe_paths import LINK_REASON, is_link
 from .store_files import NotARegularFileError, StoreFiles, open_text
 
-INVALID_CALLS_REASON = "hook calls without a usable conversation id: %d"
+# What `status` shows beside the path of `.invalid`: the folder is a record of filed-away calls, nothing to repair.
+INVALID_CALLS_REASON = "hook calls filed here for lack of a usable conversation id: %d; delete this folder to clear them"
 
 _FILES = StoreFiles(Harness.CURSOR)
 # The arrival of a record whose name holds a time no datetime can hold: the newest, so the conversation is always read.
@@ -55,6 +58,11 @@ def _is_regular_file(entry: os.DirEntry) -> Optional[bool]:
         return False
     except OSError:
         return None
+
+
+def _filed_away(source: UnreadableSource) -> UnreadableSource:
+    """The source as a finding about `.invalid`: shown by `status`, never a reason a session may be missing."""
+    return replace(source, hides_sessions=False)
 
 
 def _names_folder(name: str) -> bool:
@@ -101,9 +109,10 @@ class CursorReader:
         for entry in listing:
             is_dir = _FILES.is_real_dir(entry)
             if isinstance(is_dir, UnreadableSource):
-                problems.append(is_dir)
+                problems.append(_filed_away(is_dir) if entry.name == INVALID_FOLDER else is_dir)
             elif not is_dir and _names_folder(entry.name) and is_link(entry.path):
-                problems.append(_FILES.unreadable(entry.path, LINK_REASON))
+                link = _FILES.unreadable(entry.path, LINK_REASON)
+                problems.append(_filed_away(link) if entry.name == INVALID_FOLDER else link)
             elif is_dir and entry.name == INVALID_FOLDER:
                 problems.extend(self._invalid_calls(entry))
             elif is_dir and is_safe_id(entry.name):
@@ -117,14 +126,14 @@ class CursorReader:
 
     @staticmethod
     def _invalid_calls(folder: os.DirEntry) -> List[UnreadableSource]:
-        """The `.invalid` folder as one unreadable source with its call count (nothing when it holds no call), then the entries in it
-        that are no regular file."""
+        """The `.invalid` folder as one source with its call count (nothing when it holds no call), then the entries in it that are
+        no regular file; each a finding that hides no session."""
         listing = _FILES.list_dir(folder.path)
         if isinstance(listing, UnreadableSource):
-            return [listing]
+            return [_filed_away(listing)]
         files, problems = _record_files(listing)
         calls = [_FILES.unreadable(folder.path, INVALID_CALLS_REASON % len(files))] if files else []
-        return calls + problems
+        return [_filed_away(source) for source in calls + problems]
 
     @staticmethod
     def _conversation_unit(folder: os.DirEntry) -> Tuple[Union[SourceUnit, UnreadableSource, None], List[UnreadableSource]]:

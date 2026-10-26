@@ -61,7 +61,8 @@ def _activity_of(sub_agents: Tuple["SubAgent", ...]) -> Tuple[datetime, ...]:
 @dataclass(frozen=True)
 class RequestUsage:
     """One request's tokens; `input_tokens` excludes cache reads. Absent `recorded_cost_usd` = compute from prices;
-    `recorded_cost_usd` 0 means free."""
+    `recorded_cost_usd` 0 means free. `reasoning_tokens` is information only: the part of `output_tokens` spent on reasoning, for the
+    harnesses that record it (OMP, OpenCode); the reports show it and never add it to a total or a price."""
 
     model_name: str
     input_tokens: int
@@ -72,6 +73,7 @@ class RequestUsage:
     effort: Optional[str] = None
     fast: Optional[bool] = None
     recorded_cost_usd: Optional[float] = None
+    reasoning_tokens: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,8 @@ class Prompt:
 
 @dataclass(frozen=True)
 class SubAgent:
-    """Belongs to the session, not to a prompt. `sub_agents` are its children; they are kept ordered by start, then id."""
+    """Belongs to the session, not to a prompt. `sub_agents` are its children; they are kept ordered by start, then id.
+    `transcript_path` is the path of its own transcript when the harness names one (Cursor's hooks do); it is shown, never opened."""
 
     agent_id: str
     type: str
@@ -103,6 +106,7 @@ class SubAgent:
     requests: Tuple[RequestUsage, ...] = ()
     tokens_not_recorded: bool = False
     sub_agents: Tuple["SubAgent", ...] = ()
+    transcript_path: Optional[str] = None
 
     def __post_init__(self) -> None:
         _require_aware(self.started_at, "SubAgent.started_at")
@@ -118,7 +122,8 @@ class SubAgent:
 
 @dataclass(frozen=True)
 class Session:
-    """`session_id` must satisfy `is_safe_id`: a reader lists an unsafe id as an unreadable source and builds no Session."""
+    """`session_id` must satisfy `is_safe_id`: a reader lists an unsafe id as an unreadable source and builds no Session.
+    `transcript_path` is the path of the session's transcript when the harness names one (Cursor's hooks do); it is shown, never opened."""
 
     harness: Harness
     session_id: str
@@ -127,6 +132,7 @@ class Session:
     orphan_of_parent_id: Optional[str] = None
     prompts: Tuple[Prompt, ...] = ()
     sub_agents: Tuple[SubAgent, ...] = ()
+    transcript_path: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not is_safe_id(self.session_id):

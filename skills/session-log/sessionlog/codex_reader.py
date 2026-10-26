@@ -181,7 +181,11 @@ def _root_session(root_id: str, root: _Found, children: Sequence[_Found]) -> Opt
 
 
 def _orphan_session(root_id: str, found: Sequence[_Found]) -> Optional[Session]:
-    """The session of a family whose root rollout is gone (see `split_orphan_family`); None when no thread has a start time."""
+    """The session of a family whose root rollout is gone (see `split_orphan_family`); None when no thread has a start time, or when
+    every thread is a helper: a guardian review is no session of the user's own, so it is archived only as a sub-agent of the
+    thread it reviews."""
+    if all(item.meta.helper for item in found):
+        return None
     family = split_orphan_family(root_id, _threads_of(found))
     if family is None:
         return None
@@ -203,6 +207,10 @@ class CodexReader:
     latest header start (a header without a time is the oldest), then the file name, then the whole key; the file's mtime is
     never asked, so touching or restoring an older copy changes nothing. A unit that names another session is left out. A
     unit that cannot be read is listed unreadable. Nothing raises.
+
+    A helper rollout (`RolloutMeta.helper`: a guardian review) is never a session of the user's own: when it is its own root (its
+    header names no parent) there is no session, and in a family without its root rollout it is a sub-agent row, never the promoted
+    thread, and a family of helpers only gives no session. A helper whose parent rollout is present nests under it like any child.
 
     Without the root's own rollout the family is an orphan and is archived alone (`split_orphan_family`), unless a parent
     cannot be told from unreadable: a unit of the session that cannot be read, or a rollout named after the root id or after
@@ -262,7 +270,8 @@ class CodexReader:
         root = found_by_thread.pop(root_id, None)
         children = list(found_by_thread.values())
         if root is not None:
-            return ReadResult(session=_root_session(root_id, root, children), unreadable=tuple(unreadable))
+            session = None if root.meta.helper else _root_session(root_id, root, children)
+            return ReadResult(session=session, unreadable=tuple(unreadable))
         if children and not unreadable:
             scanned_paths = self._scanned_paths()
             if _has_unlearned_parent(root_id, children, {unit.key for unit in units}, scanned_paths):

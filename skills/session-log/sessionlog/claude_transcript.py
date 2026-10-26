@@ -21,10 +21,13 @@ _BRIDGE_SESSION = "bridge-session"
 _QUEUED_COMMAND = "queued_command"
 _QUEUED_PROMPT_MODE = "prompt"
 _PROMPT_SOURCES = frozenset({"typed", "queued", "sdk", "suggestion_accepted"})
+_TYPED_ENTRYPOINTS = frozenset({"sdk-py"})
+_EXTERNAL_USER = "external"
 _COMMAND_HEADS = ("<command-name>", "<command-message>")
 _NOT_A_PROMPT_HEADS = ("<local-command-", "<bash-", "[Request interrupted by user", "Another Claude session sent a message:")
 _INJECTED_HEAD = "<task-notification>"
 _SYNTHETIC_MODEL = "<synthetic>"
+_API_ERROR_FLAG = "isApiErrorMessage"
 _TAG = re.compile(r"<[^>]*>")
 _WHITESPACE = re.compile(r"\s+")
 _COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
@@ -131,7 +134,8 @@ def _command_text(text: str) -> str:
 def _user_opening(record: Record) -> Optional[_Opening]:
     """`promptSource` is one of the prompt sources (a real prompt), absent or null (a plain entry), or anything else
     (not a prompt). A plain entry is a slash command by its tags; else a remote prompt unless it only reports local
-    output, a shell command, an interrupt or a message from another Claude session."""
+    output, a shell command, an interrupt or a message from another Claude session. The Python Agent SDK writes no
+    `promptSource` at all, so its plain text of an external user is a real prompt."""
     source = record.get("promptSource")
     texts = _text_blocks(record)
     text = _PROMPT_TEXT_SEPARATOR.join(texts)
@@ -143,7 +147,8 @@ def _user_opening(record: Record) -> Optional[_Opening]:
         return _Opening(_Kind.COMMAND, _command_text(text))
     if not texts or text.startswith(_NOT_A_PROMPT_HEADS):
         return None
-    return _Opening(_Kind.REMOTE, text)
+    typed_by_sdk = record.get("entrypoint") in _TYPED_ENTRYPOINTS and record.get("userType") == _EXTERNAL_USER
+    return _Opening(_Kind.REAL if typed_by_sdk else _Kind.REMOTE, text)
 
 
 def _queued_opening(record: Record) -> Optional[_Opening]:
@@ -175,6 +180,11 @@ def _is_replayed(record: Record) -> bool:
 
 def _is_synthetic(record: Record) -> bool:
     return _message_of(record).get("model") == _SYNTHETIC_MODEL
+
+
+def _is_api_error(record: Record) -> bool:
+    """A synthetic message Claude Code wrote for a failed API call (rate limit, login expired): what the user saw as the answer."""
+    return _is_synthetic(record) and record.get(_API_ERROR_FLAG) is True
 
 
 def _cache_writes(usage: Record) -> Tuple[int, int]:
@@ -243,10 +253,11 @@ class _Turn:
         self._latest_reply: Optional[datetime] = None
         self._last_key: Optional[_MessageKey] = None
         self._kept_replies: List[_Reply] = []
+        self._api_error_reply: Optional[_Reply] = None
 
     @property
     def has_reply(self) -> bool:
-        return self._last_key is not None
+        return self._last_key is not None or self._api_error_reply is not None
 
     @property
     def message_ids(self) -> List[str]:
@@ -276,15 +287,24 @@ class _Turn:
         for reply in self._kept_replies:
             holder.add(reply)
 
+    def add_api_error(self, reply: _Reply) -> None:
+        """An API error message counts no request and is the reply only when no real answer came."""
+        self._api_error_reply = reply
+
     def finish(self) -> Optional[Prompt]:
         if self._submitted_at is None:
             return None
         reply_at = max(self._latest_reply, self._submitted_at) if self._latest_reply else None
+        reply_text = _REPLY_PARAGRAPH_SEPARATOR.join(self._texts.get(self._last_key, ())) or None
+        if self._last_key is None and self._api_error_reply is not None:
+            error = self._api_error_reply
+            reply_text = _REPLY_PARAGRAPH_SEPARATOR.join(error.texts) or None
+            reply_at = max(error.moment, self._submitted_at) if error.moment else None
         return Prompt(
             submitted_at=self._submitted_at,
             text=self._text,
             reply_at=reply_at,
-            reply_text=_REPLY_PARAGRAPH_SEPARATOR.join(self._texts.get(self._last_key, ())) or None,
+            reply_text=reply_text,
             working_time=reply_at - self._submitted_at if reply_at else timedelta(0),
             requests=tuple(self._requests.values()),
         )
@@ -342,6 +362,8 @@ class _Folder(_RecordFolder):
         opening = _opening_of(record)
         if opening is not None:
             self._turns.append(_Turn(moment, opening, keep_replies=opening.kind is _Kind.REMOTE))
+        elif self._turns and record.get("type") == _ASSISTANT and _is_api_error(record):
+            self._turns[-1].add_api_error(_Reply(_message_key(record, line_number), None, _text_blocks(record), moment))
         elif self._turns and record.get("type") == _ASSISTANT and not _is_synthetic(record):
             self._turns[-1].add(_Reply(_message_key(record, line_number), _request_of(record), _text_blocks(record), moment))
 

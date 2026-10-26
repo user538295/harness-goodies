@@ -5,10 +5,10 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
-from .archive_port import WriteOutcome
-from .model import Session
+from .archive_port import ArchiveFiles, WriteOutcome
+from .model import Prompt, Session
 from .pricing import PARTIAL, PRICED, UNKNOWN, Price, UsageReport
 from .safe_paths import FOLDER_LINK_REASON, LINK_REASON, is_link, make_real_folders
 from .temp_files import STALE_TEMP_TAIL, publish, remove_stale_temps, temp_name
@@ -28,7 +28,7 @@ ENTRY_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 CLOCK_FORMAT = "%H:%M:%S"
 NO_VALUE = "-"
 API_EQUIVALENT = " (API-equivalent)"
-_OTHER_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+_OTHER_CHARS = re.compile(r"[^A-Za-z0-9._-]")  # `.` kept: the old native hook's key did, so `my.app` stays one folder with its old logs
 _LINE_BREAKS = re.compile(r"[\r\n\t]+")
 _STALE_TEMP = re.compile(r"\.%s.*(?:%s|%s)" % (re.escape(SESSION_PREFIX), re.escape(LOG_SUFFIX), re.escape(REPORT_SUFFIX)) + STALE_TEMP_TAIL)
 
@@ -85,10 +85,25 @@ def _price(price: Price, api_equivalent: bool) -> str:
 
 
 def _estimate(usage, price_text: str) -> str:
-    return ("est. used token: input: %d, output: %d, cache_create: %d, cache_read: %d, total_tokens: %d, "
+    """`reasoning` sits right after `output` as the old OMP and OpenCode reports had it; only a harness that records it has the field."""
+    reasoning = "" if usage.reasoning_tokens is None else ", reasoning: %d" % usage.reasoning_tokens
+    return ("est. used token: input: %d, output: %d%s, cache_create: %d, cache_read: %d, total_tokens: %d, "
             "price: %s, model: %s, effort: %s") % (
-        usage.input_tokens, usage.output_tokens, usage.cache_write_tokens, usage.cache_read_tokens,
+        usage.input_tokens, usage.output_tokens, reasoning, usage.cache_write_tokens, usage.cache_read_tokens,
         usage.total_tokens or 0, price_text, _single_line(usage.model_names), _single_line(usage.effort or NO_VALUE))
+
+
+def _last_recorded(prompt: Prompt, field: str) -> Optional[str]:
+    """The model or effort the prompt ended on: that of its last request that names one."""
+    return next((value for value in (getattr(request, field) for request in reversed(prompt.requests)) if value), None)
+
+
+def _switch_line(previous: Tuple[Optional[str], Optional[str]], model: Optional[str], effort: Optional[str]) -> Optional[str]:
+    """The old Claude log's `switched:` line: each half needs both sides known, so a first or unknown value is no transition."""
+    parts = ["%s %s \u2192 %s" % (name, _single_line(before), _single_line(after))
+             for name, before, after in (("model", previous[0], model), ("effort", previous[1], effort))
+             if before and after and before != after]
+    return "switched: " + ", ".join(parts) if parts else None
 
 
 class LogUsageWriter:
@@ -116,7 +131,11 @@ class LogUsageWriter:
                                "%s%s_%s%s" % (SESSION_PREFIX, stamp, session.session_id, LOG_SUFFIX))
 
     def _local(self, moment: datetime) -> datetime:
-        local = self._to_local(moment)
+        """A time the local zone cannot hold (outside the platform's range) is shown in UTC, never an error."""
+        try:
+            local = self._to_local(moment)
+        except (OverflowError, OSError, ValueError):
+            return moment.astimezone(timezone.utc)
         if local.utcoffset() is None:
             raise ValueError("to_local must return an aware datetime")
         return local
@@ -132,15 +151,21 @@ class LogUsageWriter:
                             "- start: %s" % self._entry_time(session.started_at)]
         if session.orphan_of_parent_id:
             lines.append("- sub-agent of %s (parent not found)" % _single_line(session.orphan_of_parent_id))
+        previous: Tuple[Optional[str], Optional[str]] = (None, None)
         for prompt in session.prompts:
+            model, effort = _last_recorded(prompt, "model_name"), _last_recorded(prompt, "effort")
             lines += ["", "## %s" % self._entry_time(prompt.submitted_at), prompt.text]
             if prompt.reply_text is not None:
                 lines += ["", "### %s response" % self._entry_time(prompt.reply_at or prompt.submitted_at), prompt.reply_text]
+                switched = _switch_line(previous, model, effort)
+                if switched:
+                    lines += ["", switched]
+            previous = (model or previous[0], effort or previous[1])
         return _text("\n".join(lines) + "\n")
 
     def render_report(self, report: UsageReport) -> str:
         api = report.total.api_equivalent
-        lines = ["session: %s" % report.session_id, "harness: %s" % report.harness.value,
+        lines = ["session: %s" % _single_line(report.transcript_path or report.session_id), "harness: %s" % report.harness.value,
                  "project: %s" % _single_line(report.project_dir or NO_VALUE)]
         header_offset = None
         if report.prompts:
@@ -156,8 +181,9 @@ class LogUsageWriter:
         if report.sub_agents:
             lines.append("")
         for agent in report.sub_agents:
-            lines.append("sub-agent: %s (%s), working time: %s" % (
-                _single_line(agent.type), _single_line(agent.agent_id), _duration(agent.working_time or timedelta(0))))
+            jsonl = ", jsonl: %s" % _single_line(agent.transcript_path) if agent.transcript_path else ""
+            lines.append("sub-agent: %s (%s), working time: %s%s" % (
+                _single_line(agent.type), _single_line(agent.agent_id), _duration(agent.working_time or timedelta(0)), jsonl))
             lines.append("tokens: not recorded by Cursor" if agent.total_tokens is None
                          else _estimate(agent, _price(agent.price, api)))
         total = report.total
@@ -207,3 +233,17 @@ class LogUsageWriter:
                 return handle.read().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return None
+
+    def files_present(self, log_path: str) -> ArchiveFiles:
+        return ArchiveFiles(self._is_present(log_path), self._is_present(self._report_path(log_path)))
+
+    @staticmethod
+    def _is_present(path: str) -> bool:
+        """Absent only when the OS says so: a file that cannot be examined (a folder without access) is taken as present."""
+        try:
+            os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        except OSError:
+            pass
+        return True

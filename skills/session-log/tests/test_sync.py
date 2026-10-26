@@ -6,9 +6,9 @@ import shutil
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from sessionlog.archive_port import WriteOutcome
+from sessionlog.archive_port import ArchiveFiles, WriteOutcome
 from sessionlog.claude_reader import ClaudeReader
 from sessionlog.commands import CommandUseCases, UnreadableItem
 from sessionlog.log_usage_writer import LogUsageWriter
@@ -103,6 +103,7 @@ class FakeArchive:
         self.failure: Optional[WriteOutcome] = None
         self.crash_on_write: Optional[int] = None
         self.before_write = lambda: None
+        self.missing: Dict[str, ArchiveFiles] = {}  # log path -> what is on disk of its files, for files deleted from disk
 
     def new_log_path(self, session):
         self.new_paths.append(session.session_id)
@@ -123,6 +124,9 @@ class FakeArchive:
 
     def read_report(self, log_path):
         return None
+
+    def files_present(self, log_path):
+        return self.missing.get(log_path, ArchiveFiles(True, True))
 
 
 class CountingReader(ClaudeReader):
@@ -200,7 +204,7 @@ class SyncArchivesTest(SyncTestCase):
         self.assertEqual((old_unit["state"], old_unit["sessionKey"]), ("inactive", self._key("old")))
         self.assertIn("fingerprint", old_unit)
 
-    def test_session_entry_records_log_path_activity_prompt_time_and_versions(self):
+    def test_session_entry_records_log_path_activity_prompt_time_versions_and_what_the_files_hold(self):
         self._install("spanning", _transcript(LONG_AGO, ON_AT + ONE_DAY), ON_AT + ONE_DAY)
         self._sync()
         entry = self.state.saved["sessions"][self._key("spanning")]
@@ -208,7 +212,7 @@ class SyncArchivesTest(SyncTestCase):
             "logPath": "/logs/spanning.md", "state": "written", "projectDir": "/work/proj",
             "lastPromptAt": (ON_AT + ONE_DAY).isoformat(),
             "lastActivityAt": (ON_AT + ONE_DAY + timedelta(seconds=1)).isoformat(),
-            "orphan": False, "renderVersion": RENDER_VERSION, "unitCount": 1})
+            "orphan": False, "renderVersion": RENDER_VERSION, "unitCount": 1, "promptCount": 2, "subAgentCount": 0})
         unit = self.state.saved["units"][os.path.join(self.folder, "spanning.jsonl")]
         self.assertEqual((unit["state"], unit["sessionKey"]), ("read", self._key("spanning")))
         self.assertEqual(self.state.saved["lastSyncAt"], NOW.isoformat())

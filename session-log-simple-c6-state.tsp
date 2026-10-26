@@ -34,6 +34,12 @@ enum WriteState {
   written,
   /** The last rewrite of its log or report failed (reason given); the files of an earlier write remain; retried on every sync. */
   skipped,
+  /**
+   * The source now holds less than the files do (reason given: fewer prompts, or fewer sub-agent rows / units): nothing is lost, the files stay
+   * (a log that only gained prompts is rewritten and the saved report kept). Read again only when a source unit changed or is unreadable,
+   * not for a render version; `status` lists it.
+   */
+  withheld,
 }
 
 /**
@@ -55,18 +61,37 @@ model SessionEntry {
   /**
    * RENDER_VERSION of the program that last wrote the files. RENDER_VERSION is an integer constant in the package, raised by every change
    * that alters log or report text for the same source (readers, model, PricingRules, writer, prices.json); a unit test pins the
-   * sha256 of prices.json to it, so a price change without a raise fails (S65). Sync rewrites, once, every archived session whose
+   * sha256 of prices.json to it, so a price change without a raise fails (S65). Sync rewrites, once, every written session whose
    * renderVersion is lower than its own, within the hook budget, saving each entry as it goes, so the next sync continues with the rest.
    * A higher renderVersion (written by a newer installed copy on the same log root) is never rewritten for its version, so two installed
-   * versions do not undo each other's rewrites.
+   * versions do not undo each other's rewrites. A withheld session is not owed a rewrite for its version.
    */
   renderVersion: int32;
   /**
-   * Number of source units the last write was built from. A rewrite, for its version or for a changed source, that would be built from
-   * fewer units is not published: the files and the entry stay as they are, and status lists the session as unreadable,
-   * "source partly gone (N of M units)", so rows the archive holds are never dropped (a deleted Codex child, cleaned Claude sub-agent files).
+   * Number of source units the last write was built from: M in "source partly gone (N of M units)". A session read again for another reason is
+   * not rewritten when its files hold the same or a newer render version, built from as many units, with no unit changed.
    */
   unitCount: int32;
+  /**
+   * Prompts the files hold (the log and the report both). A rewrite from a source with fewer prompts is not published (state withheld):
+   * a reverted OpenCode session, a rewritten Codex rollout or a cut transcript never replaces the archive. Tokens and prices are not compared.
+   * Absent in an entry written before the counts existed: nothing is protected then. After a failed write it is the larger of the old and
+   * the new count, since either file may hold the new rows.
+   */
+  promptCount?: int32;
+  /**
+   * Sub-agent rows (nested ones too) the saved report holds. A read with as many prompts and fewer rows (a deleted Codex child, a cleaned
+   * Claude sub-agent file, an unreadable unit) rewrites the log, so new prompts are archived, and keeps the saved report: state withheld,
+   * "source partly gone (N of M units)" (N units read, M counted at the last write) or, when no unit is missing,
+   * "source holds fewer sub-agents than archived (N of M)". A rewrite owed only to a render version, a price file or deleted files, from a source no
+   * unit of which changed and that has no fewer units, is published as read: a reader fix may drop rows.
+   */
+  subAgentCount?: int32;
+  /**
+   * The files were written while `prices.json` was unusable, so every price in the report is unknown: the next sync with a usable
+   * price file rewrites the session once. Absent when the file was usable.
+   */
+  priceFileProblem?: boolean;
 }
 
 /** Content of prompt-logs/.sync.json. The archived count shown by status is the number of session entries. */

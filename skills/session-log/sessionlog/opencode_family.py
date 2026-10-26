@@ -1,7 +1,8 @@
 """Pure rules for the sessions of one OpenCode family: which session is the root of a `parent_id` chain, and how the root's transcript and
 its sub-agent sessions' make the session with its nested sub-agents, or the orphan session; no database access.
 
-The root's prompts are its own; every sub-agent session reports its requests and the time it worked, and is nested under the session
+The root's prompts are its own, led by the row of its requests that fall under no prompt (`prompt_turns.with_unprompted`); every
+sub-agent session reports its requests and the time it worked, and is nested under the session
 its `parent_id` names (`agent_family.nest_threads`): a parent that is the root, or is not among the sub-agents, leaves it at the top
 level. A session whose parent row is gone is the root of its own family and is labelled with the parent it names, so it loses nothing
 (unlike Codex and OMP, whose orphan family is split by `agent_family.split_orphan_family`, a session here is one row with its own
@@ -13,6 +14,7 @@ from typing import Dict, NamedTuple, Optional, Sequence, Set, Tuple
 from .agent_family import Thread, nest_threads
 from .model import Harness, Session
 from .opencode_messages import Transcript
+from .prompt_turns import with_unprompted
 
 ParentOf = Dict[str, Optional[str]]
 
@@ -59,5 +61,6 @@ def build_session(root: SessionRow, root_transcript: Transcript, parent_of: Pare
         return None
     threads = [_thread_of(row, transcript, root.created_at) for row, transcript in children]
     orphan_of_parent_id = root.parent_id if root.parent_id not in parent_of else None
+    prompts = with_unprompted(root_transcript.prompts, root_transcript.unprompted_requests, root.created_at)
     return Session(harness=Harness.OPENCODE, session_id=root.id, started_at=root.created_at, project_dir=root.directory,
-                   orphan_of_parent_id=orphan_of_parent_id, prompts=root_transcript.prompts, sub_agents=nest_threads(threads))
+                   orphan_of_parent_id=orphan_of_parent_id, prompts=prompts, sub_agents=nest_threads(threads))

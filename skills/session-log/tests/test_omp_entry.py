@@ -17,10 +17,10 @@ from tests.store_fakes import OmpOpenCounter, write_gzip
 FIXED_NOW = datetime(2000, 1, 1, tzinfo=timezone.utc)
 FIXTURE_TIME = datetime(2026, 10, 13, 8, 43, 0, tzinfo=timezone.utc)
 ONE_SECOND_NS = 1_000_000_000
-PROMPT_ONE_TOKENS = "input: 10, output: 160, cache_create: 200, cache_read: 2200, total_tokens: 2570"
-PROMPT_TWO_TOKENS = "input: 10, output: 83, cache_create: 100, cache_read: 1500, total_tokens: 1693"
-CHILD_TOKENS = "input: 50, output: 20, cache_create: 0, cache_read: 400, total_tokens: 470"
-TOTAL_TOKENS = "input: 70, output: 263, cache_create: 300, cache_read: 4100, total_tokens: 4733"
+PROMPT_ONE_TOKENS = "input: 10, output: 160, reasoning: 0, cache_create: 200, cache_read: 2200, total_tokens: 2570"
+PROMPT_TWO_TOKENS = "input: 10, output: 83, reasoning: 0, cache_create: 100, cache_read: 1500, total_tokens: 1693"
+CHILD_TOKENS = "input: 50, output: 20, reasoning: 0, cache_create: 0, cache_read: 400, total_tokens: 470"
+TOTAL_TOKENS = "input: 70, output: 263, reasoning: 0, cache_create: 300, cache_read: 4100, total_tokens: 4733"
 SUPPORTED_HARNESSES = "(supported: claude, codex, cursor, omp, opencode)"
 
 

@@ -237,10 +237,10 @@ class OnTests(SkeletonCase):
         os.makedirs(os.path.dirname(old_script))
         with open(old_script, "w", encoding="utf-8") as handle:
             handle.write("old")
-        kept = os.path.join(self.claude, "session-log-old", "scripts", "prompt_log_save.sh")
+        kept_folder = os.path.join(self.claude, "session-log-old", "scripts")
         expected = ("  %s: move it outside the skills folders: `mkdir -p %s && mv %s %s` "
                     "(a copy moved inside a skills folder may still load)"
-                    % (old_script, shlex.quote(os.path.dirname(kept)), shlex.quote(old_script), shlex.quote(kept)))
+                    % (old_script, shlex.quote(kept_folder), shlex.quote(old_script), shlex.quote(kept_folder)))
 
         for command in ("on", "status"):
             lines = self.run_ok(command).splitlines()

@@ -101,7 +101,7 @@ class CodexEntryTest(CodexEntryTestCase):
         self.run_main(["codex", "on"])
         reports = [self.read(path) for path in self.archived_files(".usage.txt") if OTHER_ID in path]
         self.assertEqual(1, len(reports))
-        self.assertIn("input: 700, output: 70, cache_create: 50, cache_read: 300, total_tokens: 1120", reports[0])
+        self.assertIn("input: 650, output: 70, cache_create: 50, cache_read: 300, total_tokens: 1070", reports[0])
 
     def test_a_codex_command_reads_only_the_codex_root_and_writes_under_it(self):
         project = os.path.join(self.home, ".claude", "projects", "-work-proj")
@@ -135,11 +135,14 @@ class CodexEntryTest(CodexEntryTestCase):
 class CodexLatestEntryTest(CodexEntryTestCase):
     """`usage` without a target (S37): once synced, the session with the newest prompt, else the newest activity, among root sessions."""
 
-    def write_rollout(self, session_id, at, prompt_at=None, parent=None):
-        """A rollout of `session_id` started at `at` (a UTC timestamp text) with one prompt at `prompt_at`; a `parent` makes it a sub-agent."""
+    def write_rollout(self, session_id, at, prompt_at=None, parent=None, source=None):
+        """A rollout of `session_id` started at `at` (a UTC timestamp text) with one prompt at `prompt_at`; a `parent` makes it a sub-agent,
+        and a `source` is the header's own `source`."""
         payload = {"id": session_id, "session_id": parent or session_id, "timestamp": at, "cwd": CWD}
         if parent:
             payload.update(parent_thread_id=parent, source={"subagent": {"thread_spawn": {"parent_thread_id": parent, "depth": 1}}})
+        if source:
+            payload["source"] = source
         records = [{"timestamp": at, "type": "session_meta", "payload": payload}]
         if prompt_at:
             records.append({"timestamp": prompt_at, "type": "event_msg", "payload": {"type": "item_completed", "item": {
@@ -160,6 +163,13 @@ class CodexLatestEntryTest(CodexEntryTestCase):
         self.write_rollout("1a00000a-0000-7000-8000-00000000000a", "2026-09-13T08:00:00.000Z")  # newest activity, no prompt
         self.write_rollout("1a00000b-0000-7000-8000-00000000000b", "2026-09-14T08:00:00.000Z", prompt_at="2026-09-14T08:00:01.000Z", parent=OTHER_ID)
         self.assertEqual("session: %s" % streaming, self.synced_usage_header())
+
+    def test_a_parentless_guardian_review_with_the_newest_prompt_is_neither_archived_nor_picked(self):
+        guardian = "1a00000d-0000-7000-8000-00000000000d"
+        self.write_rollout(OTHER_ID, "2026-09-12T08:00:00.000Z", prompt_at="2026-09-12T08:00:01.000Z")
+        self.write_rollout(guardian, "2026-09-14T08:00:00.000Z", prompt_at="2026-09-14T08:00:01.000Z", source={"subagent": {"other": "guardian"}})
+        self.assertEqual("session: %s" % OTHER_ID, self.synced_usage_header())
+        self.assertEqual([OTHER_ID], [id_ for id_ in (OTHER_ID, guardian) if any(id_ in path for path in self.archived_files(".md"))])
 
     def test_without_any_prompt_the_newest_activity_wins_whatever_the_ids(self):
         newest = "1a00000a-0000-7000-8000-00000000000a"

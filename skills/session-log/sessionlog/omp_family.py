@@ -13,6 +13,7 @@ from .agent_tree import nodes_entering_a_loop
 from .model import Harness, Session
 from .omp_layout import stem_of_path
 from .omp_transcript import Transcript
+from .prompt_turns import with_unprompted
 
 
 class Member(NamedTuple):
@@ -83,14 +84,18 @@ def _threads_of(root_id: str, root_stem: str, children: Sequence[Member]) -> Lis
         else:
             parent_id = root_id if parent == root_stem else parent
         transcript = child.transcript
+        # Only a thread with prompts can become the session, so only it needs the row of its unprompted requests: one without prompts
+        # (every sub-agent whose task is an agent message) reports them as a sub-agent row and must not look promotable.
+        prompts = with_unprompted(transcript.prompts, transcript.unprompted_requests, started_at) if transcript.prompts else ()
         threads.append(Thread(thread_id=child.agent_id, parent_thread_id=parent_id, agent_type=transcript.agent_type,
                               started_at=started_at, working_time=child.working_time, requests=transcript.requests,
-                              prompts=transcript.prompts, project_dir=transcript.project_dir))
+                              prompts=prompts, project_dir=transcript.project_dir))
     return threads
 
 
 def build_session(root_id: str, root_stem: str, root: Optional[Member], children: Sequence[Member]) -> Optional[Session]:
-    """The session of the family. With the root's own file it has the root's prompts and every child as a sub-agent (a child whose
+    """The session of the family. With the root's own file it has the root's prompts (led by the row of its requests that fall under
+    no prompt, `prompt_turns.with_unprompted`) and every child as a sub-agent (a child whose
     parent is gone stays at the top level); None when the file gives no start time. Without it the family is an orphan archived
     alone (`split_orphan_family`): the first top-level child with a prompt is the session itself, the others are its sub-agents, and
     the session is labelled with the parent the promoted child names; None when no child gives a start time. `children` have no
@@ -102,7 +107,8 @@ def build_session(root_id: str, root_stem: str, root: Optional[Member], children
         if started_at is None:
             return None
         return Session(harness=Harness.OMP, session_id=root_id, started_at=started_at, project_dir=transcript.project_dir,
-                       prompts=transcript.prompts, sub_agents=nest_threads(threads))
+                       prompts=with_unprompted(transcript.prompts, transcript.unprompted_requests, started_at),
+                       sub_agents=nest_threads(threads))
     family = split_orphan_family(root_id, threads)
     if family is None:
         return None

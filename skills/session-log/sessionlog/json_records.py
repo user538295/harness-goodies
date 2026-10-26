@@ -28,19 +28,27 @@ def decode_record(line: str) -> Optional[Record]:
     return record if isinstance(record, dict) else None
 
 
+def _has_local_time(moment: datetime) -> bool:
+    """Whether the time converts to this machine's local zone: a time outside the platform's range (year 1 or 9999 shifted by the
+    zone's offset, a time before 1970 on Windows) raises, and one such record must not make a whole session unreadable. The
+    conversion goes through UTC, so it also rejects a time UTC cannot hold."""
+    try:
+        moment.astimezone()
+    except (OverflowError, OSError, ValueError):
+        return False
+    return True
+
+
 def parse_moment(value: Any) -> Optional[datetime]:
-    """The timezone-aware time an ISO-8601 text names; None for anything else, a naive time or one UTC cannot hold."""
+    """The timezone-aware time an ISO-8601 text names; None for anything else, a naive time or one this machine's local time
+    cannot hold."""
     try:
         moment = datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
     if moment.utcoffset() is None:
         return None
-    try:
-        moment.astimezone(timezone.utc)
-    except OverflowError:
-        return None
-    return moment
+    return moment if _has_local_time(moment) else None
 
 
 def is_finite_number(value: Any) -> bool:
@@ -52,13 +60,14 @@ def is_finite_number(value: Any) -> bool:
 
 def parse_epoch_milliseconds(value: Any) -> Optional[datetime]:
     """The UTC time a positive number of epoch milliseconds names; None for anything else (zero, a negative number, a number of
-    milliseconds written as text, a time UTC cannot hold)."""
+    milliseconds written as text, a time UTC or the local zone cannot hold)."""
     if not is_finite_number(value) or value <= 0:
         return None
     try:
-        return datetime.fromtimestamp(value / _MILLISECONDS, timezone.utc)
+        moment = datetime.fromtimestamp(value / _MILLISECONDS, timezone.utc)
     except (OverflowError, OSError, ValueError):
         return None
+    return moment if _has_local_time(moment) else None
 
 
 def parse_whole_count(value: Any) -> Optional[int]:

@@ -13,6 +13,7 @@ from sessionlog.model import Harness, RequestUsage
 from sessionlog.pricing import PricingRules, Rates
 from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, UNSAFE_ID_REASON,
                                     SourceUnit, UnreadableSource)
+from tests.local_zone import local_zone
 from tests.test_claude_reader import (ONE_SECOND_NS, PROJECT, SID, STAMP, ClaudeReaderTestCase, _FakeEntry, _answer, _at,
                                       _on_model, _plain_user, _typed, _usage)
 
@@ -382,7 +383,8 @@ class ClaudeSubAgentReadTest(ClaudeSubAgentTestCase):
         self._main()
         last = {**_answer(None, "m1", _usage(1)), "timestamp": "9999-12-31T23:59:59+00:00"}
         self._agent("a1", [{**_agent_user(None, "a1"), "timestamp": "9999-12-31T10:00:00+05:00"}, last])
-        (agent,) = self._agents()
+        with local_zone("UTC"):
+            (agent,) = self._agents()
         self.assertEqual(agent.started_at.utcoffset(), timedelta(0))
         self.assertEqual(agent.last_activity_at, datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone.utc))
 

@@ -1,6 +1,7 @@
 """`usage` resolution across the archive and the store (S37, S68), where the old rules showed a session older than one that exists:
 the latest session of the nearest project folder wins whether it is archived or not, and a sub-agent id names its root session."""
 import ntpath
+import os
 import unittest
 from datetime import timedelta
 
@@ -49,14 +50,14 @@ class LatestAcrossArchiveAndStoreTest(UsageTargetTestCase):
         self.assertEqual(self.sync.calls, 0)
         self.assertEqual(set(self.state.load_sync()["sessions"]), {"claude:archived"})  # nothing was archived by asking
 
-    def test_a_newer_archived_session_wins_and_the_older_store_sessions_are_not_read(self):
+    def test_a_newer_archived_session_wins_but_every_store_session_is_ranked_as_an_old_file_may_hold_a_newer_prompt(self):
         self._install("archived", prompts=[ON_AT + ONE_DAY])
         self._install("older", prompts=[BEFORE_ON], modified=BEFORE_ON)
         self._install("elsewhere", cwd=OTHER_PROJECT, prompts=[BEFORE_ON - ONE_DAY], modified=BEFORE_ON - ONE_DAY)
         self._turn_on_and_sync()
         reads = _ReadCounter(self.reader)
         self.assertEqual(self._text(), _report("archived"))
-        self.assertEqual(reads.keys, [])
+        self.assertEqual(sorted(reads.keys), ["claude:elsewhere", "claude:older"])
 
     def test_a_never_archived_session_with_a_prompt_beats_an_archived_one_without_a_prompt(self):
         self._install("older", prompts=[BEFORE_ON], modified=BEFORE_ON)
@@ -115,6 +116,84 @@ class SubAgentIdTargetTest(UsageTargetTestCase):
         self._install_sub_agent("abc", "child", ON_AT + 3 * ONE_DAY)
         self._turn_on_and_sync()
         self.assertEqual(self._text("agent-child"), _report("agent-child-root"))
+
+
+class SubAgentFileNameTest(UsageTargetTestCase):
+    """The Claude reader names a sub-agent by its file stem, so an id that no sub-agent file is named after is looked for in no session."""
+
+    def _store_with_sub_agents(self):
+        for number, session_id in enumerate(("one", "two", "three")):
+            self._install(session_id, prompts=[BEFORE_ON + number * ONE_DAY], modified=BEFORE_ON)
+        self._install_sub_agent("two", "child", BEFORE_ON)
+        self._install_sub_agent("three", "other-child", BEFORE_ON)
+        self._install_sub_agent("three", "child-long", BEFORE_ON)  # `agent-child` is no prefix match, only the exact stem is one
+        return _ReadCounter(self.reader)
+
+    def test_an_id_that_no_sub_agent_file_is_named_after_reads_no_session(self):
+        reads = self._store_with_sub_agents()
+        with self.assertRaisesRegex(CommandError, "no session has the id 'agent-nope'"):
+            self._text("agent-nope")
+        self.assertEqual(reads.keys, [])
+
+    def test_a_sub_agent_id_reads_only_the_session_that_holds_a_file_of_that_name(self):
+        reads = self._store_with_sub_agents()
+        self.assertEqual(self._text("agent-child"), _report("two"))
+        self.assertEqual(reads.keys, ["claude:two"])
+
+    def test_a_main_session_file_named_like_a_sub_agent_is_no_sub_agent(self):
+        self._install("agent-ghost", prompts=[BEFORE_ON], modified=BEFORE_ON)
+        reads = _ReadCounter(self.reader)
+        self.assertEqual(self._text("agent-ghost"), _report("agent-ghost"))  # an exact root id, resolved as one
+        self.assertEqual(reads.keys, ["claude:agent-ghost"])
+
+
+class _WholeReadCounter:
+    """Records the session keys the reader is asked to read with a sub-agent file among their units."""
+
+    def __init__(self, reader) -> None:
+        self.keys = []
+        real_read = reader.read
+
+        def counted(session_key, units):
+            if any("subagents" in unit.key for unit in units):
+                self.keys.append(session_key)
+            return real_read(session_key, units)
+        reader.read = counted
+
+
+class RankedFromMainFilesTest(UsageTargetTestCase):
+    """`latest` learns a session's project, prompts and orphan state from its main file alone and reads all the files (sub-agents too)
+    of the one session it picks."""
+
+    def _store(self):
+        for number, session_id in enumerate(("older", "newer", "elsewhere")):
+            cwd = OTHER_PROJECT if session_id == "elsewhere" else PROJECT
+            self._install(session_id, cwd=cwd, prompts=[BEFORE_ON + number * ONE_DAY], modified=BEFORE_ON + number * ONE_DAY)
+            self._install_sub_agent(session_id, "child", BEFORE_ON)
+            moment = (BEFORE_ON + number * ONE_DAY).timestamp()
+            os.utime(os.path.join(self.folder, session_id, "subagents", "agent-child.jsonl"), (moment, moment))  # the order of sessions
+
+    def test_only_the_session_it_picks_is_read_with_its_sub_agent_files(self):
+        self._store()
+        whole = _WholeReadCounter(self.reader)
+        self.assertEqual(self._text(cwd=SUB_FOLDER), _report("newer"))  # the nearest folder with a session: its parent, newest prompt
+        self.assertEqual(whole.keys, ["claude:newer"])
+
+    def _break_sub_agent_file(self, session_id):
+        path = os.path.join(self.folder, session_id, "subagents", "agent-child.jsonl")
+        modified = os.stat(path).st_mtime
+        with open(path, "wb") as handle:
+            handle.write(b"\xff\xfe\xfd not json\n")
+        os.utime(path, (modified, modified))  # the order of sessions stays
+
+    def test_a_sub_agent_file_that_cannot_be_read_ends_the_lookup_only_when_its_session_is_the_pick(self):
+        self._store()
+        self._break_sub_agent_file("older")
+        self._break_sub_agent_file("elsewhere")
+        self.assertEqual(self._text(cwd=SUB_FOLDER), _report("newer"))
+        self._break_sub_agent_file("newer")
+        with self.assertRaisesRegex(CommandError, "newer/subagents/agent-child.jsonl"):
+            self._text(cwd=SUB_FOLDER)
 
 
 class _SubAgentStoreCase(unittest.TestCase):

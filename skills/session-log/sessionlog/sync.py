@@ -2,7 +2,7 @@
 
 Cheap path first: `scan` gives every unit a fingerprint without opening it, and the reader names a unit's session once; the
 name is saved before any session is read. A session none of whose units changed (and that is neither skipped, owed a
-render-version rewrite, nor holding an unreadable unit) is not read, and a changed unit last modified before the on-time
+rewrite, nor holding an unreadable unit) is not read, and a changed unit last modified before the on-time
 cannot hold activity since it. A session whose id is not a safe id is never read: its units are unreadable with that reason
 (a reader checks it too, so a session built without sync is safe as well). A candidate session is read whole from all its
 units, and when it has activity since the on-time its log and report are rewritten whole through `Archive`. Progress is
@@ -10,59 +10,100 @@ saved after each session (C6) while the state is small; a large one is saved in 
 costs time linear in the number of sessions, and a killed run loses at most the session in progress plus one batch.
 One session that raises is recorded unreadable with the error and the sync goes on with the others.
 
-Partly gone: a rewrite never replaces the files of an archived session with a report built from fewer units than the last
-write counted. Its entry changes only in `state` and `reason` (skipped, "source partly gone (N of M units)", N being the
-units available); its files stay. Fewer units present than counted means units are gone, which is detected without reading
-the session; a counted unit that is present but unreadable is detected after the read. The label is the plan's wording for
-the two cases above. Skipped sessions are candidates on every sync, so the session is rewritten once its units are back;
-in the first case this costs no read. The check compares unit counts, as C6 defines them: a deleted unit replaced by a new
-one is not noticed. A scan that could not list a folder makes its units look gone and withholds the same way; the next
-complete scan heals it (the label is transiently off, nothing is dropped). A skipped session whose sources are all gone is
-not retried and stays listed: nothing can heal it and its files are stale.
+Never less than the archive: an archived session's entry records what its files hold, `promptCount` (in the log and the
+report) and `subAgentCount` (rows, nested ones too, in the report only). A rewrite is judged after the read, from what the
+read session holds, so a deleted unit that was replaced, or a unit that kept its name and lost content, is noticed too:
+- fewer prompts than recorded (a reverted OpenCode session, a rewritten Codex rollout, a cut transcript): nothing is written;
+  the entry becomes withheld, "source holds fewer prompts than archived (N of M)".
+- as many prompts, fewer sub-agent rows (a sub-agent file Claude cleaned, a deleted Codex thread or OpenCode child, a unit
+  present but unreadable): the log, which holds prompts only, is rewritten whole, so new activity is still archived; the
+  report, the only holder of the sub-agent rows, stays as it is. The entry becomes withheld, "source partly gone (N of M
+  units)", N being the units that read (when none is missing: "source holds fewer sub-agents than archived (N of M)").
+- otherwise both files are rewritten and the counts replaced by those of the read.
+Tokens and prices are not compared: a reader fix may legitimately change them. A written session whose source no unit of
+changed since and that has no fewer readable units than the last write counted cannot have been shrunk by its source, so a
+rewrite owed to it (a render version, a price file that works again, deleted files) is published as read, and a reader fix
+that drops rows applies. Only files on disk are protected; a missing file beside a present one does not rescue a read with
+fewer prompts (nothing is written until the source grows). A withheld session is read again when a unit changed (whatever its
+time: a restored sub-agent file heals it) or is unreadable, not for a render version; a read that finds the same units writes
+nothing. Entries written before the counts existed have none (0): nothing is protected for them. A session whose sources are
+all gone has no units and is never a candidate. A scan that could not list a folder makes its units look gone; the next
+complete scan heals it.
 
 Vanished units: a unit entry whose source left a complete scan is dropped, so `.sync.json` and the cost of saving it do not grow
 with how long logging has been on; this includes an unreadable unit, which can never be retried and so is no longer listed.
 With an incomplete scan (a folder that could not be listed) no unit is dropped. Session entries are never dropped.
 
-Render version: each session entry records the `RENDER_VERSION` of the installed copy that wrote its files. A session whose
-entry has a lower version is a candidate on every sync until it is rewritten, whatever its units did, and is rewritten even
-when its last activity is older than a later on-time (like a skipped rewrite, it is owed); the rewrite stamps the current
-version, so each session is rewritten once per raise, and a stopped sync resumes with the rest. Sessions that wait only for
-that rewrite come after every other candidate, so a backlog never delays new turns. An entry with a higher
-version (written by a newer installed copy on the same log root) is never rewritten for its version; a session read for
-another reason is not rewritten when its files already hold the same or a newer version, built from as many units, with no
-unit changed. A session whose source is gone has no units and is never a candidate; one with fewer units than its last write
-counted is withheld as above. A session that reads as no session and has nothing unreadable (its file was emptied) keeps its
-old version, so it costs one read per sync like a skipped one; new activity rewrites it.
+Owed rewrites: a written session is rewritten once, whatever its units did and even when its last activity is older than a
+later on-time, when (1) its entry has a lower `RENDER_VERSION` than the installed copy (each session is rewritten once per
+raise, and a stopped sync resumes with the rest; an entry with a higher version, written by a newer installed copy on the same
+log root, is never rewritten for its version), (2) it was written while `prices.json` was unusable (`priceFileProblem`) and the
+file works now, or (3) its log or report is missing on disk (one stat each per archived session and sync); the source is then
+read again and both files are recreated, or, when no source is left, nothing can be done and `status` lists the session. A
+session read for another reason is not rewritten when its files already hold the same or a newer version, built from as many
+units, with no unit changed. Sessions that wait only for such a repair come after every other candidate, so a backlog never
+delays new turns. A session that reads as no session and has nothing unreadable (its file was emptied) keeps its entry, so it
+costs one read per sync while a rewrite is owed; new activity rewrites it. A skipped session (its last write failed) is a
+candidate on every sync.
 
 Budget: a sync given `budget_seconds` starts no new session once that much time has passed on `now` since the sync began;
 the session in progress finishes, and what was learned and written is already saved. The next sync continues.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
-from .archive_port import Archive
-from .model import Session, is_safe_id
+from .archive_port import Archive, ArchiveFiles
+from .model import Session, SubAgent, is_safe_id
 from .pricing import PricingRules
 from .reader_port import UNSAFE_ID_REASON, SessionReader, SourceUnit, UnreadableSource, root_id_of
 from .state_port import StateStore, recorded_session_key
 
 # Raised by every change that alters log or report text for the same source (readers, model, PricingRules, writer,
 # prices.json); `test_render_version` pins the sha256 of prices.json to it.
-RENDER_VERSION = 1
+RENDER_VERSION = 3
 HOOK_SYNC_BUDGET_SECONDS = 20.0  # below the 30 s hook timeouts; the hook entry passes it to `sync`
 UNIT_READ = "read"
 UNIT_INACTIVE = "inactive"
 UNIT_UNREADABLE = "unreadable"
 SESSION_WRITTEN = "written"
 SESSION_SKIPPED = "skipped"
+SESSION_WITHHELD = "withheld"
 UNKNOWN_SESSION_REASON = "session cannot be determined"
 PARTLY_GONE_REASON = "source partly gone (%d of %d units)"
+FEWER_SUB_AGENTS_REASON = "source holds fewer sub-agents than archived (%d of %d)"
+FEWER_PROMPTS_REASON = "source holds fewer prompts than archived (%d of %d)"
 CHECKPOINT_FREE_ENTRIES = 500  # up to this many `.sync.json` entries, every session is saved as soon as it is done
 CHECKPOINT_FRACTION = 50  # beyond that, a save is due once the sessions done since the last one reach 1/50 of the entries
 
 _Units = Tuple[SourceUnit, ...]
+
+
+class _Counts(NamedTuple):
+    """What the files of an archived session must never lose: its prompts and its sub-agent rows."""
+
+    prompts: int
+    sub_agents: int
+
+
+class _Verdict(NamedTuple):
+    """How a read session may be published over an archived one: `publish_log` False withholds everything; `keep_report` publishes
+    the log and leaves the saved report as it is. `reason` explains a withhold or a kept report."""
+
+    publish_log: bool
+    keep_report: bool
+    reason: Optional[str] = None
+
+
+_PUBLISH_ALL = _Verdict(True, False)
+
+
+def _sub_agent_rows(agents: Sequence[SubAgent]) -> int:
+    return sum(1 + _sub_agent_rows(agent.sub_agents) for agent in agents)
+
+
+def _counts_of(session: Session) -> _Counts:
+    return _Counts(len(session.prompts), _sub_agent_rows(session.sub_agents))
 
 
 @dataclass(frozen=True)
@@ -114,12 +155,14 @@ class SyncUseCase:
         state = self._state.load_sync()
         scan = self._reader.scan()
         candidates: List[Tuple[str, _Units]] = []
-        version_only: List[Tuple[str, _Units]] = []  # waiting only for the render-version rewrite: after the rest
+        repair_only: List[Tuple[str, _Units]] = []  # waiting only for a repair rewrite: after the rest
         for session_key, units in sorted(self._learn_and_group(state, scan.units).items()):  # sorted: a fixed order
-            if not self._must_read(state, session_key, units, on_at):
+            entry = state["sessions"].get(session_key)
+            owed = self._is_rewrite_owed(entry)
+            if not self._must_read(state, entry, owed, units, on_at):
                 self._mark_changed_inactive(state, session_key, units)
-            elif self._is_owed_only_for_version(state, state["sessions"].get(session_key), units, on_at):
-                version_only.append((session_key, units))
+            elif self._waits_only_for_repair(state, entry, owed, units, on_at):
+                repair_only.append((session_key, units))
             else:
                 candidates.append((session_key, units))
         # An unlistable folder makes live units look gone, so no unit is dropped then.
@@ -129,7 +172,7 @@ class SyncUseCase:
         self._save(state)
         unsaved: Dict[str, str] = {}
         unsaved_sessions = 0
-        for session_key, units in candidates + version_only:
+        for session_key, units in candidates + repair_only:
             if self._budget_spent(started_at, budget_seconds):
                 break
             report_text = self._archive_isolated(state, session_key, units, on_at)
@@ -207,20 +250,30 @@ class SyncUseCase:
     def _may_hold_new_activity(self, state: dict, unit: SourceUnit, on_at: datetime) -> bool:
         return self._unit_unreadable(state, unit) or (self._changed(state, unit) and unit.modified_at >= on_at)
 
-    @staticmethod
-    def _is_rewrite_owed(entry: Optional[dict]) -> bool:
-        """An archived session whose last rewrite was skipped, or whose files were written by an older render version, is
-        owed a rewrite whatever its units did and whatever the on-time is now."""
-        return entry is not None and (entry["state"] == SESSION_SKIPPED or entry["renderVersion"] < RENDER_VERSION)
+    def _owes_price_rewrite(self, entry: dict) -> bool:
+        """Written while `prices.json` was unusable, and it is usable now: the report holds unknown prices that can be known."""
+        return bool(entry.get("priceFileProblem")) and self._pricing.problem() is None
 
-    def _is_owed_only_for_version(self, state: dict, entry: Optional[dict], units: _Units, on_at: datetime) -> bool:
-        """A written session whose files are older than `RENDER_VERSION` and none of whose units may hold new activity."""
-        return (entry is not None and entry["state"] == SESSION_WRITTEN and entry["renderVersion"] < RENDER_VERSION
+    def _is_rewrite_owed(self, entry: Optional[dict]) -> bool:
+        """An archived session is owed a rewrite whatever its units did and whatever the on-time is now when its last rewrite
+        was skipped, its log or report is missing on disk, or (written ones only: a withheld one holds what its source lost,
+        and no version can bring that back) its files were written by an older render version or without a usable price file."""
+        if entry is None:
+            return False
+        if entry["state"] == SESSION_SKIPPED or not self._archive.files_present(entry["logPath"]).complete:
+            return True
+        return entry["state"] == SESSION_WRITTEN and (entry["renderVersion"] < RENDER_VERSION or self._owes_price_rewrite(entry))
+
+    def _waits_only_for_repair(self, state: dict, entry: Optional[dict], owed: bool, units: _Units, on_at: datetime) -> bool:
+        """A session owed a rewrite that is no retry of a failed one, and none of whose units may hold new activity."""
+        return (owed and entry["state"] != SESSION_SKIPPED
                 and not any(self._may_hold_new_activity(state, unit, on_at) for unit in units))
 
-    def _must_read(self, state: dict, session_key: str, units: _Units, on_at: datetime) -> bool:
-        if self._is_rewrite_owed(state["sessions"].get(session_key)):
+    def _must_read(self, state: dict, entry: Optional[dict], owed: bool, units: _Units, on_at: datetime) -> bool:
+        if owed:
             return True
+        if entry is not None and entry["state"] == SESSION_WITHHELD and any(self._changed(state, unit) for unit in units):
+            return True  # a source that changed in any way may be whole again
         return any(self._may_hold_new_activity(state, unit, on_at) for unit in units)
 
     @staticmethod
@@ -251,11 +304,8 @@ class SyncUseCase:
     def _archive_session(self, state: dict, session_key: str, units: _Units, on_at: datetime) -> Optional[str]:
         """Reads the session whole and archives it when it has activity since the on-time, or when a rewrite is owed to
         it (it is archived already, so a later on-time does not excuse the missing rewrite); returns the report
-        text that could not be saved, if any. Fewer units present than the last write counted are gone: the rewrite is
-        withheld without a read, and no unit is marked, so unreadable ones stay listed and retried."""
+        text that could not be saved, if any."""
         entry = state["sessions"].get(session_key)
-        if self._withhold_if_partly_gone(entry, len(units)):
-            return None
         result = self._reader.read(session_key, units)
         failed = {source.path: source.reason for source in result.unreadable}
         session = result.session
@@ -269,31 +319,23 @@ class SyncUseCase:
         return None
 
     @staticmethod
-    def _skip_rewrite(entry: dict, reason: str, unit_count: Optional[int] = None) -> None:
-        """The entry becomes skipped with `reason` and is retried on every sync; its files stay. A failed write passes the
-        number of units it built from: the writer replaces the log and the report one by one, so either may already hold
-        rows of the new read and `unitCount` must not drop below it (it never shrinks)."""
-        entry.update(state=SESSION_SKIPPED, reason=reason)
-        if unit_count is not None:
-            entry["unitCount"] = max(entry["unitCount"], unit_count)
+    def _skip_rewrite(entry: dict, reason: str, counts: _Counts) -> None:
+        """The entry becomes skipped with `reason` and is retried on every sync; its files stay. The writer replaces the log and
+        the report one by one, so either may already hold rows of the new read: the recorded counts never drop below it."""
+        entry.update(state=SESSION_SKIPPED, reason=reason,
+                     promptCount=max(entry.get("promptCount", 0), counts.prompts),
+                     subAgentCount=max(entry.get("subAgentCount", 0), counts.sub_agents))
 
-    def _withhold_if_partly_gone(self, entry: Optional[dict], available: int) -> bool:
-        """Skips the rewrite of an archived session that has fewer units available than its last write counted; `available`
-        is the number of units present before the read, or readable after it. Returns whether it did."""
-        if entry is None or available >= entry["unitCount"]:
-            return False
-        self._skip_rewrite(entry, PARTLY_GONE_REASON % (available, entry["unitCount"]))
-        return True
-
-    def _publish(self, session: Session, known_log_path: Optional[str]) -> _Publication:
+    def _publish(self, session: Session, known_log_path: Optional[str], kept_report: Optional[str]) -> _Publication:
         """A failed write is named by its reason. The failed file is put before it unless it is the `logPath` of the session's
         existing entry (`known_log_path`): `status` shows that path with the reason (`CommandUseCases._unreadable`). A first
-        write has no entry, so status shows the source file and the failed log is named as well."""
+        write has no entry, so status shows the source file and the failed log is named as well. `kept_report` is the saved
+        report that stays; it is written back as it is."""
         log_path = report_text = None
         try:
             log_path = known_log_path or self._archive.new_log_path(session)
             log_text = self._archive.render_log(session)
-            report_text = self._archive.render_report(self._pricing.build(session))
+            report_text = kept_report if kept_report is not None else self._archive.render_report(self._pricing.build(session))
             outcome = self._archive.write(log_path, log_text, report_text)
         except Exception as error:
             return _Publication(log_path, report_text, _reason(error))
@@ -302,49 +344,102 @@ class SyncUseCase:
         failure = outcome.reason if outcome.path == known_log_path else "%s: %s" % (outcome.path, outcome.reason)
         return _Publication(log_path, report_text, failure)
 
-    def _already_written(self, state: dict, existing: Optional[dict], units: _Units, failed: Dict[str, str]) -> bool:
-        """Whether the files already hold what a rewrite would publish: written by this render version or a newer one from
-        as many units, and every unit that read now still has the fingerprint of that write. A session read only to retry
-        a unit that stays unreadable is therefore not written again, and an older copy does not undo a newer one's write."""
+    def _already_written(self, state: dict, existing: Optional[dict], units: _Units, failed: Dict[str, str],
+                         files: Optional[ArchiveFiles]) -> bool:
+        """Whether the files already hold what a rewrite would publish: both are on disk and every unit that read now still has
+        the fingerprint of the last evaluation. A written entry also needs this render version or a newer one, built from as
+        many units, and no price rewrite owed; a withheld one has nothing more to publish. A session read only to retry a unit
+        that stays unreadable is therefore not written again, and an older copy does not undo a newer one's write."""
+        if existing is None or files is None or not files.complete or existing["state"] not in (SESSION_WRITTEN, SESSION_WITHHELD):
+            return False
         readable = [unit for unit in units if unit.key not in failed]
-        return (existing is not None and existing["state"] == SESSION_WRITTEN and existing["renderVersion"] >= RENDER_VERSION
-                and existing["unitCount"] == len(readable) and not any(self._changed(state, unit) for unit in readable))
+        if any(self._changed(state, unit) for unit in readable):
+            return False
+        if existing["state"] == SESSION_WITHHELD:
+            return True
+        return (existing["renderVersion"] >= RENDER_VERSION and existing["unitCount"] == len(readable)
+                and not self._owes_price_rewrite(existing))
+
+    def _source_unchanged(self, state: dict, existing: dict, units: _Units, failed: Dict[str, str], built_from: int) -> bool:
+        """A written session whose readable units all have the fingerprint of the last evaluation and are not fewer than the last
+        write counted: its source cannot have lost anything since, so a smaller read is the reader's doing."""
+        return (existing["state"] == SESSION_WRITTEN and built_from >= existing["unitCount"]
+                and not any(self._changed(state, unit) for unit in units if unit.key not in failed))
+
+    def _judge(self, state: dict, existing: Optional[dict], files: Optional[ArchiveFiles], counts: _Counts, units: _Units,
+               failed: Dict[str, str], built_from: int) -> _Verdict:
+        """Whether the read may replace the archived files (see the module text): never when it has fewer prompts than the files
+        hold; with fewer sub-agent rows only the log, whose prompts are all kept. A file missing on disk protects nothing,
+        and a first write or a rewrite from an unchanged source (`_source_unchanged`) is published as read."""
+        if existing is None or self._source_unchanged(state, existing, units, failed, built_from):
+            return _PUBLISH_ALL
+        prompt_floor, sub_agent_floor = existing.get("promptCount", 0), existing.get("subAgentCount", 0)
+        if (files.log or files.report) and counts.prompts < prompt_floor:
+            return _Verdict(False, False, FEWER_PROMPTS_REASON % (counts.prompts, prompt_floor))
+        if files.report and counts.sub_agents < sub_agent_floor:
+            reason = (PARTLY_GONE_REASON % (built_from, existing["unitCount"]) if built_from < existing["unitCount"]
+                      else FEWER_SUB_AGENTS_REASON % (counts.sub_agents, sub_agent_floor))
+            return _Verdict(True, True, reason)
+        return _PUBLISH_ALL
 
     def _write_session(self, state: dict, session_key: str, units: _Units, session: Session,
                        failed: Dict[str, str]) -> Optional[str]:
-        """Decides in this order: withhold the rewrite when the session is partly gone; skip it when the files already hold
-        what it would publish; otherwise publish. A success records the entry from the `built_from` readable units. A failure
-        of an archived session skips the rewrite (`unitCount` grows to `built_from`); a failure of a first write leaves the
-        units unreadable with the reason. Returns the report text that could not be saved, if any."""
+        """Decides in this order: skip the rewrite when the files already hold what it would publish; withhold it, or publish the
+        log alone, when the read holds less than the files (`_judge`); otherwise publish. A success records the entry from the
+        `built_from` readable units. A failure of an archived session skips the rewrite (the counts grow to the read's); a
+        failure of a first write leaves the units unreadable with the reason. Returns the report text that could not be saved,
+        if any."""
         existing = state["sessions"].get(session_key)
         built_from = sum(unit.key not in failed for unit in units)
-        if self._withhold_if_partly_gone(existing, built_from):  # a counted unit is present but unreadable
+        files = self._archive.files_present(existing["logPath"]) if existing is not None else None
+        if self._already_written(state, existing, units, failed, files):
             self._mark(state, session_key, units, UNIT_READ, failed=failed)
             return None
-        if self._already_written(state, existing, units, failed):
+        counts = _counts_of(session)
+        verdict = self._judge(state, existing, files, counts, units, failed, built_from)
+        if not verdict.publish_log:
+            existing.update(state=SESSION_WITHHELD, reason=verdict.reason)
             self._mark(state, session_key, units, UNIT_READ, failed=failed)
             return None
-        log_path, report_text, failure = self._publish(session, existing["logPath"] if existing is not None else None)
+        kept_report = self._archive.read_report(existing["logPath"]) if verdict.keep_report else None
+        if verdict.keep_report and kept_report is None:  # an unreadable report holds nothing to keep
+            verdict = _PUBLISH_ALL
+        log_path, report_text, failure = self._publish(session, existing["logPath"] if existing is not None else None, kept_report)
         if failure is None:
-            state["sessions"][session_key] = self._session_entry(session, log_path, built_from)
+            state["sessions"][session_key] = self._entry_after_write(existing, session, log_path, built_from, counts, verdict)
             self._mark(state, session_key, units, UNIT_READ, failed=failed)
             return None
         if existing is not None:
-            self._skip_rewrite(existing, failure, built_from)
+            self._skip_rewrite(existing, failure, counts)
             self._mark(state, session_key, units, UNIT_READ, failed=failed)
         else:
             self._mark(state, session_key, units, UNIT_UNREADABLE, failure, failed)
         return report_text
 
-    @staticmethod
-    def _session_entry(session: Session, log_path: str, unit_count: int) -> dict:
+    def _entry_after_write(self, existing: Optional[dict], session: Session, log_path: str, built_from: int, counts: _Counts,
+                           verdict: _Verdict) -> dict:
+        """The entry of a session whose files were just written. When the saved report was kept, the entry is withheld and
+        still describes what that report holds (version, units, sub-agent rows, price state); the log holds the new prompts."""
+        entry = self._session_entry(session, log_path, built_from, counts)
+        if verdict.keep_report:
+            entry.update(state=SESSION_WITHHELD, reason=verdict.reason, renderVersion=existing["renderVersion"],
+                         unitCount=existing["unitCount"], subAgentCount=existing["subAgentCount"])
+            entry.pop("priceFileProblem", None)
+            if existing.get("priceFileProblem"):
+                entry["priceFileProblem"] = True
+        return entry
+
+    def _session_entry(self, session: Session, log_path: str, unit_count: int, counts: _Counts) -> dict:
         entry = {"logPath": log_path, "state": SESSION_WRITTEN}
         if session.project_dir is not None:
             entry["projectDir"] = session.project_dir
         if session.prompts:
             entry["lastPromptAt"] = max(prompt.submitted_at for prompt in session.prompts).isoformat()
         entry.update(lastActivityAt=session.last_activity_at.isoformat(), orphan=session.orphan_of_parent_id is not None,
-                     renderVersion=RENDER_VERSION, unitCount=unit_count)
+                     renderVersion=RENDER_VERSION, unitCount=unit_count, promptCount=counts.prompts,
+                     subAgentCount=counts.sub_agents)
+        if self._pricing.problem() is not None:
+            entry["priceFileProblem"] = True  # every price in this report is unknown; rewritten once the file works
         return entry
 
     def _save(self, state: dict) -> None:

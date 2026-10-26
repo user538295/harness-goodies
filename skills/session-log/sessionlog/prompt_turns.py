@@ -6,13 +6,17 @@ helper request: an `Answer`, or any object with its six attributes). A turn is a
 answers before the first opening belong to the first turn. A turn's reply is its last answer that stops it. A turn works from its
 opening to its last answer that has a time, whatever stopped it (an error, an abort, a steering prompt, a limit), except for the
 spans in which an answer put a question to the user: from the time it asked to the start of the next answer, the turn waited for
-the user and works no time. A turn whose opening has no usable time gives no prompt: its replies and the requests under it are
-dropped from the prompts (the requests stay in the list of every request the grouping returns, which a sub-agent reports)."""
+the user and works no time. A turn whose opening has no usable time gives no prompt: its replies are dropped from the prompts and its
+requests, with those of a transcript that has no opening at all, fall under no prompt: `group_turns` returns them apart (and, like
+every request, in the list a sub-agent reports) and `with_unprompted` shows them as the leading row `NO_PROMPT_TEXT`, so their tokens
+and cost still reach the TOTAL (the convention of Cursor's lone `stop`)."""
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, List, NamedTuple, Optional, Protocol, Tuple, Union
 
 from .model import Prompt, RequestUsage
+
+NO_PROMPT_TEXT = "(prompt not recorded)"
 
 
 class Opening(NamedTuple):
@@ -97,9 +101,17 @@ class _Turn:
         )
 
 
-def group_turns(events: Iterable[Union[Opening, AnswerLike]]) -> Tuple[Tuple[Prompt, ...], Tuple[RequestUsage, ...]]:
-    """The prompts of the events in order, and every request in order (also the ones under a dropped opening, and those before the first
-    opening)."""
+class Grouping(NamedTuple):
+    """The prompts of a transcript, every request it made and the requests that fall under no prompt (see the module text)."""
+
+    prompts: Tuple[Prompt, ...]
+    requests: Tuple[RequestUsage, ...]
+    unprompted: Tuple[RequestUsage, ...]
+
+
+def group_turns(events: Iterable[Union[Opening, AnswerLike]]) -> Grouping:
+    """The prompts of the events in order, every request in order (also the ones under a dropped opening, and those before the first
+    opening) and, in order, the requests under no prompt: those of a dropped opening and, with no opening at all, every one."""
     turns: List[_Turn] = []
     leading: List[AnswerLike] = []
     requests: List[RequestUsage] = []
@@ -113,5 +125,21 @@ def group_turns(events: Iterable[Union[Opening, AnswerLike]]) -> Tuple[Tuple[Pro
         current.append(event)
     if turns:
         turns[0].answers = leading + turns[0].answers
-    prompts = (prompt for prompt in (turn.to_prompt() for turn in turns) if prompt is not None)
-    return tuple(prompts), tuple(requests)
+    prompts: List[Prompt] = []
+    orphans: List[AnswerLike] = [] if turns else leading
+    for turn in turns:
+        prompt = turn.to_prompt()
+        if prompt is None:
+            orphans += turn.answers
+        else:
+            prompts.append(prompt)
+    unprompted = tuple(answer.request for answer in orphans if answer.request is not None)
+    return Grouping(tuple(prompts), tuple(requests), unprompted)
+
+
+def with_unprompted(prompts: Tuple[Prompt, ...], unprompted: Tuple[RequestUsage, ...], started_at: datetime) -> Tuple[Prompt, ...]:
+    """`prompts` led by the row of the requests that fall under no prompt, dated by the session start and without a reply or working
+    time; the prompts themselves when there are no such requests."""
+    if not unprompted:
+        return prompts
+    return (Prompt(submitted_at=started_at, text=NO_PROMPT_TEXT, working_time=timedelta(0), requests=unprompted),) + prompts

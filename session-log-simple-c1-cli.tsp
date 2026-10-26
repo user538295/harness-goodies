@@ -24,7 +24,7 @@ enum Command { on, off, status, usage }
 /**
  * `usage` target. Absent and `latest` mean the same: the root session of the current project with the newest prompt, ranked from the
  * C6 session entries (no harness file is read for ranking). Only when the project has no archived session is the store read:
- * newest source unit first, the first root session with a prompt wins (S68).
+ * every never-archived root session is ranked by its newest prompt, the newest source unit breaking a tie (S68).
  * Current project: the sessions whose recorded cwd equals the command's cwd; if none, those of the nearest parent folder of the cwd
  * that has any (so `usage` works from a subfolder, as today's Cursor `usage`). Paths are compared under os.path.normcase, or both after
  * os.path.realpath.
@@ -122,8 +122,10 @@ model StatusResult {
   /** The number of C6 session entries: every session this tool has archived under the log root, also one whose last rewrite failed. */
   archivedSessionCount: int32;
   /**
-   * Unreadable sources (Cursor: also `.records/.invalid/` with its call count), files skipped because the write failed, and sessions
-   * kept unrewritten because part of their source is gone (C6 unitCount), with reasons.
+   * Unreadable sources (Cursor: also `.records/.invalid/` with its call count), files skipped because the write failed, sessions
+   * withheld because their source holds less than the archive (C6 withheld: fewer prompts, partly gone), and sessions whose log or report
+   * is missing from disk with no source left to rebuild it, with reasons. While the log root cannot be written, `status` and `usage` go on
+   * with what is archived and print one warning line on stderr; the exit code stays 0.
    */
   unreadable: UnreadableItem[];
   /** Cursor only. */

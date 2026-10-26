@@ -105,9 +105,9 @@ class LegacyHeaderTest(unittest.TestCase):
         meta = _meta(forked_from_id=PARENT, source={"subagent": {"other": "guardian"}})
         self.assertEqual((PARENT, PARENT, True), (meta.parent_thread_id, meta.root_id, meta.forked))
 
-    def test_a_sub_agent_naming_no_parent_at_all_is_its_own_root(self):
+    def test_a_helper_naming_no_parent_at_all_has_its_own_id_as_root_and_is_marked_a_helper(self):
         meta = _meta(source={"subagent": {"other": "guardian"}})
-        self.assertEqual((None, THREAD, "guardian"), (meta.parent_thread_id, meta.root_id, meta.agent_type))
+        self.assertEqual((None, THREAD, "guardian", True), (meta.parent_thread_id, meta.root_id, meta.agent_type, meta.helper))
 
     def test_a_fork_of_a_thread_that_is_no_sub_agent_stays_its_own_root(self):
         meta = _meta(forked_from_id=PARENT, source="cli")
@@ -150,13 +150,44 @@ class LegacyChildNestingTest(_FamilyReaderTestCase):
         session = self._read().session
         self.assertEqual((ROOT, ["child ask"]), (session.orphan_of_parent_id, [prompt.text for prompt in session.prompts]))
 
-    def test_a_sub_agent_without_any_parent_is_archived_alone_under_its_own_id_and_is_no_orphan_label(self):
-        self._write(_name(GUARD), _rollout(GUARD, root=GUARD, start=20, records=[_prompt(21, "review"), _used(22, 5, 1)],
-                                           source={"subagent": {"other": "guardian"}}))
-        (unit,) = self.reader.scan().units
-        self.assertEqual("codex:" + GUARD, self.reader.session_of(unit))
+    def test_a_helper_without_any_parent_is_no_session_of_the_user_and_nothing_is_unreadable(self):
+        """Guardian reviews whose header names no parent (21 of 194 sessions in a real store) were archived as user sessions of their
+        own and could win `usage --latest`; a parentless helper is not archived at all."""
+        for source in ({"subagent": {"other": "guardian"}}, {"subagent": "review"}):
+            with self.subTest(source=source):
+                self._write(_name(GUARD), _rollout(GUARD, root=GUARD, start=20, records=[_prompt(21, "review"), _used(22, 5, 1)], source=source))
+                (unit,) = self.reader.scan().units
+                self.assertEqual("codex:" + GUARD, self.reader.session_of(unit))
+                result = self._read(GUARD)
+                self.assertEqual((None, ()), (result.session, result.unreadable))
+
+    def test_a_thread_spawn_without_any_parent_is_still_archived_alone_under_its_own_id(self):
+        self._write(_name(GUARD), _rollout(GUARD, root=GUARD, start=20, records=[_prompt(21, "work"), _used(22, 5, 1)],
+                                           source={"subagent": {"thread_spawn": {"depth": 1}}}))
         session = self._read(GUARD).session
-        self.assertEqual((None, 6), (session.orphan_of_parent_id, PricingRules(_Book()).build(session).total.total_tokens))
+        self.assertEqual((None, ["work"], 6), (session.orphan_of_parent_id, [p.text for p in session.prompts],
+                                               PricingRules(_Book()).build(session).total.total_tokens))
+
+    def test_a_helper_whose_parent_rollout_is_present_is_a_sub_agent_of_it_and_its_tokens_are_in_the_total(self):
+        self._put(ROOT, records=[_prompt(10, "ask"), _used(11, 100, 10)])
+        self._put(GUARD, parent=ROOT, start=20, records=[_prompt(21, "review"), _used(22, 5, 1)], source={"subagent": {"other": "guardian"}})
+        session = self._read().session
+        (guard,) = session.sub_agents
+        self.assertEqual((["ask"], GUARD, "guardian", 116), ([p.text for p in session.prompts], guard.agent_id, guard.type,
+                                                             PricingRules(_Book()).build(session).total.total_tokens))
+
+    def test_a_helper_whose_parent_rollout_is_gone_is_not_archived_alone_labelled_as_an_orphan(self):
+        self._put(GUARD, parent=ROOT, start=20, records=[_prompt(21, "review"), _used(22, 5, 1)], source={"subagent": {"other": "guardian"}})
+        result = self._read()
+        self.assertEqual((None, ()), (result.session, result.unreadable))
+
+    def test_an_orphan_family_promotes_the_thread_spawn_never_the_helper_whose_prompt_came_first(self):
+        self._put(GUARD, parent=ROOT, start=20, records=[_prompt(21, "review"), _used(22, 5, 1)], source={"subagent": {"other": "guardian"}})
+        self._put(CHILD, parent=ROOT, start=30, agent_role="explorer", records=[_prompt(31, "child ask"), _used(32, 700, 70)])
+        session = self._read().session
+        self.assertEqual((ROOT, ["child ask"], [GUARD]), (session.orphan_of_parent_id, [p.text for p in session.prompts],
+                                                          [agent.agent_id for agent in session.sub_agents]))
+        self.assertEqual(6 + 770, PricingRules(_Book()).build(session).total.total_tokens)
 
 
 class LegacyChildSyncTest(CodexEntryTestCase):

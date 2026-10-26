@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from sessionlog.model import Harness
 from sessionlog.omp_family import Member, build_session, cyclic_keys
+from sessionlog.prompt_turns import NO_PROMPT_TEXT
 from tests.omp_records import assistant_record, at, header_record, helper_record, init_record, parse, usage_of, user_record
 
 ROOT_STEM = "2026-10-13T08-42-00-000Z_root-id"
@@ -135,6 +136,30 @@ class OrphanSessionTest(unittest.TestCase):
     def test_without_the_root_and_without_any_child_with_a_start_there_is_no_session(self):
         self.assertIsNone(build_session(ROOT_ID, ROOT_STEM, None, []))
         self.assertIsNone(build_session(ROOT_ID, ROOT_STEM, None, [Member("/store/t", "t", at(0), parse({"type": "session", "id": "t"}))]))
+
+
+class UnpromptedRequestsTest(unittest.TestCase):
+    def test_a_root_without_any_prompt_still_reports_its_requests_as_a_leading_row_dated_by_its_start(self):
+        root = root_member(helper_record(10, usage_of(2, 2, cost=2.5)), assistant_record(11, usage=usage_of(1, 1, cost=1.0)))
+        (lead,) = build_session(ROOT_ID, ROOT_STEM, root, []).prompts
+        self.assertEqual((at(2), NO_PROMPT_TEXT, [2.5, 1.0]), (lead.submitted_at, lead.text, [r.recorded_cost_usd for r in lead.requests]))
+
+    def test_the_leading_row_comes_before_the_prompts_of_the_root(self):
+        timeless = {"type": "custom_message", "customType": "skill-prompt", "content": "timeless", "attribution": "user"}
+        root = root_member(timeless, assistant_record(11, usage=usage_of(1, 1)), user_record(20, "ask"), assistant_record(21, usage=usage_of(3, 3)))
+        lead, asked = build_session(ROOT_ID, ROOT_STEM, root, []).prompts
+        self.assertEqual(([1], "ask", [3]), ([r.input_tokens for r in lead.requests], asked.text, [r.input_tokens for r in asked.requests]))
+
+    def test_a_promoted_orphan_child_keeps_its_unprompted_requests_in_the_leading_row(self):
+        timeless = {"type": "custom_message", "customType": "skill-prompt", "content": "timeless", "attribution": "user"}
+        promoted = member("Asked", timeless, assistant_record(11, usage=usage_of(1, 1)), user_record(12, "child prompt"), parent=ROOT_STEM)
+        session = build_session(ROOT_ID, ROOT_STEM, None, [promoted])
+        self.assertEqual([NO_PROMPT_TEXT, "child prompt"], [prompt.text for prompt in session.prompts])
+
+    def test_a_child_without_a_prompt_is_not_promoted_for_its_unprompted_requests_and_reports_them_as_a_sub_agent(self):
+        child = member("Task", assistant_record(11, usage=usage_of(1, 1)), parent=ROOT_STEM)
+        session = build_session(ROOT_ID, ROOT_STEM, None, [child])
+        self.assertEqual(((), ["Task-id"]), (session.prompts, [agent.agent_id for agent in session.sub_agents]))
 
 
 if __name__ == "__main__":

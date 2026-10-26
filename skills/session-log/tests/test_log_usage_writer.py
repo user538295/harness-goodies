@@ -66,7 +66,7 @@ def report_of(*rows, project="/p"):
 
 class SlugTests(unittest.TestCase):
     def test_slug_replaces_other_chars_cuts_64_root_and_unknown_fallbacks(self):
-        self.assertRegex(slug_of(posixpath, "/work/my proj.v2"), hashed("my-proj-v2"))
+        self.assertRegex(slug_of(posixpath, "/work/my proj.v2"), hashed(r"my-proj\.v2"))
         self.assertRegex(slug_of(posixpath, "/work/\u00e9\u00e9\u00fc"), hashed("---"))
         self.assertRegex(slug_of(posixpath, "/work/" + "x" * 100), hashed("x{%d}" % SLUG_MAX))
         self.assertRegex(slug_of(posixpath, "/"), hashed("root"))
@@ -78,6 +78,17 @@ class SlugTests(unittest.TestCase):
     def test_slug_length_boundary_64_kept_65_cut(self):
         self.assertRegex(slug_of(posixpath, "/w/" + "x" * SLUG_MAX), hashed("x{%d}" % SLUG_MAX))
         self.assertRegex(slug_of(posixpath, "/w/" + "x" * (SLUG_MAX + 1)), hashed("x{%d}" % SLUG_MAX))
+
+    def test_slug_keeps_dots_so_a_project_folder_matches_the_old_log_key(self):
+        """Pinned from the old native hook's workspace_key (git ae476af): `.` was a kept character, a leading dot included."""
+        self.assertEqual(slug_of(posixpath, "/Users/me/dev/my.app"), "my.app-49e58f1bee07")
+        self.assertEqual(slug_of(posixpath, "/Users/me/.claude"), ".claude-0bd83d077606")
+        self.assertRegex(slug_of(posixpath, "/w/" + "." * 70), hashed(r"\." + "{%d}" % SLUG_MAX))
+
+    def test_a_dot_dot_basename_stays_one_safe_folder_name(self):
+        folder = slug_of(posixpath, "/a/..")
+        self.assertRegex(folder, hashed(r"\.\."))
+        self.assertNotIn(folder, (".", ".."))
 
     def test_slug_hash_is_pinned_sha256_prefix_of_the_cwd(self):
         self.assertEqual(slug_of(posixpath, "/work/proj"), "proj-277ae841cc3b")
@@ -128,6 +139,13 @@ def pricing_report(*prompts, harness=Harness.CLAUDE, agents=()):
 def head_of(text):
     lines = writer().render_report(pricing_report(Prompt(submitted_at=START, text=text))).split("\n")
     return next(line for line in lines if line.startswith("1. ")).split('"')[1]
+
+
+def replied(minute, name, model, effort):
+    """A prompt `minute` minutes in, answered 5 s later with one request on `model` at `effort`."""
+    at = START + timedelta(minutes=minute)
+    return Prompt(at, name, at + timedelta(seconds=5), "reply " + name, timedelta(seconds=5),
+                  (RequestUsage(model, 1, 1, 0, 0, 0, effort=effort),))
 
 
 class Shifting(tzinfo):
@@ -199,6 +217,34 @@ class RenderTests(unittest.TestCase):
             "price: \u2265 $0.02 (incomplete), model: known+nope, effort: high",
             ""]))
 
+    def test_omp_and_opencode_rows_and_total_show_reasoning_between_output_and_cache_create_the_others_do_not(self):
+        """Old OMP/OpenCode report layout (git ae476af): `output: N, reasoning: N, cache_write`; a subset of output, so no total changes."""
+        prompt = Prompt(START, "hello", requests=(RequestUsage("known", 1000, 500, 0, 0, 0, reasoning_tokens=20),))
+        agent = SubAgent("a1", "Explore", START, requests=(RequestUsage("known", 7, 3, 0, 0, 0, reasoning_tokens=2),))
+        for harness in (Harness.OMP, Harness.OPENCODE):
+            with self.subTest(harness=harness):
+                lines = writer().render_report(pricing_report(prompt, harness=harness, agents=(agent,))).split("\n")
+                estimates = [line for line in lines if line.startswith("est. used token: ")]
+                self.assertEqual(["est. used token: input: 1000, output: 500, reasoning: 20, cache_create: 0",
+                                  "est. used token: input: 7, output: 3, reasoning: 2, cache_create: 0",
+                                  "est. used token: input: 1007, output: 503, reasoning: 22, cache_create: 0"],
+                                 [line[:line.index(", cache_read")] for line in estimates])
+                self.assertIn("total_tokens: 1510,", estimates[2])
+        claude = writer().render_report(pricing_report(prompt))
+        self.assertNotIn("reasoning", claude)
+
+    def test_a_recorded_transcript_path_replaces_the_session_id_line_and_ends_the_subagent_line_as_in_the_old_cursor_report(self):
+        """Old Cursor report (git ae476af): `session: <transcript path>` and `sub-agent: <type> (<id>), working time: <t>, jsonl: <path>`."""
+        agents = (SubAgent("c1", "explore", START, timedelta(seconds=65), tokens_not_recorded=True, transcript_path="/t/sub/c1.jsonl"),
+                  SubAgent("c2", "explore", START, timedelta(seconds=5), tokens_not_recorded=True))
+        prompt = Prompt(START, "p", requests=(RequestUsage("known", 1, 1, 0, 0, 0),))
+        report = pricing_report(prompt, harness=Harness.CURSOR, agents=agents)
+        recorded = writer().render_report(replace(report, transcript_path="/t/main.jsonl")).split("\n")
+        self.assertEqual(["session: /t/main.jsonl", "harness: cursor"], recorded[:2])
+        self.assertIn("sub-agent: explore (c1), working time: 00:01:05, jsonl: /t/sub/c1.jsonl", recorded)
+        self.assertIn("sub-agent: explore (c2), working time: 00:00:05", recorded)
+        self.assertEqual("session: abc", writer().render_report(report).split("\n")[0])
+
     def test_unexpected_price_status_is_a_programming_error(self):
         with self.assertRaises(ValueError):
             writer().render_report(report_of(row(price=Price(5, "bogus"))))
@@ -228,6 +274,15 @@ class RenderTests(unittest.TestCase):
             naive.render_log(session())
         with self.assertRaisesRegex(ValueError, "to_local must return an aware datetime"):
             naive.render_report(report_of(row()))
+
+    def test_to_local_that_cannot_convert_a_time_falls_back_to_utc_in_the_log_and_the_report(self):
+        for error in (OverflowError("date value out of range"), OSError("Invalid argument"), ValueError("year out of range")):
+            def to_local(moment, error=error):
+                raise error
+            failing = LogUsageWriter("/logs", to_local, posixpath)
+            with self.subTest(error=type(error).__name__):
+                self.assertIn("- start: 2026-08-28 10:00:00 UTC\n", failing.render_log(session()))
+                self.assertIn("times: UTC\n", failing.render_report(report_of(row())))
 
     def test_lone_surrogates_are_scrubbed_in_the_renders_so_printed_equals_saved(self):
         prompt = Prompt(START, "a\ud800b", START + timedelta(seconds=1), "r\udcffs", timedelta(seconds=1))
@@ -285,6 +340,27 @@ class RenderTests(unittest.TestCase):
     def test_response_header_uses_the_reply_time_not_the_prompt_time(self):
         prompt = Prompt(START, "ask", START + timedelta(minutes=2), "answer", timedelta(minutes=2))
         self.assertIn("### 2026-08-28 10:02:00 UTC response\nanswer", writer().render_log(session(prompts=(prompt,))))
+
+    def test_a_response_notes_the_model_and_effort_switch_from_the_previous_prompt(self):
+        """Old Claude log wording (git ae476af prompt_log_lib.sh switch_line): only the part that changed, `→` between the values."""
+        log = writer().render_log(session(prompts=(
+            replied(0, "a", "claude-sonnet", "high"), replied(1, "b", "claude-fable", "max"), replied(2, "c", "claude-fable", "low"),
+            replied(3, "d", "claude-fable", "low"))))
+        self.assertEqual(log.count("switched:"), 2)
+        self.assertIn("### 2026-08-28 10:01:05 UTC response\nreply b\n\nswitched: model claude-sonnet \u2192 claude-fable, effort high \u2192 max\n", log)
+        self.assertIn("### 2026-08-28 10:02:05 UTC response\nreply c\n\nswitched: effort max \u2192 low\n", log)
+
+    def test_the_first_prompt_and_an_unknown_side_never_switch(self):
+        log = writer().render_log(session(prompts=(
+            replied(0, "a", "m1", None), replied(1, "b", "m1", "high"), replied(2, "c", "m2", None))))
+        self.assertEqual(log.count("switched:"), 1)
+        self.assertIn("reply c\n\nswitched: model m1 \u2192 m2\n", log)
+        self.assertNotIn("effort", log.split("switched:")[1])
+
+    def test_a_prompt_that_used_several_models_is_compared_by_its_last_request(self):
+        first = Prompt(START, "a", START, "reply a", timedelta(0), (RequestUsage("m1", 1, 1, 0, 0, 0), RequestUsage("m2", 1, 1, 0, 0, 0)))
+        second = replied(1, "b", "m2", None)
+        self.assertNotIn("switched:", writer().render_log(session(prompts=(first, second))))
 
     def test_times_render_local_with_utc_offset_zero_offset_plain_utc(self):
         prompt = Prompt(START, "ask", START + timedelta(minutes=1), "answer", timedelta(minutes=1))

@@ -16,6 +16,7 @@ _SPACE_RUN = re.compile(r" +")
 PRICED = "priced"
 PARTIAL = "partial"
 UNKNOWN = "unknown"
+REASONING_HARNESSES = (Harness.OMP, Harness.OPENCODE)  # the harnesses whose requests record reasoning tokens; the old report showed them
 
 
 def _whole_seconds(span: timedelta) -> timedelta:
@@ -78,6 +79,7 @@ class Usage:
     price: Price
     model_names: str
     effort: Optional[str]
+    reasoning_tokens: Optional[int] = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,7 @@ class SubAgentRow(Usage):
     type: str
     depth: int
     working_time: Optional[timedelta]
+    transcript_path: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +121,7 @@ class Total:
     model_names: str
     effort: Optional[str]
     label: Optional[str] = None
+    reasoning_tokens: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,7 @@ class UsageReport:
     prompts: Tuple[PromptRow, ...]
     sub_agents: Tuple[SubAgentRow, ...]
     total: Total
+    transcript_path: Optional[str] = None
 
 
 class PricingRules:
@@ -154,7 +159,7 @@ class PricingRules:
             (rates.cache_write_5m, request.cache_write_5m_tokens),
             (rates.cache_write_1h, request.cache_write_1h_tokens))), Decimal(0)) / TOKENS_PER_MILLION
 
-    def _usage(self, requests: Tuple[RequestUsage, ...], missing: bool = False) -> dict:
+    def _usage(self, requests: Tuple[RequestUsage, ...], records_reasoning: bool, missing: bool = False) -> dict:
         amount = Decimal(0)
         known = 0
         for request in requests:
@@ -177,21 +182,23 @@ class PricingRules:
                     total_tokens=None if missing else input_tokens + output_tokens + cache_read + cache_write,
                     price=Price(_cents(amount), status, amount),
                     model_names="+".join(sorted({r.model_name + (":fast" if r.fast else "") for r in requests if r.model_name})) or "-",
-                    effort="+".join(sorted({r.effort for r in requests if r.effort})) or None)
+                    effort="+".join(sorted({r.effort for r in requests if r.effort})) or None,
+                    reasoning_tokens=sum(r.reasoning_tokens or 0 for r in requests) if records_reasoning else None)
 
     def build(self, session: Session) -> UsageReport:
         """Prefer recorded costs; round each row once for display, and the total once from the rows' exact amounts, not their cents."""
+        records_reasoning = session.harness in REASONING_HARNESSES
         prompts = tuple(PromptRow(
-            **self._usage(prompt.requests), at=prompt.submitted_at,
+            **self._usage(prompt.requests, records_reasoning), at=prompt.submitted_at,
             working_time=_whole_seconds(prompt.working_time or timedelta(0)) if prompt.reply_at is not None else timedelta(0),
             prompt_head=_prompt_head(prompt.text)) for prompt in session.prompts)
         agents = []
 
         def visit(children, depth):
             for agent in children:
-                agents.append(SubAgentRow(**self._usage(agent.requests, agent.tokens_not_recorded),
+                agents.append(SubAgentRow(**self._usage(agent.requests, records_reasoning, agent.tokens_not_recorded),
                                           agent_id=agent.agent_id, type=agent.type, depth=depth,
-                                          working_time=agent.working_time))
+                                          working_time=agent.working_time, transcript_path=agent.transcript_path))
                 visit(agent.sub_agents, depth + 1)
 
         visit(session.sub_agents, 0)
@@ -209,5 +216,6 @@ class PricingRules:
                       cache_write_tokens=sum(row.cache_write_tokens for row in rows),
                       model_names="+".join(sorted({name for row in rows for name in row.model_names.split("+") if name != "-"})) or "-",
                       effort="+".join(sorted({effort for row in rows if row.effort for effort in row.effort.split("+")})) or None,
-                      label="tokens: main session only — Cursor does not record sub-agent tokens" if cursor else None)
-        return UsageReport(session.harness, session.session_id, session.project_dir, prompts, tuple(agents), total)
+                      label="tokens: main session only — Cursor does not record sub-agent tokens" if cursor else None,
+                      reasoning_tokens=sum(row.reasoning_tokens for row in rows) if records_reasoning else None)
+        return UsageReport(session.harness, session.session_id, session.project_dir, prompts, tuple(agents), total, session.transcript_path)

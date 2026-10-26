@@ -53,6 +53,11 @@ def _on_model(record: dict, model: str) -> dict:
     return record
 
 
+def _api_error(record: dict) -> dict:
+    """The `<synthetic>` message Claude Code writes when the API call failed."""
+    return {**_on_model(record, "<synthetic>"), "isApiErrorMessage": True, "error": "rate_limit"}
+
+
 def _plain_user(second, text, **extra) -> dict:
     return {"type": "user", "promptSource": None, "cwd": "/work/proj", "timestamp": STAMP % second,
             "message": {"role": "user", "content": text}, **extra}
@@ -662,6 +667,45 @@ class ClaudeRulesTest(ClaudeReaderTestCase):
         records = [_typed(1), _answer(2, "m1", _usage(5), "real"), synthetic, _plain_user(10, "<command-name>/x</command-name>"), synthetic]
         (prompt,) = self._prompts(records)
         self.assertEqual((prompt.reply_text, prompt.reply_at, [r.output_tokens for r in prompt.requests]), ("real", _at(2), [5]))
+
+    def test_claude_read_synthetic_only_answer_still_gives_a_slash_command_its_row_with_the_synthetic_text_as_reply_and_no_request(self):
+        limit = _api_error(_answer(5, "m1", _usage(0), "You've hit your org's monthly spend limit"))
+        (prompt,) = self._prompts([_plain_user(1, COMMAND_TEXT), limit])
+        self.assertEqual((prompt.text, prompt.reply_text, prompt.reply_at, prompt.requests),
+                         ("/x:iterative-review", "You've hit your org's monthly spend limit", _at(5), ()))
+
+    def test_claude_read_synthetic_only_answer_is_the_reply_of_a_typed_prompt_but_never_beats_a_real_one(self):
+        limit = _api_error(_answer(5, "m1", _usage(0), "Rate limited"))
+        (only,) = self._prompts([_typed(1), limit])
+        self.assertEqual((only.reply_text, only.requests), ("Rate limited", ()))
+        (mixed,) = self._prompts([_typed(1), _answer(2, "m2", _usage(3), "real"), limit])
+        self.assertEqual((mixed.reply_text, [r.output_tokens for r in mixed.requests]), ("real", [3]))
+
+    def test_claude_read_synthetic_message_that_is_no_api_error_never_answers_a_slash_command(self):
+        note = _on_model(_answer(5, "m1", _usage(0), "No response requested."), "<synthetic>")
+        self.assertEqual(self._prompts([_plain_user(1, COMMAND_TEXT), note]), ())
+
+    def test_claude_read_synthetic_answer_is_not_handed_to_the_turn_before_a_plain_entry(self):
+        limit = _api_error(_answer(5, "m1", _usage(0), "Rate limited"))
+        (prompt,) = self._prompts([_typed(1), _plain_user(2, "plain"), limit])
+        self.assertEqual((prompt.reply_text, prompt.requests), (None, ()))
+
+    def test_claude_read_plain_text_of_a_python_sdk_run_is_a_prompt_with_its_reply_and_tokens_without_a_bridge_session(self):
+        sdk = {"entrypoint": "sdk-py", "userType": "external"}
+        records = [_plain_user(1, "run the cron job", **sdk), _answer(2, "m1", _usage(7), "done")]
+        (prompt,) = self._prompts(records)
+        self.assertEqual((prompt.text, prompt.reply_text, [r.output_tokens for r in prompt.requests]), ("run the cron job", "done", [7]))
+
+    def test_claude_read_python_sdk_entries_that_are_no_typed_text_stay_no_prompts(self):
+        sdk = {"entrypoint": "sdk-py", "userType": "external"}
+        noise = [_plain_user(2, "<local-command-stdout>x</local-command-stdout>", **sdk), _plain_user(3, "meta", isMeta=True, **sdk),
+                 _plain_user(4, [{"type": "tool_result", "content": "ok"}], **sdk), _plain_user(5, "<task-notification>x</task-notification>", **sdk)]
+        (prompt,) = self._prompts([_typed(1), *noise, _answer(7, "m1", _usage(), "r")])
+        self.assertEqual((prompt.text, prompt.reply_text), ("ask", "r"))
+
+    def test_claude_read_plain_text_of_other_entrypoints_still_needs_a_bridge_session(self):
+        records = [_plain_user(1, "plain", entrypoint="cli", userType="external"), _answer(2, "m1", _usage(), "r")]
+        self.assertEqual(self._prompts(records), ())
 
     def test_claude_read_legacy_cache_creation_tokens_count_as_5m_unless_the_split_is_present(self):
         legacy = _usage(cache_creation_input_tokens=30)

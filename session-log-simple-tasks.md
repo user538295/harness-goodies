@@ -450,12 +450,12 @@ flowchart LR
         - #e2e_test — `test_python34_hook_exits_0_silently` — S55
 
 ### Phase 9 · Log Codex sessions, compressed rollouts and sub-agents
-- [x] **BE-24** — CodexReader core: rollouts under `sessions/` and `archived_sessions/` (`.jsonl`, `.jsonl.zst`), keys drop `.zst`, `sessionOf` from the rollout's first line, prompts only from `UserMessage` items or old `user_message` events, uncached input = `input_tokens` − `cached_input_tokens`, `cache_write_input_tokens` as cache write, requests from `token_usage_record` else growth of `total_token_usage`, `last_token_usage` never summed; wired into the composition root #backend-role
+- [x] **BE-24** — CodexReader core: rollouts under `sessions/` and `archived_sessions/` (`.jsonl`, `.jsonl.zst`), keys drop `.zst`, `sessionOf` from the rollout's first line, prompts only from `UserMessage` items or old `user_message` events, uncached input = `input_tokens` − `cached_input_tokens` − `cache_write_input_tokens`, `cache_write_input_tokens` as cache write, requests from `token_usage_record` else growth of `total_token_usage`, `last_token_usage` never summed; wired into the composition root #backend-role
     - Interface Adapters · 4.0h
     - needs BE-9, BE-14 · completes S7
     - Tests
         - #unit_test — `test_prompts_only_from_user_message_items_injected_context_skipped` — S7
-        - #unit_test — `test_input_is_input_minus_cached_cache_read_is_cached_and_cache_write_counted_once` — S7
+        - #unit_test — `test_input_is_input_minus_cached_and_minus_cache_write_because_both_are_inside_input_tokens` — S7
         - #unit_test — `test_requests_from_token_usage_record_else_total_growth_with_fork_inherited_total_excluded` — S43
 - [x] **BE-25** — Codex sub-agents: `parent_thread_id` nesting (grandchild under its child while `session_meta.session_id` names the root), root in `archived_sessions/` found, an active child makes its parent archived whole, an old child (plain or `.zst`) linked from its first line, orphan child archived alone and labelled #backend-role
     - Interface Adapters · 4.0h

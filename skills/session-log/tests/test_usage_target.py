@@ -353,6 +353,37 @@ class IdTargetTest(UsageTargetTestCase):
             self._text("")
 
 
+class FindingThatHidesNoSessionTest(UsageTargetTestCase):
+    """A listing finding with `hides_sessions` False (Cursor's folder of filed-away hook calls) is for `status` alone: it must not end
+    a lookup the way a source that could not be listed does."""
+
+    FINDING_PATH = "/store/.invalid"
+
+    def _list_with_finding(self, hides_sessions: bool) -> None:
+        real_scan = self.reader.scan
+        finding = UnreadableSource(Harness.CLAUDE, self.FINDING_PATH, "filed away", hides_sessions=hides_sessions)
+        self.reader.scan = lambda: ScanResult(real_scan().units, (finding,))
+
+    def test_it_neither_ends_latest_nor_an_unknown_id_in_an_empty_store(self):
+        self._list_with_finding(hides_sessions=False)
+        with self.assertRaisesRegex(CommandError, "^no session for this project"):
+            self._text()
+        with self.assertRaisesRegex(CommandError, "^no session has the id 'nope'$"):
+            self._text("nope")
+
+    def test_a_source_that_may_hide_a_session_still_ends_both_lookups(self):
+        self._list_with_finding(hides_sessions=True)
+        for lookup in (lambda: self._text(), lambda: self._text("nope")):
+            with self.assertRaisesRegex(CommandError, "the store could not be read completely \\(%s: filed away\\)" % self.FINDING_PATH):
+                lookup()
+
+    def test_a_prefix_and_the_latest_are_still_resolved_beside_it(self):
+        self._install("abc", prompts=[BEFORE_ON], modified=BEFORE_ON)
+        self._list_with_finding(hides_sessions=False)
+        self.assertEqual(self._text("ab"), _report("abc"))
+        self.assertEqual(self._text(), _report("abc"))
+
+
 class OffTest(UsageTargetTestCase):
     def test_usage_while_off_prints_report_saved_at_last_sync(self):
         path = self._install("abc", prompts=[ON_AT + ONE_DAY])

@@ -23,7 +23,8 @@ def thread_of_rollout(rollout: Rollout, modified_at: datetime) -> Optional[Threa
     after the header (a header is written when the thread is created, which can be minutes before it does anything); one with
     no record time after its header starts at the header; a header without a time gives the rollout's file time `modified_at`
     when it has requests (as for a Claude sub-agent), else the rollout has no row. It works from its start to its newest
-    record; a rollout with no record time after the header works no time."""
+    record; a rollout with no record time after the header works no time. A helper (a guardian review) carries no prompts: it is
+    never the session itself, so it cannot be promoted out of a family whose root rollout is gone, and its tokens stay in its row."""
     meta = rollout.meta
     if meta is None:
         return None
@@ -34,5 +35,5 @@ def thread_of_rollout(rollout: Rollout, modified_at: datetime) -> Optional[Threa
     if rollout.first_moment is not None and rollout.last_moment is not None:
         working_time = rollout.last_moment - started_at  # `started_at` is `first_moment`, never after the newest record
     return Thread(thread_id=meta.thread_id, parent_thread_id=meta.parent_thread_id, agent_type=meta.agent_type,
-                  started_at=started_at, working_time=working_time, requests=rollout.requests, prompts=rollout.prompts,
+                  started_at=started_at, working_time=working_time, requests=rollout.requests, prompts=() if meta.helper else rollout.prompts,
                   project_dir=meta.project_dir)
