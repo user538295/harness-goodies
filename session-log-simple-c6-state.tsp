@@ -80,8 +80,8 @@ model SessionEntry {
    */
   promptCount?: int32;
   /**
-   * Sub-agent rows (nested ones too) the saved report holds. A read with as many prompts and fewer rows (a deleted Codex child, a cleaned
-   * Claude sub-agent file, an unreadable unit) rewrites the log, so new prompts are archived, and keeps the saved report: state withheld,
+   * Sub-agent rows (nested ones too) the saved report holds. A read with as many or more prompts and fewer rows (a deleted Codex child, a cleaned
+   * Claude sub-agent file, an unreadable unit) rewrites the log, so new prompts are archived, and keeps the saved report (which `usage` then prints with a warning): state withheld,
    * "source partly gone (N of M units)" (N units read, M counted at the last write) or, when no unit is missing,
    * "source holds fewer sub-agents than archived (N of M)". A rewrite owed only to a render version, a price file or deleted files, from a source no
    * unit of which changed and that has no fewer units, is published as read: a reader fix may drop rows.
@@ -122,12 +122,14 @@ interface StateStore {
   loadSync(): SyncState;
 
   /**
-   * Called after each session sync writes, and at the end, so a killed sync loses at most the session in progress.
+   * Called after each session sync writes while the state is small (up to 500 entries), after batches of sessions beyond that (once the
+   * sessions done since the last save reach 1/50 of the entries), and at the end, so a killed sync loses at most the session in
+   * progress plus one batch.
    * Re-reads .sync.json and merges by key: this run's entries win, other runs' entries are kept, except
    * - a unit entry another run changed since this run loaded the state, to a different fingerprint: its fingerprint is dropped,
    *   so the next sync reads that unit again (two syncs at once can never leave an older log behind a newer fingerprint);
    * - a session entry's logPath, which is never replaced.
-   * Then writes a unique temp and os.replace. If the replace fails, the old file stays and the temp is removed; the next sync
+   * Then writes a unique temp, flushes it to disk and os.replace. If the replace fails, the old file stays and the temp is removed; the next sync
    * re-reads what was lost (fingerprints only make sync cheaper).
    */
   saveSync(state: SyncState): void;

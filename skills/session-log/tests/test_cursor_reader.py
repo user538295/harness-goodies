@@ -301,6 +301,47 @@ class ReadTest(CursorReaderTestCase):
         invalid = os.path.join(self.records, INVALID_FOLDER)
         self.assertEqual((UnreadableSource(Harness.CURSOR, invalid, INVALID_CALLS_REASON % 2, hides_sessions=False),), self.reader.scan().unreadable)
 
+    def write_child_run(self, child="child-1", prompt_at=3):
+        """What Cursor records for a sub-agent that runs as a conversation of its own: hooks filed under its own conversation id."""
+        self.write("beforeSubmitPrompt", prompt_at, prompt_input("g-child", "child task", conversation_id=child), conversation=child)
+        self.write("stop", prompt_at + 1, stop_input("g-child", conversation_id=child, **TOKENS), conversation=child)
+
+    def test_a_conversation_the_parent_names_as_a_sub_agent_is_no_session_and_the_parent_keeps_its_row(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1", "parent prompt"))
+        self.write("stop", 2, stop_input("g1"))
+        self.write_child_run()
+        self.write("subagentStop", 5, subagent_input("child-1", subagent_type="explore", duration_ms=2000))
+        child = self.read("child-1")
+        self.assertEqual((None, ()), (child.session, child.unreadable))
+        self.assertEqual(["child-1"], [agent.agent_id for agent in self.session().sub_agents])
+
+    def test_a_child_is_a_session_until_its_parent_names_it_and_none_after(self):
+        """Nothing says a conversation is a child before the parent's `subagentStop` arrives, so it is read like any conversation then."""
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1", "parent prompt"))
+        self.write_child_run()
+        self.assertEqual(["child task"], [prompt.text for prompt in self.session("child-1").prompts])
+        self.write("subagentStop", 5, subagent_input("child-1", subagent_type="explore", duration_ms=2000))
+        self.assertIsNone(self.session("child-1"))
+
+    def test_a_subagent_record_that_cannot_be_opened_hides_no_conversation(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1", "parent prompt"))
+        self.write_child_run()
+        denied = self.write("subagentStop", 5, subagent_input("child-1", subagent_type="explore"))
+        real_open = cursor_reader.open_text
+
+        def deny(path):
+            if path == denied:
+                raise PermissionError("denied")
+            return real_open(path)
+
+        with mock.patch.object(cursor_reader, "open_text", deny):
+            self.assertEqual(["child task"], [prompt.text for prompt in self.session("child-1").prompts])
+
+    def test_a_conversation_that_names_itself_is_still_a_session(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1", "prompt"))
+        self.write("subagentStop", 5, subagent_input(CONVERSATION, subagent_type="explore"))
+        self.assertEqual(["prompt"], [prompt.text for prompt in self.session().prompts])
+
     def test_new_record_makes_conversation_read_again(self):
         self.write("beforeSubmitPrompt", 0, prompt_input("g1", "first"))
         before = self.reader.scan().units[0]

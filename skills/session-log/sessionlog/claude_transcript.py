@@ -21,7 +21,7 @@ _BRIDGE_SESSION = "bridge-session"
 _QUEUED_COMMAND = "queued_command"
 _QUEUED_PROMPT_MODE = "prompt"
 _PROMPT_SOURCES = frozenset({"typed", "queued", "sdk", "suggestion_accepted"})
-_TYPED_ENTRYPOINTS = frozenset({"sdk-py"})
+_SDK_ENTRYPOINT = "sdk-py"
 _EXTERNAL_USER = "external"
 _COMMAND_HEADS = ("<command-name>", "<command-message>")
 _NOT_A_PROMPT_HEADS = ("<local-command-", "<bash-", "[Request interrupted by user", "Another Claude session sent a message:")
@@ -147,7 +147,7 @@ def _user_opening(record: Record) -> Optional[_Opening]:
         return _Opening(_Kind.COMMAND, _command_text(text))
     if not texts or text.startswith(_NOT_A_PROMPT_HEADS):
         return None
-    typed_by_sdk = record.get("entrypoint") in _TYPED_ENTRYPOINTS and record.get("userType") == _EXTERNAL_USER
+    typed_by_sdk = record.get("entrypoint") == _SDK_ENTRYPOINT and record.get("userType") == _EXTERNAL_USER
     return _Opening(_Kind.REAL if typed_by_sdk else _Kind.REMOTE, text)
 
 

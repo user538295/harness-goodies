@@ -90,6 +90,19 @@ class CursorEntryTest(CursorEntryTestCase):
         self.assertEqual((0, ""), (code, stderr))
         self.assertIn("second prompt", self.read_text(self.archived_files(".md")[0]))
 
+    def test_a_sub_agent_conversation_is_neither_archived_nor_picked_by_latest_over_its_parent(self):
+        self.install_conversation()
+        self.record("subagentStop", 5, subagent_input("child-1", subagent_type="explore", duration_ms=1000))
+        self.record("beforeSubmitPrompt", 6, prompt_input("g-child", "child task", conversation_id="child-1"), conversation="child-1")
+        self.record("stop", 7, stop_input("g-child", conversation_id="child-1", **TOKENS), conversation="child-1")
+        self.run_main(["cursor", "on"])
+        (log_path,) = self.archived_files(".md")
+        (report_path,) = self.archived_files(".usage.txt")
+        self.assertIn("conv-1", os.path.basename(log_path))
+        code, stdout, stderr = self.run_main(["cursor", "usage", "--latest"])
+        self.assertEqual((0, ""), (code, stderr))
+        self.assertEqual(self.read_text(report_path), stdout)
+
     def test_usage_from_a_project_subfolder_reports_the_nearest_parent_conversation_not_the_newest_one(self):
         self.install_conversation()
         for conversation, root, seconds in (("conv-2", "/work/other", 20), ("conv-3", "/work", 30)):  # newer, one outside and one above /work/proj

@@ -12,6 +12,7 @@
 // Joins: prompt and stop by generation_id; usage comes from `stop` only (afterAgentResponse repeats the same totals).
 // Sub-agents: one row per `child_conversation_id` in the conversation, start = subagentStop arrival - duration_ms, ordered as C2 SubAgent.
 // Duplicates (same event and generation_id, or same child_conversation_id) count once, the last one wins.
+// A conversation that another conversation's subagentStop names as its child_conversation_id is no session (not archived, never picked by `usage --latest`; its parent keeps the row): CursorReader.read gives none for it, once per scan. Until that record arrives nothing marks it, so it is read like any conversation (and stays archived if it was); a conversation never counts as its own child, and a subagentStop record that cannot be opened names nobody.
 // A prompt without a stop shows no reply and zero tokens; a stop without a prompt is counted in TOTAL under `(prompt not recorded)`.
 // sessionStart runs sync and writes no record (Q9).
 import "./session-log-simple-c2-session-model.tsp";

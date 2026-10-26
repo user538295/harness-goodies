@@ -4,7 +4,7 @@ Sync documents use the contract's JSON field names. Each store tracks the last l
 The persistent .sync.lock serializes re-read/merge/replace across processes and is released by the OS on exit. sync_reset stays true for the run after rebuilding corrupt state.
 A save merges by key: this run's entries win, other runs' entries are kept, and an entry this run dropped since it loaded the state is dropped from the
 file too unless another run changed it meanwhile.
-New folders are 0700 and every file written is 0600 (`safe_paths`, `temp_files`; `.sync.json` gets 0600 from `tempfile.mkstemp`).
+New folders are 0700 and every file written is 0600 (`safe_paths`, `temp_files`). `.sync.json` is flushed to disk (`temp_files.publish`) before it replaces the old file, so a power loss never leaves a truncated state that would reset the never-less-than-the-archive guard.
 Nothing is written through a link: a `.sync.lock`, or a `.log_enabled` that is a dangling link, fails the write with an error naming it.
 `.sync.json` is always replaced whole, so a link in its place is replaced by a regular file and its target is left alone. Reading through a link stays allowed.
 A temp a killed save left (`.sync-*.tmp`) is removed by the first save of a later run once it is stale (`temp_files.STALE_TEMP_SECONDS`).
@@ -17,7 +17,6 @@ import copy
 import json
 import os
 import re
-import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,13 +24,13 @@ from stat import S_ISREG
 from typing import Callable, Optional
 
 from .safe_paths import make_folders, require_no_link
-from .temp_files import FILE_MODE, remove_stale_temps
+from .temp_files import FILE_MODE, TEMP_RANDOM_BYTES, TEMP_SUFFIX, publish, remove_stale_temps
 from .state_port import OnFlag
 
 MAX_INT32 = 2**31 - 1
 NO_FOLLOW = getattr(os, 'O_NOFOLLOW', 0)  # where it exists, it closes the gap between the link check and the open of `.sync.lock`
 LOG_ROOT_FIELD = 'logRoot'
-_SYNC_TEMP = re.compile(r'\.sync-[a-z0-9_]+\.tmp')  # the names `tempfile.mkstemp` gives the temp of a save
+_SYNC_TEMP = re.compile(r'\.sync-[a-z0-9_]+\.tmp')  # the names of the temp of a save (`_save_locked`)
 _LONE_SURROGATE = re.compile('[\ud800-\udfff]')
 
 
@@ -251,16 +250,8 @@ class FileStateStore:
         if 'lastSyncAt' in state:
             merged['lastSyncAt'] = state['lastSyncAt']
         data = _encode({**merged, LOG_ROOT_FIELD: self._root_text})
-        fd, name = tempfile.mkstemp(prefix='.sync-', suffix='.tmp', dir=self.root)
-        try:
-            with os.fdopen(fd, 'wb') as stream:
-                stream.write(data)
-            os.replace(name, self.root / '.sync.json')
-        finally:
-            try:
-                os.unlink(name)
-            except FileNotFoundError:
-                pass
+        publish(os.path.join(self._root_text, '.sync-%s%s' % (os.urandom(TEMP_RANDOM_BYTES).hex(), TEMP_SUFFIX)),
+                os.path.join(self._root_text, '.sync.json'), data)
         self._baseline = json.loads(data)  # an independent copy, much cheaper than `copy.deepcopy`
         del self._baseline[LOG_ROOT_FIELD]
         state.clear()

@@ -19,7 +19,7 @@ NO_PROMPT_TEXT = "(prompt not recorded)"
 _PROMPT_EVENT = "beforeSubmitPrompt"
 _RESPONSE_EVENT = "afterAgentResponse"
 _STOP_EVENT = "stop"
-_SUBAGENT_EVENT = "subagentStop"
+SUBAGENT_EVENT = "subagentStop"
 _GENERATION_ID = "generation_id"
 _CHILD_ID = "child_conversation_id"
 _PROMPT_TEXT = "prompt"
@@ -121,6 +121,11 @@ def _duration_of(record: HookRecord) -> Optional[timedelta]:
     return duration if duration <= record.received_at - _EPOCH else None
 
 
+def child_of(record: HookRecord) -> Optional[str]:
+    """The conversation a `subagentStop` record names as its sub-agent; None for any other record, or one that names none."""
+    return _text(record.hook_input, _CHILD_ID) if record.event == SUBAGENT_EVENT else None
+
+
 def _sub_agent_of(child_id: str, record: HookRecord) -> SubAgent:
     """A sub-agent row. A duration that is not recorded (see `_duration_of`) leaves the working time open and the start at the arrival."""
     duration = _duration_of(record)
@@ -148,7 +153,7 @@ def build_session(conversation_id: str, records: Sequence[HookRecord]) -> Option
     `conversation_id` must be a safe id."""
     if not records:
         return None
-    sub_agents = tuple(_sub_agent_of(child_id, record) for child_id, record in _last_by_id(records, _SUBAGENT_EVENT, _CHILD_ID).items())
+    sub_agents = tuple(_sub_agent_of(child_id, record) for child_id, record in _last_by_id(records, SUBAGENT_EVENT, _CHILD_ID).items())
     return Session(harness=Harness.CURSOR, session_id=conversation_id, started_at=records[0].received_at,
                    project_dir=_project_dir_of(records), prompts=_prompts_of(records), sub_agents=sub_agents,
                    transcript_path=_transcript_path_of(records))

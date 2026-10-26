@@ -70,7 +70,7 @@ model SubAgentRow {
 model Total {
   /** Main session + every sub-agent (Cursor: main session only, labelled). */
   totalTokens: int64;
-  /** Sum of the rows' cents shown above it, so TOTAL equals the sum of the rows. */
+  /** The exact sum of the rows' unrounded prices, rounded once, so it can differ from the sum of the printed row prices by rounding. */
   priceCents: int64;
   /** Rendered `>= $X (incomplete)` when any row is partial or unknown, or Cursor sub-agent tokens are missing. */
   priceIncomplete: boolean;
@@ -110,7 +110,7 @@ model WriteOutcome {
  * Archive owns every path rule; the sync use case never builds a path. It asks newLogPath once for a session without a C6 entry,
  * keeps that path in the entry, and passes it back to write and readReport, which derive the report path beside it.
  * Log path: <log root>/<slug>/session_<YYYY-MM-DD_HH-MM-SS UTC>_<session-id>.md (Q6), report session_<ts>_<id>.usage.txt beside it.
- * slug = <basename, each char outside [A-Za-z0-9._-] replaced by "-" (the dot stays, as in the old native hook's key), cut to 64; empty basename -> "root"; no recorded cwd -> "unknown">
+ * slug = <basename, each char outside [A-Za-z0-9._-] replaced by "-" (`.` is in the allowed set, so it stays), cut to 64; empty basename -> "root"; no recorded cwd -> "unknown">
  *        -<sha256(UTF-8 of normcase(cwd as the harness recorded it))[:12]>, with the injected path module (`os.path`; tests pass `ntpath`).
  * A session keeps the path in its C6 session entry, even if its start time or cwd is later read differently. Paths are never found
  * by searching the log root, so old-format logs (`session_<id>.md`, `session_<ts>_<id>.md`) are never touched (Q13).

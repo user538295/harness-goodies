@@ -28,7 +28,7 @@ ENTRY_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 CLOCK_FORMAT = "%H:%M:%S"
 NO_VALUE = "-"
 API_EQUIVALENT = " (API-equivalent)"
-_OTHER_CHARS = re.compile(r"[^A-Za-z0-9._-]")  # `.` kept: the old native hook's key did, so `my.app` stays one folder with its old logs
+_OTHER_CHARS = re.compile(r"[^A-Za-z0-9._-]")  # `.` is in the allowed set, so it stays in the folder name
 _LINE_BREAKS = re.compile(r"[\r\n\t]+")
 _STALE_TEMP = re.compile(r"\.%s.*(?:%s|%s)" % (re.escape(SESSION_PREFIX), re.escape(LOG_SUFFIX), re.escape(REPORT_SUFFIX)) + STALE_TEMP_TAIL)
 

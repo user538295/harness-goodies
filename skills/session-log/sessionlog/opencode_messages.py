@@ -1,8 +1,10 @@
 """Pure parsing of the `session_message` rows of one OpenCode session (OpenCode v2.0.30) into its prompts with their replies and requests
 and the end of its activity; no database access. The rows are `(type, data text)` pairs in `seq` order. A row whose `data` is no JSON
 object is skipped without a report, and so is an assistant row without a `tokens` object as a request (it still ends a turn and carries
-a reply). Rows of a type this reader does not use (`system`, `synthetic`, `shell`, `compaction`, `idle`, `model-switched`) open no
-prompt and make no request, but their times still count as activity.
+a reply). A `compaction` row is the summary call OpenCode makes when the context is full: when it holds a `tokens` object it is a request
+like an assistant row's (same `tokens`, `cost` and `model`; OpenCode adds it to the session's own totals) that stops no turn, has no
+reply and no end time, so it moves neither a reply nor a working time. Rows of a type this reader does not use (`system`, `synthetic`,
+`shell`, `idle`, `model-switched`) open no prompt and make no request, but their times still count as activity.
 
 A `user` row opens a prompt: its text is `data.text` trimmed and its time `data.time.created` (epoch milliseconds); a row with no text
 opens none (its answers fall under the prompt before it); a prompt with no usable time is dropped with its replies, and the requests
@@ -39,7 +41,7 @@ from .prompt_turns import Answer, Opening, group_turns
 # minutes, a request that hung) and far below the shortest migrated one (94 days).
 MAX_COMPLETION_LAG = timedelta(hours=6)
 
-_USER, _ASSISTANT = "user", "assistant"
+_USER, _ASSISTANT, _COMPACTION = "user", "assistant", "compaction"
 _STOP = "stop"
 _TOOL_BLOCK = "tool"
 _WAIT_TOOLS = ("question", "confirm", "ask")
@@ -160,6 +162,8 @@ def _events_of(rows: Iterable[Tuple[str, str]]) -> Tuple[List[_Event], Optional[
                 events.append(Opening(started_at, text))
         elif kind == _ASSISTANT:
             events.append(_answer_of(data))
+        elif kind == _COMPACTION:
+            events.append(Answer(_request_of(data), False, None, None))
     return events, last_moment
 
 

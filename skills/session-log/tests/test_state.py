@@ -273,6 +273,15 @@ class StateTests(unittest.TestCase):
         self.assertEqual((self.root / '.sync.json').read_bytes(), before)
         self.assertEqual(list(self.root.glob('*.tmp')), [])
 
+    def test_sync_json_data_is_fsynced_before_it_replaces_the_old_file(self):
+        events = []
+        real_replace = os.replace
+        with patch('sessionlog.state.os.fsync', lambda descriptor: events.append('fsync')), \
+                patch('sessionlog.state.os.replace',
+                      lambda source, target: (events.append(('replace', os.path.basename(target))), real_replace(source, target))[1]):
+            self.store.save_sync({'units': {}, 'sessions': {}})
+        self.assertEqual(events, ['fsync', ('replace', '.sync.json')])
+
     def test_invalid_session_fields_are_rebuilt_and_reported(self):
         for field, value in (('lastActivityAt', 'not a time'),
                              ('lastPromptAt', '2026-01-01T00:00:00'),

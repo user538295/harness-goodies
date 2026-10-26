@@ -44,7 +44,7 @@ class LatestInStoreTest(UsageTargetTestCase):
     def _never_archived(self, session_id, modified, cwd=PROJECT, prompts=(BEFORE_ON,)):
         return self._install(session_id, cwd=cwd, prompts=list(prompts), modified=modified)
 
-    def test_latest_reads_store_only_without_archived_session_the_newest_prompt_of_a_root_wins(self):
+    def test_latest_of_a_project_with_only_never_archived_sessions_is_the_one_with_the_newest_prompt(self):
         self._never_archived("old", BEFORE_ON - 3 * ONE_DAY, prompts=[BEFORE_ON])  # oldest file, newest prompt
         self._never_archived("file-newest-prompt-oldest", BEFORE_ON - ONE_DAY, prompts=[BEFORE_ON - 5 * ONE_DAY])
         self._install("meta-only", modified=BEFORE_ON)  # a newer file, but no prompt

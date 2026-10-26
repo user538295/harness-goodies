@@ -7,6 +7,7 @@ is part of the command and its failure is an error.
 `usage` prints the saved report of an archived session; a session that was never archived gets the same report computed live
 from the store (read, priced and rendered as a sync would) and never saved, and so does one whose saved report is gone while
 its source is not (a sync normally recreates it first).
+A withheld session's saved report may be behind its log; `usage` prints it unchanged and names that in a warning.
 Failures a user must hear about are raised as `CommandError`; the entry prints them as `session-log: <msg>`. A failed file
 operation names the operation, the path and the reason of the OS.
 """
@@ -28,6 +29,7 @@ from .usage_target import ResolvedSession, UsageTargetResolver
 
 FLAG_FILE = ".log_enabled"
 FILES_MISSING_REASON = "the log or the report is missing from disk"
+WITHHELD_REPORT_WARNING = "the saved report of session %s is withheld and may be behind its log (%s); `status` lists it"
 
 
 def _io_message(operation: str, error: OSError, default_path: Optional[str] = None) -> str:
@@ -198,9 +200,13 @@ class CommandUseCases:
         return UsageResult(report_text)
 
     def _saved_report(self, state: dict, session_key: str, entry: dict) -> str:
-        """The saved report; when its file is gone, the live report of the session if its source is still there."""
+        """The saved report; when its file is gone, the live report of the session if its source is still there. A withheld
+        session's saved report may be behind its log (a log that gained prompts keeps the report that holds the lost sub-agent
+        rows), so `usage` says so in a warning."""
         report_text = self._archive.read_report(entry["logPath"])
         if report_text is not None:
+            if entry["state"] == SESSION_WITHHELD:
+                self.warnings.append(WITHHELD_REPORT_WARNING % (root_id_of(session_key), entry.get("reason", "")))
             return report_text
         session = self._targets.read_stored(state, session_key)
         if session is None:

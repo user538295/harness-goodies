@@ -15,10 +15,10 @@ report) and `subAgentCount` (rows, nested ones too, in the report only). A rewri
 read session holds, so a deleted unit that was replaced, or a unit that kept its name and lost content, is noticed too:
 - fewer prompts than recorded (a reverted OpenCode session, a rewritten Codex rollout, a cut transcript): nothing is written;
   the entry becomes withheld, "source holds fewer prompts than archived (N of M)".
-- as many prompts, fewer sub-agent rows (a sub-agent file Claude cleaned, a deleted Codex thread or OpenCode child, a unit
+- as many or more prompts, fewer sub-agent rows (a sub-agent file Claude cleaned, a deleted Codex thread or OpenCode child, a unit
   present but unreadable): the log, which holds prompts only, is rewritten whole, so new activity is still archived; the
-  report, the only holder of the sub-agent rows, stays as it is. The entry becomes withheld, "source partly gone (N of M
-  units)", N being the units that read (when none is missing: "source holds fewer sub-agents than archived (N of M)").
+  report, the only holder of the sub-agent rows, stays as it is (`usage` prints it with a warning). The entry becomes withheld,
+  "source partly gone (N of M units)", N being the units that read (when none is missing: "source holds fewer sub-agents than archived (N of M)").
 - otherwise both files are rewritten and the counts replaced by those of the read.
 Tokens and prices are not compared: a reader fix may legitimately change them. A written session whose source no unit of
 changed since and that has no fewer readable units than the last write counted cannot have been shrunk by its source, so a
@@ -32,7 +32,7 @@ complete scan heals it.
 
 Vanished units: a unit entry whose source left a complete scan is dropped, so `.sync.json` and the cost of saving it do not grow
 with how long logging has been on; this includes an unreadable unit, which can never be retried and so is no longer listed.
-With an incomplete scan (a folder that could not be listed) no unit is dropped. Session entries are never dropped.
+With an incomplete scan (a folder that could not be listed) no unit is dropped; a finding that hides no session (`hides_sessions` False) does not make a scan incomplete. Session entries are never dropped.
 
 Owed rewrites: a written session is rewritten once, whatever its units did and even when its last activity is older than a
 later on-time, when (1) its entry has a lower `RENDER_VERSION` than the installed copy (each session is rewritten once per
@@ -61,7 +61,7 @@ from .state_port import StateStore, recorded_session_key
 
 # Raised by every change that alters log or report text for the same source (readers, model, PricingRules, writer,
 # prices.json); `test_render_version` pins the sha256 of prices.json to it.
-RENDER_VERSION = 3
+RENDER_VERSION = 4
 HOOK_SYNC_BUDGET_SECONDS = 20.0  # below the 30 s hook timeouts; the hook entry passes it to `sync`
 UNIT_READ = "read"
 UNIT_INACTIVE = "inactive"
@@ -165,8 +165,9 @@ class SyncUseCase:
                 repair_only.append((session_key, units))
             else:
                 candidates.append((session_key, units))
-        # An unlistable folder makes live units look gone, so no unit is dropped then.
-        if not scan.unreadable:
+        # An unlistable folder makes live units look gone, so no unit is dropped then; a finding that hides no session (Cursor's
+        # `.records/.invalid`) leaves the unit list complete.
+        if not any(source.hides_sessions for source in scan.unreadable):
             # Before the first save on purpose: dropping needs no read.
             self._drop_vanished_units(state, scan.units)
         self._save(state)

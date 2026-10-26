@@ -1,7 +1,8 @@
 """Which session a `usage` call names (C1): the latest root session of a project, or the session an id names.
 
 Archived sessions are ranked from the session entries of `.sync.json` alone, so it is the same in every harness. The store of
-the harness is read only for a session that was never archived. `latest` lists it for those too and, in the nearest folder that
+the harness is read for the sessions that were never archived, and `latest` reads it on every call: it lists the store and reads
+each never-archived root session far enough to learn its project folder and newest prompt, then, in the nearest folder that
 has a session of either kind, takes the one with the newest prompt (an archived session needs no read). An id is matched
 exactly, else as a unique prefix, over the archived sessions and the sessions of the store together; failing both, it is
 matched exactly against the sub-agent ids of the store's sessions and names the root session that holds it (a reader that names its

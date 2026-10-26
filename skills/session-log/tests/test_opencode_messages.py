@@ -161,6 +161,47 @@ class RequestsTest(unittest.TestCase):
         self.assertIsNone(self.request_of(assistant_data(11, tokens=(1, 1))).effort)
 
 
+def compaction_data(second, tokens=None, cost=0, model=("opencode", "big-pickle")):
+    """The `data` of a compaction row created at `second`: the summary call OpenCode makes when the context is full. A real row that
+    holds no `tokens` also holds no `model` and no `cost`."""
+    data = {"reason": "auto", "status": "completed", "time": {"created": ms(second)}}
+    if tokens is not None:
+        data.update({"model": {"providerID": model[0], "id": model[1], "variant": "default"}, "cost": cost,
+                     "tokens": {"input": tokens[0], "output": tokens[1], "reasoning": tokens[2] if len(tokens) > 2 else 0,
+                                "cache": {"read": tokens[3] if len(tokens) > 3 else 0, "write": 0}}})
+    return data
+
+
+class CompactionTest(unittest.TestCase):
+    """A compaction row that records `tokens` is a real model call: OpenCode adds it to the session's own totals."""
+
+    def test_a_compaction_with_tokens_is_a_request_of_the_prompt_in_progress_with_its_own_model_and_cost(self):
+        transcript = parse_messages([row("user", user_data(10)), row("compaction", compaction_data(11, tokens=(300, 20, 0, 40), cost=0.25)),
+                                     row("assistant", assistant_data(12, "done", tokens=(5, 6)))])
+        compaction, answer = transcript.prompts[0].requests
+        self.assertEqual(("opencode/big-pickle", 300, 20, 40, 0.25), (compaction.model_name, compaction.input_tokens, compaction.output_tokens,
+                                                                      compaction.cache_read_tokens, compaction.recorded_cost_usd))
+        self.assertEqual((5, [compaction, answer]), (answer.input_tokens, list(transcript.requests)))
+
+    def test_a_compaction_is_no_reply_and_moves_neither_the_reply_nor_the_working_time(self):
+        transcript = parse_messages([row("user", user_data(10)), row("assistant", assistant_data(11, "ok", tokens=(1, 1))),
+                                     row("compaction", compaction_data(500, tokens=(300, 20)))])
+        prompt = transcript.prompts[0]
+        self.assertEqual(("ok", at(12), timedelta(seconds=2), 2), (prompt.reply_text, prompt.reply_at, prompt.working_time, len(prompt.requests)))
+
+    def test_a_compaction_before_the_first_prompt_falls_under_the_first_prompt_and_one_without_any_prompt_under_no_prompt(self):
+        led = parse_messages([row("compaction", compaction_data(5, tokens=(300, 20))), row("user", user_data(10))])
+        alone = parse_messages([row("compaction", compaction_data(5, tokens=(300, 20)))])
+        self.assertEqual(([300], [], [300], [300]), ([request.input_tokens for request in led.prompts[0].requests], list(led.unprompted_requests),
+                                                      [request.input_tokens for request in alone.requests],
+                                                      [request.input_tokens for request in alone.unprompted_requests]))
+
+    def test_a_compaction_without_tokens_makes_no_request(self):
+        transcript = parse_messages([row("user", user_data(10)), row("compaction", compaction_data(11)),
+                                     row("compaction", {"error": {"type": "x", "message": "m"}, "time": {"created": ms(12)}})])
+        self.assertEqual((), transcript.requests)
+
+
 class ActivityTest(unittest.TestCase):
     def test_the_last_moment_is_the_newest_start_or_completion_of_any_row(self):
         transcript = parse_messages([row("user", user_data(10)), row("assistant", assistant_data(11, tokens=(1, 1), done=20)),

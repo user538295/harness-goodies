@@ -405,19 +405,19 @@ flowchart LR
         - #manual_test — `python3` missing: the session continues, Claude may show a non-blocking hook error — S23
 
 ### Phase 6 · Show usage for a chosen or never-archived session
-- [x] **BE-19** — `usage` target resolution: no argument = `--latest`; project = cwd else nearest parent folder with sessions (symlinked cwd matches); ranking from `.sync.json` only (newest prompt, no-prompt sessions below, newest activity if none, sub-agents and orphans never win); `<id>` exact else unique prefix over archived and store sessions; unknown, ambiguous and empty project exit 1; ports of `test_prompt_log_usage.sh` `:423-503,524-527`, Codex `--latest` ([test_python_adapters.py](./skills/session-log/tests/test_python_adapters.py) `:229-250`), Cursor subfolder `:6119-6125`, OMP id targets #backend-role
+- [x] **BE-19** — `usage` target resolution: no argument = `--latest`; project = cwd else the nearest parent folder holding a root session of either kind, archived or never archived (symlinked cwd matches; a never-archived session of a nearer folder beats an archived one of a parent); within a folder the newest prompt wins, an archived session beats a never-archived one on a tie, no-prompt sessions rank below, newest activity if none, sub-agents and orphans never win; archived sessions are ranked from `.sync.json` alone (no read); `<id>` exact else unique prefix over archived and store sessions; unknown, ambiguous and empty project exit 1; ports of `test_prompt_log_usage.sh` `:423-503,524-527`, Codex `--latest` ([test_python_adapters.py](./skills/session-log/tests/test_python_adapters.py) `:229-250`), Cursor subfolder `:6119-6125`, OMP id targets #backend-role
     - Use Cases · 4.0h
     - needs BE-8, BE-15 · completes S37
     - Tests
         - #integration_test — `test_latest_ranks_newest_prompt_streaming_session_and_ignores_subagents_orphans_and_no_prompt_sessions` — S37
         - #integration_test — `test_usage_id_exact_prefix_ambiguous_unknown_and_subfolder_and_symlinked_cwd` — `abc`, `ab`, unknown id, project without sessions
         - #integration_test — `test_usage_while_off_prints_report_saved_at_last_sync` — S37
-- [x] **BE-20** — Live report for a session never archived: read through the invoked harness's reader, priced by PricingRules, rendered by `Archive.renderReport`, nothing written and no sync while off; `--latest` reads the store only when the project has no archived session; prints the report text a failed write could not save #backend-role
+- [x] **BE-20** — Live report for a session never archived: read through the invoked harness's reader, priced by PricingRules, rendered by `Archive.renderReport`, nothing written and no sync while off; `--latest` reads the store on every call (each never-archived root session's main file is read for its project folder and newest prompt, then only the chosen session whole), so its cost grows with the never-archived part of the store; prints the report text a failed write could not save #backend-role
     - Use Cases · 3.0h
     - needs BE-19 · completes S68
     - Tests
         - #integration_test — `test_never_archived_session_text_equals_what_a_sync_would_save_and_nothing_is_written` — no log, report, temp or `.sync.json` change, off and on
-        - #integration_test — `test_latest_reads_store_only_without_archived_session_first_root_with_prompt_wins` — S68
+        - #integration_test — `test_latest_of_a_project_with_only_never_archived_sessions_is_the_one_with_the_newest_prompt` — S68
         - #integration_test — `test_unreadable_source_exits_1_and_symlinked_harness_root_still_fails` — S68
 
 ### Phase 7 · Upgrade from the old release without losing logging

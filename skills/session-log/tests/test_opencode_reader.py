@@ -162,8 +162,8 @@ class ReadTest(OpenCodeReaderTestCase):
                          (first.text, first.reply_text, first.reply_at, first.working_time))  # reasoning and tool blocks are no reply text
         self.assertEqual([("fixture-provider/fixture-model", 1000, 60, 200, 300, 0.01), ("fixture-provider/fixture-model", 2000, 80, 1200, 0, 0.02)],
                          [(r.model_name, r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_5m_tokens, r.recorded_cost_usd) for r in first.requests])
-        self.assertEqual(("second placeholder question", "second placeholder answer", timedelta(seconds=40), [0, 300]),
-                         (second.text, second.reply_text, second.working_time, [r.input_tokens for r in second.requests]))
+        self.assertEqual(("second placeholder question", "second placeholder answer", timedelta(seconds=40), [0, 300, 9000]),
+                         (second.text, second.reply_text, second.working_time, [r.input_tokens for r in second.requests]))  # the last is the compaction call
         (child,) = session.sub_agents
         self.assertEqual(("ses_fixture_child", "general", BASE + timedelta(seconds=30), timedelta(seconds=40), [(400, 60, 50, 20, 0.005)]),
                          (child.agent_id, child.type, child.started_at, child.working_time,

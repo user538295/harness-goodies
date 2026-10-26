@@ -302,6 +302,19 @@ class VanishedUnitTest(HomeTestCase):
         self._sync()
         self.assertEqual(sorted(self._saved()["units"]), [keep])
 
+    def test_a_finding_that_hides_no_session_does_not_stop_the_dropping_of_vanished_units(self):
+        keep = self._install("keep", _transcript(NOW))
+        gone = self._install("gone", _transcript(NOW))
+        self._sync()
+        os.unlink(gone)
+
+        class FiledAwayFindingReader(CountingReader):
+            def scan(self):
+                return replace(super().scan(), unreadable=(UnreadableSource(Harness.CLAUDE, self._projects, "filed away", hides_sessions=False),))
+
+        self._sync(reader=FiledAwayFindingReader(self.home))
+        self.assertEqual(sorted(self._saved()["units"]), [keep])
+
     def test_a_unit_another_run_changed_meanwhile_is_not_dropped_by_this_runs_save(self):
         store = FileStateStore(self.logs)
         store.save_sync({"units": {"a": {"state": "read", "fingerprint": "1"}, "b": {"state": "read", "fingerprint": "1"}},

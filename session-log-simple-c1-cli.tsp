@@ -22,14 +22,19 @@ namespace SessionLogSimple.C1Cli;
 enum Command { on, off, status, usage }
 
 /**
- * `usage` target. Absent and `latest` mean the same: the root session of the current project with the newest prompt, ranked from the
- * C6 session entries (no harness file is read for ranking). Only when the project has no archived session is the store read:
- * every never-archived root session is ranked by its newest prompt, the newest source unit breaking a tie (S68).
- * Current project: the sessions whose recorded cwd equals the command's cwd; if none, those of the nearest parent folder of the cwd
- * that has any (so `usage` works from a subfolder, as today's Cursor `usage`). Paths are compared under os.path.normcase, or both after
- * os.path.realpath.
- * Sessions without a prompt rank below every session with one; if none has a prompt, the newest last activity wins; sub-agents and
- * orphan sub-agent logs are never candidates.
+ * `usage` target. Absent and `latest` mean the same: the root session of the current project, archived or never archived, with the
+ * newest prompt. Current project: the nearest folder, the command's cwd first and then each parent, that holds a root session of
+ * either kind (recorded cwd compared under os.path.normcase, or both after os.path.realpath; so `usage` works from a subfolder, as
+ * today's Cursor `usage`); a never-archived session of a nearer folder beats an archived one of a parent. Archived sessions are ranked
+ * from the C6 session entries alone (no read). The store is read on every `--latest`, archived sessions or not: every never-archived
+ * root session of the store is read from its main file to learn its project folder and newest prompt (a reader whose sub-agent files
+ * never change those reads only the main file), so the cost grows with the never-archived part of the store; only the session picked
+ * is then read whole. File times bound nothing: a restored file has an old time and the newest prompt (S68). In one folder the newest
+ * prompt wins; a tie between never-archived sessions goes to the newest source unit, a tie with an archived session to the archived one.
+ * Sessions without a prompt rank below every session with one; when no archived one has a prompt the newest last activity wins among
+ * the archived ones; never-archived sessions without a prompt are no candidates. Sub-agents and orphan sub-agent logs are never
+ * candidates. A store that cannot be listed completely, or a never-archived session that cannot be read, ends the lookup (exit 1) only
+ * when the project has no archived session; else it is passed over.
  * sessionId: an exact id wins; otherwise a prefix shared by exactly one session, archived or listed by the reader's scan together;
  * a prefix shared by several is ambiguous (exit 1).
  */
@@ -56,8 +61,8 @@ model CommandResult {
 interface SessionLogCli {
   /**
    * While logging is on, every command syncs first (`off` syncs, then turns off). While off, no command syncs.
-   * A command's sync has no time budget; if the harness's tool timeout kills it, the progress saved after each session (C6)
-   * lets the next command continue.
+   * A command's sync has no time budget; if the harness's tool timeout kills it, the progress saved after each session or batch of sessions
+   * (C6) lets the next command continue.
    */
   run(invocation: Invocation): CommandResult;
 }
@@ -141,7 +146,9 @@ model UsageResult {
   /**
    * Exactly the C3 report text: the saved file; when this run's write failed, the same rendering (S33); or, for a session never archived,
    * the same rendering of a report computed live from the store (reader, PricingRules, Archive.renderReport), never saved (S68).
-   * While off an archived session's report is the one saved at the last sync.
+   * While off an archived session's report is the one saved at the last sync. The text of a withheld session (C6 withheld) is its saved
+   * report, which may be behind its log (a log that gained prompts keeps the report that holds sub-agent rows the source lost): `usage`
+   * prints it unchanged and adds one warning line on stderr (exit code 0) naming the session and the withheld reason.
    */
   reportText: string;
 }
@@ -162,7 +169,7 @@ model SyncOutcome {
 /**
  * Sync of the invoked harness's store, called by the command use cases while on and by the hook entry.
  * budgetSeconds absent (commands): no time budget. Hook entry: HOOK_SYNC_BUDGET_SECONDS (20 s, below the 30 s hook timeouts);
- * the sync stops starting new sessions after it, and the progress saved after each session (C6) lets the next sync continue.
+ * the sync stops starting new sessions after it, and the progress saved after each session or batch of sessions (C6) lets the next sync continue.
  */
 interface SyncUseCase {
   sync(harness: Harness, budgetSeconds?: float64): SyncOutcome;

@@ -707,6 +707,14 @@ class ClaudeRulesTest(ClaudeReaderTestCase):
         records = [_plain_user(1, "plain", entrypoint="cli", userType="external"), _answer(2, "m1", _usage(), "r")]
         self.assertEqual(self._prompts(records), ())
 
+    def test_claude_read_unhashable_entrypoint_is_no_python_sdk_marker_and_does_not_fail_the_session(self):
+        for entrypoint in ({"a": 1}, ["sdk-py"]):
+            with self.subTest(entrypoint=entrypoint):
+                records = [_plain_user(1, "plain", entrypoint=entrypoint, userType="external"), _typed(2, "real"),
+                           _answer(3, "m1", _usage(), "r")]
+                (prompt,) = self._prompts(records)
+                self.assertEqual((prompt.text, prompt.reply_text), ("real", "r"))
+
     def test_claude_read_legacy_cache_creation_tokens_count_as_5m_unless_the_split_is_present(self):
         legacy = _usage(cache_creation_input_tokens=30)
         split = _usage(cache_creation_input_tokens=30, cache_creation={"ephemeral_5m_input_tokens": 1, "ephemeral_1h_input_tokens": 2})

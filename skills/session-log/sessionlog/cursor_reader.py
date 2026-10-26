@@ -17,13 +17,20 @@ is a source with `hides_sessions` False: it never stops a `usage` lookup.
 `read` opens every record of the conversation once, in order of arrival (`cursor_conversation` joins them). A record that cannot be
 decoded or parsed is skipped, as a torn line of another harness's file is, unless no record of the conversation can be (it is then
 unreadable as "cannot be parsed"); one that cannot be opened makes the conversation unreadable
-under its folder, so sync retries it, and no session is built from a part of it. Nothing raises."""
+under its folder, so sync retries it, and no session is built from a part of it. Nothing raises.
+
+A sub-agent may run as a conversation of its own, its hooks filed under its own conversation id. Such a conversation is no root session:
+`read` gives none for a conversation that the `subagentStop` record of another conversation names as its `child_conversation_id`, so it
+is neither archived nor a candidate for `usage --latest`, while the parent keeps its sub-agent row. Nothing marks a conversation as a
+child before that record arrives, so until then it is read like any other (and stays archived if it was); a conversation never counts as
+its own child. The named children are learned from the `subagentStop` records alone, once per scan; a record that cannot be opened names
+nobody, so a conversation is never hidden by a guess."""
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import List, NamedTuple, Optional, Tuple, Union
+from typing import Dict, List, NamedTuple, Optional, Set, Tuple, Union
 
-from .cursor_conversation import build_session
+from .cursor_conversation import SUBAGENT_EVENT, build_session, child_of
 from .cursor_records import INVALID_FOLDER, RECORD_FILE_NAME, HookRecord, moment_of_ns, nanoseconds_of, parse_record
 from .model import Harness, is_safe_id
 from .reader_port import (CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, NOT_A_REGULAR_FILE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult,
@@ -43,6 +50,7 @@ class _RecordFile(NamedTuple):
     arrival_ns: int
     name: str
     path: str
+    event: str
 
 
 def _is_regular_file(entry: os.DirEntry) -> Optional[bool]:
@@ -81,7 +89,7 @@ def _record_files(listing: List[os.DirEntry]) -> Tuple[List[_RecordFile], List[U
             continue
         is_regular = _is_regular_file(entry)
         if is_regular:
-            found.append(_RecordFile(int(match.group(1)), entry.name, entry.path))
+            found.append(_RecordFile(int(match.group(1)), entry.name, entry.path, match.group(2)))
         elif is_regular is False:
             problems.append(_FILES.unreadable(entry.path, NOT_A_REGULAR_FILE_REASON))
     return sorted(found), problems
@@ -97,8 +105,10 @@ class CursorReader:
 
     def __init__(self, records_folder: str) -> None:
         self._records = records_folder
+        self._parents: Optional[Dict[str, Set[str]]] = None
 
     def scan(self) -> ScanResult:
+        self._parents = None
         if is_link(self._records):
             return ScanResult(unreadable=(_FILES.unreadable(self._records, LINK_REASON),))
         listing = _FILES.list_dir(self._records)
@@ -155,6 +165,43 @@ class CursorReader:
         matching = [unit for unit in units if self.session_of(unit) == session_key]
         return max(matching, key=lambda unit: (unit.modified_at, unit.key), default=None)
 
+    @staticmethod
+    def _child_named_in(path: str) -> Optional[str]:
+        """The child a `subagentStop` record file names; None when it cannot be opened or parsed (the read of its own conversation reports
+        that), so a record nobody can use never hides a conversation."""
+        try:
+            with open_text(path) as handle:
+                record = parse_record(handle.read())
+        except (UnicodeDecodeError, OSError):
+            return None
+        return None if record is None else child_of(record)
+
+    def _parents_by_child(self) -> Dict[str, Set[str]]:
+        """The conversations whose `subagentStop` records name each child, from the records now on disk."""
+        parents: Dict[str, Set[str]] = {}
+        if is_link(self._records):
+            return parents
+        listing = _FILES.list_dir(self._records)
+        if isinstance(listing, UnreadableSource):
+            return parents
+        for entry in listing:
+            if not is_safe_id(entry.name) or _FILES.is_real_dir(entry) is not True:
+                continue
+            inner = _FILES.list_dir(entry.path)
+            if isinstance(inner, UnreadableSource):
+                continue
+            for file in _record_files(inner)[0]:
+                child = self._child_named_in(file.path) if file.event == SUBAGENT_EVENT else None
+                if child is not None:
+                    parents.setdefault(child, set()).add(entry.name)
+        return parents
+
+    def _is_named_as_child(self, conversation_id: str) -> bool:
+        """Whether a conversation other than itself names it as a sub-agent; the answer holds until the next scan."""
+        if self._parents is None:
+            self._parents = self._parents_by_child()
+        return bool(self._parents.get(conversation_id, set()) - {conversation_id})
+
     def read(self, session_key: str, units: Tuple[SourceUnit, ...]) -> ReadResult:
         root_id = root_id_of(session_key)
         if not root_id or session_key != build_session_key(Harness.CURSOR, root_id):
@@ -164,6 +211,8 @@ class CursorReader:
             return ReadResult()
         if not is_safe_id(root_id):
             return ReadResult(unreadable=(_FILES.unreadable(unit.key, UNSAFE_ID_REASON),))
+        if self._is_named_as_child(root_id):
+            return ReadResult()
         listing = _FILES.list_dir(unit.key)
         if isinstance(listing, UnreadableSource):
             return ReadResult(unreadable=(listing,))

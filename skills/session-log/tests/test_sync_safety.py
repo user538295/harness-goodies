@@ -315,6 +315,19 @@ class PartlyGoneTest(SafetyTestCase):
         self.assertEqual(self._archived(), before)
         self.assertEqual(self._commands().status().unreadable, ())
 
+    def test_usage_of_a_session_whose_report_stayed_behind_its_log_warns_that_the_report_is_withheld(self):
+        self._install("partial", _transcript(BASE), NOW)
+        agent = self._agent_file("partial")
+        self._sync()
+        report = _read_bytes(_report_path(self._entry("partial")["logPath"])).decode("utf-8")
+        os.unlink(agent)
+        self._install("partial", _transcript(BASE, BASE + PARTIAL_OFFSET, BASE + PARTIAL_LATER_OFFSET), NOW)
+        commands = self._commands()
+        self.assertEqual(commands.usage_latest(CWD).report_text, report)  # the saved report, sub-agent row and all
+        self.assertEqual(len(commands.warnings), 1)
+        self.assertIn(PARTLY_GONE, commands.warnings[0])
+        self.assertIn("partial", commands.warnings[0])
+
 
 class FailedReplaceTest(SafetyTestCase):
     def test_os_replace_raising_skips_file_removes_temp_and_reports_path_and_reason(self):
