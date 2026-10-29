@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/double-check — Claude Code Handout</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/double-check/SKILL.md (last synced: 2026-10-29) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/double-check</code></h1>
+      <a class="back-link" href="index.html">← Back to index</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Summary</h2>
+      <p><strong>Every reviewer you trust, one target, one merged list of findings.</strong> Runs each item in your project's <code>.double-check.json</code> — skills and commands, agents, MCP servers, CLI tools, Markdown rule files — on the same target, then collapses the results into one line per finding, sorted by severity.</p>
+      <p>Read-only. It never edits, stages, or commits the files it reviews; the only project file it writes is <code>.double-check.json</code>.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>When to use</h2>
+      <p>You run <code>/da-review</code>, then <code>/clean-code-review</code>, then the linter, then remember the rules in <code>AGENTS.md</code> — and each one speaks its own format. <code>/double-check</code> runs them all in parallel, checks first that each one is actually installed and ready, and hands you a single list instead of five reports.</p>
+      <p>The skill declares no trigger phrases beyond the command. Invoke it with <code>/double-check</code>, or ask to double-check changes or files with all configured reviewers, or ask which configured reviewers are available.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Invocation</h2>
+      <pre><code>/double-check [TARGET] [per-item parameters]
+/double-check init
+/double-check status</code></pre>
+      <p><strong>Targets</strong> (default: all local changes):</p>
+      <ul>
+        <li><em>none</em> or <code>local</code> — staged, unstaged, and untracked changes. Without git there is nothing to diff, so the skill asks what to check.</li>
+        <li>One ref — <code>abc123</code>, <code>HEAD</code> — the files that commit touched.</li>
+        <li>A range — <code>A..B</code> or <code>A...B</code>. Commit and range targets need git; without it the run stops with <code>Nothing to check: not a git repository</code>.</li>
+        <li>Files, folders, or globs — <code>*.h tests/</code>. Works without git.</li>
+        <li>A described file set — <code>all files except tests/</code>. Ambiguous prose makes the skill ask which files you mean before it continues.</li>
+      </ul>
+      <p><strong>Per-item parameters</strong> go in the same sentence as the target: <code>/double-check check src/ and run shellcheck with -S warning</code>. They combine with each entry's <code>args</code> in the config; for one run the invocation wins where the two conflict, and the file stays unchanged.</p>
+      <p><strong><code>.double-check.json</code></strong> sits at the project root (the git top level, or the current directory without git). It is a JSON array; each entry has exactly one type key plus an optional <code>args</code> string:</p>
+      <ul>
+        <li><code>{ "skill": "/brooks-review" }</code> — a skill, command, or plugin</li>
+        <li><code>{ "agent": "security-reviewer" }</code> — an agent type</li>
+        <li><code>{ "mcp": "playwright" }</code> — a connected MCP server</li>
+        <li><code>{ "tool": "eslint", "args": "--max-warnings 0" }</code> — a CLI tool</li>
+        <li><code>{ "md": "conventions.md" }</code> — a Markdown file of rules and guidelines</li>
+      </ul>
+      <p>When the file is missing, the skill creates it with the default config — <code>/da-review</code>, <code>/clean-code-review</code>, <code>/brooks-review</code>, <code>/open-code-review</code>, <code>markdownlint</code>, <code>shellcheck</code>, and <code>AGENTS.md</code> as a strict rule file — and tells you in one line. A broken entry (not an object, zero or several type keys, a non-string <code>args</code>) or an unknown key is listed one per line with a suggested fix, and the run continues with the corrected config.</p>
+      <p><strong><code>init</code></strong> creates the default config and prints its path — or just prints the path when the file already exists, leaving it untouched. <strong><code>status</code></strong> prints every configured item with its <code>args</code> and whether it is available — <code>✅ 🛠 eslint (args: --max-warnings 0)</code> — and reviews nothing.</p>
+      <p><strong>Availability gate.</strong> Before any reviewer starts, the skill prints a <code>Check availability:</code> block: <code>✅</code> or <code>❌</code> per item, dependencies of a skill listed on their own line above it. Reasons: <code>not found</code> · <code>not installed</code> · <code>not connected</code> · <code>not ready: …</code> · <code>installed, but there is no … in the target</code> · <code>not applicable: …</code> · <code>missing dependency …</code>. A fix that needs no secret and no choice from you — installing a documented CLI — runs by itself. Anything interactive (credentials, a login) stops the run until you answer <code>retry</code>, <code>continue</code> (review without them), or <code>stop</code>. The skill never asks for a secret in chat.</p>
+      <p><strong>How items run.</strong> Every item runs in a subagent, in parallel; heavy or slow items get their own, quick deterministic tools share one. Tool-native severities are mapped onto the rubric (shellcheck <code>error</code> → Major, <code>warning</code> → Moderate, <code>info</code>/<code>style</code> → Minor). With no subagent tool in the harness, the items run inline and the summary says <code>Review ran inline, not independent.</code></p>
+      <p><strong>Finding line</strong> — one per finding, at most 255 characters:</p>
+      <pre><code>emoji [item] · Severity · Short name/category | path/to/file.ext:N | Explanation and a short fix.</code></pre>
+      <p>The same root cause at the same location from several items merges into one line, items comma-joined. Sorted by severity, then path, then line. Items that crashed or were skipped at the gate end up in a final <code>Not run:</code> block.</p>
+      <p><strong>Severity levels:</strong> Critical (blocks correctness, security, or safety) · Major (significant design flaw, missing requirement, or likely bug) · Moderate (suboptimal but workable) · Minor (style, naming, or nitpick)</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>Example 1 — Local changes, default config <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/double-check</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>Target: local — 4 files
+
+Check availability:
+   ✅ 🧠 /devils-advocate
+   ✅ 💡 /da-review
+   ✅ 💡 /clean-code-review
+   ✅ 💡 /brooks-review
+   ✅ 💡 /open-code-review
+   ✅ 🛠 markdownlint
+   ❌ 🛠 shellcheck: installed, but there is no shell script in the target
+   ✅ #️⃣ AGENTS.md
+
+💡 [da-review] · Major · Unchecked payment result | src/services/PaymentProcessor.ts:34 | charge() result is ignored; an order can be marked paid without payment. Check the result before updating status.
+💡💡 [clean-code-review, brooks-review] · Major · Single Responsibility | src/services/UserService.ts:12 | Split UserService: move auth, email, and billing into separate classes.
+#️⃣ [AGENTS.md] · Moderate · Avoid magic numbers | src/services/PaymentProcessor.ts:58 | Replace the literal 3 with a named RETRY_LIMIT constant.
+🛠 [markdownlint] · Minor · MD022 | README.md:14 | Surround the heading with blank lines.</code></pre>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>Example 2 — Commit range with a blocked reviewer <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/double-check HEAD~2..HEAD</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>Target: range HEAD~2..HEAD — 6 files
+
+Check availability:
+   ✅ 🧠 /devils-advocate
+   ✅ 💡 /da-review
+   ✅ 💡 /clean-code-review
+   ❌ 💡 /open-code-review: not ready: no LLM provider configured (ocr llm test failed)
+   ✅ 🛠 markdownlint
+
+Blocked — run the fixes, then answer `retry`, `continue` (review without them), or `stop`:
+   ❌ 💡 /open-code-review: not ready: no LLM provider configured (ocr llm test failed) → run: ocr config provider</code></pre>
+        <p><strong>Input:</strong></p>
+        <pre><code>continue</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>💡 [clean-code-review] · Critical · [safety-01] Resource Leak | src/db/session.py:23 | Wrap the connection in a `with` block so it is closed on every path.
+💡 [da-review] · Moderate · Missing migration test | tests/test_migrate.py:1 | Add a test that runs the new migration on a non-empty table.
+
+Not run:
+   ❌ 💡 /open-code-review: not ready: no LLM provider configured (ocr llm test failed)</code></pre>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Related tools</h2>
+      <ul>
+        <li><a href="cmd-da-review.html">/da-review</a> — Single-pass adversarial review. One of the default <code>/double-check</code> items; run it alone when one opinion is enough.</li>
+        <li><a href="skill-clean-code-review.html">/clean-code-review</a> — 132 checks across 7 groups. Also a default item; <code>/double-check</code> gives it the same target and folds its findings into the shared list.</li>
+        <li><a href="cmd-iterative-review.html">/iterative-review</a> — Reviews and fixes in a loop. <code>/double-check</code> only lists findings and changes nothing; reach for <code>/iterative-review</code> when you want the problems resolved.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Links</h2>
+      <p>
+        <a href="index.html">← All handouts</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-en.html">Agentic workflow pipeline (agentic-workflow-en.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

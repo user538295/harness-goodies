@@ -79,8 +79,7 @@ The default config:
 ```
 
 - **Missing file** → create it with exactly the default above, tell the user in one line, continue.
-- **Present, with problems** → list every problem in one line each with your suggested fix, then wait for the user's answer, apply it to the file, and continue with the updated config. Problems:
-  - a default item missing from the config;
+- **Present, with problems** → list every problem in one line each with your suggested fix, and continue with the updated config. Problems can be:
   - a **broken** file or entry: not JSON, not an array, an entry that is not an object, zero or several type keys, an `args` that is not a string;
   - an **unknown** key: anything other than the five type keys and `args`.
 
@@ -108,7 +107,7 @@ Check availability:
    ❌ 💡 /brooks-review: not found
    ✅ 🔌 playwright
    ❌ 🛠 shellcheck: installed, but there is no shell script in the target
-   ❌ #️⃣ conventions.md: not found
+   ❌ #️⃣ AGENTS.md: not found
 ```
 
 Category emojis: agent 🧠 · skill 💡 · MCP 🔌 · tool 🛠 · md #️⃣. Agents and skills carry a leading `/`; MCP servers, tools, and md files do not. Every later step uses only the `✅` items (dependencies run inside their item, never on their own); no `✅` item after the blocker gate → skip.
@@ -145,7 +144,7 @@ File-level items on a commit/range target read the worktree copy; when `git diff
 
 ## Step 4 — Summary
 
-**Finding line** — one finding per line, at most 255 characters:
+**Finding line** — one finding per line, at most 300 characters:
 
 ```text
 emoji [item] · Severity · Short name/category | relative/path/to/file.ext:N | Short explanation of the finding and a short suggestion for the fix.
@@ -158,10 +157,10 @@ Example:
 ```
 
 - emoji is the emoji of the item (🛠 for tools). A line merging several items carries every item's emoji, one per item in the same order as the names: `💡🛠 [da-review, shellcheck]`.
-- `[item]` is the config name without `/` (`[da-review]`, `[shellcheck]`, `[playwright]`, `[conventions.md]`). The same root cause at the same location from several items → one line, items comma-joined: `[da-review, brooks-review]`.
+- `[item]` is the config name without `/` (`[da-review]`, `[shellcheck]`, `[playwright]`, `[AGENTS.md]`). The same root cause at the same location from several items → one line, items comma-joined: `[da-review, brooks-review]`.
 - Severity is one of the four rubric words. No line number → `path`; no file at all → `-`.
 - Sort by severity (Critical first), then path, then line.
-- Before printing, write the lines to a temp file and run `awk 'length > 255' <file>`; shorten every line it prints (bytes overcount multibyte characters, so passing is safe).
+- Before printing, write the lines to a temp file and run `awk 'length > 300' <file>`; shorten every line it prints (bytes overcount multibyte characters, so passing is safe).
 
 Print the sorted lines (no findings → `No findings.`), then, when any item failed at runtime or was skipped at the blocker gate:
 

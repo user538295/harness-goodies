@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/double-check — Claude Code segédlet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/double-check/SKILL.md (last synced: 2026-10-29) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/double-check</code></h1>
+      <a class="back-link" href="index-hu.html">← Vissza az áttekintéshez</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Összefoglaló</h2>
+      <p><strong>Minden megbízható reviewer, egy célpont, egy összefésült találatlista.</strong> A projekt <code>.double-check.json</code> fájljának minden elemét — skilleket és parancsokat, ágenseket, MCP-szervereket, CLI-eszközöket, Markdown szabályfájlokat — ugyanazon a célponton futtatja le, majd az eredményeket találatonként egy sorba vonja össze, súlyosság szerint rendezve.</p>
+      <p>Csak olvas. Soha nem szerkeszti, stage-eli vagy commitolja az átvizsgált fájlokat; az egyetlen projektfájl, amit ír, a <code>.double-check.json</code>.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>Mikor használd</h2>
+      <p>Lefuttatod a <code>/da-review</code>-t, aztán a <code>/clean-code-review</code>-t, aztán a lintert, aztán eszedbe jut, hogy az <code>AGENTS.md</code>-ben is vannak szabályok — és mindegyik a saját formátumában válaszol. A <code>/double-check</code> mindet párhuzamosan futtatja, előtte ellenőrzi, hogy tényleg telepítve és használatra kész-e, és öt riport helyett egyetlen listát ad.</p>
+      <p>A skill a parancson túl nem deklarál trigger kifejezéseket. Hívd meg a <code>/double-check</code> paranccsal, kérd, hogy az összes beállított reviewerrel ellenőrizze a változásokat vagy fájlokat, vagy kérdezd meg, mely beállított reviewerek érhetők el.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Meghívás</h2>
+      <pre><code>/double-check [TARGET] [elemenkénti paraméterek]
+/double-check init
+/double-check status</code></pre>
+      <p><strong>Célok</strong> (alapértelmezett: összes helyi változás):</p>
+      <ul>
+        <li><em>nincs</em> vagy <code>local</code> — staged, unstaged és untracked változások. Git nélkül nincs mit diffelni, ezért a skill megkérdezi, mit ellenőrizzen.</li>
+        <li>Egy ref — <code>abc123</code>, <code>HEAD</code> — a commit által érintett fájlok.</li>
+        <li>Egy tartomány — <code>A..B</code> vagy <code>A...B</code>. A commit és a tartomány cél gitet igényel; git nélkül a futás ezzel áll le: <code>Nothing to check: not a git repository</code>.</li>
+        <li>Fájlok, mappák vagy glob-minták — <code>*.h tests/</code>. Git nélkül is működik.</li>
+        <li>Leírt fájlhalmaz — <code>all files except tests/</code>. Félreérthető szövegnél a skill megkérdezi, mely fájlokra gondolsz, mielőtt folytatná.</li>
+      </ul>
+      <p><strong>Elemenkénti paraméterek</strong> a célponttal egy mondatba kerülnek: <code>/double-check check src/ and run shellcheck with -S warning</code>. A konfigban az egyes bejegyzések <code>args</code> mezőjével együtt érvényesek; egy futásra ütközésnél a meghíváskor megadott érték győz, a fájl változatlan marad.</p>
+      <p><strong><code>.double-check.json</code></strong> a projekt gyökerében áll (a git legfelső könyvtárában, git nélkül az aktuális könyvtárban). JSON tömb; minden bejegyzésnek pontosan egy típuskulcsa van, plusz opcionális <code>args</code> string:</p>
+      <ul>
+        <li><code>{ "skill": "/brooks-review" }</code> — skill, parancs vagy plugin</li>
+        <li><code>{ "agent": "security-reviewer" }</code> — ágens-típus</li>
+        <li><code>{ "mcp": "playwright" }</code> — csatlakoztatott MCP-szerver</li>
+        <li><code>{ "tool": "eslint", "args": "--max-warnings 0" }</code> — CLI-eszköz</li>
+        <li><code>{ "md": "conventions.md" }</code> — szabályokat és irányelveket tartalmazó Markdown fájl</li>
+      </ul>
+      <p>Ha a fájl hiányzik, a skill létrehozza az alapértelmezett konfiggal — <code>/da-review</code>, <code>/clean-code-review</code>, <code>/brooks-review</code>, <code>/open-code-review</code>, <code>markdownlint</code>, <code>shellcheck</code>, és az <code>AGENTS.md</code> szigorú szabályfájlként —, és egy sorban szól. A hibás bejegyzést (nem objektum, nulla vagy több típuskulcs, nem string <code>args</code>) és az ismeretlen kulcsot soronként felsorolja javasolt javítással, és a javított konfiggal folytatja.</p>
+      <p><strong><code>init</code></strong> létrehozza az alapértelmezett konfigot és kiírja az útvonalát — ha a fájl már létezik, csak az útvonalat írja ki, a fájlhoz nem nyúl. A <strong><code>status</code></strong> kiírja minden beállított elemet az <code>args</code> mezőjével és az elérhetőségével — <code>✅ 🛠 eslint (args: --max-warnings 0)</code> — és semmit nem vizsgál át.</p>
+      <p><strong>Elérhetőségi kapu.</strong> Mielőtt bármelyik reviewer elindul, a skill kiír egy <code>Check availability:</code> blokkot: elemenként <code>✅</code> vagy <code>❌</code>, egy skill függőségei külön sorban fölötte. Okok: <code>not found</code> · <code>not installed</code> · <code>not connected</code> · <code>not ready: …</code> · <code>installed, but there is no … in the target</code> · <code>not applicable: …</code> · <code>missing dependency …</code>. Ami titok és a te döntésed nélkül javítható — egy dokumentált CLI telepítése —, azt magától megcsinálja. Ami interaktív (hitelesítő adatok, bejelentkezés), ott a futás megáll, amíg nem válaszolsz: <code>retry</code>, <code>continue</code> (review nélkülük), vagy <code>stop</code>. A skill titkot sosem kér chatben.</p>
+      <p><strong>Hogyan futnak az elemek.</strong> Minden elem külön subagentben fut, párhuzamosan; a nehéz vagy lassú elemek saját subagentet kapnak, a gyors, determinisztikus eszközök közösen egyet. Az eszközök natív súlyosságát a rubrikára képezi le (shellcheck <code>error</code> → Major, <code>warning</code> → Moderate, <code>info</code>/<code>style</code> → Minor). Ha a harnessben nincs subagent eszköz, az elemek inline futnak, és az összegzés kiírja: <code>Review ran inline, not independent.</code></p>
+      <p><strong>Találatsor</strong> — találatonként egy sor, legfeljebb 255 karakter:</p>
+      <pre><code>emoji [item] · Severity · Short name/category | path/to/file.ext:N | Explanation and a short fix.</code></pre>
+      <p>Ugyanaz a gyökérok ugyanazon a helyen több elemtől egy sorba olvad össze, az elemek vesszővel elválasztva. Rendezés: súlyosság, majd útvonal, majd sorszám. A lefutás közben elhasalt vagy a kapunál kihagyott elemek a záró <code>Not run:</code> blokkba kerülnek.</p>
+      <p><strong>Súlyossági szintek:</strong> Kritikus (helyességet, biztonságot vagy védettséget akadályoz) · Súlyos (jelentős tervezési hiba, hiányzó követelmény vagy valószínű bug) · Közepes (nem optimális, de működőképes) · Apró (stílus, elnevezés vagy szőrszálhasogatás)</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>1. példa — Helyi változások, alapértelmezett konfig <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/double-check</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>Target: local — 4 files
+
+Check availability:
+   ✅ 🧠 /devils-advocate
+   ✅ 💡 /da-review
+   ✅ 💡 /clean-code-review
+   ✅ 💡 /brooks-review
+   ✅ 💡 /open-code-review
+   ✅ 🛠 markdownlint
+   ❌ 🛠 shellcheck: installed, but there is no shell script in the target
+   ✅ #️⃣ AGENTS.md
+
+💡 [da-review] · Major · Unchecked payment result | src/services/PaymentProcessor.ts:34 | charge() result is ignored; an order can be marked paid without payment. Check the result before updating status.
+💡💡 [clean-code-review, brooks-review] · Major · Single Responsibility | src/services/UserService.ts:12 | Split UserService: move auth, email, and billing into separate classes.
+#️⃣ [AGENTS.md] · Moderate · Avoid magic numbers | src/services/PaymentProcessor.ts:58 | Replace the literal 3 with a named RETRY_LIMIT constant.
+🛠 [markdownlint] · Minor · MD022 | README.md:14 | Surround the heading with blank lines.</code></pre>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>2. példa — Commit-tartomány egy elakadt reviewerrel <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/double-check HEAD~2..HEAD</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>Target: range HEAD~2..HEAD — 6 files
+
+Check availability:
+   ✅ 🧠 /devils-advocate
+   ✅ 💡 /da-review
+   ✅ 💡 /clean-code-review
+   ❌ 💡 /open-code-review: not ready: no LLM provider configured (ocr llm test failed)
+   ✅ 🛠 markdownlint
+
+Blocked — run the fixes, then answer `retry`, `continue` (review without them), or `stop`:
+   ❌ 💡 /open-code-review: not ready: no LLM provider configured (ocr llm test failed) → run: ocr config provider</code></pre>
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>continue</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>💡 [clean-code-review] · Critical · [safety-01] Resource Leak | src/db/session.py:23 | Wrap the connection in a `with` block so it is closed on every path.
+💡 [da-review] · Moderate · Missing migration test | tests/test_migrate.py:1 | Add a test that runs the new migration on a non-empty table.
+
+Not run:
+   ❌ 💡 /open-code-review: not ready: no LLM provider configured (ocr llm test failed)</code></pre>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Kapcsolódó eszközök</h2>
+      <ul>
+        <li><a href="cmd-da-review-hu.html">/da-review</a> — Egymenetes, ellenpárti review. Az alapértelmezett <code>/double-check</code> elemek egyike; egyedül akkor futtasd, ha egy vélemény elég.</li>
+        <li><a href="skill-clean-code-review-hu.html">/clean-code-review</a> — 132 ellenőrzés 7 csoportban. Szintén alapértelmezett elem; a <code>/double-check</code> ugyanazt a célpontot adja neki, és a találatait beolvasztja a közös listába.</li>
+        <li><a href="cmd-iterative-review-hu.html">/iterative-review</a> — Hurokban review-zik és javít. A <code>/double-check</code> csak listáz, és semmit nem módosít; az <code>/iterative-review</code>-hoz akkor nyúlj, ha a problémák meg is oldódjanak.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Hivatkozások</h2>
+      <p>
+        <a href="index-hu.html">← Összes segédlet</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-hu.html">Ügynöki munkafolyamat-pipeline (agentic-workflow-hu.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

@@ -42,6 +42,14 @@ All fixes applied across all cycles: issue ID → severity → what changed. Mus
 - Unresolvable oscillations with explanation (max 2 lines; max 250 chars / line)
 - Unfixed Minor issues (1 line / issue; max 250 chars / line)
 
+### Used double-checks
+- list the used and unused items that you used. Example:
+- ✅ 🧠 /devils-advocate
+- ✅ 💡 /da-review
+- ❌ 🛠 markdownlint: had nothing to check in this target
+- ❌ 🛠 shellcheck: had nothing to check in this target
+- ✅ #️⃣ AGENTS.md
+
 ### Verdict
 "No critical, major or moderate issues remain" OR "The following issues could not be resolved: [list]"
 
