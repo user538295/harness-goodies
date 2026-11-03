@@ -203,6 +203,11 @@ class SkeletonCase(unittest.TestCase):
     def stored_sync_state(self):
         return json.loads(Path(self.sync_state).read_text(encoding="utf-8"))
 
+    def latest_session_lines(self, session_id):
+        """The lines `status` names an archived Claude session of the project with: its id, its main file and its Markdown log."""
+        log_path = self.stored_sync_state()["sessions"]["claude:" + session_id]["logPath"]
+        return ["Latest archived session: %s" % session_id, "Session source: %s" % self.project_file(session_id), "Prompt log: %s" % log_path]
+
     def assert_python_never_called(self):
         self.assertFalse(os.path.exists(self.python_called), "a command ran a Python interpreter by name (a probe)")
 
@@ -265,7 +270,8 @@ class OffTests(SkeletonCase):
         # nothing syncs while off, whichever command runs
         self.write_session(NEWER_SESSION, NEWER_PROMPT_AT)
         self.assertEqual(["Session logging is off.", "Log root: %s" % self.log_root, "Last sync: %s" % shown(parse_time(synced_at)),
-                          "Archived sessions: 1"], self.run_ok("status").splitlines())
+                          "Archived sessions: 1"] + self.latest_session_lines(ACTIVE_SESSION),  # not the newer, never-archived one
+                         self.run_ok("status").splitlines())
         self.assertEqual(self.saved_reports()[ACTIVE_SESSION], self.run_ok("usage", ACTIVE_SESSION))  # the saved report of an archived one
         live = self.run_ok("usage")  # the newest prompt of the project is the never-archived session: computed live, saved nowhere
         self.assertIn(NEWER_SESSION, live)
@@ -297,7 +303,8 @@ class StatusTests(SkeletonCase):
         self.assert_between(before, after, synced_at)
         self.assertEqual("Last sync: %s" % shown(synced_at), lines[2])
         self.assertEqual("Archived sessions: 2", lines[3])
-        self.assertEqual([UNREADABLE_HEADING, "  %s: %s" % (broken, UNDECODABLE_REASON)], lines[4:])
+        self.assertEqual(self.latest_session_lines(ACTIVE_SESSION), lines[4:7])  # its prompt is the newest: 2099
+        self.assertEqual([UNREADABLE_HEADING, "  %s: %s" % (broken, UNDECODABLE_REASON)], lines[7:])
         self.assertEqual({ACTIVE_SESSION, CURRENT_SESSION}, set(self.saved_reports()))
         self.assert_python_never_called()
 

@@ -65,6 +65,15 @@ class OffResult:
 
 
 @dataclass(frozen=True)
+class LatestSession:
+    """The archived session `status` names: its id, its Markdown log and the path of its own source (None when it is gone)."""
+
+    session_id: str
+    log_path: str
+    source: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class StatusResult:
     on: bool
     log_root: str
@@ -77,6 +86,7 @@ class StatusResult:
     cursor_recorded_since_on: Optional[bool] = None
     price_file_problem: Optional[str] = None
     leftovers: Tuple[Leftover, ...] = ()
+    latest_session: Optional[LatestSession] = None
     probe: Optional[ProbeResult] = None
 
 
@@ -158,7 +168,9 @@ class CommandUseCases:
     def _flag_path(self) -> str:
         return os.path.join(self._log_root, FLAG_FILE)
 
-    def status(self) -> StatusResult:
+    def status(self, cwd: str) -> StatusResult:
+        """Also names the archived root session of the project of `cwd` with the newest prompt (while logging is on, the sync that
+        comes first archives the session that runs `status`) and its own source."""
         outcome = self._sync_while_on()
         flag = self._state.read_on_flag()
         state = self._state.load_sync()
@@ -175,6 +187,7 @@ class CommandUseCases:
             price_file_problem=self._pricing.problem(),
             sync_state_reset=self._state.sync_reset,
             leftovers=self._leftover_scan.scan(),
+            latest_session=self._latest_session(state, cwd),
             probe=self._python_probe.check())
 
     def usage_latest(self, cwd: str) -> UsageResult:
@@ -222,6 +235,13 @@ class CommandUseCases:
         if self._hooks_recorded_since is None or flag is None:
             return None
         return self._hooks_recorded_since(flag.on_at)
+
+    def _latest_session(self, state: dict, cwd: str) -> Optional[LatestSession]:
+        session_key = self._targets.latest_archived(state, cwd)
+        if session_key is None:
+            return None
+        return LatestSession(root_id_of(session_key), state["sessions"][session_key]["logPath"],
+                             self._targets.main_source(state, session_key))
 
     def _sync_while_on(self) -> SyncOutcome:
         """The sync of `status` and `usage`: best effort. An OS error (the log root is not writable) is kept as a warning, and

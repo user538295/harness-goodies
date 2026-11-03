@@ -2,7 +2,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from sessionlog.commands import OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
+from sessionlog.commands import LatestSession, OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
 from sessionlog.leftover_port import Leftover
 from sessionlog.probe_port import ProbeResult
 from sessionlog.presentation import LEFTOVERS_HEADING as LEFTOVERS, PROBE_FAILED, render_off, render_on, render_status, render_usage
@@ -14,6 +14,9 @@ LEFTOVER = Leftover("/home/u/.claude/scripts/prompt_log_hook.sh", "move it aside
 PROBE_FAIL = ProbeResult(ok=False, fix="install Python 3.14 and make python3 resolve to it")
 ON_AT_TEXT = "2026-03-04 05:06:07 +0000"
 SYNC_AT_TEXT = "2026-03-05 08:09:10 +0000"
+SESSION_ID = "abc"
+SESSION_SOURCE = "/home/u/.claude/projects/-work-proj/abc.jsonl"
+PROMPT_LOG = "/home/u/.claude/prompt-logs/proj-0123456789ab/session_2026-03-04_05-06-07_abc.md"
 
 
 def _status(**changes):
@@ -76,13 +79,18 @@ class StatusRenderingTest(unittest.TestCase):
 
     def test_status_unset_fields_are_absent_and_cursor_recorded_is_silent(self):
         text = render_status(_status(on_at=ON_AT, cursor_recorded_since_on=True))
-        for absent in ("Last sync", "Unreadable", "Cursor", "Price file", "rebuilt", "leftover", "python3"):
+        for absent in ("Last sync", "Unreadable", "Cursor", "Price file", "rebuilt", "leftover", "python3", "Latest archived session"):
             self.assertNotIn(absent, text)
 
     def test_status_on_time_read_from_file_time_is_marked(self):
         text = render_status(_status(on_at=ON_AT, on_at_from_file_time=True))
         self.assertIn("Session logging is on since %s (from the file time: .log_enabled could not be parsed).\n" % ON_AT_TEXT, text)
         self.assertNotIn("file time", render_status(_status(on_at=ON_AT)))
+
+    def test_status_names_the_latest_archived_session_and_leaves_out_a_source_that_is_gone(self):
+        text = render_status(_status(archived_session_count=1, latest_session=LatestSession(SESSION_ID, PROMPT_LOG)))
+        self.assertIn("Archived sessions: 1\nLatest archived session: %s\nPrompt log: %s\n" % (SESSION_ID, PROMPT_LOG), text)
+        self.assertNotIn("Session source", text)
 
 
 class EdgeRenderingTest(unittest.TestCase):
@@ -124,6 +132,7 @@ class FullStatusTest(unittest.TestCase):
                 on_at=ON_AT,
                 last_sync_at=SYNC_AT,
                 archived_session_count=3,
+                latest_session=LatestSession(SESSION_ID, PROMPT_LOG, SESSION_SOURCE),
                 cursor_recorded_since_on=False,
                 price_file_problem="prices.json is unreadable",
                 sync_state_reset=True,
@@ -135,12 +144,14 @@ class FullStatusTest(unittest.TestCase):
         self.assertEqual(
             text,
             "Session logging is on since %s.\nLog root: %s\nLast sync: %s\nArchived sessions: 3\n"
+            "Latest archived session: %s\nSession source: %s\nPrompt log: %s\n"
             "Unreadable or skipped items:\n  /a: bad\n  /c\n"
             "Cursor has recorded no hook events since logging was turned on.\n"
             "Price file problem: prices.json is unreadable\n"
             "The sync state was empty or corrupt and has been rebuilt.\n"
             "%s; fix: %s\n%s\n  %s: %s\n  /b: delete it\n"
-            % (ON_AT_TEXT, ROOT, SYNC_AT_TEXT, PROBE_FAILED, PROBE_FAIL.fix, LEFTOVERS, LEFTOVER.path, LEFTOVER.fix),
+            % (ON_AT_TEXT, ROOT, SYNC_AT_TEXT, SESSION_ID, SESSION_SOURCE, PROMPT_LOG, PROBE_FAILED, PROBE_FAIL.fix, LEFTOVERS, LEFTOVER.path,
+               LEFTOVER.fix),
         )
 
 

@@ -65,7 +65,7 @@ class DeletedFilesTest(SafetyTestCase):
                 self.reader.read_keys.clear()
                 self._sync()
                 self.assertEqual((self._archived(), self.reader.read_keys), (archived, [self._key("s1")]))
-                self.assertEqual(self._commands().status().unreadable, ())
+                self.assertEqual(self._commands().status(CWD).unreadable, ())
                 self.reader.read_keys.clear()
                 self._sync()
                 self.assertEqual(self.reader.read_keys, [])  # whole again: no read
@@ -86,7 +86,7 @@ class DeletedFilesTest(SafetyTestCase):
         os.unlink(_report_path(log_path))
         self._sync()  # nothing to rebuild from, and no crash
         commands = self._commands()
-        self.assertEqual(commands.status().unreadable, (UnreadableItem(log_path, FILES_MISSING_REASON),))
+        self.assertEqual(commands.status(CWD).unreadable, (UnreadableItem(log_path, FILES_MISSING_REASON),))
         with self.assertRaisesRegex(CommandError, "the saved report of session s1 beside %s cannot be read, and its source is gone" % log_path):
             self._commands().usage_of("s1")
         with self.assertRaisesRegex(CommandError, "its source is gone"):
@@ -121,7 +121,7 @@ class DeletedFilesTest(SafetyTestCase):
         self.assertEqual((os.path.exists(log_path), _read_bytes(_report_path(log_path))), (False, report))
         reason = FEWER_PROMPTS_REASON % (1, 2)
         self.assertEqual((self._entry("s1")["state"], self._entry("s1")["reason"]), ("withheld", reason))
-        self.assertEqual(self._commands().status().unreadable, (UnreadableItem(log_path, reason),))
+        self.assertEqual(self._commands().status(CWD).unreadable, (UnreadableItem(log_path, reason),))
 
 
 class _FlakyPrices(_PricedModels):

@@ -494,6 +494,15 @@ class OmpReadSessionsTest(OmpReaderTestCase):
         newer = self._store(newer_stem, records=[header_record(session_id), user_record(10, "newer")], mtime_ns=2_000_000_000)
         self.assertEqual(["newer"], [p.text for p in self._read_session(session_id, older, newer).session.prompts])
 
+    def test_main_source_is_the_copy_of_the_roots_own_file_read_uses_and_never_a_child(self):
+        stem, session_id = root_of(1)
+        self._store(stem, records=[header_record(session_id), user_record(10, "older copy")], mtime_ns=1_000_000_000)
+        newer = self._store(stem, records=[header_record(session_id), user_record(10, "newer copy")], archived=True, mtime_ns=2_000_000_000)
+        child = self._store(stem, "Task", records=[header_record("child", parent=self._parent(stem))], mtime_ns=3_000_000_000)
+        units = self.reader.scan().units
+        self.assertEqual(newer, self.reader.main_source("omp:" + session_id, units))
+        self.assertIsNone(self.reader.main_source("omp:" + session_id, (self._unit(child),)))
+
 
 class OmpRootLoopTest(OmpReaderTestCase):
     """Root-level files (not in a family folder) that name each other as parent, as a fork names the root it was forked from: S42's two

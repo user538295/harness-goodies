@@ -1,4 +1,5 @@
-"""Which session a `usage` call names (C1): the latest root session of a project, or the session an id names.
+"""Which session a `usage` call names (C1): the latest root session of a project, or the session an id names; and which archived
+session `status` names: the latest archived root session of a project, with its own source.
 
 Archived sessions are ranked from the session entries of `.sync.json` alone, so it is the same in every harness. The store of
 the harness is read for the sessions that were never archived, and `latest` reads it on every call: it lists the store and reads
@@ -119,6 +120,18 @@ class UsageTargetResolver:
         none of its sources is left or they hold nothing. An unreadable source raises (see `_read_complete`)."""
         units = self._store_units(state, self._reader.scan()).get(session_key)
         return None if units is None else self._read_complete(session_key, units)
+
+    def latest_archived(self, state: dict, cwd: str) -> Optional[str]:
+        """The key of the archived root session of the project of `cwd` with the newest prompt, ranked from `.sync.json` alone as
+        `latest` ranks the archived ones; None when no folder of `cwd` holds one. Nothing is read."""
+        archived = self._latest_archived(state["sessions"], list(self._project_matchers(cwd)))
+        return None if archived is None else archived.session_key
+
+    def main_source(self, state: dict, session_key: str) -> Optional[str]:
+        """The path of the session's own source the reader names (see `SessionReader.main_source`), among the units of a fresh scan
+        that `.sync.json` records for the session, so no unit is learned anew; None when none of them is left."""
+        units = tuple(unit for unit in self._reader.scan().units if recorded_session_key(state, unit.key) == session_key)
+        return self._reader.main_source(session_key, units) if units else None
 
     def _holding_sub_agent(self, state: dict, units_of: Dict[str, _Units], target: str) -> ResolvedSession:
         """The root session of the store whose sub-agents (nested ones too) include `target`, newest source unit first. Only the

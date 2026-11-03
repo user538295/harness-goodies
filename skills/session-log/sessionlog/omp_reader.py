@@ -144,6 +144,10 @@ class OmpReader:
                 chosen[place.identity] = (unit, place)
         return sorted(chosen.values(), key=lambda pair: pair[0].key)
 
+    def main_source(self, session_key: str, units: Tuple[SourceUnit, ...]) -> Optional[str]:
+        """The root's own file: of its copies, the one `read` uses."""
+        return next((unit.key for unit, place in self._chosen_places(root_id_of(session_key), units) if place.is_root), None)
+
     @staticmethod
     def _parse(chosen: List[Tuple[SourceUnit, Place]]) -> _FamilyFiles:
         root: Optional[Member] = None

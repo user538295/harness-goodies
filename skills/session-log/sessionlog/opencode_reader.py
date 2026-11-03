@@ -190,6 +190,10 @@ class OpenCodeReader:
             reason = _failure_reason(self._path, error)
             return ReadResult(unreadable=tuple(_unreadable(key, reason) for key in keys))
 
+    def main_source(self, session_key: str, units: Tuple[SourceUnit, ...]) -> Optional[str]:
+        """The database every session is read from."""
+        return self._path
+
     @staticmethod
     def _read_family(database: sqlite3.Connection, links: _ParentLinks, root_id: str, keys: Iterable[str]) -> ReadResult:
         family = [row for row in (_row_of(database, key) for key in keys) if row is not None]  # a session deleted since the scan is gone

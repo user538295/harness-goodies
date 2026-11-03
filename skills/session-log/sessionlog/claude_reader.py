@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple, Union
 from .claude_subagents import ReadSubAgent, SubAgentMeta, is_agent_file_name, meta_path_of, nest_sub_agents, parse_meta
 from .claude_transcript import TRANSCRIPT_SUFFIX, parse_main_session, parse_sub_agent_session
 from .model import Harness, Session, is_safe_id
-from .reader_port import UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key
+from .reader_port import UNSAFE_ID_REASON, ReadResult, ScanResult, SourceUnit, UnreadableSource, build_session_key, root_id_of
 from .store_files import FILE_ENCODING, StoreFiles
 
 _PROJECTS_DIR = "projects"
@@ -171,12 +171,21 @@ class ClaudeReader:
         """The main-session files: prompts, project folder and the absence of a parent come from them alone."""
         return tuple(unit for unit in units if self._sub_agent_owner(unit.key) is None)
 
+    def _newest_main(self, units: List[SourceUnit]) -> Optional[SourceUnit]:
+        """The main-session file `read` uses among `units` of one session: the newest `modified_at`, ties going to the greatest key."""
+        return max(self.units_for_ranking(tuple(units)), key=lambda unit: (unit.modified_at, unit.key), default=None)
+
+    def main_source(self, session_key: str, units: Tuple[SourceUnit, ...]) -> Optional[str]:
+        """The main-session file `read` uses: one named after the session id."""
+        main = self._newest_main([unit for unit in units if _stem(unit.key) == root_id_of(session_key)])
+        return None if main is None else main.key
+
     def read(self, session_key: str, units: Tuple[SourceUnit, ...]) -> ReadResult:
         matching = [unit for unit in units if self.session_of(unit) == session_key]
-        mains = [unit for unit in matching if self._sub_agent_owner(unit.key) is None]
-        if not mains:
+        main = self._newest_main(matching)
+        if main is None:
             return ReadResult()
-        path = max(mains, key=lambda unit: (unit.modified_at, unit.key)).key
+        path = main.key
         session_id = _stem(path)
         if not is_safe_id(session_id):
             return ReadResult(unreadable=(_FILES.unreadable(path, UNSAFE_ID_REASON),))

@@ -278,3 +278,13 @@ class CodexReader:
                 unreadable.append(_FILES.unreadable(_newest_first(units)[0].key, PARENT_UNREADABLE_REASON))
         session = None if unreadable else _orphan_session(root_id, children)
         return ReadResult(session=session, unreadable=tuple(unreadable))
+
+    def main_source(self, session_key: str, units: Tuple[SourceUnit, ...]) -> Optional[str]:
+        """The root's own rollout, told by its file name (`_is_named_after`), so nothing is opened, as it lies on disk: the plain file
+        when it is there, else the compressed one beside its key. Of several copies (a reverted thread) the one `copy_rank` ranks
+        highest without a header time: the name, then the key."""
+        root_id = root_id_of(session_key)
+        key = max((unit.key for unit in units if _is_named_after(root_id, unit.key)), key=lambda key: copy_rank(None, key), default=None)
+        if key is None:
+            return None
+        return key if os.path.isfile(key) else key + _COMPRESSED_SUFFIX

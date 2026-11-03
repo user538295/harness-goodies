@@ -10,7 +10,7 @@ from typing import Dict, Optional
 from sessionlog.archive_port import WriteOutcome
 from sessionlog.claude_reader import ClaudeReader
 from sessionlog.command_error import CommandError
-from sessionlog.commands import CommandUseCases, OffResult, OnResult, UnreadableItem
+from sessionlog.commands import CommandUseCases, LatestSession, OffResult, OnResult, UnreadableItem
 from sessionlog.pricing import PricingRules
 from sessionlog.probe_port import ProbeResult
 from sessionlog.reader_port import CANNOT_BE_LISTED_REASON, ScanResult
@@ -22,6 +22,7 @@ from tests.store_fakes import scandir_wrapping
 from tests.test_sync import NOW, ON_AT, ONE_DAY, WRITE_FAILURE, FakeArchive, NoLeftovers, NoProbe, _NoPrices, _transcript
 
 CWD = "/work/proj"
+OTHER_PROJECT = "/work/other"
 FAILED_FILE = "/logs/x.md"
 PRICE_PROBLEM = "prices.json is unreadable"
 
@@ -159,7 +160,7 @@ class OnOffTest(CommandTestCase):
         commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state, PricingRules(self.prices),
                                    lambda: self.clock, self.log_root, NoLeftovers(), probe)
         self.assertEqual(commands.on().probe, failed)
-        self.assertEqual(commands.status().probe, failed)
+        self.assertEqual(commands.status(CWD).probe, failed)
         self.assertEqual(probe.calls, 2)
         self._install("a", ON_AT + ONE_DAY)
         commands.usage_latest(CWD)
@@ -220,14 +221,14 @@ class OnOffTest(CommandTestCase):
         sync_path = os.path.join(self.log_root, ".sync.json")
         with open(sync_path, "w", encoding="utf-8") as handle:
             handle.write("{ corrupt")
-        status = self.commands.status()
+        status = self.commands.status(CWD)
         self.assertEqual((status.on, status.sync_state_reset, self.sync.calls), (False, True, 0))
         with open(sync_path, encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "{ corrupt")
 
     def test_status_and_usage_do_not_sync_while_off(self):
         self._install("late", ON_AT + ONE_DAY)
-        self.commands.status()
+        self.commands.status(CWD)
         self.assertEqual(self.commands.usage_latest(CWD).report_text, "report late (1 requests)")  # live, not saved
         self.assertEqual(self.sync.calls, 0)
         self.assertEqual(self.archive.writes, [])
@@ -245,7 +246,7 @@ class StatusTest(CommandTestCase):
         self.prices.problem_text = PRICE_PROBLEM
         path_a = self._install("a", ON_AT + ONE_DAY)
 
-        rebuilt = self.commands.status()
+        rebuilt = self.commands.status(CWD)
 
         self.assertTrue(rebuilt.on)
         self.assertEqual(rebuilt.on_at, ON_AT)  # the file time, reported as such
@@ -259,7 +260,7 @@ class StatusTest(CommandTestCase):
         path_b = self._install("b", ON_AT + ONE_DAY)
         self.clock = NOW + ONE_DAY
 
-        status = self.commands.status()
+        status = self.commands.status(CWD)
 
         self.assertEqual(status.last_sync_at, NOW + ONE_DAY)
         self.assertEqual(status.archived_session_count, 1)
@@ -277,13 +278,13 @@ class StatusTest(CommandTestCase):
 
         commands = CommandUseCases(self.sync, UsageTargetResolver(self.reader), self.archive, self.state, PricingRules(self.prices),
                                    lambda: self.clock, self.log_root, NoLeftovers(), NoProbe(), recorded_since)
-        return commands.status(), asked
+        return commands.status(CWD), asked
 
     def test_status_names_a_source_the_scan_could_not_list(self):
         self._enable()
         projects = os.path.join(self.root, "projects")
         with scandir_wrapping(fail={projects: PermissionError()}):
-            status = self.commands.status()
+            status = self.commands.status(CWD)
         self.assertEqual(status.unreadable, (UnreadableItem(projects, CANNOT_BE_LISTED_REASON),))
 
     def test_status_lists_a_path_the_state_and_the_scan_both_name_once_with_the_state_reason(self):
@@ -293,7 +294,7 @@ class StatusTest(CommandTestCase):
         state["units"][projects] = {"state": "unreadable", "reason": "earlier failure"}
         self.state.save_sync(state)
         with scandir_wrapping(fail={projects: PermissionError()}):
-            status = self.commands.status()
+            status = self.commands.status(CWD)
         self.assertEqual(status.unreadable, (UnreadableItem(projects, "earlier failure"),))
 
     def test_status_asks_hook_activity_since_the_on_time_and_reports_the_answer_only_while_on(self):
@@ -301,14 +302,14 @@ class StatusTest(CommandTestCase):
         for answer in (True, False, None):
             status, asked = self._status_asking(answer)
             self.assertEqual((status.cursor_recorded_since_on, asked), (answer, [ON_AT]))
-        self.assertIsNone(self.commands.status().cursor_recorded_since_on)  # no hook activity given: not a hook harness
+        self.assertIsNone(self.commands.status(CWD).cursor_recorded_since_on)  # no hook activity given: not a hook harness
         self.state.delete_on_flag()
         status, asked = self._status_asking(False)
         self.assertEqual((status.cursor_recorded_since_on, asked), (None, []))
 
     def test_status_without_problems_has_no_optional_fields(self):
         self._enable()
-        status = self.commands.status()
+        status = self.commands.status(CWD)
         self.assertEqual((status.on_at, status.on_at_from_file_time, status.sync_state_reset), (ON_AT, False, False))
         self.assertIsNone(status.price_file_problem)
         self.assertEqual(status.unreadable, ())
@@ -318,17 +319,36 @@ class StatusTest(CommandTestCase):
         self._install("a", ON_AT + ONE_DAY)
         self.commands.off()
         calls = self.sync.calls
-        status = self.commands.status()
+        status = self.commands.status(CWD)
         self.assertFalse(status.on)
         self.assertIsNone(status.on_at)
         self.assertEqual((status.last_sync_at, status.archived_session_count), (NOW, 1))
         self.assertEqual(self.sync.calls, calls)
 
     def test_status_while_off_without_state_has_no_on_time_and_counts_nothing(self):
-        status = self.commands.status()
+        status = self.commands.status(CWD)
         self.assertFalse(status.on)
         self.assertIsNone(status.last_sync_at)
         self.assertEqual((status.archived_session_count, status.unreadable), (0, ()))
+
+    def test_status_names_the_newest_archived_session_of_the_project_with_its_source_and_prompt_log(self):
+        self._enable()
+        self._install("older", ON_AT + ONE_DAY)
+        newer = self._install("newer", ON_AT + 2 * ONE_DAY)
+        self.assertEqual(self.commands.status(CWD).latest_session, LatestSession("newer", "/logs/newer.md", newer))
+
+    def test_status_names_no_session_for_a_project_without_an_archived_one(self):
+        self._enable()
+        self._install("a", ON_AT + ONE_DAY)
+        self.assertIsNone(self.commands.status(OTHER_PROJECT).latest_session)
+
+    def test_status_while_off_names_the_last_archived_session_and_no_source_once_its_file_is_gone(self):
+        self._enable()
+        path = self._install("a", ON_AT + ONE_DAY)
+        self.commands.off()
+        os.unlink(path)
+        self._install("late", ON_AT + 2 * ONE_DAY)  # newer, but never archived: status reads only the archive's sessions
+        self.assertEqual(self.commands.status(CWD).latest_session, LatestSession("a", "/logs/a.md"))
 
 
 class UsageTest(CommandTestCase):
@@ -362,7 +382,7 @@ class UsageTest(CommandTestCase):
     def test_usage_prints_the_report_a_failed_write_could_not_save(self):
         self._enable()
         self._install("first", ON_AT + ONE_DAY)
-        self.commands.status()  # first session is archived and saved
+        self.commands.status(CWD)  # first session is archived and saved
         self.archive.failure = WriteOutcome(FAILED_FILE, False, WRITE_FAILURE)
         path = self._install("first", ON_AT + ONE_DAY, ON_AT + 3 * ONE_DAY)
         os.utime(path, (NOW.timestamp() + 5, NOW.timestamp() + 5))
@@ -371,7 +391,7 @@ class UsageTest(CommandTestCase):
     def test_usage_serves_the_live_report_when_its_saved_report_cannot_be_read_and_the_source_is_there(self):
         self._enable()
         self._install("first", ON_AT + ONE_DAY)
-        self.commands.status()
+        self.commands.status(CWD)
         self.archive.reports.clear()
         self.assertEqual(self.commands.usage_latest(CWD).report_text, "report first (1 requests)")
         self.assertEqual(self.commands.usage_of("first").report_text, "report first (1 requests)")
@@ -380,7 +400,7 @@ class UsageTest(CommandTestCase):
     def test_usage_names_the_log_when_its_saved_report_cannot_be_read_and_the_source_is_gone(self):
         self._enable()
         path = self._install("first", ON_AT + ONE_DAY)
-        self.commands.status()
+        self.commands.status(CWD)
         self.archive.reports.clear()
         os.unlink(path)
         with self.assertRaisesRegex(CommandError, "/logs/first.md cannot be read, and its source is gone"):

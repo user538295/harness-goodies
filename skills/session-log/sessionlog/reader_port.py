@@ -90,6 +90,12 @@ class SessionReader(Protocol):
         for file-system or format errors."""
         ...
 
+    def main_source(self, session_key: str, units: Tuple[SourceUnit, ...]) -> Optional[str]:
+        """The path of the session's own source among `units`, which `status` shows: its main transcript file (Claude, Codex, OMP),
+        its conversation's hook-record folder (Cursor) or the database (OpenCode). None when `units` hold none (an orphan). Told from
+        the units' keys alone: no source is opened (Codex asks by a stat whether the plain or the compressed file is there)."""
+        ...
+
 
 @runtime_checkable
 class SubAgentNaming(Protocol):

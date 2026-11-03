@@ -116,6 +116,19 @@ model OffResult {
   logRoot: string;
 }
 
+/**
+ * The archived root session of the current project (the `usage` project rule, cwd first, then each parent) with the newest prompt, ranked
+ * from the C6 session entries alone, as `usage` ranks the archived ones; never-archived sessions are not looked for. While logging is on,
+ * the sync that comes first archives the session that runs `status`.
+ */
+model LatestSession {
+  sessionId: string;
+  /** The C6 logPath: the session's Markdown log. */
+  logPath: string;
+  /** C2 SessionReader.mainSource over the units of a fresh scan that C6 records for the session; absent when none is left. */
+  source?: string;
+}
+
 /** Built from .log_enabled and .sync.json (C6) after the sync, if any. */
 model StatusResult {
   on: boolean;
@@ -139,6 +152,8 @@ model StatusResult {
   /** .sync.json existed but was empty or corrupt, so it was rebuilt. */
   syncStateReset: boolean;
   leftovers: Leftover[];
+  /** Absent when no folder of the cwd holds an archived root session. */
+  latestSession?: LatestSession;
   probe?: ProbeResult;
 }
 
@@ -156,7 +171,7 @@ model UsageResult {
 interface CommandUseCases {
   on(harness: Harness): OnResult;
   off(harness: Harness): OffResult;
-  status(harness: Harness): StatusResult;
+  status(harness: Harness, cwd: string): StatusResult;
   usage(harness: Harness, cwd: string, target?: UsageTarget): UsageResult;
 }
 

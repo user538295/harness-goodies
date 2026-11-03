@@ -262,7 +262,7 @@ class PartlyGoneTest(SafetyTestCase):
         self.assertEqual((entry["state"], entry["unitCount"], "reason" in entry), ("written", UNITS_WITH_AGENT, False))
         self.assertIn("prompt 1", _read_bytes(partial_log).decode("utf-8"))
         self.assertIn("agent-a1", _read_bytes(_report_path(partial_log)).decode("utf-8"))
-        self.assertEqual(self._commands().status().unreadable, ())
+        self.assertEqual(self._commands().status(CWD).unreadable, ())
 
     def _plant_old_format_logs(self, folder, session_ids):
         """Old-release logs of the ids: `session_<id>.md`, Claude `session_<ts>_<id>_<pid>.md`, OpenCode `session_<ts>_<id>.md`."""
@@ -291,7 +291,7 @@ class PartlyGoneTest(SafetyTestCase):
                 entry = self._entry("partial")
                 self.assertEqual((entry["state"], entry["reason"], entry["unitCount"], entry["logPath"]),
                                  ("withheld", PARTLY_GONE, UNITS_WITH_AGENT, partial_log))
-                self.assertEqual(commands.status().unreadable, (UnreadableItem(partial_log, PARTLY_GONE),))
+                self.assertEqual(commands.status(CWD).unreadable, (UnreadableItem(partial_log, PARTLY_GONE),))
                 self.assertEqual(commands.usage_latest(CWD).report_text, partial_report)
         return files
 
@@ -306,14 +306,14 @@ class PartlyGoneTest(SafetyTestCase):
         self.assertEqual(self._archived(), before)
         entry = self._entry("partial")
         self.assertEqual((entry["state"], entry["reason"], entry["unitCount"]), ("withheld", PARTLY_GONE, UNITS_WITH_AGENT))
-        self.assertEqual(self._commands().status().unreadable,
+        self.assertEqual(self._commands().status(CWD).unreadable,
                          (UnreadableItem(agent, CANNOT_BE_PARSED_REASON), UnreadableItem(log_path, PARTLY_GONE)))
         self._agent_file("partial")
         self._sync()
         entry = self._entry("partial")
         self.assertEqual((entry["state"], entry["unitCount"], "reason" in entry), ("written", UNITS_WITH_AGENT, False))
         self.assertEqual(self._archived(), before)
-        self.assertEqual(self._commands().status().unreadable, ())
+        self.assertEqual(self._commands().status(CWD).unreadable, ())
 
     def test_usage_of_a_session_whose_report_stayed_behind_its_log_warns_that_the_report_is_withheld(self):
         self._install("partial", _transcript(BASE), NOW)
@@ -349,7 +349,7 @@ class FailedReplaceTest(SafetyTestCase):
         with self._replace_blocked(blocked_path):
             outcome = self._sync()
             reason = self._entry("s1")["reason"]
-            status = commands.status().unreadable
+            status = commands.status(CWD).unreadable
             printed = commands.usage_latest(CWD).report_text
         self.assertEqual(_temp_files(self.logs), [])
         self.assertEqual(self._entry("s1")["state"], "skipped")
@@ -530,12 +530,12 @@ class VanishedUnreadableUnitTest(SafetyTestCase):
         gone = self._install("gone", _transcript(NOW), NOW)
         self._corrupt(agent)
         self._corrupt(bad)
-        self.assertEqual([item.path for item in self._commands().status().unreadable], sorted((agent, bad)))
+        self.assertEqual([item.path for item in self._commands().status(CWD).unreadable], sorted((agent, bad)))
         before = self._saved()["units"]
         os.unlink(gone)
         os.unlink(agent)
         os.unlink(bad)
-        self.assertEqual(self._commands().status().unreadable, ())
+        self.assertEqual(self._commands().status(CWD).unreadable, ())
         units = self._saved()["units"]
         self.assertNotIn(agent, units)  # a unit whose source left a complete scan is dropped, whatever its state
         self.assertNotIn(bad, units)
@@ -556,7 +556,7 @@ class VanishedUnreadableUnitTest(SafetyTestCase):
         self.reader = IncompleteScanReader(self.root)
         self._sync()
         self.assertEqual(self._saved()["units"][bad]["state"], "unreadable")
-        self.assertEqual([item.path for item in self._commands().status().unreadable], [bad, self.reader._projects])  # the folder it could not list too
+        self.assertEqual([item.path for item in self._commands().status(CWD).unreadable], [bad, self.reader._projects])  # the folder it could not list too
         self.reader = CountingReader(self.root)
         self._sync()
         self.assertNotIn(bad, self._saved()["units"])  # the complete scan drops it: it can never be retried

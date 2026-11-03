@@ -6,7 +6,7 @@ except a `UsageResult`, whose report text is returned unchanged.
 from datetime import datetime
 from typing import List, Optional, Sequence
 
-from .commands import OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
+from .commands import LatestSession, OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
 from .leftover_port import Leftover
 from .probe_port import MINIMUM_TEXT, ProbeResult
 
@@ -44,6 +44,13 @@ def _unreadable_lines(items: Sequence[UnreadableItem]) -> List[str]:
     return [UNREADABLE_HEADING] + [("  %s: %s" % (item.path, item.reason)) if item.reason else ("  %s" % item.path) for item in items]
 
 
+def _latest_session_lines(session: Optional[LatestSession]) -> List[str]:
+    if session is None:
+        return []
+    source = [] if session.source is None else ["Session source: %s" % session.source]
+    return ["Latest archived session: %s" % session.session_id] + source + ["Prompt log: %s" % session.log_path]
+
+
 def render_on(result: OnResult) -> str:
     if result.already_on:
         headline = "Session logging is already on, since %s." % _time(result.on_at)
@@ -71,6 +78,7 @@ def render_status(result: StatusResult) -> str:
     if result.last_sync_at is not None:
         lines.append("Last sync: %s" % _time(result.last_sync_at))
     lines.append("Archived sessions: %d" % result.archived_session_count)
+    lines += _latest_session_lines(result.latest_session)
     lines += _unreadable_lines(result.unreadable)
     if result.on and result.cursor_recorded_since_on is False:
         lines.append("Cursor has recorded no hook events since logging was turned on.")

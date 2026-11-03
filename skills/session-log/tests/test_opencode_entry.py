@@ -71,7 +71,9 @@ class OpenCodeEntryTest(OpenCodeEntryTestCase):
         self.run_main(["opencode", "on"])
         code, stdout, stderr = self.run_main(["opencode", "status"])
         self.assertEqual((0, ""), (code, stderr))
-        self.assertIn("Archived sessions: 1", stdout)
+        (log_path,) = self.archived_files(".md")
+        self.assertIn("Archived sessions: 1\nLatest archived session: %s\nSession source: %s\nPrompt log: %s\n"
+                      % (ROOT_ID, self.database_path, log_path), stdout)  # the database every session is read from
         code, stdout, stderr = self.run_main(["opencode", "usage"])
         self.assertEqual((0, ""), (code, stderr))
         self.assertIn(TOTAL_TOKENS, stdout)

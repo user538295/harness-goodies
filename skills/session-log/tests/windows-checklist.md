@@ -32,7 +32,7 @@ Repeat the whole section once per harness (Claude Code, Codex, Cursor, OMP, Open
 - [ ] `on` prints `Session logging is on since <time>.` and `Logs are saved under <log root>.`, prints no line starting `python3 does not run Python 3.14 or newer`, and `<log root>\.log_enabled` exists.
 - [ ] `on` run a second time prints `Session logging is already on, since <the same time>.`
 - [ ] One prompt is sent and answered.
-- [ ] `status` prints `Session logging is on since <time>.`, `Log root: <log root>`, a `Last sync:` line and `Archived sessions: 1`, and no `Unreadable or skipped items:` block.
+- [ ] `status` prints `Session logging is on since <time>.`, `Log root: <log root>`, a `Last sync:` line, `Archived sessions: 1`, `Latest archived session: <id>` (the session that ran it), `Session source: <path>` (an existing file or folder: the harness's transcript, OpenCode's database, Cursor's `.records\<id>` folder) and `Prompt log: <log root>\<slug>\session_<UTC time>_<id>.md`, and no `Unreadable or skipped items:` block.
 - [ ] `usage` prints the report of that session; `usage --latest` and `usage <session-id>` print the same text. `<log root>\<slug>\session_<UTC time>_<id>.md` and `session_<UTC time>_<id>.usage.txt` exist side by side; times inside carry a UTC offset; both files are UTF-8 with LF line ends (check in an editor that shows encoding and line ends).
 - [ ] `ő` and `≥` read correctly in the `.md` log and in the report (both hold the prompt text; the report's prompt row shows its first characters); Cursor under 5.1 is exempt (section 2).
 - [ ] `off` prints `Session logging is off.` and `Logs under <log root> are kept.`; `.log_enabled` is gone and the log files stay. Run `on` again before the next section.

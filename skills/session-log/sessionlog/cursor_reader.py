@@ -165,6 +165,11 @@ class CursorReader:
         matching = [unit for unit in units if self.session_of(unit) == session_key]
         return max(matching, key=lambda unit: (unit.modified_at, unit.key), default=None)
 
+    def main_source(self, session_key: str, units: Tuple[SourceUnit, ...]) -> Optional[str]:
+        """The conversation's own hook-record folder."""
+        unit = self._own_unit(session_key, units)
+        return None if unit is None else unit.key
+
     @staticmethod
     def _child_named_in(path: str) -> Optional[str]:
         """The child a `subagentStop` record file names; None when it cannot be opened or parsed (the read of its own conversation reports

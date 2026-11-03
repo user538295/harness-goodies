@@ -24,7 +24,7 @@ from sessionlog.pricing import PricingRules
 from sessionlog.state import FileStateStore
 from sessionlog.sync import SyncUseCase
 from sessionlog.usage_target import UsageTargetResolver
-from tests.test_commands import ReportKeepingArchive
+from tests.test_commands import CWD, ReportKeepingArchive
 from tests.test_sync import NOW, NoLeftovers, NoProbe, _NoPrices
 
 MOVE_FIX = "move it outside the skills folders: `%s` (a copy moved inside a skills folder may still load)"
@@ -258,7 +258,7 @@ class EveryKindTests(SandboxCase):
                 use_cases = self.use_cases(harness, self.scanner(harness))
 
                 on = use_cases.on()
-                status = use_cases.status()
+                status = use_cases.status(CWD)
 
                 self.assertEqual(expected, sorted((item.path, item.fix) for item in on.leftovers))
                 self.assertEqual(expected, sorted((item.path, item.fix) for item in status.leftovers))
@@ -289,7 +289,7 @@ class EveryKindTests(SandboxCase):
     def test_status_while_off_and_on_while_already_on_report_the_leftovers_too(self):
         found = (Leftover("/x/old", ANY_FIX),)
         use_cases = self.use_cases(Harness.CLAUDE, FixedScan(found))
-        self.assertEqual(found, use_cases.status().leftovers)  # off: never turned on
+        self.assertEqual(found, use_cases.status(CWD).leftovers)  # off: never turned on
         use_cases.on()
         self.assertEqual(found, use_cases.on().leftovers)  # already on
 
@@ -297,8 +297,8 @@ class EveryKindTests(SandboxCase):
         found = (Leftover("/x/old", ANY_FIX),)
         use_cases = self.use_cases(Harness.CLAUDE, FixedScan(found))
         self.assertEqual(found, use_cases.on().leftovers)
-        self.assertEqual(found, use_cases.status().leftovers)
-        self.assertEqual((), self.use_cases(Harness.CLAUDE, NoLeftovers()).status().leftovers)
+        self.assertEqual(found, use_cases.status(CWD).leftovers)
+        self.assertEqual((), self.use_cases(Harness.CLAUDE, NoLeftovers()).status(CWD).leftovers)
 
 
 class PerHarnessTests(SandboxCase):
@@ -774,7 +774,7 @@ class CleanMachineTests(SandboxCase):
             with self.subTest(harness=harness.value):
                 self.fresh_home()
                 use_cases = self.use_cases(harness, self.scanner(harness))
-                on, status = use_cases.on(), use_cases.status()
+                on, status = use_cases.on(), use_cases.status(CWD)
                 self.assertEqual((), on.leftovers)
                 self.assertEqual((), status.leftovers)
                 self.assertNotIn("leftover", presentation.render_on(on).lower())

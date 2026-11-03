@@ -158,4 +158,13 @@ interface SessionReader {
 
   /** Reads one session whole from all of its units (root, children, sub-agent files). */
   read(sessionKey: string, units: SourceUnit[]): ReadResult;
+
+  /**
+   * Path of the session's own source among `units` (the units C6 records for it), which `status` shows: Claude the main-session file
+   * `read` uses; Codex the root's own rollout, told by its file name (`rollout-<ts>-<thread id>[_<rollout id>].jsonl`; of several copies
+   * the greatest name, then key), the `.zst` file when no plain file is there; OMP the root's own file of the copy `read` uses; Cursor the
+   * conversation's `.records/<id>` folder; OpenCode the database. Told from the keys alone, no source is opened (Codex: one stat).
+   * Absent when `units` hold none of it (an orphan). Never raises.
+   */
+  mainSource(sessionKey: string, units: SourceUnit[]): string | void;
 }

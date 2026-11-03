@@ -56,7 +56,7 @@ class MissingSubAgentFileTest(SafetyTestCase):
         entry = self._entry("s1")
         self.assertEqual((entry["state"], entry["reason"]), ("withheld", PARTLY_GONE_REASON % (2, 3)))
         self.assertEqual((entry["promptCount"], entry["subAgentCount"]), (2, 2))
-        self.assertEqual(self._commands().status().unreadable, (UnreadableItem(log_path, entry["reason"]),))
+        self.assertEqual(self._commands().status(CWD).unreadable, (UnreadableItem(log_path, entry["reason"]),))
         self.assertEqual(self._commands().usage_latest(CWD).report_text, old_report.decode("utf-8"))
 
     def test_the_withheld_session_takes_every_further_prompt_and_is_read_only_when_a_unit_changes(self):
@@ -126,7 +126,7 @@ class SourceThatLostPromptsTest(SafetyTestCase):
         reason = FEWER_PROMPTS_REASON % (CUT_TO, FULL_TRANSCRIPT_PROMPTS)
         entry = self._entry("s1")
         self.assertEqual((entry["state"], entry["reason"], entry["promptCount"]), ("withheld", reason, FULL_TRANSCRIPT_PROMPTS))
-        self.assertEqual(self._commands().status().unreadable, (UnreadableItem(log_path, reason),))
+        self.assertEqual(self._commands().status(CWD).unreadable, (UnreadableItem(log_path, reason),))
         self.assertEqual(self._commands().usage_latest(CWD).report_text, _read_bytes(_report_path(log_path)).decode("utf-8"))
 
     def test_the_cut_source_is_not_read_again_until_it_changes_and_grows_back_to_a_superset(self):

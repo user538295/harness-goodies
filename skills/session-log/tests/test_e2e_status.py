@@ -114,11 +114,12 @@ class FullStatusTests(skeleton.SkeletonCase):
         self.assertEqual("Log root: %s" % self.log_root, lines[1])
         self.assertEqual("Last sync: %s" % skeleton.shown(skeleton.parse_time(self.stored_sync_state()["lastSyncAt"])), lines[2])
         self.assertEqual("Archived sessions: 1", lines[3])
+        self.assertEqual(self.latest_session_lines(skeleton.ACTIVE_SESSION), lines[4:7])
         self.assertEqual([skeleton.UNREADABLE_HEADING,
                           "  %s: %s" % (agent, skeleton.UNDECODABLE_REASON),
-                          "  %s: %s" % (log_path, PARTLY_GONE_REASON)], lines[4:7])
-        self.assertTrue(lines[7].startswith(PRICE_PROBLEM_LABEL + self.price_file + ": "), msg=lines[7])
-        self.assertEqual(8, len(lines), msg=lines)
+                          "  %s: %s" % (log_path, PARTLY_GONE_REASON)], lines[7:10])
+        self.assertTrue(lines[10].startswith(PRICE_PROBLEM_LABEL + self.price_file + ": "), msg=lines[10])
+        self.assertEqual(11, len(lines), msg=lines)
         self.assertNotIn(RESET_LINE, lines)
 
         Path(self.sync_state).write_bytes(b"{corrupt")
@@ -144,6 +145,7 @@ class FullStatusTests(skeleton.SkeletonCase):
         self.assertEqual([skeleton.UNREADABLE_HEADING, "  %s: %s" % (invalid, INVALID_REASON % 2)],
                          [line for line in lines if line == skeleton.UNREADABLE_HEADING or line.startswith("  ")])
         self.assertEqual("Archived sessions: 1", lines[3])  # the one valid call's conversation; the invalid calls make no session
+        self.assertIn("Session source: %s" % os.path.join(self.cursor_log_root, RECORDS_FOLDER, CONVERSATION), lines)  # its hook-record folder
 
         # off: nothing is synced and the hook line is not due; on again: records older than the new on-time do not count
         self.run_harness(CURSOR_HARNESS, "off")

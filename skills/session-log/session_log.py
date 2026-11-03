@@ -295,7 +295,7 @@ def _run(harness, command, target, environment):
     handlers = {
         "on": lambda: presentation.render_on(use_cases.on()),
         "off": lambda: presentation.render_off(use_cases.off()),
-        "status": lambda: presentation.render_status(use_cases.status()),
+        "status": lambda: presentation.render_status(use_cases.status(environment.get_cwd())),
         "usage": lambda: presentation.render_usage(
             use_cases.usage_latest(environment.get_cwd()) if target is None else use_cases.usage_of(target)),
     }

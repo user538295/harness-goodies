@@ -138,6 +138,14 @@ class CompressedReadTest(CodexReaderTestCase):
         self.assertEqual((ROOT, ()), (result.session.session_id, result.unreadable))
         self.assertEqual(([os.path.join(self.day, _name(ROOT) + ".zst")], [os.path.join(self.day, _name(CHILD))]), (zstd_opened, plain_opened))
 
+    def test_main_source_is_the_roots_own_rollout_as_it_lies_on_disk_and_none_without_it(self):
+        root = os.path.join(self.day, _name(ROOT) + ".zst")
+        write_compressed(root, _rollout(ROOT, records=[_prompt(10, "ask root")]))
+        child = self._write(_name(CHILD), _rollout(CHILD, parent=ROOT, start=20, records=[_used(21, 3, 1)]))
+        units = self.reader.scan().units
+        self.assertEqual(root, self.reader.main_source("codex:" + ROOT, units))
+        self.assertIsNone(self.reader.main_source("codex:" + ROOT, tuple(unit for unit in units if unit.key == child)))
+
     def test_compressed_threads_make_the_same_session_as_plain_ones_with_a_plain_grandchild_nested_under_a_compressed_middle_thread(self):
         family = {_name(ROOT): _rollout(ROOT, records=[_prompt(10, "ask root"), _used(11, 100, 10)]),
                   _name(CHILD): _rollout(CHILD, parent=ROOT, start=20, records=[_used(21, 3, 1)]),

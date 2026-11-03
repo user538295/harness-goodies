@@ -306,6 +306,11 @@ class ReadTest(CursorReaderTestCase):
         self.write("beforeSubmitPrompt", prompt_at, prompt_input("g-child", "child task", conversation_id=child), conversation=child)
         self.write("stop", prompt_at + 1, stop_input("g-child", conversation_id=child, **TOKENS), conversation=child)
 
+    def test_main_source_is_the_conversations_own_record_folder(self):
+        record = self.write("beforeSubmitPrompt", 0, prompt_input("g1", "parent prompt"))
+        self.write_child_run(prompt_at=5)  # newer, but another conversation's folder
+        self.assertEqual(os.path.dirname(record), self.reader.main_source(key_of(), self.reader.scan().units))
+
     def test_a_conversation_the_parent_names_as_a_sub_agent_is_no_session_and_the_parent_keeps_its_row(self):
         self.write("beforeSubmitPrompt", 0, prompt_input("g1", "parent prompt"))
         self.write("stop", 2, stop_input("g1"))

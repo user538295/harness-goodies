@@ -452,6 +452,18 @@ class ClaudeSubAgentReadTest(ClaudeSubAgentTestCase):
         main_only = tuple(unit for unit in units if unit.key == newer)
         self.assertEqual(self.reader.read("claude:" + SID, main_only).session.sub_agents, ())
 
+    def test_claude_main_source_is_the_main_file_read_uses_and_never_a_subagent_file(self):
+        other = self._folder("-other-proj")
+        older = self._main([_typed(1, "older")])
+        newer = self._main([_typed(1, "newer")], folder=other)
+        os.utime(older, ns=(0, ONE_SECOND_NS))
+        os.utime(newer, ns=(0, 2 * ONE_SECOND_NS))
+        agent = self._agent("mine", _run("mine", 10, 11), folder=other)
+        os.utime(agent, ns=(0, 3 * ONE_SECOND_NS))
+        units = self.reader.scan().units
+        self.assertEqual(newer, self.reader.main_source("claude:" + SID, units))
+        self.assertIsNone(self.reader.main_source("claude:" + SID, tuple(unit for unit in units if unit.key == agent)))
+
     def test_claude_read_without_a_main_file_gives_an_empty_result_even_with_subagent_units(self):
         self._agent("a1", _run("a1", 10, 11))
         result = self._session()
