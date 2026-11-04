@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code segédlettár</title>
 <link rel="stylesheet" href="styles.css">
-<!-- Source: directory — links to all 24 handout pages (last synced: 2026-10-29) -->
+<!-- Source: directory — links to all 28 handout pages (last synced: 2026-11-04) -->
 <style>
   body {
     padding: 2rem 1.5rem 4rem;
@@ -285,6 +285,18 @@
           <span class="tool-name">/plan-maker</span>
           <span class="tool-desc">Ne ülj egy ticket előtt, azon töprengve, hol kezdd. Egy feature-t a legapróbb taskokra bont tesztekkel és függőségekkel — készen áll, hogy az /implement végigrágja.</span>
         </a>
+        <a class="tool-item" href="skill-plan-maker-for-team-hu.html">
+          <span class="tool-name">/plan-maker-for-team</span>
+          <span class="tool-desc">A munka frontend, backend és tester között oszlik meg. Egy briefből csapattervet ír, amelyet kilenc csak olvasó vizsgáló ágens alapoz meg a valódi kódon — architektúra-rétegek, Given/When/Then forgatókönyvek, szerepek közötti szerződések (TypeSpec, ha telepítve van), diagramok, tesztszint-allokációs tábla és dokumentációs checklist. Taskokat nem ír; azokat a <code>/create-tasks</code> írja.</span>
+        </a>
+        <a class="tool-item" href="skill-create-tasks-hu.html">
+          <span class="tool-name">/create-tasks</span>
+          <span class="tool-desc">Jóváhagyott csapatterv, de ki mit csinál és milyen sorrendben? Egyszerepű, checkboxos taskokra bontja vertikális szeletekbe rendezve, walking skeletonnal kezdve, taskonkénti tesztekkel, órabecslésekkel, függőségi gráffal és kötelező lezáró taskkal — készen az /implement számára.</span>
+        </a>
+        <a class="tool-item" href="skill-vertical-slicer-hu.html">
+          <span class="tool-name">/vertical-slicer</span>
+          <span class="tool-desc">A terv azzal kezdődik, hogy „állítsuk fel az adatbázist”, és a végén integrál. Egy feature-t rendezett vertikális szeletekre vág — mindegyik egy felhasználó által látható viselkedés végponttól végpontig, az első egy walking skeleton —, és újraszeleteli azt, amelyik elbukik a vertikalitási teszten.</span>
+        </a>
         <a class="tool-item" href="skill-skill-packager-hu.html">
           <span class="tool-name">/skill-packager</span>
           <span class="tool-desc">Készítettél egy Claude Code skillt? Tedd működővé Claude Desktopon is. Egy feltöltésre kész ZIP-be csomagolja a skill-mappádat Desktophoz és a claude.ai-hoz — neveket, útvonalakat és frontmattert lekezel.</span>
@@ -324,6 +336,10 @@
         <a class="tool-item" href="skill-plain-language-hu.html">
           <span class="tool-name">/plain-language</span>
           <span class="tool-desc">Technikai döntést kell elmagyaráznod egy stakeholdernek, aki nem ismeri a kódot. Következmény-első újraírás, technikai részlet zárójelben — pontos, mégis követhető.</span>
+        </a>
+        <a class="tool-item" href="skill-summarize-hu.html">
+          <span class="tool-name">/summarize</span>
+          <span class="tool-desc">Hosszú cikk, tanulmány vagy fájl, kevés idő. Magából a forrásból — beillesztett szövegből, URL-ből vagy fájlból — elmagyarázza a fő megállapításait és tanulságait a kért olvasási időn belül, vagy legfeljebb 24 sorban.</span>
         </a>
         <a class="tool-item" href="skill-quick-plan-hu.html">
           <span class="tool-name">/quick-plan</span>

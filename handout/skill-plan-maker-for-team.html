@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/plan-maker-for-team — Claude Code Handout</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/plan-maker-for-team/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/plan-maker-for-team</code></h1>
+      <a class="back-link" href="index.html">← Back to index</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Summary</h2>
+      <p><strong>One reviewable plan that tells frontend, backend and tester exactly what they own — grounded in your real code, not guesses.</strong> Turns a feature brief into a single Markdown team plan with a layered architecture, Given/When/Then scenarios, logical contracts between roles, Mermaid diagrams, a test-level allocation table and a documentation checklist.</p>
+      <p>Before writing anything it investigates the codebase and docs with nine read-only subagents, then one synthesis subagent writes the plan from their findings. The output is <code>&lt;feature-name&gt;-team-plan.md</code> in the same folder as the brief. It contains no tasks: the task-by-task breakdown is a separate downstream step, <code>/create-tasks</code>.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>When to use</h2>
+      <p>A feature needs several people, and each of them has to know which layer, which contract and which tests are theirs — without one long plan that mixes everyone's work. <code>/plan-maker-for-team</code> keeps a fixed Frontend, Backend and Tester section, tags each role-owned heading (<code>#frontend-role</code>, <code>#backend-role</code>, <code>#tester-role</code>) so you can filter one role's whole scope, for example in Obsidian, and puts every boundary two roles must honour into a numbered contract.</p>
+      <p>Trigger phrases (from the SKILL.md):</p>
+      <ul>
+        <li>"turn a feature brief or a feature request into an actionable engineering plan that splits work across frontend, backend, and tester roles"</li>
+        <li>the user provides a brief file (often named like <code>feature-name-brief.md</code>)</li>
+        <li>"plan a feature for the team"</li>
+        <li>"make a team plan"</li>
+        <li>"organize multi-role work" — even if they do not say the word plan</li>
+      </ul>
+      <p>It sits between <code>/feature-refinement</code> (writes <code>&lt;feature&gt;-brief.md</code>) and <code>/create-tasks</code> (writes <code>&lt;feature&gt;-tasks.md</code>), which <code>/implement</code> then executes. For a single developer who wants a plan with tasks in one file, use <code>/plan-maker</code> instead.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Invocation</h2>
+      <pre><code>/plan-maker-for-team &lt;feature-name&gt;-brief.md</code></pre>
+      <p><strong>Step 0 — the brief gate.</strong> The brief must answer five questions with concrete sentences, not a placeholder or one vague word: <strong>Problem</strong> (the user problem), <strong>Goal</strong> (the end state after it ships), <strong>Core Flow</strong> (the main step-by-step user path), <strong>In Scope</strong> and <strong>Out of Scope</strong>. If the input is only a short feature request, or any of the five is missing or weak, the skill does not plan: it tells you the brief is insufficient and runs <code>/feature-refinement</code> to produce the brief first. It never invents the missing product intent.</p>
+      <p><strong>What happens next:</strong></p>
+      <ol>
+        <li><strong>Set up.</strong> It announces the architecture approach — Clean Architecture by default (Presentation → Use Cases → Interface Adapters → Entities → Frameworks &amp; Drivers) — and the contract tooling it will use, then creates a work directory <code>&lt;feature-name&gt;-plan-work/</code> beside the brief.</li>
+        <li><strong>Investigate.</strong> Nine read-only subagents run in parallel: <code>contracts</code>, <code>scenarios</code>, <code>backend-architect</code>, <code>frontend-architect</code>, <code>data-schema</code>, <code>adr</code>, <code>docs</code>, <code>tester</code>, <code>structured-output</code>. Each reads code first and docs second, cites real file paths and symbols, modifies nothing, and writes only its own findings file into the work directory.</li>
+        <li><strong>Synthesize.</strong> One synthesis subagent reads the findings and writes the plan, then adds a <code>**Team plan:**</code> back-link to the brief's <code>## References</code> section and rewrites any bare project file path in the plan's prose as a Markdown link.</li>
+        <li><strong>Estimate.</strong> The synthesis subagent ends by running <code>/estimate &lt;plan&gt; --from &lt;brief&gt;</code> and writing <code>**Story Points:** &lt;SP&gt; — estimated &lt;YYYY-MM-DD&gt; with /estimate</code> under the plan's title. A failed estimate is reported and leaves the line out.</li>
+        <li><strong>Report and clean up.</strong> You get the summary — status, open-question count, which diagrams were included or deferred, link warnings — and the work directory is deleted.</li>
+      </ol>
+      <p><strong>Rules the plan always follows:</strong></p>
+      <ul>
+        <li>Three role sections, always. A role with no work keeps its section, marked <strong>N/A</strong>.</li>
+        <li>Under Clean Architecture, Presentation maps to frontend and the other four layers to backend; the tester is cross-cutting.</li>
+        <li>Unit and integration tests belong to the implementing developer; the tester owns e2e and manual tests only. Each scenario is allocated to the cheapest test level that proves it.</li>
+        <li>Scenarios cover happy, unhappy, edge and non-functional paths. IDs <code>S#</code> (scenarios), <code>C#</code> (contracts) and <code>Q#</code> (questions) are never renumbered on later edits.</li>
+        <li>No code: real components are named, never implemented. Every name comes from the investigation; anything unconfirmed becomes an open question.</li>
+        <li>Status is <code>draft</code> while any open question remains, then <code>planned</code> → <code>in-progress</code> → <code>done</code>.</li>
+        <li>A Documentation update checklist lists the real docs the feature touches, each with a reason: <em>new feature</em>, <em>contradiction with code</em> or <em>no change needed</em>.</li>
+      </ul>
+      <p><strong>Your own architecture.</strong> Ask for a specific architecture skill (for example <code>dotnet-vsa-webapi</code>) and the plan uses that skill's approach and its structure units as layers instead of Clean Architecture. If the named skill cannot be found, it stops and asks you — it never falls back silently.</p>
+      <p><strong>Optional: TypeSpec contracts.</strong> The skill runs <code>tsp --version</code>; exit <code>0</code> means TypeSpec is available. Then internal seams become core-construct <code>.tsp</code> files beside the plan, each validated with <code>tsp compile &lt;file&gt; --no-emit</code>, and HTTP/API seams become TypeSpec HTTP services in an <code>api-contracts/</code> subfolder, each emitting a <code>&lt;contract&gt;.openapi.yaml</code> through the <code>@typespec/openapi3</code> emitter. If the OpenAPI libraries cannot be installed, it writes a core-construct <code>.tsp</code> without YAML and says so. Without TypeSpec, each contract is written inline as a short logical summary.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>Example 1 — Planning from a complete brief <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/plan-maker-for-team multi_sound_playback-brief.md</code></pre>
+        <p><strong>Output / Result:</strong> <code>multi_sound_playback-team-plan.md</code> beside the brief, shortened:</p>
+        <pre><code>---
+id: MSP
+feature: Multi-Sound Simultaneous Playback
+brief: multi_sound_playback-brief.md
+status: draft        # draft (open questions remain) → planned → in-progress → done
+roles: [frontend, backend, tester]
+architecture: clean
+---
+
+# MSP · Multi-Sound Simultaneous Playback — Team Plan
+**Story Points:** 8 — estimated 2026-11-04 with /estimate
+
+**How to read this file**
+- **Architecture approach:** Clean Architecture — the default fallback; no override skill was requested.
+  **Layers:** Presentation · Use Cases · Interface Adapters · Entities · Frameworks &amp; Drivers.
+- **Contracts** are logical here, in the **built-in fallback** form — this feature has no client↔server API ...
+- **Tasks** are not in this file — task breakdown is a separate downstream step that consumes this plan.
+
+## Background · Goal · Scope · Acceptance criteria · What does NOT change · Known limitations
+## Approach &amp; architecture
+### Architecture        (Mermaid flowchart: AudioService *(mod)*, AVAudioPlayerPool *(new)* ...)
+### Actors &amp; Use Cases · ### Flows · ### Prior decisions · ### Contradictions
+
+## Contracts / seams
+**C2 — Audio control**  *(Presentation ↔ Use Case / Adapter)*
+The start use case receives the **whole selected set**; the audio service then owns play / stop /
+pause / resume / volume for the entire pool, exposed through `AudioServiceProtocol`. ...
+
+## Scenarios #tester-role
+| **S6** | **Given** sounds playing · **When** a call/notification interrupts · **Then** all players pause,
+and all resume when it ends |
+
+## Frontend — Presentation (SwiftUI) #frontend-role
+## Backend — Entities · Use Cases · Adapters · Frameworks (Swift) #backend-role
+## Tester #tester-role
+| S5, S6 | manual |
+
+## Documentation update
+- [ ] [audio.md](./Documentation/Architecture/audio.md) — *new feature* — update for the player-pool change (if present)
+
+## Open questions
+| **Q3** | tests | Can interruption (S6) be automated in our harness, or must it stay a manual test? ... |
+
+## References
+- **Brief:** [multi_sound_playback-brief.md](./multi_sound_playback-brief.md)</code></pre>
+        <p>The brief gains a <code>- **Team plan:** [multi_sound_playback-team-plan.md](./multi_sound_playback-team-plan.md)</code> bullet under its <code>## References</code> heading. The plan stays <code>draft</code> because Q3 is still open.</p>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>Example 2 — A short feature request <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/plan-maker-for-team Let users play several sleep sounds at once</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>The brief is insufficient: this is a short feature request, not a brief.
+Problem, Goal, Core Flow, In Scope and Out of Scope are not answered.
+
+Running /feature-refinement to produce multi-sound-playback-brief.md ...</code></pre>
+        <p><code>/feature-refinement</code> asks its clarifying questions and writes the brief. Once the brief exists, planning continues from the investigation step, as in Example 1 — the missing product intent comes from you, never from the planner.</p>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Related tools</h2>
+      <ul>
+        <li><a href="skill-feature-refinement.html">/feature-refinement</a> — Writes the <code>&lt;feature&gt;-brief.md</code> this skill needs; the brief gate sends you there when the input is thin.</li>
+        <li><a href="skill-create-tasks.html">/create-tasks</a> — Breaks the team plan into <code>&lt;feature&gt;-tasks.md</code> and appends a <code>**Tasks:**</code> link to the plan's References section.</li>
+        <li><a href="skill-plan-maker.html">/plan-maker</a> — A single-developer plan with the tasks in the same file, instead of a role-split plan.</li>
+        <li><a href="skill-estimate.html">/estimate</a> — Sizes the plan after it is written and updates the brief's entry in <code>.estimation.json</code> rather than adding a second one.</li>
+        <li><a href="cmd-iterative-review.html">/iterative-review</a> — Stress-tests the finished plan with parallel devil's-advocate review-fix loops.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Links</h2>
+      <p>
+        <a href="index.html">← All handouts</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-en.html">Agentic workflow pipeline (agentic-workflow-en.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

@@ -15,7 +15,7 @@
 # into ~/.claude): AGENTS.md, README.md, sync-manifest.txt, handout/, assets/,
 # hooks/, .claude-plugin/, .omp-plugin/, .cursor-plugin/, .codex-plugin/,
 # .agents/, .opencode-plugin/, package.json, bun.lock, skills/double-check/ (not in ~/.claude),
-# skills/estimate/ (not in ~/.claude),
+# skills/estimate/ (not in ~/.claude), skills/summarize/ (not in ~/.claude),
 # skills/session-log/ (a copy of it under ~/.claude/skills is an old seeded copy when it still holds the old installer script, ownership manifest or marker, which session-log's leftover scan reports).
 #
 # Junk is never copied regardless of these entries: .DS_Store, __pycache__/,
@@ -30,6 +30,7 @@ skills/app-store-review/
 skills/bugfix/
 skills/clean-code-review/
 skills/commit/
+skills/create-tasks/
 skills/da-review/
 skills/doc-voice/
 skills/documentation-standard/
@@ -41,8 +42,10 @@ skills/md-reviewer/
 skills/options/
 skills/plain-language/
 skills/plan-maker/
+skills/plan-maker-for-team/
 skills/quick-plan/
 skills/skill-packager/
 skills/status-report/
+skills/vertical-slicer/
 skills/wrap-up/
 

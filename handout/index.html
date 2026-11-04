@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Code Handout Directory</title>
 <link rel="stylesheet" href="styles.css">
-<!-- Source: directory — links to all 24 handout pages (last synced: 2026-10-29) -->
+<!-- Source: directory — links to all 28 handout pages (last synced: 2026-11-04) -->
 <style>
   body {
     padding: 2rem 1.5rem 4rem;
@@ -285,6 +285,18 @@
           <span class="tool-name">/plan-maker</span>
           <span class="tool-desc">Stop staring at a ticket wondering where to start. Breaks a feature into the smallest tasks with tests and dependencies — ready for /implement to chew through.</span>
         </a>
+        <a class="tool-item" href="skill-plan-maker-for-team.html">
+          <span class="tool-name">/plan-maker-for-team</span>
+          <span class="tool-desc">The work splits across frontend, backend and tester. Turns a brief into a team plan grounded in the real code by nine read-only investigation agents — architecture layers, Given/When/Then scenarios, contracts between roles (TypeSpec when installed), diagrams, a test-level allocation table and a documentation checklist. No tasks; <code>/create-tasks</code> writes those.</span>
+        </a>
+        <a class="tool-item" href="skill-create-tasks.html">
+          <span class="tool-name">/create-tasks</span>
+          <span class="tool-desc">Team plan approved, now who does what, in which order. Breaks it into single-role checkbox tasks in vertical-slice phases, walking skeleton first, with per-task tests, hour estimates, a dependency graph and a mandatory close-out task — ready for /implement.</span>
+        </a>
+        <a class="tool-item" href="skill-vertical-slicer.html">
+          <span class="tool-name">/vertical-slicer</span>
+          <span class="tool-desc">The plan starts with "set up the database" and integrates at the end. Cuts a feature into ordered vertical slices — each one user-observable behavior end-to-end, the first a walking skeleton — and re-slices every slice that fails its verticality test.</span>
+        </a>
         <a class="tool-item" href="skill-skill-packager.html">
           <span class="tool-name">/skill-packager</span>
           <span class="tool-desc">Built a Claude Code skill? Make it work in Claude Desktop too. Packages your skill folder into an upload-ready ZIP for Desktop and claude.ai — names, paths, and frontmatter handled.</span>
@@ -324,6 +336,10 @@
         <a class="tool-item" href="skill-plain-language.html">
           <span class="tool-name">/plain-language</span>
           <span class="tool-desc">Need to explain a technical decision to a stakeholder who doesn't know the code. Rewrites it consequence-first, technical detail in parentheses — precise but followable.</span>
+        </a>
+        <a class="tool-item" href="skill-summarize.html">
+          <span class="tool-name">/summarize</span>
+          <span class="tool-desc">Long article, paper or file, little time. Explains its main findings and lessons from the source itself — pasted text, a URL or a file — within the reading time you ask for, or in at most 24 lines.</span>
         </a>
         <a class="tool-item" href="skill-quick-plan.html">
           <span class="tool-name">/quick-plan</span>

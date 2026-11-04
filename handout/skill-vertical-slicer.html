@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/vertical-slicer — Claude Code Handout</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/vertical-slicer/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/vertical-slicer</code></h1>
+      <a class="back-link" href="index.html">← Back to index</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Summary</h2>
+      <p><strong>Something a user can see working on day one, then one more behavior per slice — never "database first, UI last".</strong> Breaks a feature into an ordered list of vertical slices: each delivers one user-observable behavior end-to-end, and the first is a walking skeleton — the thinnest behavior that runs through every layer it needs.</p>
+      <p>Agents drift into horizontal slicing (schema, then API, then UI, then "wire it all up"), because layered code is what they have seen most and splitting by layer is mechanically easy. This skill tests every slice against a four-part verticality test and a smell list, and re-slices any slice that fails. It works with whatever layering the project already uses — Clean Architecture layers, MVC tiers, feature folders, client/server, services — and needs no other skill.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>When to use</h2>
+      <p>Your plan for a feature reads "set up the schema, build the API, build the screens, integrate" — and nothing can be demoed until the last step. <code>/vertical-slicer</code> turns the same feature into increments where each one ships a working behavior.</p>
+      <p>Trigger phrases (from the SKILL.md description) — use it when you want to:</p>
+      <ul>
+        <li>break a feature, story, epic, or initiative into increments</li>
+        <li>slice work for delivery</li>
+        <li>order delivery phases</li>
+        <li>avoid layer-by-layer (horizontal) slicing or a "set up the foundation first" plan</li>
+      </ul>
+      <p><code>/create-tasks</code> also uses it, when installed, to set the vertical-slice phases of a task breakdown.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Invocation</h2>
+      <pre><code>/vertical-slicer &lt;feature description&gt;</code></pre>
+      <p>The skill takes no flags. Describe the feature; the skill then runs six steps:</p>
+      <ol>
+        <li><strong>Load the rules</strong> from <code>references/vertical-slicing.md</code>: the verticality test, the smell list, the behavior-first order and the cut-thinner toolkit.</li>
+        <li><strong>List behaviors, not components</strong> — "the user can now X" or Given/When/Then; never layers, services, screens or files.</li>
+        <li><strong>Pick the walking skeleton (slice 1)</strong> — the thinnest behavior that runs end-to-end and produces something a user sees. It carries the minimal data/model foundation inside that behavior, never as a separate setup phase.</li>
+        <li><strong>Order the rest</strong> by user value and hard dependency, thinnest-viable first.</li>
+        <li><strong>Map each behavior down into tasks</strong> across the layers it needs — only after the slices exist — to confirm each slice is end-to-end.</li>
+        <li><strong>Self-check and re-slice in a loop</strong> until every slice passes, then run a plan-level check over the whole list.</li>
+      </ol>
+      <p><strong>The verticality test — all four must hold:</strong></p>
+      <ul>
+        <li><strong>Demoable</strong> — a Given/When/Then that a non-developer recognizes as the feature's intended user doing a thin but real instance of the feature. An admin or diagnostic action that only exercises new infrastructure does not count.</li>
+        <li><strong>End-to-end</strong> — every layer the behavior needs does its real job; a stubbed layer does not count.</li>
+        <li><strong>Independently shippable</strong> — delete every other slice and this one still delivers value to the intended user.</li>
+        <li><strong>Named as an outcome</strong> — verb + object ("Reserve a seat"), never a layer or tech noun.</li>
+      </ul>
+      <p><strong>Passing the four is not enough:</strong> any one smell sends the slice back for re-slicing. The smells: a layer/tech-noun title (<em>Database, Schema, Models, Backend, API, Endpoints, UI, Frontend, Infrastructure, Setup, Scaffold, Plumbing, Integration, Wiring</em>), a single-layer slice, the foundation-first trap, infrastructure-in-costume, a spike shipped as a deliverable, a slice that proves nothing, a terminal integrate phase, a layer-ordered sequence, sacrificial-proxy ordering, a stub-floor (Potemkin) layer, and an over-built skeleton.</p>
+      <p><strong>Plan-level check:</strong> every slice must advance the feature you actually asked for. Leading slices that deliver a different, lower-value feature mainly to force shared infrastructure into existence are foundation-first in disguise; the skill reorders so slice 1 is the thinnest real instance of the requested feature.</p>
+      <p><strong>Cutting a slice thinner</strong> never splits it by layer. The rule: find the biggest source of variation in the behavior and reduce it to one. SPIDR names five ways to do that:</p>
+      <ul>
+        <li><strong>Spike</strong> — a time-boxed investigation only to learn; never a shippable slice.</li>
+        <li><strong>Paths</strong> — one path now, others later (pay by card now; Apple Pay later).</li>
+        <li><strong>Interfaces</strong> — one client, format or device now (web now; mobile later).</li>
+        <li><strong>Data</strong> — one data subset now (domestic addresses now; international later).</li>
+        <li><strong>Rules</strong> — the core business rule now, edge rules later.</li>
+      </ul>
+      <p><strong>Output:</strong> an ordered slice list, walking skeleton first. Each slice has a <strong>Title</strong> (verb + object), a <strong>Behavior</strong> (Given/When/Then), <strong>Layers touched</strong> (the end-to-end path through the project's actual structure) and <strong>Verticality</strong> (the four tests and the smell check, all marked pass). No "setup/foundation" slice and no closing "integrate" slice may appear.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>Example 1 — Slicing in-app notifications <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/vertical-slicer In-app notifications: users receive, view, mark-as-read, and configure delivery preferences for activity notifications (mentions, replies, system alerts).</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>1. See a mention notification in the bell   (walking skeleton)
+   Behavior:      Given Bob mentions Alice in a comment, When Alice opens the app,
+                  Then she sees one unread "Bob mentioned you" in her bell dropdown with a badge of 1.
+   Layers touched: event → persisted Notification → API → bell UI
+                  (carries the minimal Notification model inside the behavior)
+   Verticality:   demoable ✓ · end-to-end ✓ · shippable ✓ · outcome-named ✓ · smells: none
+
+2. Mark a notification as read
+   Behavior:      Given an unread notification, When Alice clicks it, Then it loses unread
+                  styling, the badge drops 1→0, and it stays read after refresh.
+   Layers touched: bell UI → API → stored read state
+   Verticality:   demoable ✓ · end-to-end ✓ · shippable ✓ · outcome-named ✓ · smells: none
+
+3. Get notified of a reply
+   Behavior:      Given Carol replies to Alice's thread, When Alice opens the app,
+                  Then a "Carol replied" notification appears alongside her mentions.
+   Layers touched: reply event → persisted Notification → API → bell UI
+   Verticality:   ... all pass — a second event type as its own slice,
+                  not an "add all event types" phase
+
+4. Mute reply notifications
+   Behavior:      Given Alice turns off "Replies" in settings, When Carol replies, Then no
+                  notification is created and the bell is unchanged; mentions still arrive.
+   Layers touched: toggle UI → stored preference → suppression at creation
+   Verticality:   ... all pass — a preference delivered end-to-end, not a "settings layer"</code></pre>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>Example 2 — Catching a horizontal checkout plan <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>Slice our checkout plan: a shopper reviews a cart, enters shipping + payment, and places an order that charges a card and emails a receipt.
+1. Set up the checkout database schema and models
+2. Build the payment-gateway integration layer
+3. Implement the checkout REST API endpoints
+4. Build the checkout UI screens
+5. Integrate and wire up the full checkout flow</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>Self-check — every slice fails:
+- 1 Schema and models   → foundation-first trap + layer-noun title
+- 2 Integration layer   → layer-noun title; proves no scenario
+- 3 REST API endpoints  → single-layer slice + layer-noun title
+- 4 UI screens          → single-layer slice + layer-noun title
+- 5 Integrate / wire up → terminal integrate phase (proves 1–4 were horizontal)
+
+Re-sliced by behavior, one source of variation at a time (Paths, then the rest later):
+1. Place a free order for one in-stock item   (walking skeleton: no payment, no email;
+   carries the minimal Order/OrderLine model inside the behavior)
+2. Charge a card and place a paid order       (adds the payment gateway end-to-end)
+3. Reject a declined card without creating an order   (failure path as its own slice)
+4. Ship a paid order to a captured address
+5. Email a receipt for a placed order
+...</code></pre>
+        <p>The result is a working order on day one, grown one behavior at a time, instead of four disconnected layers that demo nothing until a final "wire it all up".</p>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Related tools</h2>
+      <ul>
+        <li><a href="skill-create-tasks.html">/create-tasks</a> — Sets the vertical-slice phases of a task breakdown with this skill when it is installed (walking skeleton first, no "integrate" phase); otherwise it uses its built-in slicing.</li>
+        <li><a href="skill-plan-maker-for-team.html">/plan-maker-for-team</a> — Writes the role-split team plan that <code>/create-tasks</code> then slices into phases.</li>
+        <li><a href="skill-feature-refinement.html">/feature-refinement</a> — Scopes a rough idea into a feature brief; it sends "break a feature into delivery increments" requests here.</li>
+        <li><a href="skill-plan-maker.html">/plan-maker</a> — Turns a feature into a phased implementation plan with tasks; use <code>/vertical-slicer</code> when you only need the slice order.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Links</h2>
+      <p>
+        <a href="index.html">← All handouts</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-en.html">Agentic workflow pipeline (agentic-workflow-en.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/create-tasks — Claude Code segédlet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/create-tasks/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/create-tasks</code></h1>
+      <a class="back-link" href="index-hu.html">← Vissza az áttekintéshez</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Összefoglaló</h2>
+      <p><strong>A csapattervből kipipálható feladatok lesznek, amelyek valódi fájlokat neveznek meg, és egyenként felvehetők.</strong> Beolvas egy meglévő, a <code>/plan-maker-for-team</code> által írt <code>&lt;feature-name&gt;-team-plan.md</code> fájlt, és feladatbontást ír belőle: Mermaid függőségi gráfot, vertikális szeletekből álló fázisokat (elöl a walking skeleton), egyszerepű feladatokat saját tesztekkel, és egy kötelező lezáró feladatot.</p>
+      <p>Mielőtt bármit leírna, három csak olvasó subagenttel átvizsgálja a kódbázist — akkor is újra, ha a terv készítője már vizsgálódott —, így egy későbbi sessionben önállóan is működik. Az eredmény egyetlen fájl, a <code>&lt;feature-name&gt;-tasks.md</code>, a tervvel azonos mappában.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>Mikor használd</h2>
+      <p>A csapat egy csapattervben megállapodott a szerződésekről és a forgatókönyvekről, de abból még senki nem tud munkát kezdeni: a terv szándékosan nem tartalmaz feladatokat. A <code>/create-tasks</code> az a következő lépés, amely elkészíti a sorba rendezett, ellenőrizhető listát, amelyből minden szerep dolgozik.</p>
+      <p>Trigger kifejezések (a SKILL.md-ből):</p>
+      <ul>
+        <li><code>"break it into tasks"</code></li>
+        <li><code>"generate the task breakdown"</code></li>
+        <li><code>"create tasks for the plan"</code></li>
+        <li><code>/create-tasks</code></li>
+      </ul>
+      <p>Bemenetként egy meglévő csapattervet igényel. Ha még nincs ilyen, szól, hogy előbb futtasd a <code>plan-maker-for-team</code>-et, és leáll — tervet sosem talál ki.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Meghívás</h2>
+      <pre><code>/create-tasks &lt;feature-name&gt;-team-plan.md
+/create-tasks &lt;feature-name&gt;-brief.md
+/create-tasks &lt;feature-name&gt;</code></pre>
+      <p>Add meg közvetlenül a terv útvonalát, vagy egy brief útvonalát, illetve a feature nevét — ilyenkor ugyanabban a mappában a testvér <code>&lt;feature-name&gt;-team-plan.md</code> fájlt keresi.</p>
+      <p><strong>Mit csinál, sorrendben:</strong></p>
+      <ul>
+        <li><strong>Beolvassa a tervet, és kiválasztja a szeletelés eszközét.</strong> A fázisokat a <a href="skill-vertical-slicer-hu.html">vertical-slicer</a> skill-lel szeleteli, ha az telepítve van, különben egy beépített, egyszerűsített módszerrel, és közli, melyiket használja.</li>
+        <li><strong>Három párhuzamos, csak olvasó subagenttel vizsgálódik</strong> — <code>backend-grounding</code>, <code>frontend-grounding</code>, <code>tester-grounding</code> —, amelyek megkeresik a valódi fájlokat, mintákat, a függőségi sorrendet és a tesztkörnyezetet. Subagent-eszköz nélkül ugyanezt a három vizsgálatot maga végzi el, sorban.</li>
+        <li><strong>Megírja a feladatokat és a fázisokat</strong>, lefuttat egy önellenőrzést, és kiírja a <code>&lt;feature-name&gt;-tasks.md</code> fájlt.</li>
+        <li><strong>Visszalinkeli a tervet:</strong> a terv <code>## References</code> szakaszába felvesz egy <code>**Tasks:**</code> pontot (kihagyja, ha az már erre a fájlra mutat).</li>
+        <li><strong>Ellenőrzi a linkeket:</strong> a szövegben álló puszta célprojekt-fájlútvonalakat Markdown linkké alakítja, és figyelmeztet minden linkre, amely nem létező fájlra mutat.</li>
+        <li><strong>Becsül:</strong> lefuttatja az <code>/estimate &lt;tasks path&gt; --from &lt;plan path&gt;</code> parancsot, és a cím utáni sorba beírja: <code>**Story Points:** &lt;SP&gt; — estimated &lt;YYYY-MM-DD&gt; with /estimate</code>. Sikertelen becslésnél ezt jelzi, és a fájl e sor nélkül marad.</li>
+      </ul>
+      <p><strong>Szabályok, amelyeknek a kimenet mindig megfelel:</strong></p>
+      <ul>
+        <li><strong>A fázisok vertikális szeletek</strong>, mindegyik egy működő, végponttól végpontig tartó növekmény. Az első a walking skeleton, amely az adat-/modellalapot hordozza; külön „integrációs” fázis nincs. Elöl egy rövid Kickoff, a végén a Close-out áll.</li>
+        <li><strong>Tesztfelelősség:</strong> a unit- és integrációs teszteket a feladatot megvalósító fejlesztő írja, teszt-először; a tesztelőé csak az e2e és a manuális teszt. Minden <code>#manual_test</code> mellé jár egy <code>#e2e_test</code>, kivéve, ha a tester-grounding ágens megerősíti, hogy nem automatizálható — ekkor <code>(non-automatable: &lt;reason&gt;)</code> jelölést kap.</li>
+        <li><strong>Nincs kód, valódi nevek vannak:</strong> a komponensek, típusok és fájlok a vizsgálatból jönnek, nem találgatásból. A tervben megválaszolatlan kérdések egy <code>**Open questions**</code> szakaszba kerülnek, a terv <code>Q#</code> számozását folytatva.</li>
+        <li><strong>Stabil azonosítók:</strong> <code>K#</code>/<code>BE-#</code>/<code>FE-#</code>/<code>T-#</code>, későbbi szerkesztéskor sosem számozódnak át. A <code>completes</code> szó szerint a terv <code>S#</code>/<code>C#</code> azonosítóit idézi.</li>
+        <li><strong>Címkék:</strong> a szerepcímke a feladatcím végén áll (<code>#frontend-role</code>, <code>#backend-role</code>, <code>#tester-role</code>, <code>#team</code>), a teszttípus-címke minden tesztsor elején (<code>#unit_test</code>, <code>#integration_test</code>, <code>#e2e_test</code>, <code>#manual_test</code>).</li>
+        <li><strong>Becslés tizedes órában</strong> (<code>1.0h</code>, <code>2.0h</code>, <code>4.0h</code>) — sosem napban vagy pólóméretben.</li>
+        <li><strong>Kötelező lezáró feladat</strong> (<code>#tester-role</code>): a terv szerint frissíti a teljes dokumentációt, kijavít minden figyelmeztetést, lefuttatja a teljes tesztcsomagot és kijavít minden hibás tesztet, majd egyenként, tényellenőrzéssel validálja az elfogadási kritériumokat.</li>
+        <li><strong>Semmi nem lóg ki:</strong> minden feladat — a tesztelői feladatok is — abban a szeletben áll, amelynek forgatókönyvét ellenőrzi; a gráfban fázisonként egy subgraph van.</li>
+      </ul>
+      <p><strong>Feladatméret:</strong> egy szerep, egy reviewer egy ülésben át tudja nézni, nagyjából 2–4 teszt. Szét kell bontani azt a feladatot, amely több rétegen ível át, egymástól független viselkedéseket fed le, vagy nagyjából 1–2 napnál hosszabb; egyetlen triviális tesztre sosem készül külön feladat.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>1. példa — Egy csapatterv lebontása <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/create-tasks multi_sound_playback-team-plan.md</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>Slicing with the vertical-slicer skill.
+...
+Updating multi_sound_playback-team-plan.md — adding back-link to the tasks file.</code></pre>
+        <p>A kiírt <code>multi_sound_playback-tasks.md</code>, rövidítve:</p>
+        <pre><code>---
+feature: Multi-Sound Simultaneous Playback
+plan: multi_sound_playback-team-plan.md
+status: draft
+---
+
+# MSP · Multi-Sound Simultaneous Playback — Task Breakdown
+
+## References
+
+- **Plan:** [multi_sound_playback-team-plan.md](./multi_sound_playback-team-plan.md) — the full team plan (contracts, scenarios, architecture, allocation). **Always read the plan before you start planning the next task** — ...
+- **Brief:** [multi_sound_playback-brief.md](./multi_sound_playback-brief.md) — the source feature brief behind the plan.
+
+## Task Breakdown
+
+### Dependency graph
+
+```mermaid
+flowchart LR
+  K1([K1 · align])
+  subgraph P1["Phase 1 · Core multi-play"]
+    BE1["BE-1 model→set"]
+    BE4["BE-4 player pool"]
+    FE2["FE-2 handoff"]
+    T1["T-1 e2e"]
+    ...
+  end
+  ...
+  T4([T-4 · close-out &amp; acceptance])
+
+  K1 --&gt; BE1 &amp; FE1
+  BE4 --&gt; T1
+  FE2 --&gt; T1
+  ...
+```
+
+### Phase 0 · Kickoff *(prerequisite; the one cross-cutting step)*
+- [ ] **K1** — Agree the Contracts and Scenarios with the team #team
+    - — · 1.0h
+    - completes C1, C2
+    - Tests
+
+### Phase 1 · Core multi-play *(the walking skeleton: multiple sounds play and persist, end-to-end)*
+...
+- [ ] **BE-4** — `AudioService` plays a pool, one player per selected sound; start fans out #backend-role
+    - Interface Adapter · 12.0h
+    - needs BE-1 · completes S1, S2, S4
+    - Tests
+        - #unit_test — `test_start_createsOnePlayerPerSelectedSound` — N sounds yields N players
+        - #unit_test — `test_stop_stopsEveryPlayer` — stop tears down the whole pool
+        - #integration_test — `test_poolPlaysAllSelectedSounds` — after start, every selected sound is playing and looping
+        ...
+- [ ] **T-1** — e2e: select multiple → play → fade → stop #tester-role
+    - — · 6.0h
+    - needs FE-2, BE-4 · completes S1
+    - Tests
+        - #e2e_test — `test_e2e_selectMultiplePlayFadeStop` — select several sounds, start, confirm all play and fade together, then stop silences all
+
+...
+
+### Phase 4 · Close-out
+- [ ] **T-4** — Project close-out &amp; acceptance fact-check #tester-role
+    - — · 4.0h
+    - needs all prior tasks · completes (acceptance gate)
+    - Tests
+    - Duties
+        - Update all documentation per [multi_sound_playback-team-plan.md](./multi_sound_playback-team-plan.md)'s "Documentation update" section — ...
+        - Fix all build / compiler warnings, if any.
+        - Run the full test suite; fix every failing test, including any unrelated to this feature.
+        - Validate every Acceptance criterion one-by-one with a fact check — no assumptions; confirm each is genuinely done.
+
+**Critical path:** K1 → BE-1 → BE-4 → BE-5 → BE-9 → T-4. Frontend work and the tester's e2e/manual tasks run alongside their backend dependencies.</code></pre>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>2. példa — Még nincs csapatterv <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/create-tasks Documentation/Backlog/csv-import-brief.md</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>No csv-import-team-plan.md next to the brief in Documentation/Backlog/.
+A task breakdown needs an existing team plan — run /plan-maker-for-team Documentation/Backlog/csv-import-brief.md first, then /create-tasks again.</code></pre>
+        <p>Itt leáll: nem ír feladatfájlt, és nem talál ki tervet.</p>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Kapcsolódó eszközök</h2>
+      <ul>
+        <li><a href="skill-plan-maker-for-team-hu.html">/plan-maker-for-team</a> — Ez írja a skill által igényelt <code>&lt;feature-name&gt;-team-plan.md</code> fájlt; minden feladat <code>completes</code> mezője ennek <code>S#</code>/<code>C#</code> azonosítóit idézi.</li>
+        <li><a href="skill-vertical-slicer-hu.html">/vertical-slicer</a> — Ha telepítve van, ez határozza meg a fázisok határait, sorrendjét és a walking skeletont; nélküle a beépített, egyszerűsített szeletelés fut.</li>
+        <li><a href="cmd-implement-hu.html">/implement</a> — Végrehajtja a feladatfájlt, a <code>next</code> feladatot vagy <code>all</code> mindet, a kontextusért követve a <code>**Plan:**</code> linket.</li>
+        <li><a href="skill-estimate-hu.html">/estimate</a> — A végén ez írja be a <code>**Story Points:**</code> sort, és a <code>.estimation.json</code>-ban a csapatterv bejegyzését frissíti, nem vesz fel egy másodikat.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Hivatkozások</h2>
+      <p>
+        <a href="index-hu.html">← Összes segédlet</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-hu.html">Ügynöki munkafolyamat-pipeline (agentic-workflow-hu.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

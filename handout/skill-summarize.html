@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/summarize — Claude Code Handout</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/summarize/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/summarize</code></h1>
+      <a class="back-link" href="index.html">← Back to index</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Summary</h2>
+      <p><strong>The findings of an article, page or file, explained so you understand and learn from them — in the time you have.</strong> <code>/summarize</code> reads the content you supply (pasted text, a URL or an attached file) and explains its main findings and key lessons, by default in at most 24 lines of at most 255 characters each, or within the reading time you ask for.</p>
+      <p>It explains rather than lists: what each finding means, how the source supports it, and what you can learn from it. It answers in your language unless you ask otherwise.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>When to use</h2>
+      <p>A long source is in front of you and you need its message, not a table of contents. Summaries built from a title or a search snippet miss the point or invent it; <code>/summarize</code> reads the actual content, including relevant figures and tables, and keeps the claims tied to it.</p>
+      <p>Trigger, verbatim from the skill description: <em>"Explain the findings and key lessons of supplied content (pasted text, URL or attached file) within a requested reading time, or by default in at most 24 lines of at most 255 characters each."</em></p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Invocation</h2>
+      <pre><code>/summarize &lt;pasted text | URL | file&gt;
+/summarize &lt;pasted text | URL | file&gt; in 3 minutes</code></pre>
+      <p>The skill has no flags. Supply the content and, optionally, a reading time.</p>
+      <p><strong>Reading the source:</strong></p>
+      <ul>
+        <li>Reads the content with tools suited to its format; it never summarizes from a title or search snippet.</li>
+        <li>If access fails, it tries another way to read the same source. If only part is readable, it states what is missing and summarizes the rest. If nothing is readable, it asks you for an accessible copy instead of guessing.</li>
+      </ul>
+      <p><strong>Content rules:</strong></p>
+      <ul>
+        <li>Picks the findings that matter most to the central message; sections do not get equal space, and explanation is not traded for coverage.</li>
+        <li>Explains unfamiliar concepts in plain language, with a short example when it helps, and says when an example is its own illustration.</li>
+        <li>Separates the source's findings from the author's opinions and from its own inferences, keeps uncertainty and limitations that change the meaning, and does not invent missing facts.</li>
+      </ul>
+      <p><strong>Structure:</strong> first line, the central finding or message in one sentence; then the key findings, most important first, each with its meaning and support; last line(s), the takeaway — what to remember or apply. No introduction, no closing offer.</p>
+      <p><strong>Length:</strong></p>
+      <ul>
+        <li><strong>Without a reading time:</strong> at most 24 newline-separated lines, each at most 255 characters including spaces, bullets and citations. The limits cover the whole answer, even with several sources; fewer lines when that is enough.</li>
+        <li><strong>With a reading time:</strong> the time is an approximate upper limit and replaces the line and character limits. It counts about 200 words per minute (up to about 600 words for 3 minutes), uses fewer words for difficult concepts, and never pads to fill the time.</li>
+      </ul>
+      <p><strong>Before sending,</strong> it checks that the answer explains findings and lessons rather than listing claims, checks accuracy against the source, and — with a tool when available — counts words against the reading time, or lines and characters otherwise. It shortens without losing essential meaning and checks again.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>Example 1 — Summarizing an article by URL <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/summarize https://example.com/blog/why-our-tests-were-flaky</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>Most of the team's flaky tests came from shared state between tests, not from slow infrastructure, and isolating that state fixed them.
+- Shared state was the main cause: the author traced most failures to tests reusing one database and leftover fixtures, so test order decided the result.
+- Retries hid the problem: automatic reruns turned red builds green, so the flaky tests stayed in the suite. The post shows the failure rate staying flat while reruns went up.
+- Isolation fixed it: a fresh database per test worker removed most of the failures; the slowdown in build time was small, in the author's own measurement.
+- Limitation: the numbers come from one team's suite; the author does not claim they generalize.
+Takeaway: when a test is flaky, look for state it shares with other tests before adding retries.</code></pre>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>Example 2 — Summarizing within a reading time <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/summarize quarterly-research-report.pdf in 3 minutes</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>The report's central finding is ... (one sentence)
+
+1. ... (most important finding: what it means, and the table or figure that supports it)
+2. ... (a difficult concept, explained in plain language with a short example, marked as the summary's own illustration)
+3. ... (the author's opinion, kept apart from the measured findings)
+
+Takeaway: ...
+
+(about 450 words — under the ~600-word upper limit for 3 minutes, not padded to reach it)</code></pre>
+        <p>The reading time replaces the 24-line limit: 3 minutes at about 200 words per minute allows up to about 600 words. The answer stays shorter when the findings need fewer words, and uses fewer words where a concept is difficult.</p>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Related tools</h2>
+      <ul>
+        <li><a href="skill-plain-language.html">/plain-language</a> — Rewrites technical content for non-experts who have to decide; use it when the audience, not the length, is the problem.</li>
+        <li><a href="skill-llm-wiki.html">/llm-wiki</a> — Keeps what you learned from sources in a persistent markdown knowledge base instead of a one-off answer.</li>
+        <li><a href="skill-md-reviewer.html">/md-reviewer</a> — Audits Markdown docs for inconsistencies, contradictions and broken cross-references, where a summary would only restate them.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Links</h2>
+      <p>
+        <a href="index.html">← All handouts</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-en.html">Agentic workflow pipeline (agentic-workflow-en.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

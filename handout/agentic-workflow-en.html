@@ -747,6 +747,14 @@
         <div class="cmd-desc">Architecture, tests, acceptance criteria, detailed tasks. Often 1000+ lines.</div>
       </div>
       <div class="cmd-row">
+        <div class="cmd-name">/plan-maker-for-team &lt;brief&gt;</div>
+        <div class="cmd-desc">Team variant: a frontend / backend / tester plan with contracts, scenarios and test allocation. No tasks.</div>
+      </div>
+      <div class="cmd-row">
+        <div class="cmd-name">/create-tasks &lt;team-plan&gt;</div>
+        <div class="cmd-desc">Breaks the team plan into single-role tasks in vertical-slice phases. The file <span style="font-family:monospace;font-size:0.92em">/implement</span> runs.</div>
+      </div>
+      <div class="cmd-row">
         <div class="cmd-name">/implement next &lt;plan&gt;</div>
         <div class="cmd-desc">Implements only the next single task. Internal <span style="font-family:monospace;font-size:0.92em">/iterative-review</span> loop fixes issues. Works in any harness (Claude Code, Cursor, <span style="font-family:monospace;font-size:0.92em">claude -p</span>).</div>
       </div>
@@ -866,7 +874,7 @@ const STEPS = [
     desc: 'The longest planning step — intentionally. Architecture, releasable phases, tests, acceptance criteria, detailed tasks.',
     inputs: ['Approved brief.md'],
     outputs: ['plan.md — often 1000+ lines', 'Split into phases, each e2e testable', 'TDD-based task list'],
-    tips: ['Run it in a new session. A detailed plan kills implementation-time improvisation.'],
+    tips: ['Run it in a new session. A detailed plan kills implementation-time improvisation.', 'Frontend, backend and tester on the work? Use /plan-maker-for-team instead, then /create-tasks on the team plan; /implement runs the tasks file it writes.'],
     tipKind: 'ai'
   },
   {

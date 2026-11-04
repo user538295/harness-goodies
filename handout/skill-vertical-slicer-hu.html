@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/vertical-slicer — Claude Code segédlet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/vertical-slicer/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/vertical-slicer</code></h1>
+      <a class="back-link" href="index-hu.html">← Vissza az áttekintéshez</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Összefoglaló</h2>
+      <p><strong>Már az első napon látható, működő eredmény a felhasználónak, utána szeletenként egy újabb viselkedés — soha nem „előbb az adatbázis, a végén a UI”.</strong> Egy feature-t vertikális szeletek sorba rendezett listájára bont: mindegyik szelet egy, a felhasználó által megfigyelhető viselkedést szállít le végponttól végpontig, az első pedig egy walking skeleton — a legvékonyabb viselkedés, amely minden szükséges rétegen átfut.</p>
+      <p>Az ágensek hajlamosak horizontálisan szeletelni (séma, aztán API, aztán UI, aztán „kössük össze az egészet”), mert rétegzett kódot láttak a legtöbbet, és rétegek mentén mechanikusan könnyű bontani. Ez a skill minden szeletet lefuttat egy négyrészes vertikalitási teszten és egy „szag”-listán, és újraszeleteli azt, amelyik elbukik. Bármilyen rétegzéssel működik, amit a projekt már használ — Clean Architecture rétegek, MVC szintek, feature-mappák, kliens/szerver, szolgáltatások —, és nincs szüksége más skillre.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>Mikor használd</h2>
+      <p>A feature-öd terve így szól: „állítsd fel a sémát, építsd meg az API-t, építsd meg a képernyőket, integráld” — és az utolsó lépésig semmit nem lehet bemutatni. A <code>/vertical-slicer</code> ugyanezt a feature-t olyan lépésekre bontja, amelyek mindegyike egy működő viselkedést szállít le.</p>
+      <p>Trigger kifejezések (a SKILL.md leírásából) — akkor használd, ha:</p>
+      <ul>
+        <li>„break a feature, story, epic, or initiative into increments” — egy feature-t, storyt, epicet vagy kezdeményezést lépésekre bontanál</li>
+        <li>„slice work for delivery” — a munkát leszállítható szeletekre vágnád</li>
+        <li>„order delivery phases” — a leszállítási fázisokat rendeznéd sorba</li>
+        <li>„avoid layer-by-layer (horizontal) slicing or a "set up the foundation first" plan” — el akarod kerülni a rétegenkénti (horizontális) szeletelést vagy az „először rakjuk le az alapokat” tervet</li>
+      </ul>
+      <p>A <code>/create-tasks</code> is ezt használja — ha telepítve van — egy feladatbontás vertikális szeletfázisainak kialakításához.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Meghívás</h2>
+      <pre><code>/vertical-slicer &lt;feature description&gt;</code></pre>
+      <p>A skillnek nincsenek kapcsolói. Írd le a feature-t; a skill ezután hat lépést futtat:</p>
+      <ol>
+        <li><strong>Betölti a szabályokat</strong> a <code>references/vertical-slicing.md</code> fájlból: a vertikalitási tesztet, a szaglistát, a viselkedés-első sorrendet és a vékonyítási eszköztárat.</li>
+        <li><strong>Viselkedéseket listáz, nem komponenseket</strong> — „a felhasználó most már X-et tud” vagy Given/When/Then; soha nem rétegeket, szolgáltatásokat, képernyőket vagy fájlokat.</li>
+        <li><strong>Kiválasztja a walking skeletont (1. szelet)</strong> — a legvékonyabb viselkedést, amely végponttól végpontig fut, és a felhasználó számára látható eredményt ad. A minimális adat-/modellalapot ezen a viselkedésen belül viszi magával, soha nem külön előkészítő fázisként.</li>
+        <li><strong>Sorba rendezi a többit</strong> felhasználói érték és kemény függőség szerint, a legvékonyabb életképeset előre.</li>
+        <li><strong>Minden viselkedést feladatokra bont</strong> a szükséges rétegeken át — csak miután a szeletek már megvannak —, hogy megerősítse: minden szelet valóban végponttól végpontig ér.</li>
+        <li><strong>Ciklusban önellenőriz és újraszeletel</strong>, amíg minden szelet át nem megy, majd a teljes listán lefuttat egy tervszintű ellenőrzést.</li>
+      </ol>
+      <p><strong>A vertikalitási teszt — mind a négynek teljesülnie kell:</strong></p>
+      <ul>
+        <li><strong>Bemutatható</strong> — írható rá egy Given/When/Then, amelyben egy nem fejlesztő is felismeri, hogy a feature célfelhasználója a feature egy vékony, de valódi példányát végzi. Egy admin- vagy diagnosztikai művelet, amely csak az új infrastruktúrát mozgatja meg, nem számít.</li>
+        <li><strong>Végponttól végpontig</strong> — minden réteg, amelyre a viselkedésnek szüksége van, elvégzi a valódi munkáját; egy kicsonkolt réteg nem számít.</li>
+        <li><strong>Önállóan leszállítható</strong> — ha minden más szeletet törölsz, ez akkor is értéket ad a célfelhasználónak.</li>
+        <li><strong>Eredményként van elnevezve</strong> — ige + tárgy („Reserve a seat”), soha nem réteg- vagy technológiai főnév.</li>
+      </ul>
+      <p><strong>A négy teszt teljesítése nem elég:</strong> bármelyik „szag” visszaküldi a szeletet újraszeletelésre. A szagok: réteg- vagy technológiai főnév a címben (<em>Database, Schema, Models, Backend, API, Endpoints, UI, Frontend, Infrastructure, Setup, Scaffold, Plumbing, Integration, Wiring</em>), egyrétegű szelet, az „alapozás először” csapda, jelmezes infrastruktúra, leszállítandóként kezelt spike, semmit nem bizonyító szelet, záró integrációs fázis, rétegek szerint rendezett sorrend, áldozati helyettesítő feature-rel kezdő sorrend, kicsonkolt (Patyomkin-) réteg és túlméretezett skeleton.</p>
+      <p><strong>Tervszintű ellenőrzés:</strong> minden szeletnek azt a feature-t kell előrevinnie, amit ténylegesen kértél. Ha a lista elején álló szeletek egy másik, kisebb értékű feature-t szállítanak, főleg azért, hogy a közös infrastruktúra előbb létrejöjjön, az álcázott „alapozás először”; a skill ilyenkor átrendezi a listát, hogy az 1. szelet a kért feature legvékonyabb valódi példánya legyen.</p>
+      <p><strong>Egy szelet vékonyítása</strong> soha nem rétegek mentén történik. A szabály: keresd meg a viselkedés legnagyobb változatossági forrását, és szűkítsd le egyre. A SPIDR öt módot nevez meg erre:</p>
+      <ul>
+        <li><strong>Spike</strong> — időkorlátos vizsgálat, csak a tanulásért; soha nem leszállítható szelet.</li>
+        <li><strong>Paths</strong> — most egy útvonal, a többi később (most kártyás fizetés, később Apple Pay).</li>
+        <li><strong>Interfaces</strong> — most egy kliens, formátum vagy eszköz (most web, később mobil).</li>
+        <li><strong>Data</strong> — most az adatok egy részhalmaza (most belföldi címek, később nemzetköziek).</li>
+        <li><strong>Rules</strong> — most az alap üzleti szabály, később a szélső esetek szabályai.</li>
+      </ul>
+      <p><strong>Kimenet:</strong> sorba rendezett szeletlista, elöl a walking skeletonnal. Minden szeletnek van <strong>Title</strong> (ige + tárgy), <strong>Behavior</strong> (Given/When/Then), <strong>Layers touched</strong> (a végponttól végpontig tartó útvonal a projekt tényleges szerkezetén át) és <strong>Verticality</strong> (a négy teszt és a szagellenőrzés, mind sikeresnek jelölve) mezője. Nem szerepelhet benne sem „setup/foundation” szelet, sem záró „integrate” szelet.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>1. példa — Alkalmazáson belüli értesítések szeletelése <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/vertical-slicer In-app notifications: users receive, view, mark-as-read, and configure delivery preferences for activity notifications (mentions, replies, system alerts).</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>1. See a mention notification in the bell   (walking skeleton)
+   Behavior:      Given Bob mentions Alice in a comment, When Alice opens the app,
+                  Then she sees one unread "Bob mentioned you" in her bell dropdown with a badge of 1.
+   Layers touched: event → persisted Notification → API → bell UI
+                  (carries the minimal Notification model inside the behavior)
+   Verticality:   demoable ✓ · end-to-end ✓ · shippable ✓ · outcome-named ✓ · smells: none
+
+2. Mark a notification as read
+   Behavior:      Given an unread notification, When Alice clicks it, Then it loses unread
+                  styling, the badge drops 1→0, and it stays read after refresh.
+   Layers touched: bell UI → API → stored read state
+   Verticality:   demoable ✓ · end-to-end ✓ · shippable ✓ · outcome-named ✓ · smells: none
+
+3. Get notified of a reply
+   Behavior:      Given Carol replies to Alice's thread, When Alice opens the app,
+                  Then a "Carol replied" notification appears alongside her mentions.
+   Layers touched: reply event → persisted Notification → API → bell UI
+   Verticality:   ... all pass — a second event type as its own slice,
+                  not an "add all event types" phase
+
+4. Mute reply notifications
+   Behavior:      Given Alice turns off "Replies" in settings, When Carol replies, Then no
+                  notification is created and the bell is unchanged; mentions still arrive.
+   Layers touched: toggle UI → stored preference → suppression at creation
+   Verticality:   ... all pass — a preference delivered end-to-end, not a "settings layer"</code></pre>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>2. példa — Egy horizontális checkout-terv kiszűrése <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>Slice our checkout plan: a shopper reviews a cart, enters shipping + payment, and places an order that charges a card and emails a receipt.
+1. Set up the checkout database schema and models
+2. Build the payment-gateway integration layer
+3. Implement the checkout REST API endpoints
+4. Build the checkout UI screens
+5. Integrate and wire up the full checkout flow</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>Self-check — every slice fails:
+- 1 Schema and models   → foundation-first trap + layer-noun title
+- 2 Integration layer   → layer-noun title; proves no scenario
+- 3 REST API endpoints  → single-layer slice + layer-noun title
+- 4 UI screens          → single-layer slice + layer-noun title
+- 5 Integrate / wire up → terminal integrate phase (proves 1–4 were horizontal)
+
+Re-sliced by behavior, one source of variation at a time (Paths, then the rest later):
+1. Place a free order for one in-stock item   (walking skeleton: no payment, no email;
+   carries the minimal Order/OrderLine model inside the behavior)
+2. Charge a card and place a paid order       (adds the payment gateway end-to-end)
+3. Reject a declined card without creating an order   (failure path as its own slice)
+4. Ship a paid order to a captured address
+5. Email a receipt for a placed order
+...</code></pre>
+        <p>Az eredmény: már az első napon működő rendelés, amely viselkedésenként bővül — négy, egymástól független réteg helyett, amelyekből a záró „kössük össze az egészet” lépésig semmi nem mutatható be.</p>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Kapcsolódó eszközök</h2>
+      <ul>
+        <li><a href="skill-create-tasks-hu.html">/create-tasks</a> — Ha ez a skill telepítve van, ezzel alakítja ki egy feladatbontás vertikális szeletfázisait (elöl a walking skeleton, nincs „integrate” fázis); különben a beépített szeletelését használja.</li>
+        <li><a href="skill-plan-maker-for-team-hu.html">/plan-maker-for-team</a> — Megírja a szerepkörök szerint felosztott csapattervet, amelyet a <code>/create-tasks</code> ezután fázisokra szeletel.</li>
+        <li><a href="skill-feature-refinement-hu.html">/feature-refinement</a> — Egy nyers ötletet körülhatárolt feature briefté alakít; a „bontsd a feature-t leszállítható lépésekre” kéréseket ide irányítja.</li>
+        <li><a href="skill-plan-maker-hu.html">/plan-maker</a> — Egy feature-t fázisokra bontott implementációs tervvé alakít, feladatokkal; a <code>/vertical-slicer</code>-t akkor használd, ha csak a szeletek sorrendjére van szükséged.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Hivatkozások</h2>
+      <p>
+        <a href="index-hu.html">← Összes segédlet</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-hu.html">Ügynöki munkafolyamat-pipeline (agentic-workflow-hu.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

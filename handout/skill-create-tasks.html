@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/create-tasks — Claude Code Handout</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/create-tasks/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/create-tasks</code></h1>
+      <a class="back-link" href="index.html">← Back to index</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Summary</h2>
+      <p><strong>A team plan turned into checkbox tasks that name real files and can be picked up one by one.</strong> Reads an existing <code>&lt;feature-name&gt;-team-plan.md</code> from <code>/plan-maker-for-team</code> and writes a task breakdown: a Mermaid dependency graph, vertical-slice phases (walking skeleton first), single-role tasks with their own tests, and a mandatory close-out task.</p>
+      <p>Before writing anything it investigates the codebase with three read-only subagents, re-run fresh even if the plan's author already investigated, so it also works standalone in a later session. The result is one file, <code>&lt;feature-name&gt;-tasks.md</code>, in the same folder as the plan.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>When to use</h2>
+      <p>The team agreed the contracts and scenarios in a team plan, but nobody can start work from it: the plan deliberately holds no tasks. <code>/create-tasks</code> is the downstream step that produces the ordered, checkable list each role works from.</p>
+      <p>Trigger phrases (from the SKILL.md):</p>
+      <ul>
+        <li><code>"break it into tasks"</code></li>
+        <li><code>"generate the task breakdown"</code></li>
+        <li><code>"create tasks for the plan"</code></li>
+        <li><code>/create-tasks</code></li>
+      </ul>
+      <p>It requires an existing team plan as input. If none exists yet, it tells you to run <code>plan-maker-for-team</code> first and stops — it never invents a plan.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Invocation</h2>
+      <pre><code>/create-tasks &lt;feature-name&gt;-team-plan.md
+/create-tasks &lt;feature-name&gt;-brief.md
+/create-tasks &lt;feature-name&gt;</code></pre>
+      <p>Give the plan path directly, or a brief path or feature name — then it looks for the sibling <code>&lt;feature-name&gt;-team-plan.md</code> in the same folder.</p>
+      <p><strong>What it does, in order:</strong></p>
+      <ul>
+        <li><strong>Reads the plan and picks the slicing tooling.</strong> It slices the phases with the <a href="skill-vertical-slicer.html">vertical-slicer</a> skill when it is installed, else with a built-in simplified method, and tells you which one it uses.</li>
+        <li><strong>Investigates with three parallel read-only subagents</strong> — <code>backend-grounding</code>, <code>frontend-grounding</code>, <code>tester-grounding</code> — that find the real files, patterns, dependency order and test setup. Without a subagent tool it runs the same three investigations itself, inline.</li>
+        <li><strong>Writes the tasks and phases</strong>, runs a self-check, and writes <code>&lt;feature-name&gt;-tasks.md</code>.</li>
+        <li><strong>Back-links the plan:</strong> adds a <code>**Tasks:**</code> bullet to the plan's <code>## References</code> section (skipped if it already points to this file).</li>
+        <li><strong>Audits links:</strong> rewrites bare target-project file paths in the prose as Markdown links and warns about any link that does not resolve on disk.</li>
+        <li><strong>Estimates:</strong> runs <code>/estimate &lt;tasks path&gt; --from &lt;plan path&gt;</code> and writes <code>**Story Points:** &lt;SP&gt; — estimated &lt;YYYY-MM-DD&gt; with /estimate</code> right after the title. A failed estimate is reported and leaves the file without the line.</li>
+      </ul>
+      <p><strong>Rules the output always satisfies:</strong></p>
+      <ul>
+        <li><strong>Phases are vertical slices</strong>, each a working end-to-end increment. The first is the walking skeleton carrying the data/model foundation; there is no separate "integrate" phase. A short Kickoff comes first, the Close-out last.</li>
+        <li><strong>Test ownership:</strong> unit and integration tests belong to the implementing dev, written test-first; the tester owns e2e and manual tests only. Every <code>#manual_test</code> has a companion <code>#e2e_test</code>, unless the tester-grounding agent confirms it is non-automatable — then it carries <code>(non-automatable: &lt;reason&gt;)</code>.</li>
+        <li><strong>No code, real names:</strong> components, types and files come from the investigation, not from guessing. Unknowns the plan does not answer go to an <code>**Open questions**</code> section, numbering continuing from the plan's <code>Q#</code>.</li>
+        <li><strong>Stable IDs:</strong> <code>K#</code>/<code>BE-#</code>/<code>FE-#</code>/<code>T-#</code>, never renumbered on later edits. <code>completes</code> cites the plan's <code>S#</code>/<code>C#</code> verbatim.</li>
+        <li><strong>Tags:</strong> the role tag ends each task title (<code>#frontend-role</code>, <code>#backend-role</code>, <code>#tester-role</code>, <code>#team</code>); the test-type tag starts each test line (<code>#unit_test</code>, <code>#integration_test</code>, <code>#e2e_test</code>, <code>#manual_test</code>).</li>
+        <li><strong>Decimal-hour estimates</strong> (<code>1.0h</code>, <code>2.0h</code>, <code>4.0h</code>) — never days or T-shirt sizes.</li>
+        <li><strong>Mandatory close-out task</strong> (<code>#tester-role</code>): update all documentation per the plan, fix all warnings, run the full test suite and fix every failing test, and fact-check each acceptance criterion one by one.</li>
+        <li><strong>Nothing floats:</strong> every task, tester tasks included, sits in the slice whose scenario it verifies; the graph has one subgraph per phase.</li>
+      </ul>
+      <p><strong>Task size:</strong> one role, checkable by a reviewer in one sitting, about 2–4 tests. Split a task that spans layers, covers unrelated behaviours or exceeds roughly 1–2 days; never make a task for a single trivial test.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>Example 1 — Breaking down a team plan <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/create-tasks multi_sound_playback-team-plan.md</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>Slicing with the vertical-slicer skill.
+...
+Updating multi_sound_playback-team-plan.md — adding back-link to the tasks file.</code></pre>
+        <p>The written <code>multi_sound_playback-tasks.md</code>, shortened:</p>
+        <pre><code>---
+feature: Multi-Sound Simultaneous Playback
+plan: multi_sound_playback-team-plan.md
+status: draft
+---
+
+# MSP · Multi-Sound Simultaneous Playback — Task Breakdown
+
+## References
+
+- **Plan:** [multi_sound_playback-team-plan.md](./multi_sound_playback-team-plan.md) — the full team plan (contracts, scenarios, architecture, allocation). **Always read the plan before you start planning the next task** — ...
+- **Brief:** [multi_sound_playback-brief.md](./multi_sound_playback-brief.md) — the source feature brief behind the plan.
+
+## Task Breakdown
+
+### Dependency graph
+
+```mermaid
+flowchart LR
+  K1([K1 · align])
+  subgraph P1["Phase 1 · Core multi-play"]
+    BE1["BE-1 model→set"]
+    BE4["BE-4 player pool"]
+    FE2["FE-2 handoff"]
+    T1["T-1 e2e"]
+    ...
+  end
+  ...
+  T4([T-4 · close-out &amp; acceptance])
+
+  K1 --&gt; BE1 &amp; FE1
+  BE4 --&gt; T1
+  FE2 --&gt; T1
+  ...
+```
+
+### Phase 0 · Kickoff *(prerequisite; the one cross-cutting step)*
+- [ ] **K1** — Agree the Contracts and Scenarios with the team #team
+    - — · 1.0h
+    - completes C1, C2
+    - Tests
+
+### Phase 1 · Core multi-play *(the walking skeleton: multiple sounds play and persist, end-to-end)*
+...
+- [ ] **BE-4** — `AudioService` plays a pool, one player per selected sound; start fans out #backend-role
+    - Interface Adapter · 12.0h
+    - needs BE-1 · completes S1, S2, S4
+    - Tests
+        - #unit_test — `test_start_createsOnePlayerPerSelectedSound` — N sounds yields N players
+        - #unit_test — `test_stop_stopsEveryPlayer` — stop tears down the whole pool
+        - #integration_test — `test_poolPlaysAllSelectedSounds` — after start, every selected sound is playing and looping
+        ...
+- [ ] **T-1** — e2e: select multiple → play → fade → stop #tester-role
+    - — · 6.0h
+    - needs FE-2, BE-4 · completes S1
+    - Tests
+        - #e2e_test — `test_e2e_selectMultiplePlayFadeStop` — select several sounds, start, confirm all play and fade together, then stop silences all
+
+...
+
+### Phase 4 · Close-out
+- [ ] **T-4** — Project close-out &amp; acceptance fact-check #tester-role
+    - — · 4.0h
+    - needs all prior tasks · completes (acceptance gate)
+    - Tests
+    - Duties
+        - Update all documentation per [multi_sound_playback-team-plan.md](./multi_sound_playback-team-plan.md)'s "Documentation update" section — ...
+        - Fix all build / compiler warnings, if any.
+        - Run the full test suite; fix every failing test, including any unrelated to this feature.
+        - Validate every Acceptance criterion one-by-one with a fact check — no assumptions; confirm each is genuinely done.
+
+**Critical path:** K1 → BE-1 → BE-4 → BE-5 → BE-9 → T-4. Frontend work and the tester's e2e/manual tasks run alongside their backend dependencies.</code></pre>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>Example 2 — No team plan yet <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/create-tasks Documentation/Backlog/csv-import-brief.md</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>No csv-import-team-plan.md next to the brief in Documentation/Backlog/.
+A task breakdown needs an existing team plan — run /plan-maker-for-team Documentation/Backlog/csv-import-brief.md first, then /create-tasks again.</code></pre>
+        <p>It stops there: no tasks file is written and no plan is invented.</p>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Related tools</h2>
+      <ul>
+        <li><a href="skill-plan-maker-for-team.html">/plan-maker-for-team</a> — Writes the <code>&lt;feature-name&gt;-team-plan.md</code> this skill requires; its <code>S#</code>/<code>C#</code> IDs are what every task's <code>completes</code> cites.</li>
+        <li><a href="skill-vertical-slicer.html">/vertical-slicer</a> — When installed, sets the phase boundaries, their order and the walking skeleton; without it the built-in simplified slicing is used.</li>
+        <li><a href="cmd-implement.html">/implement</a> — Executes the tasks file, <code>next</code> task or <code>all</code>, following its <code>**Plan:**</code> link for context.</li>
+        <li><a href="skill-estimate.html">/estimate</a> — Called at the end to write the <code>**Story Points:**</code> line, updating the team plan's entry in <code>.estimation.json</code> instead of adding a second one.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Links</h2>
+      <p>
+        <a href="index.html">← All handouts</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-en.html">Agentic workflow pipeline (agentic-workflow-en.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

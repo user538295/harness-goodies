@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/plan-maker-for-team — Claude Code segédlet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/plan-maker-for-team/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/plan-maker-for-team</code></h1>
+      <a class="back-link" href="index-hu.html">← Vissza az áttekintéshez</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Összefoglaló</h2>
+      <p><strong>Egyetlen átnézhető terv, amely pontosan megmondja a frontendnek, a backendnek és a tesztelőnek, mi az övé — a valódi kódra alapozva, nem találgatásra.</strong> Egy feature briefből egyetlen Markdown csapattervet készít: rétegzett architektúrával, Given/When/Then forgatókönyvekkel, a szerepek közötti logikai szerződésekkel, Mermaid-diagramokkal, tesztszint-allokációs táblázattal és dokumentációs ellenőrzőlistával.</p>
+      <p>Mielőtt bármit leírna, kilenc csak olvasó subagenttel feltérképezi a kódbázist és a dokumentációt, majd egyetlen szintézis-subagent a megállapításaikból megírja a tervet. A kimenet a <code>&lt;feature-name&gt;-team-plan.md</code>, a brieffel azonos mappában. Feladatokat nem tartalmaz: a feladatonkénti bontás egy külön, későbbi lépés, a <code>/create-tasks</code>.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>Mikor használd</h2>
+      <p>Egy feature-ön többen dolgoznak, és mindenkinek tudnia kell, melyik réteg, melyik szerződés és melyik teszt az övé — egy olyan hosszú terv nélkül, amely mindenki munkáját összekeveri. A <code>/plan-maker-for-team</code> fix Frontend, Backend és Tester szakaszt tart, minden szerephez tartozó címsort címkével lát el (<code>#frontend-role</code>, <code>#backend-role</code>, <code>#tester-role</code>), így egy szerep teljes scope-jára szűrhetsz, például Obsidianben, és minden határt, amelyet két szerepnek tiszteletben kell tartania, egy számozott szerződésbe tesz.</p>
+      <p>Trigger kifejezések (a SKILL.md-ből):</p>
+      <ul>
+        <li>"turn a feature brief or a feature request into an actionable engineering plan that splits work across frontend, backend, and tester roles"</li>
+        <li>a felhasználó átad egy brief fájlt (gyakran <code>feature-name-brief.md</code> nevűt)</li>
+        <li>"plan a feature for the team"</li>
+        <li>"make a team plan"</li>
+        <li>"organize multi-role work" — akkor is, ha a "plan" szó el sem hangzik</li>
+      </ul>
+      <p>A <code>/feature-refinement</code> (megírja a <code>&lt;feature&gt;-brief.md</code>-t) és a <code>/create-tasks</code> (megírja a <code>&lt;feature&gt;-tasks.md</code>-t) között áll; a feladatfájlt ezután az <code>/implement</code> hajtja végre. Ha egyetlen fejlesztőként egy fájlban szeretnéd a tervet és a feladatokat, a <code>/plan-maker</code>-t használd.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Meghívás</h2>
+      <pre><code>/plan-maker-for-team &lt;feature-name&gt;-brief.md</code></pre>
+      <p><strong>0. lépés — a brief kapuja.</strong> A briefnek öt kérdésre kell konkrét mondatokkal válaszolnia, nem helykitöltővel vagy egyetlen homályos szóval: <strong>Problem</strong> (a felhasználói probléma), <strong>Goal</strong> (a kiadás utáni végállapot), <strong>Core Flow</strong> (a fő, lépésenkénti felhasználói út), <strong>In Scope</strong> és <strong>Out of Scope</strong>. Ha a bemenet csak egy rövid feature-kérés, vagy az öt közül bármelyik hiányzik vagy gyenge, a skill nem tervez: jelzi, hogy a brief nem elégséges, és előbb a <code>/feature-refinement</code>-tel elkészítteti a briefet. A hiányzó termékszándékot soha nem találja ki.</p>
+      <p><strong>Ami ezután történik:</strong></p>
+      <ol>
+        <li><strong>Előkészítés.</strong> Bejelenti az architektúra-megközelítést — alapértelmezetten Clean Architecture (Presentation → Use Cases → Interface Adapters → Entities → Frameworks &amp; Drivers) — és a használt szerződés-eszközt, majd a brief mellett létrehoz egy <code>&lt;feature-name&gt;-plan-work/</code> munkakönyvtárat.</li>
+        <li><strong>Feltérképezés.</strong> Kilenc csak olvasó subagent fut párhuzamosan: <code>contracts</code>, <code>scenarios</code>, <code>backend-architect</code>, <code>frontend-architect</code>, <code>data-schema</code>, <code>adr</code>, <code>docs</code>, <code>tester</code>, <code>structured-output</code>. Mindegyik előbb a kódot, aztán a dokumentációt olvassa, valódi fájlútvonalakat és szimbólumokat idéz, semmit nem módosít, és csak a saját megállapítás-fájlját írja a munkakönyvtárba.</li>
+        <li><strong>Szintézis.</strong> Egyetlen szintézis-subagent elolvassa a megállapításokat és megírja a tervet, majd a brief <code>## References</code> szakaszába beír egy <code>**Team plan:**</code> visszahivatkozást, és a terv szövegében minden csupasz projektfájl-útvonalat Markdown-linkre cserél.</li>
+        <li><strong>Becslés.</strong> A szintézis-subagent végül lefuttatja az <code>/estimate &lt;plan&gt; --from &lt;brief&gt;</code> parancsot, és a terv címe alá beírja a <code>**Story Points:** &lt;SP&gt; — estimated &lt;YYYY-MM-DD&gt; with /estimate</code> sort. Sikertelen becslésnél ezt jelzi, és a sor kimarad.</li>
+        <li><strong>Jelentés és takarítás.</strong> Megkapod az összefoglalót — állapot, nyitott kérdések száma, mely diagramok kerültek be vagy halasztódtak, link-figyelmeztetések —, a munkakönyvtár pedig törlődik.</li>
+      </ol>
+      <p><strong>Szabályok, amelyeket a terv mindig betart:</strong></p>
+      <ul>
+        <li>Mindig három szerepszakasz van. Ha egy szerepnek nincs munkája, a szakasza megmarad <strong>N/A</strong> jelöléssel.</li>
+        <li>Clean Architecture esetén a Presentation a frontendhez, a másik négy réteg a backendhez tartozik; a tesztelő minden rétegen átível.</li>
+        <li>A unit és integrációs tesztek az implementáló fejlesztőé; a tesztelőé csak az e2e és a manuális teszt. Minden forgatókönyv a legolcsóbb olyan tesztszintre kerül, amely bizonyítani tudja.</li>
+        <li>A forgatókönyvek lefedik a happy, unhappy, edge és nem funkcionális utakat. Az <code>S#</code> (forgatókönyv), <code>C#</code> (szerződés) és <code>Q#</code> (kérdés) azonosítókat későbbi szerkesztéskor sem számozza újra.</li>
+        <li>Nincs kód: a valódi komponenseket megnevezi, de nem implementálja. Minden név a feltérképezésből származik; ami nem igazolható, nyitott kérdés lesz.</li>
+        <li>Az állapot <code>draft</code>, amíg van nyitott kérdés, aztán <code>planned</code> → <code>in-progress</code> → <code>done</code>.</li>
+        <li>A Documentation update ellenőrzőlista a feature által érintett valódi dokumentumokat sorolja fel, mindegyiket indoklással: <em>new feature</em>, <em>contradiction with code</em> vagy <em>no change needed</em>.</li>
+      </ul>
+      <p><strong>Saját architektúra.</strong> Ha egy konkrét architektúra-skillt kérsz (például <code>dotnet-vsa-webapi</code>), a terv a Clean Architecture helyett annak a skillnek a megközelítését és szerkezeti egységeit használja rétegként. Ha a megnevezett skill nem található, megáll és megkérdez — csendben sosem tér vissza az alapértelmezéshez.</p>
+      <p><strong>Opcionális: TypeSpec-szerződések.</strong> A skill lefuttatja a <code>tsp --version</code> parancsot; a <code>0</code> kilépési kód azt jelenti, hogy a TypeSpec elérhető. Ekkor a belső határok a terv mellé kerülő, csak alapkonstrukciókat használó <code>.tsp</code> fájlok lesznek, mindegyik <code>tsp compile &lt;file&gt; --no-emit</code> paranccsal ellenőrizve, a HTTP/API-határok pedig egy <code>api-contracts/</code> almappában lévő TypeSpec HTTP service-ek, amelyek a <code>@typespec/openapi3</code> emitterrel egy-egy <code>&lt;contract&gt;.openapi.yaml</code> fájlt állítanak elő. Ha az OpenAPI-könyvtárak nem telepíthetők, YAML nélküli alapkonstrukciós <code>.tsp</code>-t ír, és ezt jelzi. TypeSpec nélkül minden szerződés rövid logikai összefoglalóként, a tervbe ágyazva kerül le.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>1. példa — Tervezés egy teljes briefből <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/plan-maker-for-team multi_sound_playback-brief.md</code></pre>
+        <p><strong>Kimenet / eredmény:</strong> a <code>multi_sound_playback-team-plan.md</code> a brief mellett, rövidítve:</p>
+        <pre><code>---
+id: MSP
+feature: Multi-Sound Simultaneous Playback
+brief: multi_sound_playback-brief.md
+status: draft        # draft (open questions remain) → planned → in-progress → done
+roles: [frontend, backend, tester]
+architecture: clean
+---
+
+# MSP · Multi-Sound Simultaneous Playback — Team Plan
+**Story Points:** 8 — estimated 2026-11-04 with /estimate
+
+**How to read this file**
+- **Architecture approach:** Clean Architecture — the default fallback; no override skill was requested.
+  **Layers:** Presentation · Use Cases · Interface Adapters · Entities · Frameworks &amp; Drivers.
+- **Contracts** are logical here, in the **built-in fallback** form — this feature has no client↔server API ...
+- **Tasks** are not in this file — task breakdown is a separate downstream step that consumes this plan.
+
+## Background · Goal · Scope · Acceptance criteria · What does NOT change · Known limitations
+## Approach &amp; architecture
+### Architecture        (Mermaid flowchart: AudioService *(mod)*, AVAudioPlayerPool *(new)* ...)
+### Actors &amp; Use Cases · ### Flows · ### Prior decisions · ### Contradictions
+
+## Contracts / seams
+**C2 — Audio control**  *(Presentation ↔ Use Case / Adapter)*
+The start use case receives the **whole selected set**; the audio service then owns play / stop /
+pause / resume / volume for the entire pool, exposed through `AudioServiceProtocol`. ...
+
+## Scenarios #tester-role
+| **S6** | **Given** sounds playing · **When** a call/notification interrupts · **Then** all players pause,
+and all resume when it ends |
+
+## Frontend — Presentation (SwiftUI) #frontend-role
+## Backend — Entities · Use Cases · Adapters · Frameworks (Swift) #backend-role
+## Tester #tester-role
+| S5, S6 | manual |
+
+## Documentation update
+- [ ] [audio.md](./Documentation/Architecture/audio.md) — *new feature* — update for the player-pool change (if present)
+
+## Open questions
+| **Q3** | tests | Can interruption (S6) be automated in our harness, or must it stay a manual test? ... |
+
+## References
+- **Brief:** [multi_sound_playback-brief.md](./multi_sound_playback-brief.md)</code></pre>
+        <p>A brief <code>## References</code> címsora alá bekerül egy <code>- **Team plan:** [multi_sound_playback-team-plan.md](./multi_sound_playback-team-plan.md)</code> sor. A terv <code>draft</code> marad, mert a Q3 még nyitott.</p>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>2. példa — Egy rövid feature-kérés <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/plan-maker-for-team Let users play several sleep sounds at once</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>The brief is insufficient: this is a short feature request, not a brief.
+Problem, Goal, Core Flow, In Scope and Out of Scope are not answered.
+
+Running /feature-refinement to produce multi-sound-playback-brief.md ...</code></pre>
+        <p>A <code>/feature-refinement</code> felteszi a tisztázó kérdéseit, és megírja a briefet. Amint a brief létezik, a tervezés a feltérképezési lépéstől folytatódik, ahogy az 1. példában — a hiányzó termékszándék tőled jön, sosem a tervezőtől.</p>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Kapcsolódó eszközök</h2>
+      <ul>
+        <li><a href="skill-feature-refinement-hu.html">/feature-refinement</a> — Megírja a <code>&lt;feature&gt;-brief.md</code>-t, amelyre ennek a skillnek szüksége van; a brief kapuja ide küld, ha a bemenet túl vékony.</li>
+        <li><a href="skill-create-tasks-hu.html">/create-tasks</a> — A csapattervet <code>&lt;feature&gt;-tasks.md</code> feladatfájlra bontja, és a terv References szakaszába beír egy <code>**Tasks:**</code> linket.</li>
+        <li><a href="skill-plan-maker-hu.html">/plan-maker</a> — Egyfejlesztős terv, a feladatokkal ugyanabban a fájlban, szerepek szerinti bontás helyett.</li>
+        <li><a href="skill-estimate-hu.html">/estimate</a> — Megírás után méretezi a tervet, és a brief meglévő bejegyzését frissíti a <code>.estimation.json</code>-ban, nem vesz fel egy másodikat.</li>
+        <li><a href="cmd-iterative-review-hu.html">/iterative-review</a> — Párhuzamos ördögügyvéd review-javítás körökkel teszi próbára a kész tervet.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Hivatkozások</h2>
+      <p>
+        <a href="index-hu.html">← Összes segédlet</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-hu.html">Ügynöki munkafolyamat-pipeline (agentic-workflow-hu.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

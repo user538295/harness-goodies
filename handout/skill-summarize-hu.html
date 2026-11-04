@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/summarize — Claude Code segédlet</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/summarize/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/summarize</code></h1>
+      <a class="back-link" href="index-hu.html">← Vissza az áttekintéshez</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Összefoglaló</h2>
+      <p><strong>Egy cikk, oldal vagy fájl megállapításai úgy elmagyarázva, hogy megértsd és tanulj belőlük — annyi idő alatt, amennyid van.</strong> A <code>/summarize</code> elolvassa a megadott tartalmat (bemásolt szöveg, URL vagy csatolt fájl), és elmagyarázza a fő megállapításait és tanulságait — alapértelmezésben legfeljebb 24 sorban, soronként legfeljebb 255 karakterben, vagy a kért olvasási időn belül.</p>
+      <p>Nem felsorol, hanem magyaráz: mit jelent az egyes megállapítás, mivel támasztja alá a forrás, és mit tanulhatsz belőle. A te nyelveden válaszol, hacsak mást nem kérsz.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>Mikor használd</h2>
+      <p>Hosszú forrás van előtted, és az üzenetére van szükséged, nem a tartalomjegyzékére. A cím vagy keresési találat alapján írt összefoglaló elvéti vagy kitalálja a lényeget; a <code>/summarize</code> a tényleges tartalmat olvassa el, a releváns ábrákkal és táblázatokkal együtt, és az állításokat ahhoz köti.</p>
+      <p>Kiváltó leírás, szó szerint a skill leírásából: <em>"Explain the findings and key lessons of supplied content (pasted text, URL or attached file) within a requested reading time, or by default in at most 24 lines of at most 255 characters each."</em></p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Meghívás</h2>
+      <pre><code>/summarize &lt;pasted text | URL | file&gt;
+/summarize &lt;pasted text | URL | file&gt; in 3 minutes</code></pre>
+      <p>A skillnek nincsenek kapcsolói. Add meg a tartalmat, és ha kell, egy olvasási időt.</p>
+      <p><strong>A forrás olvasása:</strong></p>
+      <ul>
+        <li>A formátumhoz illő eszközökkel olvassa el a tartalmat; címből vagy keresési találatból sosem foglal össze.</li>
+        <li>Ha a hozzáférés nem sikerül, más módon próbálja elolvasni ugyanazt a forrást. Ha csak egy része olvasható, megmondja, mi hiányzik, és a többit foglalja össze. Ha semmi sem olvasható, hozzáférhető példányt kér, ahelyett hogy találgatna.</li>
+      </ul>
+      <p><strong>Tartalmi szabályok:</strong></p>
+      <ul>
+        <li>Azokat a megállapításokat választja ki, amelyek a központi üzenet megértéséhez a legfontosabbak; nem kap minden fejezet egyforma helyet, és a magyarázatot nem áldozza fel több pont kedvéért.</li>
+        <li>Az ismeretlen fogalmakat közérthetően magyarázza el, ha segít, rövid példával, és jelzi, ha a példa a saját illusztrációja.</li>
+        <li>Elkülöníti a forrás megállapításait a szerző véleményétől és a saját következtetéseitől, megtartja a jelentést befolyásoló bizonytalanságokat és korlátokat, és nem talál ki hiányzó tényeket.</li>
+      </ul>
+      <p><strong>Szerkezet:</strong> első sor a központi megállapítás vagy üzenet egy mondatban; utána a fő megállapítások, a legfontosabbal kezdve, mindegyik a jelentésével és alátámasztásával; az utolsó sor(ok)ban a tanulság — mit érdemes megjegyezni vagy alkalmazni. Nincs bevezetés, nincs záró felajánlás.</p>
+      <p><strong>Terjedelem:</strong></p>
+      <ul>
+        <li><strong>Olvasási idő nélkül:</strong> legfeljebb 24 sortöréssel elválasztott sor, soronként legfeljebb 255 karakter szóközökkel, felsorolásjelekkel és hivatkozásokkal együtt. A korlát a teljes válaszra vonatkozik, több forrás esetén is; ha kevesebb sor elég, kevesebbet ír.</li>
+        <li><strong>Olvasási idővel:</strong> az idő hozzávetőleges felső korlát, és a sor- és karakterkorlát helyébe lép. Percenként nagyjából 200 szóval számol (3 percre legfeljebb kb. 600 szó), nehéz fogalmaknál kevesebb szót használ, és sosem tölti ki mesterségesen az időt.</li>
+      </ul>
+      <p><strong>Küldés előtt</strong> ellenőrzi, hogy a válasz a megállapításokat és tanulságaikat magyarázza-e, nem csak állításokat sorol, ellenőrzi a pontosságot a forráshoz képest, és — ha van rá eszköz — megszámolja a szavakat az olvasási időhöz, különben a sorokat és karaktereket. A lényeg elvesztése nélkül rövidít, majd újra ellenőriz.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>1. példa — Cikk összefoglalása URL alapján <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/summarize https://example.com/blog/why-our-tests-were-flaky</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>Most of the team's flaky tests came from shared state between tests, not from slow infrastructure, and isolating that state fixed them.
+- Shared state was the main cause: the author traced most failures to tests reusing one database and leftover fixtures, so test order decided the result.
+- Retries hid the problem: automatic reruns turned red builds green, so the flaky tests stayed in the suite. The post shows the failure rate staying flat while reruns went up.
+- Isolation fixed it: a fresh database per test worker removed most of the failures; the slowdown in build time was small, in the author's own measurement.
+- Limitation: the numbers come from one team's suite; the author does not claim they generalize.
+Takeaway: when a test is flaky, look for state it shares with other tests before adding retries.</code></pre>
+        <p>Magyarul kérve a válasz magyarul érkezik; a példa angol, mint a többi segédletben.</p>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>2. példa — Összefoglalás adott olvasási időn belül <em>(szemléltető példa)</em></h2>
+      <div class="example">
+        <p><strong>Bemenet:</strong></p>
+        <pre><code>/summarize quarterly-research-report.pdf in 3 minutes</code></pre>
+        <p><strong>Kimenet / eredmény:</strong></p>
+        <pre><code>The report's central finding is ... (one sentence)
+
+1. ... (most important finding: what it means, and the table or figure that supports it)
+2. ... (a difficult concept, explained in plain language with a short example, marked as the summary's own illustration)
+3. ... (the author's opinion, kept apart from the measured findings)
+
+Takeaway: ...
+
+(about 450 words — under the ~600-word upper limit for 3 minutes, not padded to reach it)</code></pre>
+        <p>Az olvasási idő a 24 soros korlát helyébe lép: 3 perc, percenként kb. 200 szóval legfeljebb kb. 600 szót enged. A válasz rövidebb marad, ha a megállapításokhoz kevesebb szó is elég, és nehéz fogalmaknál kevesebb szót használ.</p>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Kapcsolódó eszközök</h2>
+      <ul>
+        <li><a href="skill-plain-language-hu.html">/plain-language</a> — Technikai tartalmat ír újra olyan nem szakértőknek, akiknek dönteniük kell; akkor használd, ha nem a hossz, hanem a közönség a gond.</li>
+        <li><a href="skill-llm-wiki-hu.html">/llm-wiki</a> — A forrásokból tanultakat tartós markdown tudásbázisban őrzi meg egyszeri válasz helyett.</li>
+        <li><a href="skill-md-reviewer-hu.html">/md-reviewer</a> — Markdown-dokumentációt vizsgál következetlenségekre, ellentmondásokra és törött kereszthivatkozásokra, ahol egy összefoglaló csak megismételné őket.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Hivatkozások</h2>
+      <p>
+        <a href="index-hu.html">← Összes segédlet</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-hu.html">Ügynöki munkafolyamat-pipeline (agentic-workflow-hu.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>
