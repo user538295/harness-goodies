@@ -164,8 +164,10 @@ opencode plugin add github:user538295/harness-goodies
 Requires OpenCode V2. OpenCode installs the `opencode-goodies` package (`package.json` plus `.opencode-plugin/index.js`) into its package cache, adds it to `~/.config/opencode/opencode.json`, and loads it without a restart. The plugin registers every skill and the `devils-advocate` subagent. It registers no `/session-log` command and no logging handlers, so OpenCode sessions are archived by the next `on`, `status`, `usage` or `list`. To test a local checkout, `opencode plugin add git+file://<checkout>` works (a plain path is refused). Invoke the skill in prose, for example "use the session-log skill with `status`": the model reaches it through OpenCode's `skill` tool (observed with `opencode run` on an earlier release). That the shipped `SKILL.md` makes the model run the script end to end in OpenCode has not been observed. The script itself runs there directly, for example `python3 <skill dir>/session_log.py opencode usage`, where `<skill dir>` is the installed `skills/session-log` folder (it printed a correct report once, observed). To update later:
 
 ```bash
-opencode plugin update
+opencode plugin update github:user538295/harness-goodies
 ```
+
+OpenCode's background service answers the first plugin command from a folder before it has loaded that folder's plugins (observed on OpenCode 2.0.30). The command above then fails with `Plugin is not configured: github:user538295/harness-goodies`: run it again a few seconds later. A bare `opencode plugin update` prints `No plugin updates available` in that case and updates nothing.
 
 Skills and agents with the same names under `~/.config/opencode/skills` and `~/.config/opencode/agents` take precedence over the plugin's copies; remove those copies to use the plugin's versions. An old seeded `~/.config/opencode/skills/session-log` copy may be loaded in place of the plugin's skill: move it aside (see [Upgrading from an older release](#upgrading-from-an-older-release)).
 

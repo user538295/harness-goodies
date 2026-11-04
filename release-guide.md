@@ -51,7 +51,7 @@ Codex reads `.agents/plugins/marketplace.json`, which lists `codex-goodies` at `
 ```bash
 opencode plugin add github:user538295/harness-goodies
 # update later:
-opencode plugin update
+opencode plugin update github:user538295/harness-goodies
 ```
 OpenCode installs the repository as the npm-style package `opencode-goodies` from `package.json`; `"files"` limits the install to `.opencode-plugin/index.js`, `skills/`, and `agents/`, and `"dependencies"` brings in `yaml` for frontmatter parsing. `opencode plugin check` compares the installed commit with the branch head, so every pushed commit is an update.
 
@@ -152,9 +152,9 @@ On a team marketplace without Auto Refresh, click **Refresh** in **Dashboard →
 
 ### OpenCode package plugin
 ```bash
-opencode plugin update
+opencode plugin update github:user538295/harness-goodies
 ```
-Should report `Updated Server plugin "opencode-goodies"`; `opencode plugin check` then lists the new commit as `(current)`. On a machine that never added it, run `opencode plugin add github:user538295/harness-goodies` once.
+Should report `Updated Server plugin "opencode-goodies"`; `opencode plugin check` then lists the new commit as `(current)`. On a machine that never added it, run `opencode plugin add github:user538295/harness-goodies` once. OpenCode's background service answers the first plugin command from a folder before it has loaded that folder's plugins (observed on OpenCode 2.0.30): the targeted command then fails with `Plugin is not configured`, so `release.sh` retries it once after `OPENCODE_RETRY_DELAY_SECONDS`. A bare `opencode plugin update` prints `No plugin updates available` in that case and updates nothing.
 
 ---
 

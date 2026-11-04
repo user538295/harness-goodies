@@ -13,12 +13,18 @@ OPENCODE_PACKAGE_JSON="$REPO_ROOT/package.json"
 VERSION_FILES=("$PLUGIN_JSON" "$OMP_MARKETPLACE_JSON" "$CURSOR_PLUGIN_JSON" "$CODEX_PLUGIN_JSON" "$OPENCODE_PACKAGE_JSON")
 # Seconds to wait after the push so the marketplaces see the new tag before updating.
 UPDATE_DELAY_SECONDS=15
+# OpenCode's background service answers the first plugin call from a folder before it has loaded
+# that folder's plugins: an untargeted `opencode plugin update` then finds no plugin and prints
+# "No plugin updates available". Naming the target makes that call fail instead, and one retry
+# after the plugins have loaded runs the real update (observed on OpenCode 2.0.30).
+OPENCODE_PLUGIN_TARGET="github:user538295/harness-goodies"
+OPENCODE_RETRY_DELAY_SECONDS=5
 # Per-harness update commands run after the release (Cursor has no CLI: refresh it in the dashboard).
 UPDATE_COMMANDS=(
   "claude plugin update claude-goodies@user538295"
   "omp plugin marketplace update user538295 && omp plugin upgrade omp-goodies@user538295"
   "codex plugin marketplace upgrade user538295"
-  "opencode plugin update"
+  "opencode plugin update $OPENCODE_PLUGIN_TARGET || { sleep $OPENCODE_RETRY_DELAY_SECONDS; opencode plugin update $OPENCODE_PLUGIN_TARGET; }"
 )
 
 # ── Pure functions (all testable without git or filesystem) ───────────────────
