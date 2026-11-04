@@ -12,7 +12,6 @@ EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
 EXIT_BAD_ARGUMENTS = 2
 ERROR_PREFIX = "estimate: "
-SCHEMA_FILE_NAME = "estimation.schema.json"
 PLAN_PROGRESS_FROM_SKILL = (os.pardir, "implement", "scripts", "plan-progress.sh")
 
 
@@ -39,7 +38,7 @@ def _emit(stream, text):
 
 def _dispatch(invocation, environment, skill_dir):
     project = Project(environment.get_cwd(), environment.run)
-    check = SchemaCheck(os.path.join(skill_dir, SCHEMA_FILE_NAME), environment.which, environment.run)
+    check = SchemaCheck(skill_dir, environment.which, environment.run)
     commands = Commands(project, EstimationStore(project.root, check), environment,
                         os.path.normpath(os.path.join(skill_dir, *PLAN_PROGRESS_FROM_SKILL)))
     options = invocation.options

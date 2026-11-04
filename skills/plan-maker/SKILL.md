@@ -218,7 +218,7 @@ Follow the mandatory format below exactly. Never omit a section — write `N/A` 
 
 ## Step 5 — Estimate the Plan
 
-After saving, load the `estimate` skill and run `/estimate <plan path>`, adding `--from <brief path>` when the plan started from a feature brief (so the brief's entry in `.estimation.json` is updated, not duplicated). Write the SP it returns into the plan as the line immediately after the H1 title line, replacing any earlier one: `**Story Points:** <SP> — estimated <YYYY-MM-DD> with /estimate`. The plan keeps the SP of the moment it was written; `.estimation.json` always holds the latest. A failed estimate is reported to the user and leaves the plan without the line.
+After saving, load the `estimate` skill and run `/estimate <plan path>`, adding `--from <brief path>` when the plan started from a feature brief (so the brief's feature file under `.harness-goodies/estimations/` is updated, not duplicated). Write the SP it returns into the plan as the line immediately after the H1 title line, replacing any earlier one: `**Story Points:** <SP> — estimated <YYYY-MM-DD> with /estimate`. The plan keeps the SP of the moment it was written; its feature file under `.harness-goodies/estimations/` always holds the latest. A failed estimate is reported to the user and leaves the plan without the line.
 
 ---
 

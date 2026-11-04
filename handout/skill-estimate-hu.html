@@ -19,7 +19,7 @@
     <section data-section="1-summary">
       <h2>Összefoglaló</h2>
       <p><strong>Utólag ellenőrizhető Story Point-méret, a saját leszállított munkádhoz mérve.</strong> Egy briefet, tervet, feladatlistát, epicet vagy egyetlen feladatot úgy méretez, hogy összeveti a projekt már leszállított feature-jeivel, és megmondja, mennyi ágensidőbe, tokenbe és pénzbe került egy ekkora feature.</p>
-      <p>Minden feature becslése a valódi ráfordítás mellett áll — commitok, hozzáadott és törölt sorok, ágensidő, tokenek, költség — a projekt gyökerében lévő <code>.estimation.json</code> fájlban. Hogy ezt a fájlt commitolod-e, a te döntésed; egyik skill sem commitolja.</p>
+      <p>Minden feature becslése a valódi ráfordítás mellett áll — commitok, hozzáadott és törölt sorok, ágensidő, tokenek, költség — a projekt gyökerében, a <code>.harness-goodies/estimations/</code> mappában, feature-önként külön fájlban; a Story Point-skála a <code>.harness-goodies/estimation.json</code> fájlban van. Minden fájl neve a feature első napjából, az azonosítójából (ha van) és a nevéből áll, pl. <code>2026-11-04-pm-12-csv-import.json</code>. Mivel minden feature-nek saját fájlja van, a párhuzamos brancheken becsült feature-ök nem okoznak merge-konfliktust. Hogy a <code>.harness-goodies/</code> mappát commitolod-e, a te döntésed; egyik skill sem commitolja.</p>
     </section>
 
     <section data-section="2-when-to-use">
@@ -43,8 +43,9 @@
         <li>A hiányzó adat üres marad, és a riport felsorolja — semmit nem talál ki.</li>
         <li>Ha még nincs leszállított feature, akkor is kapsz SP-t, egy figyelmeztetéssel, hogy futtasd a <code>/estimate init</code>-et.</li>
         <li>Az össze nem adható méretű skálák (emoji, pólóméretek) nem kapnak bontási javaslatot.</li>
+        <li>Ha egy merge után egy név, azonosító vagy dokumentum két feature-fájlban is szerepel, minden parancs, amely beolvassa a feature-fájlokat, megnevezi mindkét fájlt, hogy eldönthesd, melyiket tartod meg.</li>
       </ul>
-      <p><strong>Követelmények:</strong> Python 3.14 vagy újabb (a macOS beépített <code>python3</code>-ja 3.9.6 — telepíts egyet a python.orgról vagy Homebrew-val). A session-számok a <a href="skill-session-log-hu.html">/session-log</a>-ból jönnek; Cursor-tokenek csak akkor vannak, ha a session-log naplózása be van kapcsolva. Ha a <code>check-jsonschema</code> telepítve van, a <code>.estimation.json</code> minden írását ellenőrzi a skill sémája szerint.</p>
+      <p><strong>Követelmények:</strong> Python 3.14 vagy újabb (a macOS beépített <code>python3</code>-ja 3.9.6 — telepíts egyet a python.orgról vagy Homebrew-val). A session-számok a <a href="skill-session-log-hu.html">/session-log</a>-ból jönnek; Cursor-tokenek csak akkor vannak, ha a session-log naplózása be van kapcsolva. Ha a <code>check-jsonschema</code> telepítve van, minden írást ellenőriz a skill sémái szerint: a skálafájlt az <code>estimation.schema.json</code>, a feature-fájlt a <code>feature.schema.json</code> alapján.</p>
     </section>
 
     <section data-section="4-example-1">
@@ -67,7 +68,7 @@ Expected effort (features at 8 SP: Bulk tag editor, Report scheduler):
 Not found:
 - no estimated hours on 2 tasks
 
-Saved as "CSV import" (estimated) in .estimation.json</code></pre>
+Saved as "CSV import" (estimated) in .harness-goodies/estimations/2026-11-04-csv-import.json</code></pre>
       </div>
     </section>
 
@@ -89,15 +90,15 @@ Not found:
         <p><strong>Bemenet:</strong></p>
         <pre><code>Az Invoice PDF export legyen 8, a többi rendben van.</code></pre>
         <p><strong>Kimenet / eredmény:</strong></p>
-        <pre><code>Saved 3 delivered features to .estimation.json</code></pre>
+        <pre><code>Saved 3 delivered features to .harness-goodies/estimations/</code></pre>
       </div>
     </section>
 
     <section data-section="6-related-tools">
       <h2>Kapcsolódó eszközök</h2>
       <ul>
-        <li><a href="skill-feature-refinement-hu.html">/feature-refinement</a>, <a href="skill-plan-maker-hu.html">/plan-maker</a>, <a href="skill-plan-maker-for-team-hu.html">/plan-maker-for-team</a> és <a href="skill-create-tasks-hu.html">/create-tasks</a> — Megbecslik az általuk írt briefet, tervet, csapattervet és feladatlistát; minden dokumentum az írása pillanatának SP-jét őrzi, a <code>.estimation.json</code> pedig mindig a legfrissebbet.</li>
-        <li><a href="cmd-implement-hu.html">/implement</a> — Minden feladatcommitot rögzít a feature-nél, és leszállításkor elindítja az újraméretezést; a <code>.estimation.json</code> commitolatlan változás marad.</li>
+        <li><a href="skill-feature-refinement-hu.html">/feature-refinement</a>, <a href="skill-plan-maker-hu.html">/plan-maker</a>, <a href="skill-plan-maker-for-team-hu.html">/plan-maker-for-team</a> és <a href="skill-create-tasks-hu.html">/create-tasks</a> — Megbecslik az általuk írt briefet, tervet, csapattervet és feladatlistát; minden dokumentum az írása pillanatának SP-jét őrzi, a feature <code>.harness-goodies/estimations/</code> alatti fájlja pedig mindig a legfrissebbet.</li>
+        <li><a href="cmd-implement-hu.html">/implement</a> — Minden feladatcommitot rögzít a feature-nél, és leszállításkor elindítja az újraméretezést; a <code>.harness-goodies/</code> alatti becslésfájlok commitolatlan változások maradnak.</li>
         <li><a href="skill-session-log-hu.html">/session-log</a> — Minden session ágensidejének, tokenjeinek és költségének forrása, mind az öt harnessben.</li>
       </ul>
     </section>

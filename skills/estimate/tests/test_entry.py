@@ -7,7 +7,8 @@ import sys
 import tempfile
 import unittest
 
-from tests.support import (DEFAULT_SCALE, ENTRY_PATH, EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, ProjectTestCase)
+from tests.support import (DEFAULT_SCALE, ENTRY_PATH, EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, FEATURES_PATH,
+                           ProjectTestCase, date_file)
 
 OLD_PYTHON = (3, 9, 6, "final", 0)
 SYSTEM_PYTHON = "/usr/bin/python3"
@@ -48,7 +49,7 @@ class ArgumentTest(ProjectTestCase):
         self.assert_error(self.run_estimate("read", "--all"), EXIT_BAD_ARGUMENTS, "unknown option '--all'")
 
     def test_a_missing_positional_is_a_bad_argument(self):
-        self.assert_error(self.run_estimate("remove"), EXIT_BAD_ARGUMENTS, "remove needs <name>")
+        self.assert_error(self.run_estimate("remove"), EXIT_BAD_ARGUMENTS, "remove needs <file>")
 
     def test_an_extra_positional_is_a_bad_argument(self):
         self.assert_error(self.run_estimate("remove", "a", "b"), EXIT_BAD_ARGUMENTS, "remove takes 1 argument")
@@ -72,6 +73,15 @@ class RealProcessTest(unittest.TestCase):
         self.assertEqual(EXIT_OK, result.returncode, result.stderr)
         self.assertEqual({"version": 1, "scale": DEFAULT_SCALE, "features": []}, json.loads(result.stdout))
         self.assertEqual([], os.listdir(self.folder))
+
+    def test_save_outside_a_git_repository_dates_the_feature_by_its_docs_file_time(self):
+        doc = os.path.join(self.folder, "a-brief.md")
+        with open(doc, "w", encoding="utf-8") as handle:
+            handle.write("# A\n")
+        date_file(doc, "2026-07-04")
+        result = self.run_entry("save", json.dumps({"name": "A", "description": "x", "sources": {"docs": ["a-brief.md"]}}))
+        self.assertEqual(EXIT_OK, result.returncode, result.stderr)
+        self.assertEqual(["2026-07-04-a.json"], os.listdir(os.path.join(self.folder, *FEATURES_PATH.split("/"))))
 
     def test_a_bad_argument_exits_2_with_one_line_and_no_usage_text(self):
         result = self.run_entry("save")

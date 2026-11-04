@@ -1,9 +1,12 @@
 """The C2 feature rules: a new feature's defaults, the `save` upsert (target selection, latest value, the freeze of the pre-work
-size, the never-changed after-delivery size, scale membership), the replacement of the sessions and the usage totals derived from
-them. Everything here works on plain JSON data; paths arrive already in their stored form."""
+size, the never-changed after-delivery size, scale membership, the kept id), the replacement of the sessions, the usage totals
+derived from them, and the duplicates that several feature files hold. Everything here works on plain JSON data; paths arrive
+already in their stored form, and each stored feature carries the name of its file under FILE_KEY."""
 import json
+import re
 
 from estimation.errors import ArgumentError, EstimateError
+from estimation.naming import slug
 
 ESTIMATED, IN_PROGRESS, DELIVERED = "estimated", "in-progress", "delivered"
 STATUSES = (ESTIMATED, IN_PROGRESS, DELIVERED)
@@ -19,17 +22,46 @@ PLAN_KEYS = ("phases", "tasks", "estimatedHours")
 GIT_KEYS = ("commits", "linesAdded", "linesRemoved")
 SOURCE_KEYS = ("docs", "commits", "sessions")
 SESSION_KEYS = ("harness", "id", "path", "log", "prompts", "agentTimeMinutes", "tokens", "costUsd")
-ENTRY_KEYS = ("name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "plan", "git", "usage",
+ENTRY_KEYS = ("id", "name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "plan", "git", "usage",
               "sources")
 REPLACED_KEYS = ("name", "description", "status")
 MATCHED_BY_KEY = "matchedBy"
+ID_KEY = "id"
+FILE_KEY = "file"  # the stored feature's file name; never part of the file itself
 COST_DECIMALS = 2
+FULL_HASH = re.compile(r"[0-9a-f]{40,64}")  # a SHA-1 or SHA-256 commit hash
 
 
 def new_feature(name, description):
-    return {"name": name, "description": description, "status": ESTIMATED, "storyPoints": None, "updatedStoryPoints": None,
-            "estimatedAt": None, "plan": dict.fromkeys(PLAN_KEYS), "git": dict.fromkeys(GIT_KEYS, 0), "usage": None,
-            "sources": {key: [] for key in SOURCE_KEYS}}
+    return {ID_KEY: None, "name": name, "description": description, "status": ESTIMATED, "storyPoints": None,
+            "updatedStoryPoints": None, "estimatedAt": None, "plan": dict.fromkeys(PLAN_KEYS), "git": dict.fromkeys(GIT_KEYS, 0),
+            "usage": None, "sources": {key: [] for key in SOURCE_KEYS}}
+
+
+def files_of(features):
+    """The file names of `features`, as messages list them."""
+    return ", ".join(feature[FILE_KEY] for feature in features)
+
+
+def _id_form(feature_id):
+    """The id as its file name holds it (None without one): "PM-12" and "pm-12" are one id."""
+    return None if feature_id is None else slug(feature_id)
+
+
+def duplicates(features):
+    """One warning for each name, id (by its file-name form) and doc that more than one feature holds (e.g. two merged
+    branches), naming their files."""
+    kinds = (("name '%s'", lambda feature: [feature["name"]], str),
+             ("id '%s'", lambda feature: [] if feature.get(ID_KEY) is None else [feature[ID_KEY]], _id_form),
+             ("doc %s", lambda feature: feature["sources"]["docs"], str))
+    warnings = []
+    for label, values, form in kinds:
+        holders = {}
+        for feature in features:
+            for value in dict.fromkeys(values(feature)):
+                holders.setdefault(form(value), (value, []))[1].append(feature)
+        warnings += ["duplicate %s: %s" % (label % value, files_of(held)) for value, held in holders.values() if len(held) > 1]
+    return warnings
 
 
 def weakest(labels):
@@ -100,12 +132,25 @@ def check_entry_shape(entry):
     for key in ("plan", "git", "sources"):
         _require(key not in entry or isinstance(entry[key], dict), "%s must be an object" % key)
     _require(entry.get("usage") is None or isinstance(entry["usage"], dict), "usage must be an object or null")
+    _require("name" not in entry or isinstance(entry["name"], str) and entry["name"].strip(), "name must be text")
+    _check_id(entry)
     sources = entry.get("sources", {})
     for key in SOURCE_KEYS:
         _require(isinstance(sources.get(key, []), list), "sources.%s must be a list" % key)
     _require(all(isinstance(doc, str) and doc for doc in sources.get("docs", [])), "sources.docs must hold paths")
+    _require(all(isinstance(commit, str) and FULL_HASH.fullmatch(commit) for commit in sources.get("commits", [])),
+             "sources.commits must hold full commit hashes")
     _require(all(isinstance(session, dict) and isinstance(session.get("harness"), str) and isinstance(session.get("id"), str)
                  for session in sources.get("sessions", [])), "each session needs a harness and an id")
+
+
+def _check_id(entry):
+    """Refuses an id that is not text, or that leaves nothing for its file name."""
+    given = entry.get(ID_KEY)
+    if given is None:
+        return
+    _require(isinstance(given, str) and given.strip(), "id must be text or null")
+    _require(_id_form(given), "id '%s' has no letter or digit for its file name" % given)
 
 
 def _is_number(value):
@@ -133,11 +178,13 @@ def _target(features, entry):
     docs = set(entry.get("sources", {}).get("docs", []))
     sharing = [feature for feature in features if docs.intersection(feature["sources"]["docs"])]
     if len(sharing) > 1:
-        raise EstimateError("the entry's sources.docs matches %d features: %s" % (
-            len(sharing), ", ".join(feature["name"] for feature in sharing)))
+        raise EstimateError("the entry's sources.docs matches %d features: %s" % (len(sharing), files_of(sharing)))
     if sharing:
         return sharing[0]
-    return next((feature for feature in features if feature["name"] == entry.get("name")), None)
+    named = [feature for feature in features if feature["name"] == entry.get("name")]
+    if len(named) > 1:
+        raise EstimateError("%d features are named '%s': %s" % (len(named), entry["name"], files_of(named)))
+    return named[0] if named else None
 
 
 class Upsert:
@@ -153,6 +200,7 @@ class Upsert:
         entry = self.entry
         feature = _target(self.document["features"], entry)
         is_new = feature is None
+        before = None if is_new else (feature["name"], _id_form(feature[ID_KEY]))
         if is_new:
             if not entry.get("name") or "description" not in entry:
                 raise EstimateError("a new feature needs name and description")
@@ -163,16 +211,39 @@ class Upsert:
                 feature[key] = entry[key]
         if feature["status"] not in STATUSES:
             raise EstimateError("unknown status '%s' (expected %s)" % (feature["status"], ", ".join(STATUSES)))
+        self._id(feature)
         self._sizes(feature, frozen)
         if "plan" in entry:
             merge_plan(feature["plan"], entry["plan"])
         self._sources(feature)
         self._usage(feature)
-        if any(other is not feature and other["name"] == feature["name"] for other in self.document["features"]):
-            raise EstimateError("another feature is named '%s'" % feature["name"])
+        self._check_unique(feature, before)
         if is_new:
             self.document["features"].append(feature)
         return feature
+
+    def _check_unique(self, feature, before):
+        """Refuses a name or id (by its file-name form) that this save gives the feature while another feature holds it;
+        `before` is the stored (name, id form), None for a new feature. One the feature already shared stays a duplicate warning."""
+        others = [other for other in self.document["features"] if other is not feature]
+        if before is None or feature["name"] != before[0]:
+            named = [other for other in others if other["name"] == feature["name"]]
+            if named:
+                raise EstimateError("another feature is named '%s': %s" % (feature["name"], files_of(named)))
+        form = _id_form(feature[ID_KEY])
+        if form is not None and (before is None or form != before[1]):
+            held = [other for other in others if _id_form(other.get(ID_KEY)) == form]
+            if held:
+                raise EstimateError("another feature has the id '%s': %s" % (feature[ID_KEY], files_of(held)))
+
+    def _id(self, feature):
+        """Takes the entry's id; a missing or null one never erases the stored id, a different one replaces it with a warning."""
+        given = self.entry.get(ID_KEY)
+        if given is None or given == feature[ID_KEY]:
+            return
+        if feature[ID_KEY] is not None:
+            self.warnings.append("id %s replaces %s for '%s'" % (given, feature[ID_KEY], feature["name"]))
+        feature[ID_KEY] = given
 
     def _ignore(self, feature, key, value, reason):
         self.warnings.append("%s %s ignored for '%s': %s (kept %s)" % (key, _text(value), feature["name"], reason,

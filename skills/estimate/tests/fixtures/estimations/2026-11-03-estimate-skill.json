@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "id": null,
+  "name": "/estimate skill",
+  "description": "Estimate a brief, plan, task list, epic or task in Story Points by comparing it with the project's delivered features; keep each feature's real commits, lines changed, agent time and tokens in its own file.",
+  "status": "estimated",
+  "storyPoints": 13,
+  "updatedStoryPoints": null,
+  "estimatedAt": "2026-11-03",
+  "plan": {
+    "phases": null,
+    "tasks": null,
+    "estimatedHours": null
+  },
+  "git": {
+    "commits": 0,
+    "linesAdded": 0,
+    "linesRemoved": 0
+  },
+  "usage": null,
+  "sources": {
+    "docs": [
+      "estimate-brief.md"
+    ],
+    "commits": [],
+    "sessions": []
+  }
+}

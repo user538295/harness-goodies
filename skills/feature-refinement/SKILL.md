@@ -145,7 +145,7 @@ Numbered steps of the main user journey — plain language, no code, no implemen
 Two to three sentences: your honest take — is this the right feature to build now, what's the hardest part, and what must not be compromised?
 ```
 
-After saving, estimate the brief: load the `estimate` skill and run `/estimate <brief path>`. Write the SP it returns into the brief as the line immediately after the H1 title line, replacing any earlier one: `**Story Points:** <SP> — estimated <YYYY-MM-DD> with /estimate`. The brief keeps the SP of the moment it was written; `.estimation.json` always holds the latest. A failed estimate is reported to the user and leaves the brief without the line.
+After saving, estimate the brief: load the `estimate` skill and run `/estimate <brief path>`. Write the SP it returns into the brief as the line immediately after the H1 title line, replacing any earlier one: `**Story Points:** <SP> — estimated <YYYY-MM-DD> with /estimate`. The brief keeps the SP of the moment it was written; its feature file under `.harness-goodies/estimations/` always holds the latest. A failed estimate is reported to the user and leaves the brief without the line.
 
 Then tell the user the file path and suggest: _"Run `/plan-maker [path]` to turn this into an implementation plan."_
 

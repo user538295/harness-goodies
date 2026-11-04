@@ -19,7 +19,7 @@
     <section data-section="1-summary">
       <h2>Summary</h2>
       <p><strong>A Story Point size you can check later, measured against your own delivered work.</strong> Sizes a brief, plan, task list, epic or single task by comparing it with the features your project has already delivered, and tells you the agent time, tokens and cost that features of that size took.</p>
-      <p>Every feature's estimate sits next to its real effort — commits, lines added and removed, agent time, tokens, cost — in <code>.estimation.json</code> at the project root. Committing that file is your call; no skill ever commits it.</p>
+      <p>Every feature's estimate sits next to its real effort — commits, lines added and removed, agent time, tokens, cost — in its own file under <code>.harness-goodies/estimations/</code> at the project root, while the Story Point scale lives in <code>.harness-goodies/estimation.json</code>. Each file is named after the feature's first day, its ID when it has one, and its name, e.g. <code>2026-11-04-pm-12-csv-import.json</code>. One file per feature means features estimated on parallel branches no longer cause merge conflicts. Committing <code>.harness-goodies/</code> is your call; no skill ever commits it.</p>
     </section>
 
     <section data-section="2-when-to-use">
@@ -43,8 +43,9 @@
         <li>Missing data stays empty and is listed in the report — nothing is guessed.</li>
         <li>With no delivered features yet, you still get an SP, with a warning to run <code>/estimate init</code>.</li>
         <li>Scales whose sizes can't be added up (emoji, T-shirt sizes) get no split suggestion.</li>
+        <li>When a merge leaves a name, ID or document in two feature files, every command that reads the feature files names both files, so you can decide which one to keep.</li>
       </ul>
-      <p><strong>Requirements:</strong> Python 3.14 or newer (macOS's built-in <code>python3</code> is 3.9.6 — install one from python.org or Homebrew). Session numbers come from <a href="skill-session-log.html">/session-log</a>; Cursor tokens exist only while session-log's logging is on. When <code>check-jsonschema</code> is installed, every write of <code>.estimation.json</code> is checked against the skill's schema.</p>
+      <p><strong>Requirements:</strong> Python 3.14 or newer (macOS's built-in <code>python3</code> is 3.9.6 — install one from python.org or Homebrew). Session numbers come from <a href="skill-session-log.html">/session-log</a>; Cursor tokens exist only while session-log's logging is on. When <code>check-jsonschema</code> is installed, every write is checked against the skill's schemas: <code>estimation.schema.json</code> for the scale file, <code>feature.schema.json</code> for a feature file.</p>
     </section>
 
     <section data-section="4-example-1">
@@ -67,7 +68,7 @@ Expected effort (features at 8 SP: Bulk tag editor, Report scheduler):
 Not found:
 - no estimated hours on 2 tasks
 
-Saved as "CSV import" (estimated) in .estimation.json</code></pre>
+Saved as "CSV import" (estimated) in .harness-goodies/estimations/2026-11-04-csv-import.json</code></pre>
       </div>
     </section>
 
@@ -89,15 +90,15 @@ Not found:
         <p><strong>Input:</strong></p>
         <pre><code>Invoice PDF export is an 8, the rest is fine.</code></pre>
         <p><strong>Output / Result:</strong></p>
-        <pre><code>Saved 3 delivered features to .estimation.json</code></pre>
+        <pre><code>Saved 3 delivered features to .harness-goodies/estimations/</code></pre>
       </div>
     </section>
 
     <section data-section="6-related-tools">
       <h2>Related tools</h2>
       <ul>
-        <li><a href="skill-feature-refinement.html">/feature-refinement</a>, <a href="skill-plan-maker.html">/plan-maker</a>, <a href="skill-plan-maker-for-team.html">/plan-maker-for-team</a> and <a href="skill-create-tasks.html">/create-tasks</a> — Estimate the brief, plan, team plan and task list they write; each document keeps the SP of the moment it was written, while <code>.estimation.json</code> holds the latest.</li>
-        <li><a href="cmd-implement.html">/implement</a> — Records every task commit for the feature and triggers the re-size at delivery; <code>.estimation.json</code> stays an uncommitted change.</li>
+        <li><a href="skill-feature-refinement.html">/feature-refinement</a>, <a href="skill-plan-maker.html">/plan-maker</a>, <a href="skill-plan-maker-for-team.html">/plan-maker-for-team</a> and <a href="skill-create-tasks.html">/create-tasks</a> — Estimate the brief, plan, team plan and task list they write; each document keeps the SP of the moment it was written, while the feature's file under <code>.harness-goodies/estimations/</code> holds the latest.</li>
+        <li><a href="cmd-implement.html">/implement</a> — Records every task commit for the feature and triggers the re-size at delivery; the estimate files under <code>.harness-goodies/</code> stay uncommitted changes.</li>
         <li><a href="skill-session-log.html">/session-log</a> — The source of agent time, tokens and cost for every session, in all five harnesses.</li>
       </ul>
     </section>

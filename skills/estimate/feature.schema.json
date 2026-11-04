@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": ".harness-goodies/estimations/<YYYY-MM-DD>[-<id>]-<name>.json",
+  "description": "One feature's Story Point estimate and delivered actuals. A Story Point value must also be one of the scale in `.harness-goodies/estimation.json`, and names and ids must be unique across the feature files; estimate.py enforces these, JSON Schema cannot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "id", "name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "plan", "git",
+               "usage", "sources"],
+  "properties": {
+    "version": { "const": 1 },
+    "id": { "type": ["string", "null"], "minLength": 1, "pattern": "\\S" },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "maxLength": 300 },
+    "status": { "enum": ["estimated", "in-progress", "delivered"] },
+    "storyPoints": { "$ref": "#/$defs/storyPoints" },
+    "updatedStoryPoints": { "$ref": "#/$defs/storyPoints" },
+    "estimatedAt": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phases", "tasks", "estimatedHours"],
+      "properties": {
+        "phases": { "$ref": "#/$defs/nullableCount" },
+        "tasks": { "$ref": "#/$defs/nullableCount" },
+        "estimatedHours": { "$ref": "#/$defs/nullableAmount" }
+      }
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commits", "linesAdded", "linesRemoved"],
+      "properties": {
+        "commits": { "$ref": "#/$defs/count" },
+        "linesAdded": { "$ref": "#/$defs/count" },
+        "linesRemoved": { "$ref": "#/$defs/count" }
+      }
+    },
+    "usage": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/usage" }] },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["docs", "commits", "sessions"],
+      "properties": {
+        "docs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "commits": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" } },
+        "sessions": { "type": "array", "items": { "$ref": "#/$defs/session" } }
+      }
+    }
+  },
+  "$defs": {
+    "storyPoints": { "type": ["number", "string", "null"] },
+    "count": { "type": "integer", "minimum": 0 },
+    "nullableCount": { "type": ["integer", "null"], "minimum": 0 },
+    "nullableAmount": { "type": ["number", "null"], "minimum": 0 },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "output", "reasoning", "cacheRead", "cacheWrite", "total"],
+      "properties": {
+        "input": { "$ref": "#/$defs/nullableCount" },
+        "output": { "$ref": "#/$defs/nullableCount" },
+        "reasoning": { "$ref": "#/$defs/nullableCount" },
+        "cacheRead": { "$ref": "#/$defs/nullableCount" },
+        "cacheWrite": { "$ref": "#/$defs/nullableCount" },
+        "total": { "$ref": "#/$defs/nullableCount" }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "id", "path", "log", "agentTimeMinutes", "tokens", "costUsd"],
+      "properties": {
+        "harness": { "enum": ["claude", "codex", "cursor", "omp", "opencode"] },
+        "id": { "type": "string", "minLength": 1 },
+        "path": { "type": ["string", "null"] },
+        "log": { "type": ["string", "null"] },
+        "prompts": {
+          "description": "The 1-based numbers of the session's prompts counted for this feature (the rows of `session-log usage`); null: the whole session.",
+          "type": ["array", "null"],
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "agentTimeMinutes": { "$ref": "#/$defs/nullableCount" },
+        "tokens": { "$ref": "#/$defs/tokens" },
+        "costUsd": { "$ref": "#/$defs/nullableAmount" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matchedBy", "sessions", "agentTimeMinutes", "tokens", "costUsd"],
+      "properties": {
+        "matchedBy": { "enum": ["implement", "prompt", "none"] },
+        "sessions": { "$ref": "#/$defs/count" },
+        "agentTimeMinutes": { "$ref": "#/$defs/nullableCount" },
+        "tokens": { "$ref": "#/$defs/tokens" },
+        "costUsd": { "$ref": "#/$defs/nullableAmount" }
+      }
+    }
+  }
+}

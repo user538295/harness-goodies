@@ -1,6 +1,6 @@
 """The project's git history through the injected process runner: every commit reachable from HEAD with its author time, message
-and numstat line counts; the commits that change given paths; the author times of given commits; one commit resolved to its full
-hash."""
+and numstat line counts; the commits that change given paths; the author times of given commits; the author time of the commit that
+first added a path; one commit resolved to its full hash."""
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -11,6 +11,7 @@ RECORD_MARK = "\x1e"
 FIELD_MARK = "\x1f"
 LOG_FORMAT = "--format=%x1e%H%x1f%aI%x1f%B%x1f"
 AUTHORED_FORMAT = "--format=%H%x1f%aI"
+AUTHOR_TIME_FORMAT = "--format=%aI"
 BINARY_COUNT = "-"  # numstat's count of a binary file
 NUMSTAT_FIELDS = 3
 
@@ -75,8 +76,16 @@ class GitHistory:
         """{hash: author time} of the given commits that the repository holds."""
         if not hashes:
             return {}
-        lines = self._git("log", "--no-walk=unsorted", "--ignore-missing", AUTHORED_FORMAT, *hashes).splitlines()
+        lines = self._git("log", "--no-walk=unsorted", "--ignore-missing", AUTHORED_FORMAT, "--end-of-options", *hashes).splitlines()
         return {commit_hash: datetime.fromisoformat(moment) for commit_hash, moment in (line.split(FIELD_MARK) for line in lines)}
+
+    def added_at(self, path):
+        """The author time of the commit reachable from HEAD that first added `path` (root-relative), following its renames;
+        None when no such commit holds it."""
+        if not self._has_commits():
+            return None
+        moments = self._git("log", "--follow", "--diff-filter=A", AUTHOR_TIME_FORMAT, "--", path).split()
+        return min((datetime.fromisoformat(moment) for moment in moments), default=None)
 
     def resolve(self, revision):
         """The full hash of the commit `revision` names."""

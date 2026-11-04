@@ -25,7 +25,7 @@ class Spec:
 COMMANDS = {
     "read": Spec((), {"--references": Kind.FLAG}),
     "save": Spec(("<entry-json | ->",), {}),
-    "remove": Spec(("<name>",), {}),
+    "remove": Spec(("<file>",), {}),
     "doc-stats": Spec(("<file.md>",), {"--plan-progress": Kind.SINGLE}),
     "git-stats": Spec(("<features-json | ->",), {}),
     "match-sessions": Spec(("<features-json | ->",), {"--session-log": Kind.REQUIRED}),

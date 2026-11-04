@@ -1,11 +1,13 @@
-"""The C3 commands. Each returns (payload printed as JSON on stdout, warnings printed as `estimate:` lines on stderr)."""
+"""The C3 commands. Each returns (payload printed as JSON on stdout, warnings printed as `estimate:` lines on stderr); every command
+that reads the estimate files also warns about each name, id and doc that several feature files hold."""
 import json
 
 from estimation.doc_stats import doc_stats
 from estimation.errors import ArgumentError, EstimateError
 from estimation.evidence import SHARED_TASK_IDS, Evidence, FeatureClaim, feature_commits, shared_task_ids
-from estimation.features import (DELIVERED, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, Upsert, check_entry_shape, derive_usage,
-                                 merge_plan, stored_matched_by, upsert_session, weakest)
+from estimation.features import (DELIVERED, FILE_KEY, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, Upsert, check_entry_shape,
+                                 derive_usage, duplicates, files_of, merge_plan, stored_matched_by, upsert_session, weakest)
+from estimation.first_day import first_day
 from estimation.git_history import GitHistory
 from estimation.sessions import NO_ROWS, SessionLog, SessionMatcher, SessionUsage
 
@@ -30,12 +32,17 @@ class Commands:
         except ValueError as error:
             raise ArgumentError("%s is not JSON: %s" % (what, error)) from error
 
-    def read(self, references):
+    def _load(self):
+        """The stored document and the duplicate warnings of its features."""
         document = self.store.load()
+        return document, duplicates(document["features"])
+
+    def read(self, references):
+        document, warnings = self._load()
         if references:
             document["features"] = [feature for feature in document["features"]
                                     if feature.get("status") == DELIVERED and feature.get("updatedStoryPoints") is not None]
-        return document, []
+        return document, warnings
 
     def save(self, entry_text):
         entry = self._json_argument(entry_text, "entry")
@@ -43,20 +50,24 @@ class Commands:
         sources = entry.get("sources")
         if sources and "docs" in sources:
             sources["docs"] = [self.project.stored(doc) for doc in sources["docs"]]
-        document = self.store.load()
-        upsert = Upsert(document, entry, self.environment.today())
+        document, warnings = self._load()
+        today = self.environment.today()
+        upsert = Upsert(document, entry, today)
         feature = upsert.apply()
-        self.store.save(document)
-        return feature, upsert.warnings
+        if FILE_KEY in feature:
+            feature[FILE_KEY] = self.store.update(feature)
+        else:
+            feature[FILE_KEY] = self.store.create(feature, first_day(feature, self.project, self._history(), today))
+        return feature, warnings + upsert.warnings
 
-    def remove(self, name):
-        document = self.store.load()
-        removed = next((feature for feature in document["features"] if feature.get("name") == name), None)
+    def remove(self, file):
+        """Deletes one feature's file; the warnings name the duplicates the remaining files still hold."""
+        features = self.store.load()["features"]
+        removed = next((feature for feature in features if feature[FILE_KEY] == file), None)
         if removed is None:
-            raise EstimateError("no feature named '%s'" % name)
-        document["features"].remove(removed)
-        self.store.save(document)
-        return removed, []
+            raise EstimateError("no feature file '%s'" % file)
+        self.store.remove(removed)
+        return removed, duplicates([feature for feature in features if feature is not removed])
 
     def doc_stats(self, doc, plan_progress=None):
         script = self.plan_progress if plan_progress is None else self.project.absolute(plan_progress)
@@ -104,8 +115,7 @@ class Commands:
         if not owners:
             raise EstimateError("no feature lists %s; run /estimate %s first" % (stored_plan, given_plan))
         if len(owners) > 1:
-            raise EstimateError("%d features list %s: %s" % (len(owners), stored_plan,
-                                                             ", ".join(feature["name"] for feature in owners)))
+            raise EstimateError("%d features list %s: %s" % (len(owners), stored_plan, files_of(owners)))
         return owners[0]
 
     @staticmethod
@@ -143,7 +153,7 @@ class Commands:
 
     def record_commit(self, plan, commit, harness, session_log=None):
         stored_plan = self.project.stored(plan)
-        document = self.store.load()
+        document, warnings = self._load()
         feature = self._plan_owner(document, stored_plan, plan)
         history = self._history()
         commit_hash = history.resolve(commit)
@@ -159,5 +169,6 @@ class Commands:
         derive_usage(feature, self._record_latest_session(document, feature, history, harness, session_log, missing))
         all_ticked = stats["tasks"] is not None and stats["completed"] == stats["tasks"]
         feature["status"] = DELIVERED if all_ticked else IN_PROGRESS
-        self.store.save(document)
-        return {"feature": feature, "needsResize": all_ticked and feature["updatedStoryPoints"] is None, "missing": missing}, []
+        feature[FILE_KEY] = self.store.update(feature)
+        return {"feature": feature, "needsResize": all_ticked and feature["updatedStoryPoints"] is None,
+                "missing": missing}, warnings

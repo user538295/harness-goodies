@@ -1,7 +1,8 @@
-"""The shipped `estimation.schema.json` (C2) accepts the brief's example file and rejects what a consumer would get wrong.
+"""The shipped schemas (C2) accept the example files and reject what a consumer would get wrong: `estimation.schema.json` for the
+scale file `.harness-goodies/estimation.json`, `feature.schema.json` for a feature file in `.harness-goodies/estimations/`.
 
-The example is a verbatim copy of the brief's "Example `.estimation.json`" block (`fixtures/brief-example.estimation.json`). Every
-case runs the real `check-jsonschema`, so the suite skips when it is not installed."""
+The examples are in `fixtures/` in the same layout: `estimation.json` and `estimations/` with a delivered and an estimated feature.
+Every case runs the real `check-jsonschema`, so the suite skips when it is not installed."""
 import copy
 import json
 import os
@@ -10,18 +11,26 @@ import subprocess
 import tempfile
 import unittest
 
-from tests.support import SCHEMA_PATH
+from tests.support import FEATURE_SCHEMA_PATH, SCALE_SCHEMA_PATH
 
-FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "brief-example.estimation.json")
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+SCALE_FIXTURE = os.path.join(FIXTURES, "estimation.json")
+DELIVERED_FIXTURE = os.path.join(FIXTURES, "estimations", "2026-09-14-inv-7-invoice-pdf-export.json")
+ESTIMATED_FIXTURE = os.path.join(FIXTURES, "estimations", "2026-11-03-estimate-skill.json")
 DESCRIPTION_LIMIT = 300
 VALIDATOR = shutil.which("check-jsonschema")
 
 
+def _load(path):
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
 @unittest.skipUnless(VALIDATOR, "check-jsonschema is not installed")
-class SchemaTest(unittest.TestCase):
+class SchemaTestCase(unittest.TestCase):
+    schema = None
+
     def setUp(self):
-        with open(FIXTURE, encoding="utf-8") as handle:
-            self.example = json.load(handle)
         self.folder = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.folder)
 
@@ -29,70 +38,113 @@ class SchemaTest(unittest.TestCase):
         path = os.path.join(self.folder, "candidate.json")
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(document, handle)
-        return subprocess.run([VALIDATOR, "--schemafile", SCHEMA_PATH, path], capture_output=True, text=True)
+        return subprocess.run([VALIDATOR, "--schemafile", self.schema, path], capture_output=True, text=True)
+
+    def assert_valid(self, document):
+        result = self.validate(document)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def assert_rejected(self, document):
         result = self.validate(document)
         self.assertNotEqual(0, result.returncode, result.stdout)
 
-    def test_the_brief_example_is_valid(self):
-        result = self.validate(self.example)
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+class ScaleSchemaTest(SchemaTestCase):
+    schema = SCALE_SCHEMA_PATH
+
+    def setUp(self):
+        super().setUp()
+        self.example = _load(SCALE_FIXTURE)
+
+    def test_the_example_is_valid(self):
+        self.assert_valid(self.example)
 
     def test_an_emoji_scale_is_valid(self):
-        document = copy.deepcopy(self.example)
-        document["scale"] = ["😇", "😉", "🙂"]
-        document["features"][0]["updatedStoryPoints"] = "🙂"
-        document["features"][1]["storyPoints"] = "😉"
-        self.assertEqual(0, self.validate(document).returncode)
+        self.assert_valid({"version": 1, "scale": ["😇", "😉", "🙂"]})
 
-    def test_a_description_over_the_limit_is_rejected(self):
-        document = copy.deepcopy(self.example)
-        document["features"][0]["description"] = "x" * (DESCRIPTION_LIMIT + 1)
-        self.assert_rejected(document)
+    def test_an_empty_or_repeating_scale_is_rejected(self):
+        for scale in ([], [1, 2, 2]):
+            with self.subTest(scale=scale):
+                self.assert_rejected({"version": 1, "scale": scale})
 
-    def test_an_unknown_status_is_rejected(self):
-        document = copy.deepcopy(self.example)
-        document["features"][0]["status"] = "done"
-        self.assert_rejected(document)
+    def test_a_missing_field_is_rejected(self):
+        for field in ("version", "scale"):
+            with self.subTest(field=field):
+                self.assert_rejected({key: value for key, value in self.example.items() if key != field})
 
-    def test_a_missing_feature_field_is_rejected(self):
-        document = copy.deepcopy(self.example)
-        del document["features"][1]["plan"]
-        self.assert_rejected(document)
-
-    def test_an_unknown_matched_by_is_rejected(self):
-        document = copy.deepcopy(self.example)
-        document["features"][0]["usage"]["matchedBy"] = "guess"
-        self.assert_rejected(document)
-
-    def test_a_date_in_another_format_is_rejected(self):
-        document = copy.deepcopy(self.example)
-        document["features"][1]["estimatedAt"] = "03/11/2026"
-        self.assert_rejected(document)
-
-    def test_a_session_of_an_unknown_harness_is_rejected(self):
-        document = copy.deepcopy(self.example)
-        document["features"][0]["sources"]["sessions"][0]["harness"] = "vim"
-        self.assert_rejected(document)
-
-    def test_a_session_slice_names_its_prompts_from_one(self):
-        document = copy.deepcopy(self.example)
-        session = document["features"][0]["sources"]["sessions"][0]
-        session["prompts"] = [1, 2]
-        self.assertEqual(0, self.validate(document).returncode)
-        session["prompts"] = [0]
-        self.assert_rejected(document)
-
-    def test_a_fractional_line_count_is_rejected(self):
-        document = copy.deepcopy(self.example)
-        document["features"][0]["git"]["linesAdded"] = 1.5
-        self.assert_rejected(document)
+    def test_features_in_the_scale_file_are_rejected(self):
+        self.assert_rejected({**self.example, "features": []})
 
     def test_another_version_is_rejected(self):
-        document = copy.deepcopy(self.example)
-        document["version"] = 2
-        self.assert_rejected(document)
+        self.assert_rejected({**self.example, "version": 2})
+
+
+class FeatureSchemaTest(SchemaTestCase):
+    schema = FEATURE_SCHEMA_PATH
+
+    def setUp(self):
+        super().setUp()
+        self.delivered = _load(DELIVERED_FIXTURE)
+        self.estimated = _load(ESTIMATED_FIXTURE)
+
+    def test_the_examples_are_valid(self):
+        self.assert_valid(self.delivered)
+        self.assert_valid(self.estimated)
+
+    def test_emoji_story_points_are_valid(self):
+        self.assert_valid({**self.estimated, "storyPoints": "😉", "updatedStoryPoints": "🙂"})
+
+    def test_an_id_is_text_or_null(self):
+        self.assert_valid({**self.estimated, "id": "PM-12"})
+        for value in ("", " ", 12):
+            with self.subTest(value=value):
+                self.assert_rejected({**self.estimated, "id": value})
+
+    def test_a_scale_or_a_scale_link_in_a_feature_file_is_rejected(self):
+        self.assert_rejected({**self.estimated, "scale": [1, 2, 3]})
+        self.assert_rejected({**self.estimated, "scaleLink": "../estimation.json"})
+
+    def test_a_description_over_the_limit_is_rejected(self):
+        self.assert_rejected({**self.delivered, "description": "x" * (DESCRIPTION_LIMIT + 1)})
+
+    def test_an_unknown_status_is_rejected(self):
+        self.assert_rejected({**self.delivered, "status": "done"})
+
+    def test_a_missing_feature_field_is_rejected(self):
+        for field in ("id", "plan"):
+            with self.subTest(field=field):
+                feature = copy.deepcopy(self.estimated)
+                del feature[field]
+                self.assert_rejected(feature)
+
+    def test_an_unknown_matched_by_is_rejected(self):
+        feature = copy.deepcopy(self.delivered)
+        feature["usage"]["matchedBy"] = "guess"
+        self.assert_rejected(feature)
+
+    def test_a_date_in_another_format_is_rejected(self):
+        self.assert_rejected({**self.estimated, "estimatedAt": "03/11/2026"})
+
+    def test_a_session_of_an_unknown_harness_is_rejected(self):
+        feature = copy.deepcopy(self.delivered)
+        feature["sources"]["sessions"][0]["harness"] = "vim"
+        self.assert_rejected(feature)
+
+    def test_a_session_slice_names_its_prompts_from_one(self):
+        feature = copy.deepcopy(self.delivered)
+        session = feature["sources"]["sessions"][0]
+        session["prompts"] = [1, 2]
+        self.assert_valid(feature)
+        session["prompts"] = [0]
+        self.assert_rejected(feature)
+
+    def test_a_fractional_line_count_is_rejected(self):
+        feature = copy.deepcopy(self.delivered)
+        feature["git"]["linesAdded"] = 1.5
+        self.assert_rejected(feature)
+
+    def test_another_version_is_rejected(self):
+        self.assert_rejected({**self.delivered, "version": 2})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "id": "INV-7",
+  "name": "Invoice PDF export",
+  "description": "Let users download any invoice as a PDF from the invoice page and the invoice list; the PDF matches the on-screen layout, includes the company logo and the VAT breakdown, and is generated on the server.",
+  "status": "delivered",
+  "storyPoints": null,
+  "updatedStoryPoints": 8,
+  "estimatedAt": null,
+  "plan": {
+    "phases": 4,
+    "tasks": 17,
+    "estimatedHours": 38.5
+  },
+  "git": {
+    "commits": 19,
+    "linesAdded": 2140,
+    "linesRemoved": 310
+  },
+  "usage": {
+    "matchedBy": "prompt",
+    "sessions": 1,
+    "agentTimeMinutes": 188,
+    "tokens": {
+      "input": 190200,
+      "output": 121300,
+      "reasoning": null,
+      "cacheRead": 27805100,
+      "cacheWrite": 1046900,
+      "total": 29163500
+    },
+    "costUsd": 27.95
+  },
+  "sources": {
+    "docs": [
+      "Documentation/Backlog/invoice-pdf-export-brief.md",
+      "Documentation/Backlog/invoice-pdf-export-team-plan.md",
+      "Documentation/Backlog/invoice-pdf-export-tasks.md"
+    ],
+    "commits": [
+      "3c9e1f0a7b2d4e6f8a1c3e5b7d9f0a2c4e6b8d1f",
+      "8d2a4c6e8f0b1d3f5a7c9e1b3d5f7a9c1e3b5d7f",
+      "e1f3a5c7e9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9"
+    ],
+    "sessions": [
+      {
+        "harness": "claude",
+        "id": "7b3f2c1e-9a4d-4e6b-8c2f-5d1a0e9b7c34",
+        "path": "/Users/manczg/.claude/projects/-Users-manczg-Documents-development-invoicer/7b3f2c1e-9a4d-4e6b-8c2f-5d1a0e9b7c34.jsonl",
+        "log": "/Users/manczg/.claude/prompt-logs/invoicer-4f1c2a9b7e3d/session_2026-09-14_08-12-03_7b3f2c1e-9a4d-4e6b-8c2f-5d1a0e9b7c34.md",
+        "agentTimeMinutes": 188,
+        "tokens": {
+          "input": 190200,
+          "output": 121300,
+          "reasoning": null,
+          "cacheRead": 27805100,
+          "cacheWrite": 1046900,
+          "total": 29163500
+        },
+        "costUsd": 27.95
+      }
+    ]
+  }
+}

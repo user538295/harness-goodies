@@ -1,10 +1,14 @@
-"""`save <entry-json | ->` (C3): which feature an entry updates, the latest-value rules and their exceptions, and the derived usage."""
+"""`save <entry-json | ->` (C3): which feature an entry updates, the latest-value rules and their exceptions, the derived usage, and
+the feature's file: its name from the first day, the id and the name, and the one file a save writes."""
 import json
 import os
 import unittest
 
-from tests.support import (ESTIMATION_FILE, EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, TODAY, ProjectTestCase, document,
-                           new_feature)
+from tests.support import (DATA_FOLDER, DEFAULT_SCALE, EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, FEATURES_PATH,
+                           SCALE_PATH, TODAY, ProjectTestCase, date_file, document, git, new_feature)
+
+MAX_FILE_NAME_LENGTH = len("2026-11-04-") + 60 + len(".json")  # the day, a name part cut to 60 characters, the suffix
+LONG_NAME_LENGTH = 300
 
 HASH_A = "a" * 40
 HASH_B = "b" * 40
@@ -29,24 +33,43 @@ class SaveTestCase(ProjectTestCase):
 
 
 class NewFeatureTest(SaveTestCase):
-    def test_a_new_feature_gets_the_defaults_and_today_as_its_estimate_date(self):
+    def test_a_new_feature_gets_the_defaults_today_as_its_estimate_date_and_its_own_file(self):
         saved = self.assert_saved(self.save({"name": "Export", "description": "PDF export", "storyPoints": 8,
                                              "sources": {"docs": ["docs/export-brief.md"]}}))
-        expected = new_feature("Export", description="PDF export", storyPoints=8, estimatedAt=TODAY.isoformat(),
+        expected = new_feature("Export", file="2026-11-04-export.json", description="PDF export", storyPoints=8,
+                               estimatedAt=TODAY.isoformat(),
                                sources={"docs": ["docs/export-brief.md"], "commits": [], "sessions": []})
         self.assertEqual(expected, saved)
         self.assertEqual(document(expected), self.estimation())
 
-    def test_the_stored_file_keeps_the_brief_key_order(self):
+    def test_the_first_save_writes_the_default_scale_file(self):
         self.save({"name": "Export", "description": "PDF export"})
-        with open(self.path(ESTIMATION_FILE), encoding="utf-8") as handle:
-            feature = json.load(handle)["features"][0]
-        self.assertEqual(["name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "plan", "git",
-                          "usage", "sources"], list(feature))
+        self.assertEqual({"version": 1, "scale": DEFAULT_SCALE}, self.raw(SCALE_PATH))
+
+    def test_a_stored_scale_file_is_never_rewritten(self):
+        text = '{"version": 1,\n "scale": ["S", "M", "L"]}\n'
+        self.write(SCALE_PATH, text)
+        self.assert_saved(self.save({"name": "Export", "description": "x", "storyPoints": "M"}))
+        with open(self.path(SCALE_PATH), encoding="utf-8") as handle:
+            self.assertEqual(text, handle.read())
+
+    def test_the_stored_file_starts_with_its_version_and_keeps_the_brief_key_order(self):
+        self.save({"name": "Export", "description": "PDF export"})
+        self.assertEqual(["version", "id", "name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt",
+                          "plan", "git", "usage", "sources"], list(self.raw(FEATURES_PATH + "/2026-11-04-export.json")))
+
+    def test_saving_one_feature_leaves_the_other_files_untouched(self):
+        self.seed(document(new_feature("A"), new_feature("B")))
+        other = self.path(FEATURES_PATH + "/" + new_feature("B")["file"])
+        with open(other, encoding="utf-8") as handle:
+            before = handle.read()
+        self.assert_saved(self.save({"name": "A", "storyPoints": 3}))
+        with open(other, encoding="utf-8") as handle:
+            self.assertEqual(before, handle.read())
 
     def test_a_new_feature_without_a_description_is_refused(self):
         self.assert_error(self.save({"name": "Export"}), EXIT_RUNTIME_ERROR, "a new feature needs name and description")
-        self.assertFalse(os.path.exists(self.path(ESTIMATION_FILE)))
+        self.assertFalse(os.path.exists(self.path(DATA_FOLDER)))
 
     def test_the_entry_can_come_from_stdin(self):
         result = self.run_estimate("save", "-", stdin=json.dumps({"name": "Export", "description": "PDF export"}))
@@ -59,15 +82,22 @@ class NewFeatureTest(SaveTestCase):
         self.assert_error(self.save({"name": "Export", "description": "x", "points": 3}), EXIT_BAD_ARGUMENTS,
                           "unknown field 'points'")
 
+    def test_a_name_that_is_not_text_is_a_bad_argument(self):
+        for value in (12, " "):
+            with self.subTest(value=value):
+                self.assert_error(self.save({"name": value, "description": "x"}), EXIT_BAD_ARGUMENTS, "name must be text")
+                self.assertFalse(os.path.exists(self.path(DATA_FOLDER)))
+
 
 class TargetTest(SaveTestCase):
-    def test_a_shared_doc_selects_the_feature_even_under_another_name(self):
+    def test_a_shared_doc_selects_the_feature_even_under_another_name_and_renames_its_file(self):
         self.seed(document(new_feature("Export", sources={"docs": ["export-brief.md"], "commits": [], "sessions": []}),
                            new_feature("Other")))
         saved = self.assert_saved(self.save({"name": "Export plan", "storyPoints": 13,
                                              "sources": {"docs": ["export-plan.md", "export-brief.md"]}}))
-        self.assertEqual("Export plan", saved["name"])
+        self.assertEqual(("Export plan", "2026-10-01-export-plan.json"), (saved["name"], saved["file"]))
         self.assertEqual(["export-brief.md", "export-plan.md"], saved["sources"]["docs"])
+        self.assertEqual(["2026-10-01-export-plan.json", "2026-10-01-other.json"], self.feature_files())
         self.assertEqual(["Export plan", "Other"], [feature["name"] for feature in self.estimation()["features"]])
 
     def test_without_a_shared_doc_the_same_name_selects_the_feature(self):
@@ -89,10 +119,173 @@ class TargetTest(SaveTestCase):
                           "matches 2 features")
         self.assertEqual(stored, self.estimation())
 
-    def test_renaming_onto_another_features_name_is_refused(self):
+    def test_renaming_onto_another_features_name_is_refused_naming_its_file(self):
         self.seed(document(new_feature("A", sources={"docs": ["a.md"], "commits": [], "sessions": []}), new_feature("B")))
         self.assert_error(self.save({"name": "B", "sources": {"docs": ["a.md"]}}), EXIT_RUNTIME_ERROR,
-                          "another feature is named 'B'")
+                          "another feature is named 'B': 2026-10-01-b.json")
+
+    def test_a_save_whose_target_is_clear_leaves_a_name_two_files_already_share_to_the_warning(self):
+        self.seed(document(new_feature("X", file="2026-10-01-x.json", sources={"docs": ["a.md"], "commits": [], "sessions": []}),
+                           new_feature("X", file="2026-10-02-x.json", sources={"docs": ["b.md"], "commits": [], "sessions": []})))
+        result = self.save({"name": "X", "storyPoints": 3, "sources": {"docs": ["a.md"]}})
+        self.assertEqual("2026-10-01-x.json", self.assert_saved(result)["file"])
+        self.assertEqual(3, self.raw(FEATURES_PATH + "/2026-10-01-x.json")["storyPoints"])
+        self.assertIsNone(self.raw(FEATURES_PATH + "/2026-10-02-x.json")["storyPoints"])
+        self.assertIn("duplicate name 'X': 2026-10-01-x.json, 2026-10-02-x.json", result.err)
+
+    def test_the_entrys_name_held_by_two_features_is_ambiguous_and_changes_nothing(self):
+        stored = document(new_feature("X", file="2026-10-01-x.json"), new_feature("X", file="2026-10-02-x.json"))
+        self.seed(stored)
+        self.assert_error(self.save({"name": "X", "storyPoints": 3}), EXIT_RUNTIME_ERROR,
+                          "2 features are named 'X': 2026-10-01-x.json, 2026-10-02-x.json")
+        self.assertEqual(stored, self.estimation())
+
+    def test_a_save_names_the_duplicates_it_found_and_still_saves(self):
+        self.seed(document(new_feature("X", file="2026-10-01-x.json"), new_feature("X", file="2026-10-02-x.json"),
+                           new_feature("Y")))
+        result = self.save({"name": "Y", "storyPoints": 3})
+        self.assertEqual(3, self.assert_saved(result)["storyPoints"])
+        self.assertIn("duplicate name 'X': 2026-10-01-x.json, 2026-10-02-x.json", result.err)
+
+
+class FileNameTest(SaveTestCase):
+    def test_the_name_part_is_lowercase_ascii_without_accents(self):
+        saved = self.assert_saved(self.save({"name": "Számla export / PDF (v2)", "description": "x"}))
+        self.assertEqual("2026-11-04-szamla-export-pdf-v2.json", saved["file"])
+
+    def test_letters_that_are_not_accented_ascii_become_a_separator(self):
+        self.assertEqual("2026-11-04-stra-e.json", self.assert_saved(self.save({"name": "Straße", "description": "x"}))["file"])
+
+    def test_a_long_name_part_is_cut(self):
+        saved = self.assert_saved(self.save({"name": "a b" * (LONG_NAME_LENGTH // 3), "description": "x"}))
+        self.assertLessEqual(len(saved["file"]), MAX_FILE_NAME_LENGTH)
+        self.assertEqual(saved["file"], self.feature_files()[0])
+        self.assertFalse(saved["file"].endswith("-.json"), saved["file"])
+
+    def test_a_name_without_ascii_letters_or_digits_is_called_feature(self):
+        self.assertEqual("2026-11-04-feature.json", self.assert_saved(self.save({"name": "Отчёт", "description": "x"}))["file"])
+
+    def test_a_file_name_taken_by_another_feature_is_refused_and_writes_nothing(self):
+        stored = document(new_feature("CSV import", file="2026-11-04-csv-import.json"))
+        self.seed(stored)
+        self.assert_error(self.save({"name": "CSV-Import", "description": "x"}), EXIT_RUNTIME_ERROR,
+                          "2026-11-04-csv-import.json is the file of 'CSV import'")
+        self.assertEqual(["2026-11-04-csv-import.json"], self.feature_files())
+        self.assertEqual(stored, self.estimation())
+
+    def test_a_stored_file_name_without_its_first_day_is_a_runtime_error(self):
+        self.seed(document(new_feature("CSV import", file="csv-import.json")))
+        self.assert_error(self.save({"name": "CSV import", "storyPoints": 3}), EXIT_RUNTIME_ERROR,
+                          "csv-import.json does not start with its first day")
+
+    def test_a_feature_file_that_is_not_a_json_object_is_a_runtime_error_naming_it(self):
+        self.write(FEATURES_PATH + "/2026-10-01-a.json", "[]")
+        self.assert_error(self.save({"name": "A", "description": "x"}), EXIT_RUNTIME_ERROR,
+                          FEATURES_PATH + "/2026-10-01-a.json: not a JSON object")
+
+
+class FirstDayTest(SaveTestCase):
+    def save_new(self, *docs, **fields):
+        return self.assert_saved(self.save({"name": "A", "description": "x", "sources": {"docs": list(docs)}, **fields}))
+
+    def test_a_committed_doc_dates_the_feature_by_the_commit_that_added_it(self):
+        self.commit("brief", {"docs/a-brief.md": "# A\n"}, when="2026-09-15T12:00:00+00:00")
+        self.assertEqual("2026-09-15-a.json", self.save_new("docs/a-brief.md")["file"])
+
+    def test_a_renamed_doc_keeps_the_day_it_was_first_added(self):
+        self.commit("brief", {"old-brief.md": "# A\n"}, when="2026-08-01T12:00:00+00:00")
+        os.makedirs(self.path("docs"))
+        git(self.root, "mv", "old-brief.md", "docs/a-brief.md")
+        self.commit("move", when="2026-09-15T12:00:00+00:00")
+        self.assertEqual("2026-08-01-a.json", self.save_new("docs/a-brief.md")["file"])
+
+    def test_an_uncommitted_doc_dates_the_feature_by_its_file_time(self):
+        date_file(self.write("docs/a-brief.md", "# A\n"), "2026-07-04")
+        self.assertEqual("2026-07-04-a.json", self.save_new("docs/a-brief.md")["file"])
+
+    @unittest.skipUnless(hasattr(os.stat_result, "st_birthtime"), "the file system keeps no creation time")
+    def test_a_doc_changed_after_its_creation_dates_the_feature_by_its_creation(self):
+        path = self.write("docs/a-brief.md", "# A\n")
+        date_file(path, "2026-07-04")
+        date_file(path, "2026-08-01")
+        self.assertEqual("2026-07-04-a.json", self.save_new("docs/a-brief.md")["file"])
+
+    def test_a_doc_outside_the_project_dates_the_feature_by_its_file_time(self):
+        outside = os.path.join(self.base, "notes.md")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write("# A\n")
+        date_file(outside, "2026-06-01")
+        self.assertEqual("2026-06-01-a.json", self.save_new(outside)["file"])
+
+    def test_the_earliest_of_its_docs_and_its_commits_wins(self):
+        self.commit("brief", {"docs/a-brief.md": "# A\n"}, when="2026-09-15T12:00:00+00:00")
+        first = self.commit("BE-1", {"src/a.py": "a\n"}, when="2026-09-01T09:00:00+00:00")
+        saved = self.save_new("docs/a-brief.md", git={"commits": 1, "linesAdded": 1, "linesRemoved": 0},
+                              sources={"docs": ["docs/a-brief.md"], "commits": [first]})
+        self.assertEqual("2026-09-01-a.json", saved["file"])
+
+    def test_a_commit_dates_the_feature_by_its_author_day_not_its_committer_day(self):
+        first = self.commit("BE-1", {"src/a.py": "a\n"}, when="2026-09-01T09:00:00+00:00",
+                            committed="2026-09-20T09:00:00+00:00")
+        saved = self.save_new(git={"commits": 1, "linesAdded": 1, "linesRemoved": 0}, sources={"docs": [], "commits": [first]})
+        self.assertEqual("2026-09-01-a.json", saved["file"])
+
+    def test_the_day_of_a_stored_feature_never_changes(self):
+        self.commit("brief", {"docs/a-brief.md": "# A\n"}, when="2026-09-01T12:00:00+00:00")
+        self.seed(document(new_feature("A", file="2026-10-01-a.json")))
+        self.assert_saved(self.save({"name": "A", "storyPoints": 3, "sources": {"docs": ["docs/a-brief.md"]}}))
+        self.assertEqual(["2026-10-01-a.json"], self.feature_files())
+
+
+class IdTest(SaveTestCase):
+    def seed_with_id(self):
+        self.seed(document(new_feature("A", file="2026-10-01-pm-12-a.json", id="PM-12"), new_feature("B")))
+
+    def test_a_new_features_id_goes_into_its_file_name(self):
+        saved = self.assert_saved(self.save({"name": "Export", "description": "x", "id": "PM-12"}))
+        self.assertEqual(("PM-12", "2026-11-04-pm-12-export.json"), (saved["id"], saved["file"]))
+
+    def test_an_entry_without_an_id_keeps_the_stored_one(self):
+        for entry in ({"name": "A", "storyPoints": 3}, {"name": "A", "id": None}):
+            with self.subTest(entry=entry):
+                self.seed_with_id()
+                result = self.save(entry)
+                self.assertEqual("PM-12", self.assert_saved(result)["id"])
+                self.assertEqual("", result.err)
+                self.assertEqual(["2026-10-01-b.json", "2026-10-01-pm-12-a.json"], self.feature_files())
+
+    def test_an_id_found_later_renames_the_file(self):
+        self.seed(document(new_feature("A")))
+        result = self.save({"name": "A", "id": "PM-12"})
+        self.assertEqual("PM-12", self.assert_saved(result)["id"])
+        self.assertEqual("", result.err)
+        self.assertEqual(["2026-10-01-pm-12-a.json"], self.feature_files())
+
+    def test_another_id_replaces_the_stored_one_with_a_warning(self):
+        self.seed_with_id()
+        result = self.save({"name": "A", "id": "PM-13"})
+        self.assertEqual("PM-13", self.assert_saved(result)["id"])
+        self.assertEqual("estimate: id PM-13 replaces PM-12 for 'A'\n", result.err)
+        self.assertEqual(["2026-10-01-b.json", "2026-10-01-pm-13-a.json"], self.feature_files())
+
+    def test_the_id_of_another_feature_is_refused_naming_its_file(self):
+        for given in ("PM-12", "pm-12"):
+            with self.subTest(given=given):
+                self.seed_with_id()
+                self.assert_error(self.save({"name": "B", "id": given}), EXIT_RUNTIME_ERROR,
+                                  "another feature has the id '%s': 2026-10-01-pm-12-a.json" % given)
+
+    def test_an_id_without_a_letter_or_digit_is_a_bad_argument(self):
+        for value in ("#", "---"):
+            with self.subTest(value=value):
+                self.assert_error(self.save({"name": "A", "description": "x", "id": value}), EXIT_BAD_ARGUMENTS,
+                                  "id '%s' has no letter or digit for its file name" % value)
+
+    def test_an_id_that_is_not_text_is_a_bad_argument(self):
+        for value in (12, ""):
+            with self.subTest(value=value):
+                self.assert_error(self.save({"name": "A", "description": "x", "id": value}), EXIT_BAD_ARGUMENTS,
+                                  "id must be text or null")
 
 
 class LatestValueRulesTest(SaveTestCase):
@@ -184,6 +377,16 @@ class GitTest(SaveTestCase):
         self.seed(document(new_feature("A")))
         self.assert_error(self.save({"name": "A", "git": {"commits": 1, "linesAdded": 7, "linesRemoved": 3}}),
                           EXIT_RUNTIME_ERROR, "git and sources.commits are saved together")
+
+    def test_a_commit_that_is_not_a_full_hash_is_a_bad_argument_and_writes_nothing(self):
+        for value in ("--output=x", HASH_A[:10], HASH_A.upper()):
+            with self.subTest(value=value):
+                self.assert_error(self.save({"name": "A", "description": "x",
+                                             "git": {"commits": 1, "linesAdded": 0, "linesRemoved": 0},
+                                             "sources": {"commits": [value]}}),
+                                  EXIT_BAD_ARGUMENTS, "sources.commits must hold full commit hashes")
+                self.assertFalse(os.path.exists(self.path(DATA_FOLDER)))
+                self.assertFalse(os.path.exists(self.path("x")))
 
 
 class SessionTest(SaveTestCase):

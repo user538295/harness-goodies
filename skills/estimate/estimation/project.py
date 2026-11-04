@@ -1,6 +1,8 @@
 """The project a run works on: its root (the git top-level of the working folder, else the working folder) and the C2 path rule
-(paths inside the project are stored root-relative with `/`, paths outside it absolute)."""
+(paths inside the project are stored root-relative with `/`, paths outside it absolute), and the day the file of a stored path
+was created."""
 import os
+from datetime import date
 
 GIT_SUCCESS = 0
 
@@ -36,3 +38,12 @@ class Project:
     def located(self, stored):
         """The absolute path of a stored path."""
         return stored if os.path.isabs(stored) else os.path.join(self.root, *stored.split("/"))
+
+    def created_day(self, stored):
+        """The day the file of a stored path was created (its birth time; Linux keeps none, so its last change), or None when
+        there is no such file."""
+        try:
+            status = os.stat(self.located(stored))
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        return date.fromtimestamp(getattr(status, "st_birthtime", status.st_mtime))

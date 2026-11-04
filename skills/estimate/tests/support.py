@@ -13,8 +13,12 @@ from datetime import date, datetime, timedelta
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY_PATH = os.path.join(SKILL_DIR, "estimate.py")
-SCHEMA_PATH = os.path.join(SKILL_DIR, "estimation.schema.json")
-ESTIMATION_FILE = ".estimation.json"
+SCALE_SCHEMA_PATH = os.path.join(SKILL_DIR, "estimation.schema.json")
+FEATURE_SCHEMA_PATH = os.path.join(SKILL_DIR, "feature.schema.json")
+DATA_FOLDER = ".harness-goodies"
+SCALE_PATH = DATA_FOLDER + "/estimation.json"
+FEATURES_PATH = DATA_FOLDER + "/estimations"
+SEEDED_DAY = "2026-10-01"
 GIT_IDENTITY = ("-c", "user.name=Estimate Test", "-c", "user.email=estimate@example.invalid")
 TODAY = date(2026, 11, 4)
 DEFAULT_SCALE = [0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 200, 500, 1000]
@@ -132,9 +136,9 @@ class ProjectTestCase(unittest.TestCase):
         self.root = os.path.join(self.base, "project")
         os.makedirs(self.root)
         git(self.root, "init", "-q", "-b", "main")
-        # /implement leaves `.estimation.json` uncommitted; keep it out of the test commits so line counts stay hand-computable.
+        # /implement leaves the estimate files uncommitted; keep them out of the test commits so line counts stay hand-computable.
         with open(os.path.join(self.root, ".git", "info", "exclude"), "a", encoding="utf-8") as exclude:
-            exclude.write(ESTIMATION_FILE + "\n")
+            exclude.write(DATA_FOLDER + "/\n")
         self.which = shutil.which
 
     def path(self, relative):
@@ -147,11 +151,12 @@ class ProjectTestCase(unittest.TestCase):
             handle.write(text)
         return path
 
-    def commit(self, message, files=None, when="2026-10-01T12:00:00+00:00"):
-        """Writes `files` ({relative: text}), commits everything with author and committer date `when`, returns the full hash."""
+    def commit(self, message, files=None, when="2026-10-01T12:00:00+00:00", committed=None):
+        """Writes `files` ({relative: text}), commits everything with author date `when` and committer date `committed`
+        (default `when`), returns the full hash."""
         for relative, text in (files or {}).items():
             self.write(relative, text)
-        environment = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+        environment = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=committed or when)
         git(self.root, "add", "-A", env=environment)
         git(self.root, "commit", "-q", "--allow-empty", "-m", message, env=environment)
         return git(self.root, "rev-parse", "HEAD").strip()
@@ -162,12 +167,27 @@ class ProjectTestCase(unittest.TestCase):
         return FakeSessionLog(folder)
 
     def seed(self, document):
-        with open(self.path(ESTIMATION_FILE), "w", encoding="utf-8") as handle:
-            json.dump(document, handle)
+        """Writes `document` (the `read` shape) as the scale file and one file per feature, named by its `file`."""
+        self.write(SCALE_PATH, json.dumps({"version": document["version"], "scale": document["scale"]}))
+        for feature in document["features"]:
+            stored = {"version": 1, **{key: value for key, value in feature.items() if key != "file"}}
+            self.write(FEATURES_PATH + "/" + feature["file"], json.dumps(stored))
+
+    def raw(self, relative):
+        with open(self.path(relative), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def feature_files(self):
+        folder = self.path(FEATURES_PATH)
+        return sorted(os.listdir(folder)) if os.path.isdir(folder) else []
 
     def estimation(self):
-        with open(self.path(ESTIMATION_FILE), encoding="utf-8") as handle:
-            return json.load(handle)
+        """The stored data in the `read` shape: the scale file, then each feature file in name order without its `version`
+        and with its `file`."""
+        scale = self.raw(SCALE_PATH)
+        features = [{**{key: value for key, value in self.raw(FEATURES_PATH + "/" + name).items() if key != "version"},
+                     "file": name} for name in self.feature_files()]
+        return {"version": scale["version"], "scale": scale["scale"], "features": features}
 
     def feature(self, name):
         return next(feature for feature in self.estimation()["features"] if feature["name"] == name)
@@ -191,14 +211,22 @@ class ProjectTestCase(unittest.TestCase):
         self.assertIn(fragment, result.err)
 
 
-def new_feature(name, **fields):
-    """A complete C2 feature with the `save` defaults, overridden by `fields`."""
-    feature = {"name": name, "description": "About " + name, "status": "estimated", "storyPoints": None,
+def date_file(path, day):
+    """Sets the modification time of `path` to noon of `day` (local time); macOS then moves its creation time back to it too."""
+    moment = datetime.fromisoformat(day + "T12:00:00").timestamp()
+    os.utime(path, (moment, moment))
+
+
+def new_feature(name, file=None, **fields):
+    """A complete C2 feature in the `read` shape with the `save` defaults, overridden by `fields`; its `file` defaults to a
+    seeded name of the feature."""
+    feature = {"id": None, "name": name, "description": "About " + name, "status": "estimated", "storyPoints": None,
                "updatedStoryPoints": None, "estimatedAt": None,
                "plan": {"phases": None, "tasks": None, "estimatedHours": None},
                "git": {"commits": 0, "linesAdded": 0, "linesRemoved": 0}, "usage": None,
                "sources": {"docs": [], "commits": [], "sessions": []}}
     feature.update(fields)
+    feature["file"] = file or "%s-%s.json" % (SEEDED_DAY, name.lower().replace(" ", "-"))
     return feature
 
 

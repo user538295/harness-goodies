@@ -5,8 +5,8 @@ status follows the ticked tasks."""
 import os
 import unittest
 
-from tests.support import (EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, ProjectTestCase, agent_row, document, new_feature,
-                           prompt_row, tokens_of, usage_payload)
+from tests.support import (EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, FEATURES_PATH, ProjectTestCase, agent_row, document,
+                           new_feature, prompt_row, tokens_of, usage_payload)
 
 PLAN = "docs/x-tasks.md"
 TASKS_OPEN = """## Task Breakdown
@@ -71,6 +71,29 @@ class RecordCommitTest(ProjectTestCase):
         self.assertEqual("/abs/s1.jsonl", feature["sources"]["sessions"][0]["path"])
         self.assertEqual({"feature": feature, "needsResize": False, "missing": []}, output)
         self.assertEqual(feature, self.feature("X"))
+
+    def test_only_the_features_own_file_is_written(self):
+        self.seed_feature(new_feature("Y", sources={"docs": [OTHER_PLAN], "commits": [], "sessions": []}))
+        other = self.path(FEATURES_PATH + "/" + new_feature("Y")["file"])
+        with open(other, encoding="utf-8") as handle:
+            before = handle.read()
+        self.record(self.commit("BE-1 store", {PLAN: TASKS_ONE_DONE}))
+        with open(other, encoding="utf-8") as handle:
+            self.assertEqual(before, handle.read())
+
+    def test_a_recorded_commit_names_the_duplicates_of_the_other_files(self):
+        self.seed_feature(new_feature("Y", file="2026-10-01-y.json"), new_feature("Y", file="2026-10-02-y.json"))
+        result = self.run_estimate("record-commit", PLAN, self.commit("BE-1 store", {PLAN: TASKS_ONE_DONE}), "--harness", "claude")
+        self.assertEqual(EXIT_OK, result.code, result.err)
+        self.assertIn("estimate: duplicate name 'Y': 2026-10-01-y.json, 2026-10-02-y.json\n", result.err)
+
+    def test_a_plan_two_feature_files_list_is_refused_naming_both(self):
+        listing = {"docs": [PLAN], "commits": [], "sessions": []}
+        self.seed(document(new_feature("X", file="2026-10-01-x.json", sources=listing),
+                           new_feature("X", file="2026-10-02-x.json", sources=listing)))
+        c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE})
+        self.assert_error(self.run_estimate("record-commit", PLAN, c1, "--harness", "claude"), EXIT_RUNTIME_ERROR,
+                          "2 features list docs/x-tasks.md: 2026-10-01-x.json, 2026-10-02-x.json")
 
     def test_a_session_read_again_keeps_its_newer_numbers_and_the_last_tick_delivers(self):
         self.seed_feature()
