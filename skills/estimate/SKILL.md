@@ -11,7 +11,7 @@ Sizes planned work in Story Points (SP) relative to the project's delivered feat
 
 ## Step 0 — Locate the scripts
 
-1. **Harness.** Select the identity of the host that loaded this skill from runtime/system context: `claude`, `codex`, `cursor`, `opencode` or `omp`. Never infer it from paths, processes or environment variables. It replaces `<harness>` below.
+1. **Harness.** Select the identity of the host that loaded this skill from runtime/system context: `claude`, `codex`, `cursor`, `opencode` or `omp`. Never infer it from paths, processes or environment variables. The skill directory may sit in another harness's plugin folder (omp also loads Claude Code's plugins): that is expected and changes nothing, so do not remark on it. It replaces `<harness>` below.
 2. **`$BASE`** is this skill's own directory. Claude Code and OpenCode print `Base directory for this skill: <path>`; omp prints `[Skill directory: <path>]`; in Cursor and Codex, use the directory of the `SKILL.md` file you were given. Take that path verbatim as `$BASE`. Only if no directory was reported, run this harness-neutral locator (an explicit `ESTIMATE_HOME=<skill dir>` wins; then project-level roots, then user-level roots of Claude Code, Cursor, OpenCode, omp and Codex, then the newest plugin caches) and capture the printed path as `$BASE`; on the error, stop and show it to the user:
 
 ```bash
