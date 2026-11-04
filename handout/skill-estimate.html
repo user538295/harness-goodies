@@ -33,7 +33,7 @@
       <pre><code>/estimate &lt;file.md&gt; [--from &lt;source.md&gt;]
 /estimate init</code></pre>
       <p><strong><code>/estimate &lt;file.md&gt;</code></strong> compares the work with the 2–3 closest delivered features (bigger, smaller or the same) and picks an SP from the scale — by default <code>0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 200, 500, 1000</code>. It shows the SP, the closest features with the reason, phases, tasks and estimated hours when the file has them, the expected agent time, tokens and cost, a split suggestion at 40 SP or more, and everything it could not find. Then it saves the item as <code>estimated</code>. <code>--from</code> names the document the file grew out of (the brief of a plan, the team plan of a task list), so that document's entry is updated instead of a second one being created.</p>
-      <p><strong><code>/estimate init</code></strong> collects the references: one feature per delivered set of planning documents (brief, plan, tasks file). One sub-agent per feature counts phases, tasks and hours; the main agent then finds every feature's commits and matches the past sessions of all five harnesses to the features in one pass, ranks the features by real size, and proposes an after-delivery SP for each, with 5 as a mid-size feature. You adjust the table before anything is written. Running it again adds newly delivered features and refreshes the actuals; an SP you set is never changed.</p>
+      <p><strong><code>/estimate init</code></strong> collects the references: one feature per delivered set of planning documents (brief, plan, tasks file). One sub-agent per feature counts phases, tasks and hours; the main agent then finds every feature's commits and matches the past sessions of all five harnesses to the features in one pass, ranks the features by real size, and proposes an after-delivery SP for each, with 5 as a mid-size feature. It shows them in one table and saves them right away, without waiting for you. Running it again adds newly delivered features and refreshes the actuals; a saved after-delivery SP is never changed.</p>
       <p><strong>Rules that keep the numbers honest:</strong></p>
       <ul>
         <li>The estimate sharpens with each document: brief, then plan, then tasks file. Each one replaces the feature's SP, so the last estimate before the first task commit, normally the tasks file's, becomes the original SP. A rougher document estimated again after a more detailed one is saved only when you confirm.</li>
@@ -83,14 +83,10 @@ Saved as "CSV import" (estimated) in .harness-goodies/estimations/2026-11-04-csv
 | Bulk tag editor    | 9       | 880 / 120   | 8     | 16.0  | 1        | 305 min    | 44.0 M | $39.10 | prompt  | 8 proposed  |
 | User avatar upload | 5       | 410 / 35    | 5     | 9.0   | 0        | —          | —      | —      | none    | 5 kept      |
 
-Adjust any SP, or confirm.
-
 Not found:
-- User avatar upload: no session found for 5 of 5 commits</code></pre>
-        <p><strong>Input:</strong></p>
-        <pre><code>Invoice PDF export is an 8, the rest is fine.</code></pre>
-        <p><strong>Output / Result:</strong></p>
-        <pre><code>Saved 3 delivered features to .harness-goodies/estimations/</code></pre>
+- User avatar upload: no session found for 5 of 5 commits
+
+Saved 3 delivered features to .harness-goodies/estimations/</code></pre>
       </div>
     </section>
 
