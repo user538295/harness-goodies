@@ -120,7 +120,10 @@ class ArgumentTests(SandboxCase):
     def test_bad_arguments_exit_2_without_argparse_usage_and_runtime_error_exits_1(self):
         for argv in (["claude"], ["claude", "frobnicate"], ["claude", "on", "extra"], ["claude", "off", "--latest"],
                      ["claude", "status", "x"], ["claude", "usage", "--bogus"], ["claude", "usage", "a", "b"],
-                     ["claude", "--help"], ["--help"]):
+                     ["claude", "--help"], ["--help"], ["claude", "status", "--json"], ["claude", "on", "--json"],
+                     ["claude", "list", "x"], ["claude", "list", "--latest"], ["claude", "list", "--json", "--json"],
+                     ["claude", "usage", "--json", "--json"], ["claude", "usage", "--json", "a", "b"],
+                     ["claude", "usage", "--latest", "--json", "--latest"]):
             with self.subTest(argv=argv):
                 code, stdout, stderr = self.run_main(argv)
                 self.assertEqual(2, code)
@@ -167,7 +170,41 @@ class ArgumentTests(SandboxCase):
     def test_double_dash_option_other_than_latest_is_unknown(self):
         code, _, stderr = self.run_main(["claude", "usage", "--abc"])
         self.assertEqual(2, code)
-        self.assertEqual("session-log: unknown option '--abc' (expected --latest or a session id)\n", stderr)
+        self.assertEqual("session-log: unknown option '--abc' (expected --latest, --json or a session id)\n", stderr)
+
+    def test_json_twice_and_a_list_argument_other_than_json_are_named(self):
+        for argv, message in ((["claude", "usage", "--json", "--json"], "--json is given twice"),
+                              (["claude", "list", "--json", "--json"], "--json is given twice"),
+                              (["claude", "list", "--latest"], "list takes no argument other than --json"),
+                              (["claude", "status", "--json"], "status takes no arguments")):
+            with self.subTest(argv=argv):
+                self.assertEqual((2, "", "session-log: %s\n" % message), self.run_main(argv))
+
+    def test_json_before_or_after_the_usage_target_prints_the_same_json(self):
+        self.write_transcript()
+        self.turn_logging_on()
+        outputs = [self.run_main(["claude", "usage"] + arguments)
+                   for arguments in (["--json"], ["--json", "--latest"], ["--latest", "--json"], ["--json", "abc123"], ["abc123", "--json"])]
+        self.assertEqual([outputs[0]] * len(outputs), outputs)
+        code, stdout, stderr = outputs[0]
+        self.assertEqual((0, ""), (code, stderr))
+        data = json.loads(stdout)
+        self.assertEqual(("claude", "abc123", CWD, 1), (data["harness"], data["id"], data["projectDir"], data["agentTimeSeconds"]))
+        self.assertEqual({"input": 1000, "output": 1000, "reasoning": None, "cacheRead": 0, "cacheWrite": 0, "total": 2000}, data["tokens"])
+        self.assertEqual((0.0, False), (data["costUsd"], data["costComplete"]))  # the model has no price
+        self.assertTrue(data["log"].startswith(self.log_root + os.sep), data["log"])
+        self.assertEqual(os.path.join(self.claude, "projects", "-work-proj", "abc123.jsonl"), data["path"])
+
+    def test_list_prints_the_sessions_of_the_project_as_text_or_as_json(self):
+        self.write_transcript()
+        self.turn_logging_on()
+        code, stdout, stderr = self.run_main(["claude", "list", "--json"])
+        self.assertEqual((0, ""), (code, stderr))
+        (listed,) = json.loads(stdout)
+        self.assertEqual(("abc123", "2099-06-01T10:00:00+00:00", [UNICODE_PROMPT]), (listed["id"], listed["startedAt"], listed["prompts"]))
+        code, stdout, stderr = self.run_main(["claude", "list"])
+        self.assertEqual((0, ""), (code, stderr))
+        self.assertEqual("2099-06-01 10:00:00 +0000  abc123  1 prompt  %s\n" % listed["log"], stdout)
 
 
 class RuntimeErrorTests(SandboxCase):

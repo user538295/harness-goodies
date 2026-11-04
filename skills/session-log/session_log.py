@@ -1,5 +1,5 @@
-"""Entry script of the session-log skill: `session_log.py <harness> on|off|status|usage [--latest|<id>]` and the hook entry
-`session_log.py hook <harness> <event>`.
+"""Entry script of the session-log skill: `session_log.py <harness> on|off|status|usage [--latest|<id>] [--json]|list [--json]`
+and the hook entry `session_log.py hook <harness> <event>`.
 
 This file must parse on Python 3.4, so a Python that is too old gets a clear message instead of a SyntaxError: it uses no
 f-strings, no variable annotations and no other newer syntax, and it imports the `sessionlog` package only after the
@@ -22,8 +22,10 @@ EXIT_BAD_ARGUMENTS = 2
 ERROR_PREFIX = "session-log: "
 HOOK_ARGUMENT = "hook"
 LATEST_FLAG = "--latest"
+JSON_FLAG = "--json"
 OPTION_PREFIX = "--"
-COMMANDS = ("on", "off", "status", "usage")
+COMMANDS = ("on", "off", "status", "usage", "list")
+JSON_COMMANDS = ("usage", "list")
 SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "cursor": (".cursor",), "omp": (".omp", "agent"),
                            "opencode": (".config", "opencode")}
 CURSOR_HARNESS = "cursor"
@@ -113,7 +115,8 @@ def _use_utf8(stream):
 
 
 def _parse(argv, supported_harnesses):
-    """Returns (harness, command, usage target or None). Never argparse: its usage text is not ours."""
+    """Returns (harness, command, usage target or None, whether --json was given). `--json` is taken from any position after
+    the command of `usage` and `list`. Never argparse: its usage text is not ours."""
     harnesses = ", ".join(sorted(supported_harnesses))
     if not argv:
         raise ArgumentError("missing harness (supported: %s)" % harnesses)
@@ -126,19 +129,27 @@ def _parse(argv, supported_harnesses):
     command, rest = argv[1], argv[2:]
     if command not in COMMANDS:
         raise ArgumentError("unknown command '%s' (expected %s)" % (command, expected))
-    if command != "usage":
+    if command not in JSON_COMMANDS:
         if rest:
             raise ArgumentError("%s takes no arguments" % command)
-        return harness, command, None
+        return harness, command, None, False
+    as_json = JSON_FLAG in rest
+    if rest.count(JSON_FLAG) > 1:
+        raise ArgumentError("%s is given twice" % JSON_FLAG)
+    rest = [argument for argument in rest if argument != JSON_FLAG]
+    if command == "list":
+        if rest:
+            raise ArgumentError("list takes no argument other than %s" % JSON_FLAG)
+        return harness, command, None, as_json
     if len(rest) > 1:
         raise ArgumentError("usage takes at most one argument: %s or a session id" % LATEST_FLAG)
     if not rest or rest[0] == LATEST_FLAG:
-        return harness, command, None
+        return harness, command, None, as_json
     if rest[0] == "":
         raise ArgumentError("usage target must not be empty (expected %s or a session id)" % LATEST_FLAG)
     if rest[0].startswith(OPTION_PREFIX):
-        raise ArgumentError("unknown option '%s' (expected %s or a session id)" % (rest[0], LATEST_FLAG))
-    return harness, command, rest[0]
+        raise ArgumentError("unknown option '%s' (expected %s, %s or a session id)" % (rest[0], LATEST_FLAG, JSON_FLAG))
+    return harness, command, rest[0], as_json
 
 
 def _opencode_reader(home, path_module, env):
@@ -282,7 +293,7 @@ def _compose(harness, environment):
                         _hooks_recorded_since(harness, log_root, path_module))
 
 
-def _run(harness, command, target, environment):
+def _run(harness, command, target, as_json, environment):
     """Returns (code, stdout text, stderr text) of one parsed command."""
     from sessionlog import presentation
     from sessionlog.command_error import CommandError
@@ -292,12 +303,21 @@ def _run(harness, command, target, environment):
     use_cases = CommandUseCases(composition.sync, composition.targets, composition.archive, composition.state,
                                 composition.pricing, environment.now, composition.log_root, composition.leftover_scan,
                                 composition.python_probe, composition.hooks_recorded_since)
+
+    def usage():
+        result = use_cases.usage_latest(environment.get_cwd(), as_json) if target is None else use_cases.usage_of(target, as_json)
+        return presentation.render_usage_json(result) if as_json else presentation.render_usage(result)
+
+    def listing():
+        result = use_cases.list_sessions(environment.get_cwd())
+        return presentation.render_list_json(result) if as_json else presentation.render_list(result, environment.to_local)
+
     handlers = {
         "on": lambda: presentation.render_on(use_cases.on()),
         "off": lambda: presentation.render_off(use_cases.off()),
         "status": lambda: presentation.render_status(use_cases.status(environment.get_cwd())),
-        "usage": lambda: presentation.render_usage(
-            use_cases.usage_latest(environment.get_cwd()) if target is None else use_cases.usage_of(target)),
+        "usage": usage,
+        "list": listing,
     }
     try:
         out_text = handlers[command]()
@@ -312,10 +332,10 @@ def _execute(argv, environment):
         _use_utf8(environment.stdout)
         _use_utf8(environment.stderr)
         try:
-            harness, command, target = _parse(argv, SUPPORTED_HARNESS_ROOTS)
+            harness, command, target, as_json = _parse(argv, SUPPORTED_HARNESS_ROOTS)
         except ArgumentError as error:
             return EXIT_BAD_ARGUMENTS, "", _error_text(str(error))
-        return _run(harness, command, target, environment)
+        return _run(harness, command, target, as_json, environment)
     except KeyboardInterrupt:
         return EXIT_RUNTIME_ERROR, "", _error_text("interrupted")
     except (OSError, RuntimeFailure) as error:

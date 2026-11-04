@@ -1,4 +1,4 @@
-"""Command use cases (C1): `on`, `off`, `status` and `usage` return data; the presentation module renders it.
+"""Command use cases (C1): `on`, `off`, `status`, `usage` and `list` return data; the presentation module renders it.
 
 While logging is on, every command syncs first (`off` syncs once, then turns off). While off, no command syncs.
 The sync of `status` and `usage` is best effort: a log root that cannot be written (read-only, no space) makes it fail, and
@@ -8,6 +8,11 @@ is part of the command and its failure is an error.
 from the store (read, priced and rendered as a sync would) and never saved, and so does one whose saved report is gone while
 its source is not (a sync normally recreates it first).
 A withheld session's saved report may be behind its log; `usage` prints it unchanged and names that in a warning.
+`usage` as data takes the numbers of the report's TOTAL block: from the report built now for a live one, else parsed from the
+report text by the archive, which owns its format.
+`list` names the root sessions of a project folder and the folders below it: an archived one from `.sync.json` and its log
+(read by the archive), a never-archived one from the store, and an archived one whose log cannot be read from the store too;
+one that neither can give is left out and named in `warnings`.
 Failures a user must hear about are raised as `CommandError`; the entry prints them as `session-log: <msg>`. A failed file
 operation names the operation, the path and the reason of the OS.
 """
@@ -16,13 +21,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, List, Optional, Tuple
 
-from .archive_port import Archive
+from .archive_port import Archive, ReportTotals
 from .command_error import CommandError
 from .leftover_port import Leftover, LeftoverScanner
 from .model import Session
-from .pricing import PricingRules
+from .pricing import PricingRules, UsageReport
 from .probe_port import ProbeResult, PythonProbe
-from .reader_port import root_id_of
+from .reader_port import harness_of, root_id_of
 from .state_port import OnFlag, StateStore, parse_timestamp
 from .sync import SESSION_SKIPPED, SESSION_WITHHELD, UNIT_UNREADABLE, SyncOutcome, SyncUseCase
 from .usage_target import ResolvedSession, UsageTargetResolver
@@ -30,6 +35,9 @@ from .usage_target import ResolvedSession, UsageTargetResolver
 FLAG_FILE = ".log_enabled"
 FILES_MISSING_REASON = "the log or the report is missing from disk"
 WITHHELD_REPORT_WARNING = "the saved report of session %s is withheld and may be behind its log (%s); `status` lists it"
+LEFT_OUT_WARNING = "session %s is left out: its log %s cannot be read, and %s"
+SOURCE_GONE_REASON = "its source is gone"
+UNPARSABLE_REPORT = "the report of session %s holds no TOTAL block that can be read as data"
 
 
 def _io_message(operation: str, error: OSError, default_path: Optional[str] = None) -> str:
@@ -91,10 +99,47 @@ class StatusResult:
 
 
 @dataclass(frozen=True)
+class UsageData:
+    """The numbers of a session's report, with where the session is: its own source (None when the store holds none) and its
+    archived log (None when it is not archived or the log is gone)."""
+
+    harness: str
+    session_id: str
+    project_dir: Optional[str]
+    source: Optional[str]
+    log_path: Optional[str]
+    totals: ReportTotals
+
+
+@dataclass(frozen=True)
 class UsageResult:
-    """`report_text` is exactly the report text of the session, saved or computed live."""
+    """`report_text` is exactly the report text of the session, saved or computed live; `data` is set when it was asked for."""
 
     report_text: str
+    data: Optional[UsageData] = None
+
+
+@dataclass(frozen=True)
+class ListedSession:
+    """One root session of `list`: `source` as for `UsageData`, `log_path` set when the session is archived and its log is on
+    disk, `prompts` the full prompt texts in order."""
+
+    harness: str
+    session_id: str
+    project_dir: str
+    started_at: datetime
+    last_activity_at: datetime
+    source: Optional[str]
+    log_path: Optional[str]
+    prompts: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ListResult:
+    """The root sessions of the project of `cwd`, oldest start first (then by id)."""
+
+    cwd: str
+    sessions: Tuple[ListedSession, ...]
 
 
 class CommandUseCases:
@@ -190,46 +235,97 @@ class CommandUseCases:
             latest_session=self._latest_session(state, cwd),
             probe=self._python_probe.check())
 
-    def usage_latest(self, cwd: str) -> UsageResult:
+    def usage_latest(self, cwd: str, with_data: bool = False) -> UsageResult:
         """`usage` and `usage --latest`: the report of the root session of the project of `cwd` with the newest prompt, among
         the archived sessions and the never-archived ones of the store (the nearest folder with any session wins)."""
-        return self._usage(lambda state: self._targets.latest(state, cwd))
+        return self._usage(lambda state: self._targets.latest(state, cwd), with_data)
 
-    def usage_of(self, target: str) -> UsageResult:
+    def usage_of(self, target: str, with_data: bool = False) -> UsageResult:
         """`usage <id>`: the report of the session `target` names, matched exactly, else as a unique prefix, over archived and
         store sessions together. The word `latest` is such an id, never the flag."""
-        return self._usage(lambda state: self._targets.by_id(state, target))
+        return self._usage(lambda state: self._targets.by_id(state, target), with_data)
 
-    def _usage(self, resolve: Callable[[dict], ResolvedSession]) -> UsageResult:
+    def list_sessions(self, cwd: str) -> ListResult:
+        """`list`: every root session of the project of `cwd` (see the module text)."""
+        self._sync_while_on()
+        state = self._state.load_sync()
+        found = self._targets.project_sessions(state, cwd)
+        self.warnings.extend(found.problems)
+        listed = [self._listed_from_store(key, session, found.sources.get(key), None) for key, session in found.stored.items()]
+        for session_key in found.archived:
+            session = self._archived_listing(state, session_key, found.sources.get(session_key))
+            if session is not None:
+                listed.append(session)
+        return ListResult(cwd, tuple(sorted(listed, key=lambda session: (session.started_at, session.session_id))))
+
+    def _archived_listing(self, state: dict, session_key: str, source: Optional[str]) -> Optional[ListedSession]:
+        """From the log; when it cannot be read, from the store; None, named in a warning, when neither can give the session."""
+        entry = state["sessions"][session_key]
+        log_path = entry["logPath"]
+        log = self._archive.read_log(log_path)
+        if log is not None:
+            return ListedSession(harness_of(session_key), root_id_of(session_key), entry["projectDir"], log.started_at,
+                                 parse_timestamp(entry["lastActivityAt"]), source, log_path, log.prompts)
+        try:
+            session = self._targets.read_stored(state, session_key)
+            reason = SOURCE_GONE_REASON
+        except CommandError as error:
+            session, reason = None, str(error)
+        if session is None:
+            self.warnings.append(LEFT_OUT_WARNING % (root_id_of(session_key), log_path, reason))
+            return None
+        return self._listed_from_store(session_key, session, source, log_path if self._archive.files_present(log_path).log else None)
+
+    @staticmethod
+    def _listed_from_store(session_key: str, session: Session, source: Optional[str], log_path: Optional[str]) -> ListedSession:
+        return ListedSession(harness_of(session_key), root_id_of(session_key), session.project_dir, session.started_at,
+                             session.last_activity_at, source, log_path, tuple(prompt.text for prompt in session.prompts))
+
+    def _usage(self, resolve: Callable[[dict], ResolvedSession], with_data: bool) -> UsageResult:
         outcome = self._sync_while_on()
         state = self._state.load_sync()
         resolved = resolve(state)
+        report: Optional[UsageReport] = None
         report_text = outcome.unsaved_reports.get(resolved.session_key)
         if report_text is None:
             if resolved.session is None:
-                report_text = self._saved_report(state, resolved.session_key, state["sessions"][resolved.session_key])
+                report_text, report = self._saved_report(state, resolved.session_key, state["sessions"][resolved.session_key])
             else:
-                report_text = self._live_report(resolved.session)
-        return UsageResult(report_text)
+                report_text, report = self._live_report(resolved.session)
+        return UsageResult(report_text, self._usage_data(state, resolved, report_text, report) if with_data else None)
 
-    def _saved_report(self, state: dict, session_key: str, entry: dict) -> str:
-        """The saved report; when its file is gone, the live report of the session if its source is still there. A withheld
-        session's saved report may be behind its log (a log that gained prompts keeps the report that holds the lost sub-agent
-        rows), so `usage` says so in a warning."""
+    def _usage_data(self, state: dict, resolved: ResolvedSession, report_text: str, report: Optional[UsageReport]) -> UsageData:
+        """The numbers of the live `report`, else those parsed from the report text; where the session is, from the store and the
+        archive."""
+        session_key = resolved.session_key
+        totals = ReportTotals.of(report.total) if report is not None else self._archive.parse_report(report_text)
+        if totals is None:
+            raise CommandError(UNPARSABLE_REPORT % root_id_of(session_key))
+        entry = state["sessions"].get(session_key)
+        project_dir = resolved.session.project_dir if resolved.session is not None else (entry or {}).get("projectDir")
+        log_path = entry["logPath"] if entry is not None and self._archive.files_present(entry["logPath"]).log else None
+        return UsageData(harness_of(session_key), root_id_of(session_key), project_dir, self._targets.source(state, session_key),
+                         log_path, totals)
+
+    def _saved_report(self, state: dict, session_key: str, entry: dict) -> Tuple[str, Optional[UsageReport]]:
+        """The saved report (with no report data); when its file is gone, the live report of the session if its source is still
+        there. A withheld session's saved report may be behind its log (a log that gained prompts keeps the report that holds the
+        lost sub-agent rows), so `usage` says so in a warning."""
         report_text = self._archive.read_report(entry["logPath"])
         if report_text is not None:
             if entry["state"] == SESSION_WITHHELD:
                 self.warnings.append(WITHHELD_REPORT_WARNING % (root_id_of(session_key), entry.get("reason", "")))
-            return report_text
+            return report_text, None
         session = self._targets.read_stored(state, session_key)
         if session is None:
             raise CommandError("the saved report of session %s beside %s cannot be read, and its source is gone"
                                % (root_id_of(session_key), entry["logPath"]))
         return self._live_report(session)
 
-    def _live_report(self, session: Session) -> str:
-        """The report of a session never archived, computed as a sync would and written nowhere."""
-        return self._archive.render_report(self._pricing.build(session))
+    def _live_report(self, session: Session) -> Tuple[str, UsageReport]:
+        """The report of a session never archived, computed as a sync would and written nowhere, with its data."""
+        report = self._pricing.build(session)
+        return self._archive.render_report(report), report
 
     def _recorded_since_on(self, flag: Optional[OnFlag]) -> Optional[bool]:
         if self._hooks_recorded_since is None or flag is None:

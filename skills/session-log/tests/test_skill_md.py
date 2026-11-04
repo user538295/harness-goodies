@@ -73,11 +73,13 @@ class SkillMdCommandLineTest(unittest.TestCase):
         self.assertIn("a `file://` URL stands for the filesystem path it names", steps[0])
         self.assertIn("announced no directory", steps[1])
 
-    def test_arguments_are_limited_to_the_five_commands_and_a_safe_session_id(self):
+    def test_arguments_are_limited_to_the_commands_and_a_safe_session_id(self):
         steps = [line for line in _prose().splitlines() if line.startswith("4. ")]
         self.assertEqual(len(steps), 1)
         allowlist = steps[0].split("Accept only", 1)[1].split(" (a session id", 1)[0]
-        self.assertEqual(re.findall(r"`([^`]+)`", allowlist), ["on", "off", "status", "usage", "usage --latest", "usage <session-id>"])
+        self.assertEqual(re.findall(r"`([^`]+)`", allowlist), [
+            "on", "off", "status", "usage", "usage --latest", "usage <session-id>", "usage --json", "usage --latest --json",
+            "usage <session-id> --json", "list", "list --json"])
         self.assertIn("or to `status` when none were supplied", steps[0])
         self.assertIn("letters, digits, `_` and `-`", steps[0])
         self.assertIn("stop and tell the user", steps[0])

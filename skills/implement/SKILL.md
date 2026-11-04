@@ -151,6 +151,8 @@ Update the task-breakdown file: mark the implemented task and every completed su
 
 Commit all changes for this task — implementation files AND the updated task-breakdown file (with its newly checked boxes) — in a single commit with a message derived from the actual task content. The companion plan, if any, is not modified and is not part of the commit.
 
+**Last action of this step — record the commit for `/estimate`.** Load the `estimate` skill and follow its "Record a commit" section for the task-breakdown file and the new commit's full hash, naming the harness you run in. If it reports `needsResize: true`, re-size the feature as that section says and save `updatedStoryPoints`. A failure (no feature lists the plan, Python too old, session-log not found, …) is reported in Step 7 and never blocks the task; do not retry, amend, or re-commit because of it.
+
 ### Step 7: Report
 
 Output a concise report for this task in the following exact form. Do NOT prose, you MUST report it and in the exact form. This is non-negotiable.
@@ -160,6 +162,7 @@ Output a concise report for this task in the following exact form. Do NOT prose,
 > - Feature loss or deviation: [Any feature loss or deviation from the task spec (be extremely precise); max 250 chars]
 > - Unresolvable oscillations: [Any unresolvable oscillations from the review loop; max 250 chars]
 > - Task [N.M] — checked at line [NNN] and committed ([full-hash])
+> - Estimate: [record-commit result: feature, status, `needsResize` handled, or the failure; max 250 chars]
 
 ---
 
@@ -234,7 +237,7 @@ Each iteration:
 
 #### 3. **Recovery check and report — verify the task landed.**
 
-   - Check that the task is checked in the plan file, and check that the related files are committed.
+   - Check that the task is checked in the plan file, and check that the related files are committed. A modified `.estimation.json` is never a related file: NEXT mode's Step 6 leaves it uncommitted on purpose, so ignore it here.
    - **Always report to the user in the following exact form. Follow the format literally. You and the subagents must follow the instructions strictly. Don't miss that!**
       - If there was no violation (task was already checked and committed), tell the user exactly in this format:
          - Task [N.M] ✅ — checked (line [NNN]) and committed ([short-hash]). Checkpoint verified (checkbox + commit).
@@ -246,7 +249,7 @@ Each iteration:
             - **Prevention:** [how you will prevent it in the future.; max 250 chars]
             save the learnings to prevent this next time;
    - If the task is **not checked** (regardless of commit state) → **you MUST go to step 2 ("Spawn a subagent to implement this task") and redo the full process. This is non-negotiable. You MUST NOT decide differently!** Track attempt count — after 3 failed attempts, stop and report: "Task [N.M] failed after 3 attempts. Manual intervention required."
-   - If the task **is checked but the files are not committed** → commit only: run `git status --porcelain` to identify all modified and untracked files (covers both tracked modifications and newly created files). Cross-reference each file against the task description to determine membership. Stage by explicit file path only those that belong to this task's implementation. Do NOT use `git add -A` or `git add .` — that risks including unrelated working-tree changes. The companion plan (if the task-breakdown file references one) is read-only context — never stage it; if it shows as modified, report that as a FORBIDDEN violation rather than committing it. If uncertain whether any *other* file belongs to this task, include it and note the uncertainty in the commit message. Never leave modified task files unstaged without reporting them. Then commit. Do NOT respawn the subagent.
+   - If the task **is checked but the files are not committed** → commit only: run `git status --porcelain` to identify all modified and untracked files (covers both tracked modifications and newly created files). Cross-reference each file against the task description to determine membership. Stage by explicit file path only those that belong to this task's implementation. Do NOT use `git add -A` or `git add .` — that risks including unrelated working-tree changes. The companion plan (if the task-breakdown file references one) is read-only context — never stage it; if it shows as modified, report that as a FORBIDDEN violation rather than committing it. Never stage `.estimation.json` either, and do not report it: it stays uncommitted on purpose (NEXT mode, Step 6). If uncertain whether any *other* file belongs to this task, include it and note the uncertainty in the commit message. Never leave modified task files unstaged without reporting them. Then commit, then run NEXT mode's Step 6 "record the commit for `/estimate`" action for the new commit. Do NOT respawn the subagent.
      Report this as a violation and do NOT prose it:
         - Task [N.M] partial ⚠️ — checked but not committed; committed now ([short-hash]).
            - **What:** [task was checked but commit was missing (criterion E violated); max 250 chars]

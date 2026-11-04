@@ -1,5 +1,6 @@
-"""C3 adapter: renders the log and the usage report and writes them atomically; owns every archive path rule. New folders are 0700 and every
-written file 0600; a slug folder, log or report that is a symbolic link or junction is skipped, never written through (`safe_paths`)."""
+"""C3 adapter: renders the log and the usage report, writes them atomically and parses them back; owns every archive path rule
+and the format of both files. New folders are 0700 and every written file 0600; a slug folder, log or report that is a symbolic
+link or junction is skipped, never written through (`safe_paths`)."""
 import hashlib
 import os
 import re
@@ -7,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, List, Optional, Tuple
 
-from .archive_port import ArchiveFiles, WriteOutcome
+from .archive_port import ArchivedLog, ArchiveFiles, ReportTotals, WriteOutcome
 from .model import Prompt, Session
 from .pricing import PARTIAL, PRICED, UNKNOWN, Price, UsageReport
 from .safe_paths import FOLDER_LINK_REASON, LINK_REASON, is_link, make_real_folders
@@ -28,9 +29,25 @@ ENTRY_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 CLOCK_FORMAT = "%H:%M:%S"
 NO_VALUE = "-"
 API_EQUIVALENT = " (API-equivalent)"
+INCOMPLETE_MARK = "\u2265 "
+LOG_TITLE = "# Session log"
+START_PREFIX = "- start: "
+TOTAL_PREFIX = "TOTAL ("
+TOTAL_BLOCK_MIN_LINES = 3  # heading, working time and token line; a label line may sit between the last two
 _OTHER_CHARS = re.compile(r"[^A-Za-z0-9._-]")  # `.` is in the allowed set, so it stays in the folder name
 _LINE_BREAKS = re.compile(r"[\r\n\t]+")
 _STALE_TEMP = re.compile(r"\.%s.*(?:%s|%s)" % (re.escape(SESSION_PREFIX), re.escape(LOG_SUFFIX), re.escape(REPORT_SUFFIX)) + STALE_TEMP_TAIL)
+_ENTRY_TIME_TEXT = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC(?:[+-]\d+(?::\d{2})?)?"  # what `_entry_time` writes
+_ENTRY_TIME = re.compile(r"(?P<clock>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC(?:(?P<sign>[+-])(?P<hours>\d+)(?::(?P<minutes>\d{2}))?)?")
+_PROMPT_HEADING = re.compile(r"\n\n## %s\n" % _ENTRY_TIME_TEXT)
+_RESPONSE_HEADING = re.compile(r"\n\n### %s response\n" % _ENTRY_TIME_TEXT)
+_TOTAL_HEADING = re.compile(r"TOTAL \(\d+ requests, \d+ sub-agents\)")
+_TOTAL_WORKING_TIME = re.compile(r"working time: (?P<hours>\d+):(?P<minutes>\d{2}):(?P<seconds>\d{2})")
+_TOTAL_ESTIMATE = re.compile(  # what `_estimate` writes for the total: a price is always known there, complete or not
+    r"est\. used token: input: (?P<input>\d+), output: (?P<output>\d+)(?:, reasoning: (?P<reasoning>\d+))?, "
+    r"cache_create: (?P<cache_write>\d+), cache_read: (?P<cache_read>\d+), total_tokens: (?P<total>\d+), "
+    r"price: (?P<incomplete>%s)?(?P<sign>-?)\$(?P<dollars>\d+)\.(?P<cents>\d{2})(?(incomplete) \(incomplete\))(?:%s)?, model: "
+    % (INCOMPLETE_MARK, re.escape(API_EQUIVALENT)))
 
 
 def _offset_label(moment: datetime) -> str:
@@ -40,6 +57,18 @@ def _offset_label(moment: datetime) -> str:
         return "UTC"
     hours, rest = divmod(minutes, SECONDS_PER_MINUTE)
     return "UTC%s%d%s" % ("-" if seconds < 0 else "+", hours, ":%02d" % rest if rest else "")
+
+
+def _parse_entry_time(text: str) -> Optional[datetime]:
+    """The time `_entry_time` wrote as `text`, in the offset it shows; None for any other text."""
+    match = _ENTRY_TIME.fullmatch(text)
+    if match is None:
+        return None
+    offset = timedelta(hours=int(match["hours"] or 0), minutes=int(match["minutes"] or 0))
+    try:
+        return datetime.strptime(match["clock"], ENTRY_TIME_FORMAT).replace(tzinfo=timezone(-offset if match["sign"] == "-" else offset))
+    except ValueError:
+        return None
 
 
 def _whole_seconds(span: timedelta) -> int:
@@ -76,7 +105,7 @@ def _price(price: Price, api_equivalent: bool) -> str:
     if price.status == PRICED:
         text = _dollars(price.cents)
     elif price.status == PARTIAL:
-        text = "\u2265 %s (incomplete)" % _dollars(price.cents)
+        text = "%s%s (incomplete)" % (INCOMPLETE_MARK, _dollars(price.cents))
     elif price.status == UNKNOWN:
         text = UNKNOWN
     else:
@@ -145,10 +174,10 @@ class LogUsageWriter:
         return "%s %s" % (local.strftime(ENTRY_TIME_FORMAT), _offset_label(local))
 
     def render_log(self, session: Session) -> str:
-        lines: List[str] = ["# Session log", "- harness: %s" % session.harness.value,
+        lines: List[str] = [LOG_TITLE, "- harness: %s" % session.harness.value,
                             "- session: %s" % session.session_id,
                             "- project: %s" % _single_line(session.project_dir or NO_VALUE),
-                            "- start: %s" % self._entry_time(session.started_at)]
+                            START_PREFIX + self._entry_time(session.started_at)]
         if session.orphan_of_parent_id:
             lines.append("- sub-agent of %s (parent not found)" % _single_line(session.orphan_of_parent_id))
         previous: Tuple[Optional[str], Optional[str]] = (None, None)
@@ -162,6 +191,29 @@ class LogUsageWriter:
                     lines += ["", switched]
             previous = (model or previous[0], effort or previous[1])
         return _text("\n".join(lines) + "\n")
+
+    @staticmethod
+    def parse_log(log_text: str) -> Optional[ArchivedLog]:
+        """The start and the prompt texts of a text `render_log` wrote; None when it is not in that format. A prompt is the text
+        between its `## <time>` heading and the `### <time> response` heading of its reply (else the next prompt's heading), so a
+        prompt or reply that itself holds a blank line followed by such a heading line is split there."""
+        if not log_text.endswith("\n"):
+            return None
+        header, *entries = _PROMPT_HEADING.split(log_text[:-1])
+        lines = header.split("\n")
+        start = next((line[len(START_PREFIX):] for line in lines if line.startswith(START_PREFIX)), None)
+        started_at = None if start is None else _parse_entry_time(start)
+        if lines[0] != LOG_TITLE or started_at is None:
+            return None
+        return ArchivedLog(started_at, tuple(_RESPONSE_HEADING.split(entry, maxsplit=1)[0] for entry in entries))
+
+    def read_log(self, log_path: str) -> Optional[ArchivedLog]:
+        try:
+            with open(log_path, "rb") as handle:
+                log_text = handle.read().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        return self.parse_log(log_text)
 
     def render_report(self, report: UsageReport) -> str:
         api = report.total.api_equivalent
@@ -188,12 +240,31 @@ class LogUsageWriter:
                          else _estimate(agent, _price(agent.price, api)))
         total = report.total
         status = PARTIAL if total.price_incomplete else PRICED
-        lines += ["", "TOTAL (%d requests, %d sub-agents)" % (total.request_count, total.sub_agent_count),
+        lines += ["", "%s%d requests, %d sub-agents)" % (TOTAL_PREFIX, total.request_count, total.sub_agent_count),
                   "working time: %s" % _duration(total.working_time)]
         if total.label:
             lines.append(_single_line(total.label))
         lines.append(_estimate(total, _price(Price(total.price_cents, status), api)))
         return _text("\n".join(lines) + "\n")
+
+    @staticmethod
+    def parse_report(report_text: str) -> Optional[ReportTotals]:
+        """The numbers of the TOTAL block `render_report` ends a report with: its heading, working time, optional label line and
+        token line. None when the text does not end with such a block."""
+        _, found, block = report_text.rpartition("\n\n" + TOTAL_PREFIX)
+        lines = (TOTAL_PREFIX + block).rstrip("\n").split("\n")
+        if not found or len(lines) < TOTAL_BLOCK_MIN_LINES or not _TOTAL_HEADING.fullmatch(lines[0]):
+            return None
+        working, tokens = _TOTAL_WORKING_TIME.fullmatch(lines[1]), _TOTAL_ESTIMATE.match(lines[-1])
+        if working is None or tokens is None:
+            return None
+        cents = int(tokens["dollars"]) * CENTS_PER_DOLLAR + int(tokens["cents"])
+        return ReportTotals(
+            working_seconds=int(working["hours"]) * SECONDS_PER_HOUR + int(working["minutes"]) * SECONDS_PER_MINUTE + int(working["seconds"]),
+            input_tokens=int(tokens["input"]), output_tokens=int(tokens["output"]),
+            reasoning_tokens=None if tokens["reasoning"] is None else int(tokens["reasoning"]),
+            cache_read_tokens=int(tokens["cache_read"]), cache_write_tokens=int(tokens["cache_write"]), total_tokens=int(tokens["total"]),
+            price_cents=-cents if tokens["sign"] else cents, price_complete=tokens["incomplete"] is None)
 
     @staticmethod
     def _report_path(log_path: str) -> str:

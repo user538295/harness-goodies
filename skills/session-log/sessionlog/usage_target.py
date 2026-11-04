@@ -1,5 +1,6 @@
-"""Which session a `usage` call names (C1): the latest root session of a project, or the session an id names; and which archived
-session `status` names: the latest archived root session of a project, with its own source.
+"""Which session a `usage` call names (C1): the latest root session of a project, or the session an id names; which archived
+session `status` names: the latest archived root session of a project, with its own source; and which root sessions `list`
+names: every one of a project folder and the folders below it.
 
 Archived sessions are ranked from the session entries of `.sync.json` alone, so it is the same in every harness. The store of
 the harness is read for the sessions that were never archived, and `latest` reads it on every call: it lists the store and reads
@@ -10,6 +11,9 @@ matched exactly against the sub-agent ids of the store's sessions and names the 
 sub-agents by unit, `SubAgentNaming`, has only the sessions with such a unit read). The store is listed
 only when no archived session has that exact id, and the reader is asked about a unit `.sync.json` has not recorded. The
 resolver also reads the store sessions it resolves to, so the caller need not. Nothing is written.
+
+`list` takes the archived root sessions of the project from `.sync.json` and reads every never-archived one of the store, the
+ranking units first, so only the sessions of the project are read whole.
 """
 import functools
 import os
@@ -56,6 +60,16 @@ class _Stored(NamedTuple):
 
     level: int
     resolved: ResolvedSession
+
+
+class ProjectSessions(NamedTuple):
+    """The root sessions of a project: `archived` keys (from `.sync.json`), the never-archived sessions of the store read whole
+    (`stored`), the main source of each one the store holds (`sources`) and what kept the lookup from being complete (`problems`)."""
+
+    archived: Tuple[str, ...]
+    stored: Dict[str, Session]
+    sources: Dict[str, Optional[str]]
+    problems: Tuple[str, ...]
 
 
 class UsageTargetResolver:
@@ -132,6 +146,38 @@ class UsageTargetResolver:
         that `.sync.json` records for the session, so no unit is learned anew; None when none of them is left."""
         units = tuple(unit for unit in self._reader.scan().units if recorded_session_key(state, unit.key) == session_key)
         return self._reader.main_source(session_key, units) if units else None
+
+    def source(self, state: dict, session_key: str) -> Optional[str]:
+        """The path of the session's own source (see `SessionReader.main_source`) among the units of a fresh scan, each unit
+        grouped by the key `.sync.json` recorded for it, else by what the reader learns now; None when the store holds none."""
+        units = self._store_units(state, self._reader.scan()).get(session_key)
+        return None if units is None else self._reader.main_source(session_key, units)
+
+    def project_sessions(self, state: dict, cwd: str) -> ProjectSessions:
+        """The root sessions (no orphan) whose recorded project folder is `cwd` or a folder below it. A never-archived session
+        that holds a source the reader cannot use is left out and named in `problems`, as is a store that could not be listed
+        completely; a session whose project folder cannot be learned at all is passed over, as `latest` passes it over."""
+        in_project = self._in_project(cwd)
+        scan = self._reader.scan()
+        hiding = self._hiding_sessions(scan)
+        problems = [str(self._incomplete_store(hiding, "so the list may miss sessions"))] if hiding else []
+        units_of = self._store_units(state, scan)
+        archived = tuple(key for key, entry in state["sessions"].items() if not entry["orphan"] and in_project(entry.get("projectDir")))
+        stored: Dict[str, Session] = {}
+        for session_key, units in units_of.items():
+            if session_key in state["sessions"]:
+                continue
+            ranked = self._reader.read(session_key, self._ranking_units(units))
+            session = ranked.session
+            if session is None or session.orphan_of_parent_id is not None or not in_project(session.project_dir):
+                continue
+            whole = ranked if len(self._ranking_units(units)) == len(units) else self._reader.read(session_key, units)
+            if whole.unreadable:
+                problems.append("%s, so it is left out" % self._unreadable_session(session_key, whole.unreadable[0]))
+            elif whole.session is not None:
+                stored[session_key] = whole.session
+        sources = {key: self._reader.main_source(key, units_of[key]) for key in (*archived, *stored) if key in units_of}
+        return ProjectSessions(archived, stored, sources, tuple(problems))
 
     def _holding_sub_agent(self, state: dict, units_of: Dict[str, _Units], target: str) -> ResolvedSession:
         """The root session of the store whose sub-agents (nested ones too) include `target`, newest source unit first. Only the
@@ -305,6 +351,19 @@ class UsageTargetResolver:
             if parent == folder:
                 return
             folder = parent
+
+    def _in_project(self, cwd: str) -> Callable[[Optional[str]], bool]:
+        """Whether a recorded project folder is `cwd` or a folder below it: under `normcase`, or both after `realpath` (looked up
+        once per distinct folder), as `_project_matchers` matches one folder."""
+        real_of = functools.lru_cache(maxsize=None)(self._real_or_same)
+        normcase, separator = self._path.normcase, self._path.sep
+        project_normal, project_real = normcase(cwd), real_of(cwd)
+
+        def is_at_or_below(folder: str, project: str) -> bool:
+            return folder == project or folder.startswith(project.rstrip(separator) + separator)
+
+        return lambda project_dir: project_dir is not None and (
+            is_at_or_below(normcase(project_dir), project_normal) or is_at_or_below(real_of(project_dir), project_real))
 
     @staticmethod
     def _latest_archived(sessions: Dict[str, dict], matchers: List[Callable[[str], bool]]) -> Optional[_Archived]:

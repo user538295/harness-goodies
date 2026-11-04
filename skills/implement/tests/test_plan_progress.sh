@@ -13,6 +13,9 @@
 #   Exit 3  — no recognized task-section heading (## Tasks / ## Task /
 #             ## Task breakdown), OR a task section with no tasks; a message is
 #             printed to stderr.
+#   --counts  — prints exactly PHASES=<n, empty without ### phases>, TASKS=<n>,
+#             COMPLETED=<n> and exits 0 whether or not tasks remain; exit 2/3
+#             as above. A ### heading with no tasks under it is not a phase.
 #
 # The header text comes from progress-header-flat.template (no phases) or
 # progress-header-phased.template (### headings under the task section). fill of
@@ -44,8 +47,15 @@ assert_eq() { # expected actual
   if [ "$1" = "$2" ]; then ok; else bad "expected [$1], got [$2]"; fi
 }
 
+assert_stderr_has() { # fixed text that $ERR must contain
+  if printf '%s' "$ERR" | grep -Fq -- "$1"; then ok; else bad "stderr: [$ERR]"; fi
+}
+
 # Run the script on a plan file; capture stdout, stderr and exit code.
 run_plan() { OUT="$(bash "$SCRIPT" "$1" 2>"$ERRFILE")"; RC=$?; ERR="$(cat "$ERRFILE")"; }
+run_counts() { OUT="$(bash "$SCRIPT" --counts "$@" 2>"$ERRFILE")"; RC=$?; ERR="$(cat "$ERRFILE")"; }
+NL='
+'
 
 # One line of $OUT by its literal prefix (the machine trailer / header rows).
 line() { printf '%s\n' "$OUT" | grep "$1" | head -1; }
@@ -123,6 +133,7 @@ run_plan "$PHASED"
 # extracts the name BEFORE any eval and echoes it directly, so the trailer must
 # reproduce it byte-for-byte — a regression to eval'ing it would mangle or
 # execute this.
+# shellcheck disable=SC2016  # the $ and backticks must stay literal
 SPECIAL_NAME='pay $5 for `cmd` '\''sq'\'' "dq" *all*'
 SPECIAL="$WORKROOT/special.md"
 { printf '## Tasks\n'; printf -- '- [ ] %s\n' "$SPECIAL_NAME"; } > "$SPECIAL"
@@ -150,14 +161,12 @@ cat > "$NOSEC" <<'EOF'
 EOF
 run_plan "$NOSEC"
 ( t "no section: exit 3";                  assert_eq "3" "$RC" )
-( t "no section: stderr warns";
-  printf '%s' "$ERR" | grep -q "no recognized task section" && ok || bad "stderr: [$ERR]" )
+( t "no section: stderr warns"; assert_stderr_has "no recognized task section" )
 
 # ---------------------------------------------------------------- 6. missing file
 run_plan "$WORKROOT/does-not-exist.md"
 ( t "missing file: exit 2";                assert_eq "2" "$RC" )
-( t "missing file: stderr names it";
-  printf '%s' "$ERR" | grep -q "not found" && ok || bad "stderr: [$ERR]" )
+( t "missing file: stderr names it"; assert_stderr_has "not found" )
 
 # ---------------------------------------------------------------- 7. template integrity
 # Every {{TOKEN}} in either template must be substituted by the script's awk
@@ -167,7 +176,7 @@ run_plan "$WORKROOT/does-not-exist.md"
 for tok in $(grep -ohE '\{\{[A-Z_]+\}\}' "$FLAT_TPL" "$PHASED_TPL" | tr -d '{}' | sort -u); do
   t "template token {{$tok}} is substituted by the script"
   needle="\\{\\{${tok}\\}\\}"   # -> literal  \{\{TOKEN\}\}
-  grep -Fq -- "$needle" "$SCRIPT" && ok || bad "no gsub for {{$tok}} in plan-progress.sh"
+  if grep -Fq -- "$needle" "$SCRIPT"; then ok; else bad "no gsub for {{$tok}} in plan-progress.sh"; fi
 done
 
 # ---------------------------------------------------------------- 8. section, zero checkboxes
@@ -183,8 +192,53 @@ Some prose, but no checkbox lines yet.
 EOF
 run_plan "$EMPTY"
 ( t "empty section: exit 3";                assert_eq "3" "$RC" )
-( t "empty section: stderr says no tasks found";
-  printf '%s' "$ERR" | grep -q "No tasks found" && ok || bad "stderr: [$ERR]" )
+( t "empty section: stderr says no tasks found"; assert_stderr_has "No tasks found" )
+
+# ---------------------------------------------------------------- 9. --counts
+# Each expected triple is counted by hand from the fixture above it.
+# phased: phases 1/2/3 hold 2+3+1 = 6 tasks, ticked 2+1+0 = 3.
+run_counts "$PHASED"
+( t "counts phased: exit 0";  assert_eq "0" "$RC" )
+( t "counts phased: three lines"; assert_eq "PHASES=3${NL}TASKS=6${NL}COMPLETED=3" "$OUT" )
+# flat: no ### heading -> PHASES empty; 5 tasks, 2 ticked.
+run_counts "$FLAT"
+( t "counts flat: exit 0";  assert_eq "0" "$RC" )
+( t "counts flat: PHASES empty"; assert_eq "PHASES=${NL}TASKS=5${NL}COMPLETED=2" "$OUT" )
+# fully ticked: counts still print and exit 0 (no "All tasks complete.").
+run_counts "$DONE"
+( t "counts all done: exit 0";  assert_eq "0" "$RC" )
+( t "counts all done: 2 of 2"; assert_eq "PHASES=${NL}TASKS=2${NL}COMPLETED=2" "$OUT" )
+# create-tasks layout: "## Task Breakdown", a "### Dependency graph" heading with
+# no tasks (not a phase), two "### Phase …" headings, indented "- Layer · 2.0h"
+# sub-bullets (not tasks). Phases 2; tasks 2+1 = 3; ticked 1.
+TEAM="$WORKROOT/team-tasks.md"
+cat > "$TEAM" <<'EOF'
+## Task Breakdown
+
+### Dependency graph
+
+### Phase 1 · Skeleton
+- [x] **BE-1** — Store the set #backend-role
+    - Entity · 2.0h
+- [ ] **FE-1** — Show the set #frontend-role
+    - Presentation · 1.5h
+
+### Phase 2 · Close-out
+- [ ] **T-1** — Close-out #tester-role
+    - — · 4.0h
+EOF
+run_counts "$TEAM"
+( t "counts create-tasks: exit 0";  assert_eq "0" "$RC" )
+( t "counts create-tasks: empty ### is no phase"; assert_eq "PHASES=2${NL}TASKS=3${NL}COMPLETED=1" "$OUT" )
+run_counts "$NOSEC"
+( t "counts no section: exit 3";  assert_eq "3" "$RC" )
+( t "counts no section: stdout empty"; assert_eq "" "$OUT" )
+run_counts "$EMPTY"
+( t "counts empty section: exit 3";  assert_eq "3" "$RC" )
+( t "counts empty section: stdout empty"; assert_eq "" "$OUT" )
+run_counts
+( t "counts without a file: exit 2";  assert_eq "2" "$RC" )
+( t "counts without a file: usage names --counts"; assert_stderr_has "--counts" )
 
 # ----------------------------------------------------------------
 PASS="$(grep -c '^PASS$' "$RESULTS")"

@@ -4,5 +4,9 @@
   { "skill": "/brooks-review" },
   { "skill": "/open-code-review" },
   { "tool": "markdownlint" },
-  { "tool": "shellcheck" }
+  { "tool": "shellcheck" },
+  {
+    "md": "AGENTS.md",
+    "args": "return NONE if the target has none. Check strictly: every violated rule is a finding, at least Moderate."
+  }
 ]

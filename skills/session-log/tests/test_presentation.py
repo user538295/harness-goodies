@@ -1,11 +1,17 @@
 """Presentation module (S67): pure result -> stdout text, each set field with its fixed wording, each unset field absent."""
+import json
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
-from sessionlog.commands import LatestSession, OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
+from sessionlog.archive_port import ReportTotals
+from sessionlog.commands import (LatestSession, ListedSession, ListResult, OffResult, OnResult, StatusResult, UnreadableItem, UsageData,
+                                 UsageResult)
 from sessionlog.leftover_port import Leftover
 from sessionlog.probe_port import ProbeResult
-from sessionlog.presentation import LEFTOVERS_HEADING as LEFTOVERS, PROBE_FAILED, render_off, render_on, render_status, render_usage
+from sessionlog.presentation import LEFTOVERS_HEADING as LEFTOVERS
+from sessionlog.presentation import (PROBE_FAILED, render_list, render_list_json, render_off, render_on, render_status, render_usage,
+                                     render_usage_json)
 
 ON_AT = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
 SYNC_AT = datetime(2026, 3, 5, 8, 9, 10, tzinfo=timezone.utc)
@@ -161,6 +167,60 @@ class UsageRenderingTest(unittest.TestCase):
         self.assertEqual(render_usage(UsageResult(report_text=report)), report)
         for odd in ("", "no newline", "\n\n lead\r\ntrail  \n\n\n"):
             self.assertEqual(render_usage(UsageResult(report_text=odd)), odd)
+
+
+TOTALS = ReportTotals(working_seconds=11280, input_tokens=190200, output_tokens=121300, reasoning_tokens=None, cache_read_tokens=27805100,
+                      cache_write_tokens=1046900, total_tokens=29163500, price_cents=2795, price_complete=True)
+PLUS_TWO = timezone(timedelta(hours=2))
+
+
+def _listed(session_id="abc", started_at=ON_AT, source=SESSION_SOURCE, log_path=PROMPT_LOG, prompts=("first", "second")):
+    return ListedSession("claude", session_id, "/work/proj", started_at, SYNC_AT, source, log_path, prompts)
+
+
+class UsageJsonRenderingTest(unittest.TestCase):
+    def test_an_archived_session_renders_its_numbers_source_and_log(self):
+        data = UsageData("claude", SESSION_ID, "/work/proj", SESSION_SOURCE, PROMPT_LOG, TOTALS)
+        self.assertEqual({
+            "harness": "claude", "id": SESSION_ID, "projectDir": "/work/proj", "path": SESSION_SOURCE, "log": PROMPT_LOG,
+            "agentTimeSeconds": 11280,
+            "tokens": {"input": 190200, "output": 121300, "reasoning": None, "cacheRead": 27805100, "cacheWrite": 1046900, "total": 29163500},
+            "costUsd": 27.95, "costComplete": True,
+        }, json.loads(render_usage_json(UsageResult("report\n", data))))
+
+    def test_a_live_session_without_source_log_or_project_renders_nulls_reasoning_and_an_incomplete_cost(self):
+        totals = replace(TOTALS, reasoning_tokens=42, price_cents=5, price_complete=False)
+        rendered = render_usage_json(UsageResult("report\n", UsageData("omp", SESSION_ID, None, None, None, totals)))
+        parsed = json.loads(rendered)
+        self.assertEqual((None, None, None, 42, 0.05, False), (parsed["projectDir"], parsed["path"], parsed["log"],
+                                                              parsed["tokens"]["reasoning"], parsed["costUsd"], parsed["costComplete"]))
+        self.assertTrue(rendered.endswith("}\n"))
+
+
+class ListRenderingTest(unittest.TestCase):
+    def test_list_json_is_an_array_of_sessions_with_utc_times_and_full_prompts(self):
+        local_start = ON_AT.astimezone(PLUS_TWO)
+        result = ListResult("/work/proj", (_listed(started_at=local_start, prompts=("Kérem ő\nsecond line",)),
+                                           _listed("def", source=None, log_path=None, prompts=())))
+        self.assertEqual([
+            {"harness": "claude", "id": "abc", "projectDir": "/work/proj", "startedAt": "2026-03-04T05:06:07+00:00",
+             "lastActivityAt": "2026-03-05T08:09:10+00:00", "path": SESSION_SOURCE, "log": PROMPT_LOG, "prompts": ["Kérem ő\nsecond line"]},
+            {"harness": "claude", "id": "def", "projectDir": "/work/proj", "startedAt": "2026-03-04T05:06:07+00:00",
+             "lastActivityAt": "2026-03-05T08:09:10+00:00", "path": None, "log": None, "prompts": []},
+        ], json.loads(render_list_json(result)))
+        self.assertEqual([], json.loads(render_list_json(ListResult("/work/proj", ()))))
+
+    def test_list_text_has_one_line_per_session_in_local_time_with_its_log_else_its_source(self):
+        result = ListResult("/work/proj", (_listed(), _listed("def", log_path=None, prompts=("one",)),
+                                           _listed("ghi", source=None, log_path=None, prompts=())))
+        self.assertEqual(
+            "2026-03-04 07:06:07 +0200  abc  2 prompts  %s\n"
+            "2026-03-04 07:06:07 +0200  def  1 prompt  %s\n"
+            "2026-03-04 07:06:07 +0200  ghi  0 prompts  -\n" % (PROMPT_LOG, SESSION_SOURCE),
+            render_list(result, lambda moment: moment.astimezone(PLUS_TWO)))
+
+    def test_an_empty_list_says_so_in_text(self):
+        self.assertEqual("No session for this project (/work/proj).\n", render_list(ListResult("/work/proj", ()), lambda moment: moment))
 
 
 if __name__ == "__main__":

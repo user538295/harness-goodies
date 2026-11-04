@@ -1,9 +1,11 @@
-"""Use-case-owned C3 archive boundary; the writer adapter implements it and owns every path rule."""
+"""Use-case-owned C3 archive boundary; the writer adapter implements it and owns every path rule and every format rule, the
+parsing of its own log and report included."""
 from dataclasses import dataclass
-from typing import NamedTuple, Optional, Protocol
+from datetime import datetime
+from typing import NamedTuple, Optional, Protocol, Tuple
 
 from .model import Session
-from .pricing import UsageReport
+from .pricing import Total, UsageReport
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,36 @@ class ArchiveFiles(NamedTuple):
     @property
     def complete(self) -> bool:
         return self.log and self.report
+
+
+@dataclass(frozen=True)
+class ArchivedLog:
+    """What an archived log tells about its session: its start (in the offset the log shows) and its prompt texts, in order."""
+
+    started_at: datetime
+    prompts: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReportTotals:
+    """The numbers of a report's TOTAL block: working time in whole seconds, tokens (`reasoning_tokens` None when the harness
+    records none), the price in whole cents and whether it is complete (the report shows an incomplete one as `≥ $x (incomplete)`)."""
+
+    working_seconds: int
+    input_tokens: int
+    output_tokens: int
+    reasoning_tokens: Optional[int]
+    cache_read_tokens: int
+    cache_write_tokens: int
+    total_tokens: int
+    price_cents: int
+    price_complete: bool
+
+    @classmethod
+    def of(cls, total: Total) -> "ReportTotals":
+        """The numbers the TOTAL block of `total`'s report shows."""
+        return cls(max(0, int(total.working_time.total_seconds())), total.input_tokens, total.output_tokens, total.reasoning_tokens,
+                   total.cache_read_tokens, total.cache_write_tokens, total.total_tokens, total.price_cents, not total.price_incomplete)
 
 
 class Archive(Protocol):
@@ -58,6 +90,15 @@ class Archive(Protocol):
 
     def read_report(self, log_path: str) -> Optional[str]:
         """The saved report beside the log; None when it is absent or cannot be read as UTF-8 text."""
+        ...
+
+    def read_log(self, log_path: str) -> Optional[ArchivedLog]:
+        """The start and prompt texts of the saved log; None when it is absent, cannot be read as UTF-8 text or is not in the
+        log format."""
+        ...
+
+    def parse_report(self, report_text: str) -> Optional[ReportTotals]:
+        """The numbers of the report's TOTAL block; None when the text holds no TOTAL block in the report format."""
         ...
 
     def files_present(self, log_path: str) -> ArchiveFiles:

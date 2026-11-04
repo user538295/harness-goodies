@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>/estimate — Claude Code Handout</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="card.css">
+  <!-- Source: skills/estimate/SKILL.md (last synced: 2026-11-04) -->
+</head>
+<body>
+  <div class="card-page">
+
+    <div class="page-header">
+      <h1><code>/estimate</code></h1>
+      <a class="back-link" href="index.html">← Back to index</a>
+    </div>
+
+    <section data-section="1-summary">
+      <h2>Summary</h2>
+      <p><strong>A Story Point size you can check later, measured against your own delivered work.</strong> Sizes a brief, plan, task list, epic or single task by comparing it with the features your project has already delivered, and tells you the agent time, tokens and cost that features of that size took.</p>
+      <p>Every feature's estimate sits next to its real effort — commits, lines added and removed, agent time, tokens, cost — in <code>.estimation.json</code> at the project root. Committing that file is your call; no skill ever commits it.</p>
+    </section>
+
+    <section data-section="2-when-to-use">
+      <h2>When to use</h2>
+      <p>You size work by gut feel, and nobody checks afterwards whether the size was right, because the real effort never lands next to the estimate. <code>/estimate</code> keeps both: the Story Points (SP) given before work, and the size judged after delivery from everything that happened.</p>
+      <p>Mostly it runs by itself. <code>/feature-refinement</code>, <code>/plan-maker</code>, <code>/plan-maker-for-team</code> and <code>/create-tasks</code> estimate the document they write and put a <code>**Story Points:** 8 — estimated 2026-11-04 with /estimate</code> line under its title. <code>/implement</code> adds each task commit to the feature's numbers and re-sizes the feature once every task is ticked. Call it yourself to size a document or to set up the references.</p>
+    </section>
+
+    <section data-section="3-invocation">
+      <h2>Invocation</h2>
+      <pre><code>/estimate &lt;file.md&gt; [--from &lt;source.md&gt;]
+/estimate init</code></pre>
+      <p><strong><code>/estimate &lt;file.md&gt;</code></strong> compares the work with the 2–3 closest delivered features (bigger, smaller or the same) and picks an SP from the scale — by default <code>0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 200, 500, 1000</code>. It shows the SP, the closest features with the reason, phases, tasks and estimated hours when the file has them, the expected agent time, tokens and cost, a split suggestion at 40 SP or more, and everything it could not find. Then it saves the item as <code>estimated</code>. <code>--from</code> names the document the file grew out of (the brief of a plan, the team plan of a task list), so that document's entry is updated instead of a second one being created.</p>
+      <p><strong><code>/estimate init</code></strong> collects the references: one feature per delivered set of planning documents (brief, plan, tasks file). One sub-agent per feature counts phases, tasks and hours and finds its commits; the main agent then matches the past sessions of all five harnesses to the features in one pass, ranks the features by real size, and proposes an after-delivery SP for each, with 5 as a mid-size feature. You adjust the table before anything is written. Running it again adds newly delivered features and refreshes the actuals; an SP you set is never changed.</p>
+      <p><strong>Rules that keep the numbers honest:</strong></p>
+      <ul>
+        <li>The estimate sharpens with each document: brief, then plan, then tasks file. Each one replaces the feature's SP, so the last estimate before the first task commit, normally the tasks file's, becomes the original SP. A rougher document estimated again after a more detailed one is saved only when you confirm.</li>
+        <li>The original SP freezes at the first task commit; the size judged at delivery goes into <code>updatedStoryPoints</code>. The same number in both means the estimate was right.</li>
+        <li>Only delivered features are references, compared by their after-delivery SP.</li>
+        <li>Sessions are matched by what their prompts name (the feature's documents or task IDs), else by the feature's commit dates, and each match is labelled <code>implement</code>, <code>prompt</code> or <code>dates</code>.</li>
+        <li>Missing data stays empty and is listed in the report — nothing is guessed.</li>
+        <li>With no delivered features yet, you still get an SP, with a warning to run <code>/estimate init</code>.</li>
+        <li>Scales whose sizes can't be added up (emoji, T-shirt sizes) get no split suggestion.</li>
+      </ul>
+      <p><strong>Requirements:</strong> Python 3.14 or newer (macOS's built-in <code>python3</code> is 3.9.6 — install one from python.org or Homebrew). Session numbers come from <a href="skill-session-log.html">/session-log</a>; Cursor tokens exist only while session-log's logging is on. When <code>check-jsonschema</code> is installed, every write of <code>.estimation.json</code> is checked against the skill's schema.</p>
+    </section>
+
+    <section data-section="4-example-1">
+      <h2>Example 1 — Estimating a plan <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/estimate Documentation/Backlog/csv-import-plan.md</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>Story Points: 8
+
+Closest delivered features:
+- Bigger than "User avatar upload" (5): two import paths and a validation report instead of one upload.
+- Smaller than "Invoice PDF export" (13): no layout engine, no server-side rendering.
+- Like "Bulk tag editor" (8): same shape — one parser, one preview screen, one write path.
+
+Plan: 3 phases, 11 tasks, 24.5 estimated hours
+Expected effort (features at 8 SP: Bulk tag editor, Report scheduler):
+  agent time 260–410 min · tokens 31–58 M · cost $28–$52
+
+Not found:
+- no estimated hours on 2 tasks
+
+Saved as "CSV import" (estimated) in .estimation.json</code></pre>
+      </div>
+    </section>
+
+    <section data-section="5-example-2">
+      <h2>Example 2 — Setting up the references <em>(illustrative example)</em></h2>
+      <div class="example">
+        <p><strong>Input:</strong></p>
+        <pre><code>/estimate init</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>| Feature            | Commits | Lines +/−   | Tasks | Hours | Agent time | Tokens | Cost   | Matched | SP          |
+| Invoice PDF export | 19      | 2140 / 310  | 17    | 38.5  | 412 min    | 64.2 M | $61.40 | prompt  | 13 proposed |
+| Bulk tag editor    | 9       | 880 / 120   | 8     | 16.0  | 305 min    | 44.0 M | $39.10 | dates   | 8 proposed  |
+| User avatar upload | 5       | 410 / 35    | 5     | 9.0   | —          | —      | —      | none    | 5 kept      |
+
+Adjust any SP, or confirm.
+
+Not found:
+- no session data for feature "User avatar upload"</code></pre>
+        <p><strong>Input:</strong></p>
+        <pre><code>Invoice PDF export is an 8, the rest is fine.</code></pre>
+        <p><strong>Output / Result:</strong></p>
+        <pre><code>Saved 3 delivered features to .estimation.json</code></pre>
+      </div>
+    </section>
+
+    <section data-section="6-related-tools">
+      <h2>Related tools</h2>
+      <ul>
+        <li><a href="skill-feature-refinement.html">/feature-refinement</a> and <a href="skill-plan-maker.html">/plan-maker</a> — Estimate the brief and the plan they write; each document keeps the SP of the moment it was written, while <code>.estimation.json</code> holds the latest.</li>
+        <li><a href="cmd-implement.html">/implement</a> — Records every task commit for the feature and triggers the re-size at delivery; <code>.estimation.json</code> stays an uncommitted change.</li>
+        <li><a href="skill-session-log.html">/session-log</a> — The source of agent time, tokens and cost for every session, in all five harnesses.</li>
+      </ul>
+    </section>
+
+    <footer data-section="7-footer">
+      <h2>Links</h2>
+      <p>
+        <a href="index.html">← All handouts</a>
+        &ensp;|&ensp;
+        <a href="agentic-workflow-en.html">Agentic workflow pipeline (agentic-workflow-en.html)</a>
+      </p>
+    </footer>
+
+  </div><!-- /.card-page -->
+
+</body>
+</html>

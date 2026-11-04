@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# plan-progress.sh <plan_file>
+# plan-progress.sh [--counts] <plan_file>
 #
 # Prints a formatted progress header for the next uncompleted task.
 # Reads progress-header-phased.template or progress-header-flat.template
@@ -11,11 +11,22 @@
 # Exit 2  — usage error or file not found
 # Exit 3  — no recognized task section heading, OR a task section with no tasks
 #           (a clear message is printed to stderr)
+#
+# --counts — prints exactly three lines PHASES=<n, empty when the task section
+#            has no ### phases>, TASKS=<n>, COMPLETED=<n> and exits 0 whether
+#            or not tasks remain (exit 2/3 as above). A ### heading with no
+#            tasks under it is not a phase.
 
 set -uo pipefail
 
+counts_only=0
+if [ "${1:-}" = "--counts" ]; then
+    counts_only=1
+    shift
+fi
+
 if [ $# -ne 1 ]; then
-    echo "Usage: plan-progress.sh <plan_file>" >&2
+    echo "Usage: plan-progress.sh [--counts] <plan_file>" >&2
     exit 2
 fi
 
@@ -84,6 +95,9 @@ END {
     if (!has_section) { print "NO_SECTION=1"; exit }
     total=completed+remaining
     if (total==0) { print "EMPTY_SECTION=1"; exit }
+    print "PHASES="       (has_phases ? phase_count : "")
+    print "TASKS="        total
+    print "COMPLETED="    completed
     if (remaining==0) { print "ALL_DONE=1"; exit }
 
     fill=int(completed/total*12)
@@ -94,7 +108,6 @@ END {
     print "HAS_PHASES="   has_phases
     print "BAR="          bar
     print "PCT="          pct
-    print "COMPLETED="    completed
     print "TOTAL="        total
     print "REMAINING="    remaining
     print "COMP_PHASES="  comp_phases
@@ -130,6 +143,10 @@ if echo "$parsed" | grep -q "^EMPTY_SECTION=1"; then
     echo "No tasks found in the plan file (task section is empty)." >&2
     exit 3
 fi
+if [ "$counts_only" -eq 1 ]; then
+    echo "$parsed" | grep -E "^(PHASES|TASKS|COMPLETED)="
+    exit 0
+fi
 if echo "$parsed" | grep -q "^ALL_DONE=1"; then
     echo "All tasks complete."
     exit 1
@@ -153,6 +170,7 @@ COMPLETED_PHASES_LABEL=$(phase_label "$COMP_PHASES")
 REMAINING_PHASES_LABEL=$(phase_label "$REM_PHASES")
 
 # Select template
+# shellcheck disable=SC2153  # NEXT_NUM is assigned by the eval above
 if [ "$HAS_PHASES" -eq 1 ]; then
     template="$_dir/progress-header-phased.template"
     PHASE="$NEXT_PHASE"

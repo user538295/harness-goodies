@@ -216,6 +216,12 @@ Follow the mandatory format below exactly. Never omit a section — write `N/A` 
 
 ---
 
+## Step 5 — Estimate the Plan
+
+After saving, load the `estimate` skill and run `/estimate <plan path>`, adding `--from <brief path>` when the plan started from a feature brief (so the brief's entry in `.estimation.json` is updated, not duplicated). Write the SP it returns into the plan as the line immediately after the H1 title line, replacing any earlier one: `**Story Points:** <SP> — estimated <YYYY-MM-DD> with /estimate`. The plan keeps the SP of the moment it was written; `.estimation.json` always holds the latest. A failed estimate is reported to the user and leaves the plan without the line.
+
+---
+
 ## Task Rules
 
 **Size**: One task = one callable unit of behavior — one function, one method, one endpoint, one tool, one schema. If a task implements more than one independently testable unit, split it. File count is irrelevant; a single method added to an existing file is a valid task, and two new files that together implement one cohesive unit is also valid.
@@ -252,6 +258,7 @@ Follow the mandatory format below exactly. Never omit a section — write `N/A` 
 3. Append new tasks to the appropriate phase, or add a new phase
 4. Update `**Status**` if the overall state changed
 5. Move any acceptance criteria that were in the top-level section into the final task if they aren't there already
+6. Re-estimate the plan (Step 5) when its scope changed or earlier estimation is inaccurate
 
 ---
 

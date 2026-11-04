@@ -25,6 +25,11 @@ def root_id_of(session_key: str) -> str:
     return session_key.partition(":")[2]
 
 
+def harness_of(session_key: str) -> str:
+    """The harness part of a session key built by `build_session_key`."""
+    return session_key.partition(":")[0]
+
+
 @dataclass(frozen=True)
 class SourceUnit:
     """One source a session is built from. `key` identifies it between scans. `fingerprint` is stable while the source
