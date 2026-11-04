@@ -10,7 +10,7 @@ End-to-end tests run the real harnesses (Claude Code, Codex, Cursor, OMP, OpenCo
 
 # Session-log: key decisions
 
-Short form of the Key Decisions in `session-log-simple-brief.md`; there are no ADRs.
+Short form of the Key Decisions in the removed brief (`git show ee76d76:session-log-simple-brief.md`); there are no ADRs.
 
 - **Read what the harness saved instead of recording it live.** Claude Code, Codex, OMP and OpenCode already save complete conversations; re-recording them is where the complexity and the Windows breakage came from.
 - **Copy into an own archive.** Claude Code deletes transcripts after 30 days by default, so each session is copied as a Markdown log plus a saved usage report.

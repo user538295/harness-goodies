@@ -29,12 +29,11 @@ EXEMPT_FILES = frozenset(
         "skills/commit/SKILL.md",
     }
 )
-EXEMPT_PLAN_FILE_PREFIX = "session-log-simple-"
 GIT_GREP_NO_MATCH = 1
 
 
 def _is_exempt(path: str) -> bool:
-    return path in EXEMPT_FILES or ("/" not in path and path.startswith(EXEMPT_PLAN_FILE_PREFIX))
+    return path in EXEMPT_FILES
 
 
 def _tracked_files_naming_legacy_strings() -> List[str]:
