@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import date, timezone
+from datetime import date, datetime, timedelta
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTRY_PATH = os.path.join(SKILL_DIR, "estimate.py")
@@ -84,20 +84,43 @@ class FakeSessionLog:
             return [json.loads(line) for line in handle]
 
 
-def usage_payload(harness, session_id, seconds, total=1000, cost=1.25, cost_complete=True, path=None, log=None):
-    """A C1 `usage --json` reply; tokens split so that `total` = input + output + cache read + cache write."""
+def tokens_of(total):
+    """C1 tokens split so that `total` = input + output + cache read + cache write; reasoning not recorded."""
     quarter = total // 4
+    return {"input": quarter, "output": quarter, "reasoning": None, "cacheRead": quarter, "cacheWrite": total - 3 * quarter,
+            "total": total}
+
+
+def usage_payload(harness, session_id, seconds, total=1000, cost=1.25, cost_complete=True, path=None, log=None, prompts=None,
+                  sub_agents=None):
+    """A C1 `usage --json` reply; `prompts` and `sub_agents` are its rows (null: the session's prompts cannot be read)."""
     return {"harness": harness, "id": session_id, "projectDir": "/abs/project", "path": path, "log": log,
-            "agentTimeSeconds": seconds,
-            "tokens": {"input": quarter, "output": quarter, "reasoning": None, "cacheRead": quarter,
-                       "cacheWrite": total - 3 * quarter, "total": total},
-            "costUsd": cost, "costComplete": cost_complete}
+            "agentTimeSeconds": seconds, "tokens": tokens_of(total), "costUsd": cost, "costComplete": cost_complete,
+            "prompts": prompts, "subAgents": sub_agents}
+
+
+def prompt_row(at, text, seconds=60, total=100, cost=0.5, complete=True):
+    """One C1 prompt row submitted at `at` (UTC ISO) and answered `seconds` later."""
+    reply_at = (datetime.fromisoformat(at) + timedelta(seconds=seconds)).isoformat()
+    return {"at": at, "replyAt": reply_at, "text": text, "agentTimeSeconds": seconds, "tokens": tokens_of(total), "costUsd": cost,
+            "costComplete": complete}
+
+
+def agent_row(started_at, total=100, cost=0.5, complete=True, agent_id="agent", depth=0):
+    """One C1 sub-agent row started at `started_at` (UTC ISO)."""
+    return {"id": agent_id, "type": "task", "startedAt": started_at, "depth": depth, "tokens": tokens_of(total), "costUsd": cost,
+            "costComplete": complete}
 
 
 def list_entry(harness, session_id, started, last_activity, prompts, path=None, log=None):
     """One session of a C1 `list --json` reply."""
     return {"harness": harness, "id": session_id, "projectDir": "/abs/project", "startedAt": started,
             "lastActivityAt": last_activity, "path": path, "log": log, "prompts": prompts}
+
+
+def listed_with_rows(harness, session_id, rows, path=None, log=None):
+    """The `list --json` entry of a session whose prompt rows are `rows`: it starts at the first and ends at the last reply."""
+    return list_entry(harness, session_id, rows[0]["at"], rows[-1]["replyAt"], [row["text"] for row in rows], path, log)
 
 
 class ProjectTestCase(unittest.TestCase):
@@ -155,8 +178,7 @@ class ProjectTestCase(unittest.TestCase):
         from estimation.environment import Environment
         stdout, stderr = io.StringIO(), io.StringIO()
         environment = Environment(stdout=stdout, stderr=stderr, stdin=io.StringIO(stdin), get_cwd=lambda: cwd or self.root,
-                                  today=lambda: TODAY, to_local=lambda moment: moment.astimezone(timezone.utc),
-                                  which=which or self.which, version_info=version_info or sys.version_info)
+                                  today=lambda: TODAY, which=which or self.which, version_info=version_info or sys.version_info)
         code = estimate.main(list(argv), environment)
         return Result(code, stdout.getvalue(), stderr.getvalue())
 

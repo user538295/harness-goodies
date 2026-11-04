@@ -1,6 +1,6 @@
 """Everything a run takes from the machine. Each argument defaults to the real thing and is a test injection point: the streams,
-the working folder, today's date, the conversion of a moment to local time, `which` (finds `check-jsonschema`) and `run`, the
-one process runner behind git, `plan-progress.sh`, `check-jsonschema` and session-log."""
+the working folder, today's date, `which` (finds `check-jsonschema`) and `run`, the one process runner behind git,
+`plan-progress.sh`, `check-jsonschema` and session-log."""
 import os
 import shutil
 import subprocess
@@ -29,7 +29,7 @@ def run_process(argv, cwd):
 
 class Environment:
     def __init__(self, stdout=None, stderr=None, stdin=None, version_info=None, platform=None, get_cwd=None, today=None,
-                 to_local=None, which=None, run=None):
+                 which=None, run=None):
         self.stdout = sys.stdout if stdout is None else stdout
         self.stderr = sys.stderr if stderr is None else stderr
         self.stdin = sys.stdin if stdin is None else stdin
@@ -37,6 +37,5 @@ class Environment:
         self.platform = sys.platform if platform is None else platform
         self.get_cwd = os.getcwd if get_cwd is None else get_cwd
         self.today = date.today if today is None else today
-        self.to_local = (lambda moment: moment.astimezone()) if to_local is None else to_local
         self.which = shutil.which if which is None else which
         self.run = run_process if run is None else run

@@ -54,7 +54,7 @@ class ArgumentTest(ProjectTestCase):
         self.assert_error(self.run_estimate("remove", "a", "b"), EXIT_BAD_ARGUMENTS, "remove takes 1 argument")
 
     def test_an_option_without_its_value_is_a_bad_argument(self):
-        self.assert_error(self.run_estimate("git-stats", "--doc"), EXIT_BAD_ARGUMENTS, "--doc needs a value")
+        self.assert_error(self.run_estimate("match-sessions", "-", "--session-log"), EXIT_BAD_ARGUMENTS, "--session-log needs a value")
 
 
 class RealProcessTest(unittest.TestCase):

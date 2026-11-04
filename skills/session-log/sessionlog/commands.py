@@ -9,7 +9,9 @@ from the store (read, priced and rendered as a sync would) and never saved, and 
 its source is not (a sync normally recreates it first).
 A withheld session's saved report may be behind its log; `usage` prints it unchanged and names that in a warning.
 `usage` as data takes the numbers of the report's TOTAL block: from the report built now for a live one, else parsed from the
-report text by the archive, which owns its format.
+report text by the archive, which owns its format. Its prompt and sub-agent rows come from the session read now: a live
+report's own session, else the stored session of an archived one, read only when data is asked for. When that session cannot
+be read (its source is gone, or unreadable, which a warning names) the data holds no rows; the command still succeeds.
 `list` names the root sessions of a project folder and the folders below it: an archived one from `.sync.json` and its log
 (read by the archive), a never-archived one from the store, and an archived one whose log cannot be read from the store too;
 one that neither can give is left out and named in `warnings`.
@@ -24,8 +26,8 @@ from typing import Callable, List, Optional, Tuple
 from .archive_port import Archive, ReportTotals
 from .command_error import CommandError
 from .leftover_port import Leftover, LeftoverScanner
-from .model import Session
-from .pricing import PricingRules, UsageReport
+from .model import Prompt, Session
+from .pricing import PricingRules, PromptRow, SubAgentRow, UsageReport
 from .probe_port import ProbeResult, PythonProbe
 from .reader_port import harness_of, root_id_of
 from .state_port import OnFlag, StateStore, parse_timestamp
@@ -38,6 +40,7 @@ WITHHELD_REPORT_WARNING = "the saved report of session %s is withheld and may be
 LEFT_OUT_WARNING = "session %s is left out: its log %s cannot be read, and %s"
 SOURCE_GONE_REASON = "its source is gone"
 UNPARSABLE_REPORT = "the report of session %s holds no TOTAL block that can be read as data"
+ROWS_UNREADABLE_WARNING = "%s, so its data holds no prompt or sub-agent rows"
 
 
 def _io_message(operation: str, error: OSError, default_path: Optional[str] = None) -> str:
@@ -99,9 +102,23 @@ class StatusResult:
 
 
 @dataclass(frozen=True)
+class UsageRows:
+    """The rows of the report of the session read now: each prompt beside its report row (row i is prompt i), then the
+    sub-agent rows in report order."""
+
+    prompts: Tuple[Tuple[Prompt, PromptRow], ...]
+    sub_agents: Tuple[SubAgentRow, ...]
+
+    @classmethod
+    def of(cls, session: Session, report: UsageReport) -> "UsageRows":
+        """The rows of `report`, which must be built from `session`."""
+        return cls(tuple(zip(session.prompts, report.prompts, strict=True)), report.sub_agents)
+
+
+@dataclass(frozen=True)
 class UsageData:
     """The numbers of a session's report, with where the session is: its own source (None when the store holds none) and its
-    archived log (None when it is not archived or the log is gone)."""
+    archived log (None when it is not archived or the log is gone); `rows` None when the session cannot be read now."""
 
     harness: str
     session_id: str
@@ -109,6 +126,7 @@ class UsageData:
     source: Optional[str]
     log_path: Optional[str]
     totals: ReportTotals
+    rows: Optional[UsageRows] = None
 
 
 @dataclass(frozen=True)
@@ -286,17 +304,19 @@ class CommandUseCases:
         state = self._state.load_sync()
         resolved = resolve(state)
         report: Optional[UsageReport] = None
+        rows: Optional[UsageRows] = None
         report_text = outcome.unsaved_reports.get(resolved.session_key)
         if report_text is None:
             if resolved.session is None:
-                report_text, report = self._saved_report(state, resolved.session_key, state["sessions"][resolved.session_key])
+                report_text, report, rows = self._saved_report(state, resolved.session_key, state["sessions"][resolved.session_key])
             else:
-                report_text, report = self._live_report(resolved.session)
-        return UsageResult(report_text, self._usage_data(state, resolved, report_text, report) if with_data else None)
+                report_text, report, rows = self._live_report(resolved.session)
+        return UsageResult(report_text, self._usage_data(state, resolved, report_text, report, rows) if with_data else None)
 
-    def _usage_data(self, state: dict, resolved: ResolvedSession, report_text: str, report: Optional[UsageReport]) -> UsageData:
-        """The numbers of the live `report`, else those parsed from the report text; where the session is, from the store and the
-        archive."""
+    def _usage_data(self, state: dict, resolved: ResolvedSession, report_text: str, report: Optional[UsageReport],
+                    rows: Optional[UsageRows]) -> UsageData:
+        """The numbers of the live `report`, else those parsed from the report text; the rows of the live report, else of the
+        session read now; where the session is, from the store and the archive."""
         session_key = resolved.session_key
         totals = ReportTotals.of(report.total) if report is not None else self._archive.parse_report(report_text)
         if totals is None:
@@ -305,27 +325,39 @@ class CommandUseCases:
         project_dir = resolved.session.project_dir if resolved.session is not None else (entry or {}).get("projectDir")
         log_path = entry["logPath"] if entry is not None and self._archive.files_present(entry["logPath"]).log else None
         return UsageData(harness_of(session_key), root_id_of(session_key), project_dir, self._targets.source(state, session_key),
-                         log_path, totals)
+                         log_path, totals, rows if rows is not None else self._rows_read_now(state, resolved))
 
-    def _saved_report(self, state: dict, session_key: str, entry: dict) -> Tuple[str, Optional[UsageReport]]:
-        """The saved report (with no report data); when its file is gone, the live report of the session if its source is still
-        there. A withheld session's saved report may be behind its log (a log that gained prompts keeps the report that holds the
-        lost sub-agent rows), so `usage` says so in a warning."""
+    def _rows_read_now(self, state: dict, resolved: ResolvedSession) -> Optional[UsageRows]:
+        """The rows of the resolved session, else of the archived session read now from the store; None when its source is gone,
+        or unreadable (named in a warning)."""
+        session = resolved.session
+        if session is None:
+            try:
+                session = self._targets.read_stored(state, resolved.session_key)
+            except CommandError as error:
+                self.warnings.append(ROWS_UNREADABLE_WARNING % error)
+                return None
+        return None if session is None else UsageRows.of(session, self._pricing.build(session))
+
+    def _saved_report(self, state: dict, session_key: str, entry: dict) -> Tuple[str, Optional[UsageReport], Optional[UsageRows]]:
+        """The saved report (with no report data or rows); when its file is gone, the live report of the session if its source is
+        still there. A withheld session's saved report may be behind its log (a log that gained prompts keeps the report that holds
+        the lost sub-agent rows), so `usage` says so in a warning."""
         report_text = self._archive.read_report(entry["logPath"])
         if report_text is not None:
             if entry["state"] == SESSION_WITHHELD:
                 self.warnings.append(WITHHELD_REPORT_WARNING % (root_id_of(session_key), entry.get("reason", "")))
-            return report_text, None
+            return report_text, None, None
         session = self._targets.read_stored(state, session_key)
         if session is None:
             raise CommandError("the saved report of session %s beside %s cannot be read, and its source is gone"
                                % (root_id_of(session_key), entry["logPath"]))
         return self._live_report(session)
 
-    def _live_report(self, session: Session) -> Tuple[str, UsageReport]:
-        """The report of a session never archived, computed as a sync would and written nowhere, with its data."""
+    def _live_report(self, session: Session) -> Tuple[str, UsageReport, UsageRows]:
+        """The report of a session never archived, computed as a sync would and written nowhere, with its data and rows."""
         report = self._pricing.build(session)
-        return self._archive.render_report(report), report
+        return self._archive.render_report(report), report, UsageRows.of(session, report)
 
     def _recorded_since_on(self, flag: Optional[OnFlag]) -> Optional[bool]:
         if self._hooks_recorded_since is None or flag is None:

@@ -1,13 +1,16 @@
-"""The project's git history through the injected process runner: every commit reachable from HEAD with its author date, message and
-numstat line counts; the commits that change given paths; one commit resolved to its full hash."""
+"""The project's git history through the injected process runner: every commit reachable from HEAD with its author time, message
+and numstat line counts; the commits that change given paths; the author times of given commits; one commit resolved to its full
+hash."""
 from dataclasses import dataclass
+from datetime import datetime
 
 from estimation.errors import EstimateError
 
 GIT_SUCCESS = 0
 RECORD_MARK = "\x1e"
 FIELD_MARK = "\x1f"
-LOG_FORMAT = "--format=%x1e%H%x1f%ad%x1f%B%x1f"
+LOG_FORMAT = "--format=%x1e%H%x1f%aI%x1f%B%x1f"
+AUTHORED_FORMAT = "--format=%H%x1f%aI"
 BINARY_COUNT = "-"  # numstat's count of a binary file
 NUMSTAT_FIELDS = 3
 
@@ -15,7 +18,7 @@ NUMSTAT_FIELDS = 3
 @dataclass(frozen=True)
 class Commit:
     hash: str
-    date: str
+    authored_at: datetime
     message: str
     added: int
     removed: int
@@ -55,11 +58,11 @@ class GitHistory:
         if not self._has_commits():
             self._git("rev-parse", "--git-dir")  # outside a repository this names the real problem
             return []
-        output = self._git("log", "--reverse", "--numstat", "--date=short", LOG_FORMAT)
+        output = self._git("log", "--reverse", "--numstat", LOG_FORMAT)
         commits = []
         for record in output.split(RECORD_MARK)[1:]:
-            commit_hash, date, message, numstat = record.split(FIELD_MARK, NUMSTAT_FIELDS)
-            commits.append(Commit(commit_hash, date, message, *_line_counts(numstat)))
+            commit_hash, authored_at, message, numstat = record.split(FIELD_MARK, NUMSTAT_FIELDS)
+            commits.append(Commit(commit_hash, datetime.fromisoformat(authored_at), message, *_line_counts(numstat)))
         return commits
 
     def changing(self, paths):
@@ -67,6 +70,13 @@ class GitHistory:
         if not paths or not self._has_commits():
             return set()
         return set(self._git("log", "--format=%H", "--", *paths).split())
+
+    def authored_at(self, hashes):
+        """{hash: author time} of the given commits that the repository holds."""
+        if not hashes:
+            return {}
+        lines = self._git("log", "--no-walk=unsorted", "--ignore-missing", AUTHORED_FORMAT, *hashes).splitlines()
+        return {commit_hash: datetime.fromisoformat(moment) for commit_hash, moment in (line.split(FIELD_MARK) for line in lines)}
 
     def resolve(self, revision):
         """The full hash of the commit `revision` names."""

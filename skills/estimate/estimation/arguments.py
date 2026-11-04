@@ -14,7 +14,6 @@ class Kind(Enum):
     FLAG = "flag"          # present or not
     SINGLE = "single"      # at most once, with a value
     REQUIRED = "required"  # exactly once, with a value
-    MULTI = "multi"        # any number of times, each with a value
 
 
 @dataclass(frozen=True)
@@ -28,7 +27,7 @@ COMMANDS = {
     "save": Spec(("<entry-json | ->",), {}),
     "remove": Spec(("<name>",), {}),
     "doc-stats": Spec(("<file.md>",), {"--plan-progress": Kind.SINGLE}),
-    "git-stats": Spec((), {"--doc": Kind.MULTI, "--task-id": Kind.MULTI}),
+    "git-stats": Spec(("<features-json | ->",), {}),
     "match-sessions": Spec(("<features-json | ->",), {"--session-log": Kind.REQUIRED}),
     "record-commit": Spec(("<plan-file>", "<commit>"), {HARNESS_OPTION: Kind.REQUIRED, "--session-log": Kind.SINGLE}),
 }
@@ -36,7 +35,7 @@ COMMANDS = {
 
 @dataclass(frozen=True)
 class Invocation:
-    """`options` holds every option of the command: True/False for a FLAG, a list for a MULTI, else the value or None."""
+    """`options` holds every option of the command: True/False for a FLAG, else the value or None."""
     command: str
     positionals: list[str]
     options: dict[str, object]
@@ -47,7 +46,7 @@ def _argument_count(count):
 
 
 def _empty_options(spec):
-    return {name: False if kind is Kind.FLAG else [] if kind is Kind.MULTI else None for name, kind in spec.options.items()}
+    return {name: False if kind is Kind.FLAG else None for name, kind in spec.options.items()}
 
 
 def parse(argv) -> Invocation:
@@ -76,12 +75,9 @@ def parse(argv) -> Invocation:
             raise ArgumentError("%s needs a value" % argument)
         value = rest[index]
         index += 1
-        if kind is Kind.MULTI:
-            options[argument].append(value)
-        elif options[argument] is not None:
+        if options[argument] is not None:
             raise ArgumentError("%s given twice" % argument)
-        else:
-            options[argument] = value
+        options[argument] = value
     if len(positionals) < len(spec.positionals):
         raise ArgumentError("%s needs %s" % (command, spec.positionals[len(positionals)]))
     if len(positionals) > len(spec.positionals):

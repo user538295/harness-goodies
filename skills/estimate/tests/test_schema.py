@@ -76,6 +76,14 @@ class SchemaTest(unittest.TestCase):
         document["features"][0]["sources"]["sessions"][0]["harness"] = "vim"
         self.assert_rejected(document)
 
+    def test_a_session_slice_names_its_prompts_from_one(self):
+        document = copy.deepcopy(self.example)
+        session = document["features"][0]["sources"]["sessions"][0]
+        session["prompts"] = [1, 2]
+        self.assertEqual(0, self.validate(document).returncode)
+        session["prompts"] = [0]
+        self.assert_rejected(document)
+
     def test_a_fractional_line_count_is_rejected(self):
         document = copy.deepcopy(self.example)
         document["features"][0]["git"]["linesAdded"] = 1.5

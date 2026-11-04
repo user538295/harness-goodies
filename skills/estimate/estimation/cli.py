@@ -49,7 +49,7 @@ def _dispatch(invocation, environment, skill_dir):
         "save": lambda: commands.save(positionals[0]),
         "remove": lambda: commands.remove(positionals[0]),
         "doc-stats": lambda: commands.doc_stats(positionals[0], options["--plan-progress"]),
-        "git-stats": lambda: commands.git_stats(options["--doc"], options["--task-id"]),
+        "git-stats": lambda: commands.git_stats(positionals[0]),
         "match-sessions": lambda: commands.match_sessions(positionals[0], options["--session-log"]),
         "record-commit": lambda: commands.record_commit(positionals[0], positionals[1], options["--harness"],
                                                         options["--session-log"]),

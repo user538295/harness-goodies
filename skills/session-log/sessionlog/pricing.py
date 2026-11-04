@@ -94,11 +94,12 @@ class PromptRow(Usage):
 
 @dataclass(frozen=True)
 class SubAgentRow(Usage):
-    """Depth-first agent row; depth zero is top-level and missing tokens stay absent."""
+    """Depth-first agent row; depth zero is top-level and missing tokens stay absent; `started_at` is the agent's start."""
 
     agent_id: str
     type: str
     depth: int
+    started_at: datetime
     working_time: Optional[timedelta]
     transcript_path: Optional[str] = None
 
@@ -198,7 +199,7 @@ class PricingRules:
         def visit(children, depth):
             for agent in children:
                 agents.append(SubAgentRow(**self._usage(agent.requests, records_reasoning, agent.tokens_not_recorded),
-                                          agent_id=agent.agent_id, type=agent.type, depth=depth,
+                                          agent_id=agent.agent_id, type=agent.type, depth=depth, started_at=agent.started_at,
                                           working_time=agent.working_time, transcript_path=agent.transcript_path))
                 visit(agent.sub_agents, depth + 1)
 

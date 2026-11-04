@@ -7,5 +7,11 @@ BEFORE = r"(?<![\w.-])"
 AFTER = r"(?![\w-]|\.\d)"
 
 
-def mentions_any(text, task_ids):
-    return any(re.search(BEFORE + re.escape(task_id) + AFTER, text) for task_id in task_ids)
+def finder(task_ids):
+    """A function giving the IDs of `task_ids` that a text mentions, by one pattern; where two IDs start at the same place the longer
+    one wins (`A.b` over `A`)."""
+    if not task_ids:
+        return lambda text: set()
+    alternatives = "|".join(re.escape(task_id) for task_id in sorted(set(task_ids), key=len, reverse=True))
+    pattern = re.compile(BEFORE + "(" + alternatives + ")" + AFTER)
+    return lambda text: set(pattern.findall(text))

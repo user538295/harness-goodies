@@ -1,6 +1,6 @@
 """The C2 feature rules: a new feature's defaults, the `save` upsert (target selection, latest value, the freeze of the pre-work
-size, the never-changed after-delivery size, scale membership), the session upsert and the usage totals derived from the sessions.
-Everything here works on plain JSON data; paths arrive already in their stored form."""
+size, the never-changed after-delivery size, scale membership), the replacement of the sessions and the usage totals derived from
+them. Everything here works on plain JSON data; paths arrive already in their stored form."""
 import json
 
 from estimation.errors import ArgumentError, EstimateError
@@ -10,16 +10,15 @@ STATUSES = (ESTIMATED, IN_PROGRESS, DELIVERED)
 FROZEN_STATUSES = (IN_PROGRESS, DELIVERED)
 HARNESSES = ("claude", "codex", "cursor", "omp", "opencode")
 MATCH_NONE = "none"
-MATCH_DATES = "dates"
 MATCH_PROMPT = "prompt"
 MATCH_IMPLEMENT = "implement"
-MATCH_STRENGTH = (MATCH_DATES, MATCH_PROMPT, MATCH_IMPLEMENT)  # weakest first
+MATCH_STRENGTH = (MATCH_PROMPT, MATCH_IMPLEMENT)  # weakest first
 MATCHED_BY_LABELS = MATCH_STRENGTH + (MATCH_NONE,)
 TOKEN_KEYS = ("input", "output", "reasoning", "cacheRead", "cacheWrite", "total")
 PLAN_KEYS = ("phases", "tasks", "estimatedHours")
 GIT_KEYS = ("commits", "linesAdded", "linesRemoved")
 SOURCE_KEYS = ("docs", "commits", "sessions")
-SESSION_KEYS = ("harness", "id", "path", "log", "agentTimeMinutes", "tokens", "costUsd")
+SESSION_KEYS = ("harness", "id", "path", "log", "prompts", "agentTimeMinutes", "tokens", "costUsd")
 ENTRY_KEYS = ("name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "plan", "git", "usage",
               "sources")
 REPLACED_KEYS = ("name", "description", "status")
@@ -34,7 +33,7 @@ def new_feature(name, description):
 
 
 def weakest(labels):
-    """The weakest of the match labels (implement > prompt > dates)."""
+    """The weakest of the match labels (implement > prompt)."""
     return min(labels, key=MATCH_STRENGTH.index)
 
 
@@ -211,8 +210,10 @@ class Upsert:
         if "git" in self.entry:
             feature["git"] = {key: self.entry["git"].get(key, 0) for key in GIT_KEYS}
             stored["commits"] = list(dict.fromkeys(given["commits"]))
-        for session in given.get("sessions", []):
-            upsert_session(feature, session_entry(session))
+        if "sessions" in given:
+            stored["sessions"] = []
+            for session in given["sessions"]:
+                upsert_session(feature, session_entry(session))
 
     def _usage(self, feature):
         given = self.entry.get("usage") or {}

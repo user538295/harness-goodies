@@ -11,6 +11,8 @@ from typing import Callable, List, Optional, Sequence
 
 from .commands import LatestSession, ListedSession, ListResult, OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
 from .leftover_port import Leftover
+from .model import Prompt
+from .pricing import PRICED, PromptRow, SubAgentRow, Usage
 from .probe_port import MINIMUM_TEXT, ProbeResult
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
@@ -107,16 +109,44 @@ def _utc_text(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
+def _tokens_json(row: Usage) -> Optional[dict]:
+    """A row's tokens as the TOTAL block maps them; None when the row's source records no tokens."""
+    if row.total_tokens is None:
+        return None
+    return {"input": row.input_tokens, "output": row.output_tokens, "reasoning": row.reasoning_tokens,
+            "cacheRead": row.cache_read_tokens, "cacheWrite": row.cache_write_tokens, "total": row.total_tokens}
+
+
+def _cost_json(row: Usage) -> dict:
+    """The row's exact known USD subtotal, unrounded, and whether it is priced."""
+    return {"costUsd": float(row.price.exact), "costComplete": row.price.status == PRICED}
+
+
+def _prompt_json(prompt: Prompt, row: PromptRow) -> dict:
+    return {"at": _utc_text(prompt.submitted_at), "replyAt": None if prompt.reply_at is None else _utc_text(prompt.reply_at),
+            "text": prompt.text, "agentTimeSeconds": int(row.working_time.total_seconds()), "tokens": _tokens_json(row),
+            **_cost_json(row)}
+
+
+def _sub_agent_json(row: SubAgentRow) -> dict:
+    return {"id": row.agent_id, "type": row.type, "startedAt": _utc_text(row.started_at), "depth": row.depth,
+            "tokens": _tokens_json(row), **_cost_json(row)}
+
+
 def render_usage_json(result: UsageResult) -> str:
-    """The numbers of the report's TOTAL block; `result` must carry `data`."""
+    """The numbers of the report's TOTAL block, then the prompt and sub-agent rows (null when the session cannot be read now);
+    `result` must carry `data`."""
     data = result.data
     totals = data.totals
+    rows = data.rows
     return _json_text({
         "harness": data.harness, "id": data.session_id, "projectDir": data.project_dir, "path": data.source, "log": data.log_path,
         "agentTimeSeconds": totals.working_seconds,
         "tokens": {"input": totals.input_tokens, "output": totals.output_tokens, "reasoning": totals.reasoning_tokens,
                    "cacheRead": totals.cache_read_tokens, "cacheWrite": totals.cache_write_tokens, "total": totals.total_tokens},
-        "costUsd": totals.price_cents / CENTS_PER_DOLLAR, "costComplete": totals.price_complete})
+        "costUsd": totals.price_cents / CENTS_PER_DOLLAR, "costComplete": totals.price_complete,
+        "prompts": None if rows is None else [_prompt_json(prompt, row) for prompt, row in rows.prompts],
+        "subAgents": None if rows is None else [_sub_agent_json(row) for row in rows.sub_agents]})
 
 
 def _listed_json(session: ListedSession) -> dict:

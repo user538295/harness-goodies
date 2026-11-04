@@ -6,12 +6,15 @@ from datetime import datetime, timedelta, timezone
 
 from sessionlog.archive_port import ReportTotals
 from sessionlog.commands import (LatestSession, ListedSession, ListResult, OffResult, OnResult, StatusResult, UnreadableItem, UsageData,
-                                 UsageResult)
+                                 UsageResult, UsageRows)
 from sessionlog.leftover_port import Leftover
+from sessionlog.model import Harness, Prompt, Session, SubAgent
+from sessionlog.pricing import PricingRules
 from sessionlog.probe_port import ProbeResult
 from sessionlog.presentation import LEFTOVERS_HEADING as LEFTOVERS
 from sessionlog.presentation import (PROBE_FAILED, render_list, render_list_json, render_off, render_on, render_status, render_usage,
                                      render_usage_json)
+from tests.test_pricing import Book, request
 
 ON_AT = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
 SYNC_AT = datetime(2026, 3, 5, 8, 9, 10, tzinfo=timezone.utc)
@@ -185,7 +188,7 @@ class UsageJsonRenderingTest(unittest.TestCase):
             "harness": "claude", "id": SESSION_ID, "projectDir": "/work/proj", "path": SESSION_SOURCE, "log": PROMPT_LOG,
             "agentTimeSeconds": 11280,
             "tokens": {"input": 190200, "output": 121300, "reasoning": None, "cacheRead": 27805100, "cacheWrite": 1046900, "total": 29163500},
-            "costUsd": 27.95, "costComplete": True,
+            "costUsd": 27.95, "costComplete": True, "prompts": None, "subAgents": None,
         }, json.loads(render_usage_json(UsageResult("report\n", data))))
 
     def test_a_live_session_without_source_log_or_project_renders_nulls_reasoning_and_an_incomplete_cost(self):
@@ -195,6 +198,35 @@ class UsageJsonRenderingTest(unittest.TestCase):
         self.assertEqual((None, None, None, 42, 0.05, False), (parsed["projectDir"], parsed["path"], parsed["log"],
                                                               parsed["tokens"]["reasoning"], parsed["costUsd"], parsed["costComplete"]))
         self.assertTrue(rendered.endswith("}\n"))
+
+    def test_rows_render_in_report_order_with_utc_times_full_texts_and_exact_costs(self):
+        answered = Prompt(submitted_at=ON_AT.astimezone(PLUS_TWO), text="first <b>line</b>\nsecond line",
+                          reply_at=ON_AT + timedelta(seconds=5), working_time=timedelta(seconds=4.5),
+                          requests=(request(input_tokens=1000, output_tokens=500, cache_read_tokens=2000, cache_write_5m_tokens=100),))
+        unanswered = Prompt(submitted_at=ON_AT + timedelta(minutes=1), text="open", requests=(request("unpriced", input_tokens=5),))
+        child = SubAgent("child", "explore", ON_AT + timedelta(seconds=20), requests=(request(output_tokens=7, recorded_cost_usd=0.25),))
+        parent = SubAgent("parent", "worker", ON_AT + timedelta(seconds=10), requests=(request(recorded_cost_usd=0.5),),
+                          tokens_not_recorded=True, sub_agents=(child,))
+        session = Session(harness=Harness.CURSOR, session_id=SESSION_ID, started_at=ON_AT, prompts=(answered, unanswered),
+                          sub_agents=(parent,))
+        rows = UsageRows.of(session, PricingRules(Book()).build(session))
+        parsed = json.loads(render_usage_json(UsageResult("report\n", UsageData("cursor", SESSION_ID, None, None, None, TOTALS, rows))))
+        self.assertEqual([
+            {"at": "2026-03-04T05:06:07+00:00", "replyAt": "2026-03-04T05:06:12+00:00", "text": "first <b>line</b>\nsecond line",
+             "agentTimeSeconds": 4,
+             "tokens": {"input": 1000, "output": 500, "reasoning": None, "cacheRead": 2000, "cacheWrite": 100, "total": 3600},
+             "costUsd": 0.02325, "costComplete": True},
+            {"at": "2026-03-04T05:07:07+00:00", "replyAt": None, "text": "open", "agentTimeSeconds": 0,
+             "tokens": {"input": 5, "output": 0, "reasoning": None, "cacheRead": 0, "cacheWrite": 0, "total": 5},
+             "costUsd": 0.0, "costComplete": False},
+        ], parsed["prompts"])
+        self.assertEqual([
+            {"id": "parent", "type": "worker", "startedAt": "2026-03-04T05:06:17+00:00", "depth": 0, "tokens": None,
+             "costUsd": 0.5, "costComplete": False},
+            {"id": "child", "type": "explore", "startedAt": "2026-03-04T05:06:27+00:00", "depth": 1,
+             "tokens": {"input": 0, "output": 7, "reasoning": None, "cacheRead": 0, "cacheWrite": 0, "total": 7},
+             "costUsd": 0.25, "costComplete": True},
+        ], parsed["subAgents"])
 
 
 class ListRenderingTest(unittest.TestCase):

@@ -1,31 +1,47 @@
-"""`match-sessions <features-json | -> --session-log <path>` (C3) against a fake `session_log.py` run as a real subprocess: prompt
-matches beat date matches, the weakest label wins per feature, usage numbers become C2 session entries (minutes rounded half up)
-and every failed session-log call is named in `missing`."""
+"""`match-sessions <features-json | -> --session-log <path>` (C3) against a fake `session_log.py` run as a real subprocess and a real
+repository: each prompt of a session goes to the features it names or whose commits were made while it ran (a name or commit two
+features share is no evidence), a prompt without evidence follows the prompt before it, sub-agents follow the prompt they started
+under, each feature gets its own slice of the session's numbers, nothing is matched by dates, and every failed call and every
+commit made while no listed prompt ran is named in `missing`."""
 import json
 import os
 import unittest
 
-from tests.support import EXIT_BAD_ARGUMENTS, EXIT_OK, ProjectTestCase, list_entry, usage_payload
+from tests.support import (EXIT_BAD_ARGUMENTS, EXIT_OK, ProjectTestCase, agent_row, list_entry, listed_with_rows, prompt_row,
+                           tokens_of, usage_payload)
 
 HARNESSES = ("claude", "codex", "cursor", "omp", "opencode")
-EXPORT = {"name": "Export", "docs": ["docs/export-brief.md"], "taskIds": ["BE-1"], "firstDate": "2026-09-01",
-          "lastDate": "2026-09-10"}
-IMPORT = {"name": "Import", "docs": ["docs/import-brief.md"], "taskIds": ["IM-1"], "firstDate": "2026-09-05",
-          "lastDate": "2026-09-20"}
+EXPORT_BRIEF = "docs/export-brief.md"
+IMPORT_BRIEF = "docs/import-brief.md"
+EXPORT = {"name": "Export", "docs": [EXPORT_BRIEF], "taskIds": ["EX-1"]}
+IMPORT = {"name": "Import", "docs": [IMPORT_BRIEF], "taskIds": ["IM-1"]}
+NO_NUMBERS = {"agentTimeMinutes": None, "tokens": dict.fromkeys(tokens_of(0)), "costUsd": None}
+
+
+def at(clock, day="2026-09-01"):
+    return "%sT%s+00:00" % (day, clock)
 
 
 class MatchSessionsTest(ProjectTestCase):
     def setUp(self):
         super().setUp()
         self.session_log = self.fake_session_log()
+        self.lists = {harness: [] for harness in HARNESSES}
         for harness in HARNESSES:
             self.session_log.reply(harness + " list --json", [])
 
-    def listed(self, harness, *sessions):
-        self.session_log.reply(harness + " list --json", list(sessions))
-        for session in sessions:
-            self.session_log.reply("%s usage %s --json" % (harness, session["id"]),
-                                   usage_payload(harness, session["id"], 600, path=session["path"], log=session["log"]))
+    def session(self, harness, session_id, rows, agents=(), cost_complete=True, path=None, log=None):
+        """Lists a session with prompt rows `rows` and answers its `usage --json` with them."""
+        self.lists[harness].append(listed_with_rows(harness, session_id, rows, path, log))
+        self.session_log.reply(harness + " list --json", self.lists[harness])
+        self.session_log.reply("%s usage %s --json" % (harness, session_id),
+                               usage_payload(harness, session_id, 0, cost_complete=cost_complete, path=path, log=log,
+                                             prompts=list(rows), sub_agents=list(agents)))
+
+    def edit(self, doc, when, message="docs"):
+        """A commit at `when` that changes `doc` (each time differently)."""
+        with_text = {doc: "%s %s\n" % (doc, when)}
+        return self.commit(message, with_text, when=when)
 
     def match(self, *features, cwd=None):
         result = self.run_estimate("match-sessions", json.dumps({"features": list(features)}), "--session-log",
@@ -34,92 +50,136 @@ class MatchSessionsTest(ProjectTestCase):
         return result.json
 
     @staticmethod
-    def ids(output):
-        return {feature["name"]: [session["id"] for session in feature["sessions"]] for feature in output["features"]}
+    def sessions(output):
+        return {feature["name"]: feature["sessions"] for feature in output["features"]}
+
+    @staticmethod
+    def slices(output):
+        """{feature: {session id: counted prompt numbers}}."""
+        return {feature["name"]: {session["id"]: session["prompts"] for session in feature["sessions"]}
+                for feature in output["features"]}
 
     @staticmethod
     def labels(output):
         return {feature["name"]: feature["matchedBy"] for feature in output["features"]}
 
-    def test_prompts_naming_a_doc_path_a_doc_basename_or_a_task_id_match(self):
-        self.listed("claude",
-                    list_entry("claude", "by-path", "2026-08-01T12:00:00+00:00", "2026-08-01T13:00:00+00:00",
-                               ["Read docs/export-brief.md first"]),
-                    list_entry("claude", "by-basename", "2026-08-02T12:00:00+00:00", "2026-08-02T13:00:00+00:00",
-                               ["/plan-maker export-brief.md"]),
-                    list_entry("claude", "by-task-id", "2026-08-03T12:00:00+00:00", "2026-08-03T13:00:00+00:00",
-                               ["hello", "/implement next (BE-1)"]),
-                    list_entry("claude", "wider-id", "2026-08-04T12:00:00+00:00", "2026-08-04T13:00:00+00:00",
-                               ["BE-10 please"]))
+    def usage_calls(self):
+        return [call["argv"] for call in self.session_log.calls() if call["argv"][1] == "usage"]
+
+    def test_prompts_naming_a_doc_path_a_doc_basename_or_a_task_id_are_evidence(self):
+        self.session("claude", "by-path", [prompt_row(at("10:00:00"), "Read docs/export-brief.md first")])
+        self.session("claude", "by-basename", [prompt_row(at("11:00:00"), "/plan-maker export-brief.md")])
+        self.session("claude", "by-task-id", [prompt_row(at("12:00:00"), "hello"), prompt_row(at("12:05:00"), "/implement (EX-1)")])
+        self.session("claude", "wider-id", [prompt_row(at("13:00:00"), "EX-10 please")])
         output = self.match(EXPORT)
-        self.assertEqual({"Export": ["by-path", "by-basename", "by-task-id"]}, self.ids(output))
+        self.assertEqual({"Export": {"by-path": [1], "by-basename": [1], "by-task-id": [1, 2]}}, self.slices(output))
         self.assertEqual({"Export": "prompt"}, self.labels(output))
         self.assertEqual([], output["missing"])
+        self.assertNotIn(["claude", "usage", "wider-id", "--json"], self.usage_calls())
 
-    def test_a_prompt_match_beats_dates_and_dates_need_start_and_last_activity_inside(self):
-        self.listed("codex",
-                    # Names Export and lies inside Import's dates: Export only, by prompt.
-                    list_entry("codex", "prompted", "2026-09-12T09:00:00+00:00", "2026-09-12T10:00:00+00:00",
-                               ["continue BE-1"]),
-                    # No prompt match, inside both ranges (09-05 .. 09-10): both features, by dates.
-                    list_entry("codex", "both-ranges", "2026-09-06T09:00:00+00:00", "2026-09-07T10:00:00+00:00", ["go"]),
-                    # Starts inside Export's range, last activity after it: Import only.
-                    list_entry("codex", "runs-over", "2026-09-09T09:00:00+00:00", "2026-09-11T10:00:00+00:00", ["go"]),
-                    # Outside every range.
-                    list_entry("codex", "too-late", "2026-09-21T09:00:00+00:00", "2026-09-21T10:00:00+00:00", ["go"]))
+    def test_a_session_is_split_between_the_features_its_prompts_worked_on(self):
+        rows = [prompt_row(at("10:00:00"), "/implement docs/export-brief.md", seconds=600, total=100, cost=1.0),
+                prompt_row(at("10:20:00"), "go", seconds=300, total=200, cost=2.0),
+                prompt_row(at("11:00:00"), "/plan-maker import-brief.md", seconds=1200, total=400, cost=4.0),
+                prompt_row(at("11:30:00"), "A", seconds=60, total=800, cost=8.0)]
+        agents = [agent_row(at("10:21:00"), total=1000, cost=10.0, agent_id="a1"),
+                  agent_row(at("10:22:00"), total=3000, cost=30.0, agent_id="a1.1", depth=1),
+                  agent_row(at("11:31:00"), total=2000, cost=20.0, agent_id="a2")]
+        self.session("omp", "s1", rows, agents, path="/abs/s1.jsonl", log="/abs/logs/s1.md")
         output = self.match(EXPORT, IMPORT)
-        self.assertEqual({"Export": ["prompted", "both-ranges"], "Import": ["both-ranges", "runs-over"]}, self.ids(output))
-        # Export has a prompt and a dates session: the weakest label wins.
-        self.assertEqual({"Export": "dates", "Import": "dates"}, self.labels(output))
+        # Export: prompts 1-2 (600 + 300 s) and the two agents started under prompt 2; Import: prompts 3-4 (1200 + 60 s), agent a2.
+        self.assertEqual({"Export": [{"harness": "omp", "id": "s1", "path": "/abs/s1.jsonl", "log": "/abs/logs/s1.md",
+                                      "prompts": [1, 2], "agentTimeMinutes": 15, "tokens": tokens_of(4300), "costUsd": 43.0}],
+                          "Import": [{"harness": "omp", "id": "s1", "path": "/abs/s1.jsonl", "log": "/abs/logs/s1.md",
+                                      "prompts": [3, 4], "agentTimeMinutes": 21, "tokens": tokens_of(3200), "costUsd": 32.0}]},
+                         self.sessions(output))
+        self.assertEqual([["omp", "usage", "s1", "--json"]], self.usage_calls())
 
-    def test_local_dates_decide_the_range(self):
-        # 23:30 at -02:00 is 01:30 UTC on the next day; the tests' local zone is UTC, so the session is on 09-11.
-        self.listed("omp", list_entry("omp", "late-evening", "2026-09-10T23:30:00-02:00", "2026-09-10T23:50:00-02:00", ["go"]))
-        self.assertEqual({"Export": [], "Import": ["late-evening"]}, self.ids(self.match(EXPORT, IMPORT)))
+    def test_a_feature_commit_made_while_a_prompt_ran_is_evidence_and_earlier_prompts_join_the_first_evidence(self):
+        self.edit(EXPORT_BRIEF, at("09:05:00"))
+        self.edit(IMPORT_BRIEF, at("09:35:00"))
+        self.session("codex", "s1", [prompt_row(at("09:00:00"), "hi"),
+                                     prompt_row(at("09:02:00"), "go", seconds=600),
+                                     prompt_row(at("09:30:00"), "continue", seconds=600),
+                                     prompt_row(at("09:50:00"), "thanks")])
+        output = self.match(EXPORT, IMPORT)
+        self.assertEqual({"Export": {"s1": [1, 2]}, "Import": {"s1": [3, 4]}}, self.slices(output))
+        self.assertEqual([], output["missing"])
 
-    def test_a_feature_without_sessions_is_matched_by_none(self):
-        self.assertEqual({"Export": "none"}, self.labels(self.match(EXPORT)))
+    def test_a_named_feature_beats_commits_and_otherwise_the_most_commits_win_a_tie_counting_for_each(self):
+        self.edit(EXPORT_BRIEF, at("09:03:00"))
+        self.edit(EXPORT_BRIEF, at("09:04:00"))
+        self.edit(IMPORT_BRIEF, at("09:06:00"))
+        self.edit(EXPORT_BRIEF, at("09:33:00"))
+        self.edit(EXPORT_BRIEF, at("10:03:00"))
+        self.edit(IMPORT_BRIEF, at("10:04:00"))
+        self.session("omp", "s1", [prompt_row(at("09:00:00"), "go", seconds=600),
+                                   prompt_row(at("09:30:00"), "/implement docs/import-brief.md", seconds=600),
+                                   prompt_row(at("10:00:00"), "go on", seconds=600)])
+        self.assertEqual({"Export": {"s1": [1, 3]}, "Import": {"s1": [2, 3]}}, self.slices(self.match(EXPORT, IMPORT)))
 
-    def test_usage_becomes_a_c2_session_entry_with_minutes_rounded_half_up(self):
-        session = list_entry("claude", "s1", "2026-08-01T12:00:00+00:00", "2026-08-01T13:00:00+00:00", ["BE-1"],
-                             path="/abs/s1.jsonl", log="/abs/logs/s1.md")
-        self.session_log.reply("claude list --json", [session])
-        for seconds, minutes in ((11280, 188), (89, 1), (90, 2), (150, 3), (29, 0)):
-            with self.subTest(seconds=seconds):
-                self.session_log.reply("claude usage s1 --json", usage_payload("claude", "s1", seconds, total=1000, cost=2.5,
-                                                                               path="/abs/s1.jsonl", log="/abs/logs/s1.md"))
-                entry = self.match(EXPORT)["features"][0]["sessions"][0]
-                self.assertEqual({"harness": "claude", "id": "s1", "path": "/abs/s1.jsonl", "log": "/abs/logs/s1.md",
-                                  "agentTimeMinutes": minutes,
-                                  "tokens": {"input": 250, "output": 250, "reasoning": None, "cacheRead": 250,
-                                             "cacheWrite": 250, "total": 1000},
-                                  "costUsd": 2.5}, entry)
+    def test_names_and_commits_two_features_share_are_no_evidence(self):
+        export = {"name": "Export", "docs": [EXPORT_BRIEF, "docs/shared-plan.md"], "taskIds": ["EX-1", "BE-1"]}
+        imported = {"name": "Import", "docs": [IMPORT_BRIEF, "docs/shared-plan.md"], "taskIds": ["IM-1", "BE-1"]}
+        self.edit("docs/shared-plan.md", at("09:05:00"))
+        self.session("claude", "shared", [prompt_row(at("09:00:00"), "read docs/shared-plan.md, then BE-1", seconds=600)])
+        self.session("claude", "own", [prompt_row(at("10:00:00"), "EX-1")])
+        output = self.match(export, imported)
+        self.assertEqual({"Export": {"own": [1]}, "Import": {}}, self.slices(output))
+        self.assertEqual({"Export": "prompt", "Import": "none"}, self.labels(output))
 
-    def test_an_incomplete_cost_is_null(self):
-        self.session_log.reply("cursor list --json", [list_entry("cursor", "c1", "2026-08-01T12:00:00+00:00",
-                                                                 "2026-08-01T13:00:00+00:00", ["BE-1"])])
-        self.session_log.reply("cursor usage c1 --json", usage_payload("cursor", "c1", 60, cost=3.0, cost_complete=False))
-        self.assertIsNone(self.match(EXPORT)["features"][0]["sessions"][0]["costUsd"])
+    def test_a_session_inside_a_features_commit_dates_without_evidence_is_not_matched(self):
+        self.edit(EXPORT_BRIEF, at("09:00:00", day="2026-09-01"))
+        self.edit(EXPORT_BRIEF, at("09:00:00", day="2026-09-03"))
+        self.session("cursor", "between", [prompt_row(at("09:00:00", day="2026-09-02"), "go", seconds=3600)])
+        output = self.match(EXPORT)
+        self.assertEqual({"Export": "none"}, self.labels(output))
+        self.assertEqual([], self.usage_calls())
 
-    def test_a_session_matched_by_two_features_is_read_once(self):
-        self.listed("claude", list_entry("claude", "s1", "2026-08-01T12:00:00+00:00", "2026-08-01T13:00:00+00:00",
-                                         ["BE-1 and IM-1"]))
-        self.assertEqual({"Export": ["s1"], "Import": ["s1"]}, self.ids(self.match(EXPORT, IMPORT)))
-        usage_calls = [call for call in self.session_log.calls() if call["argv"][1] == "usage"]
-        self.assertEqual([["claude", "usage", "s1", "--json"]], [call["argv"] for call in usage_calls])
+    def test_slice_minutes_round_half_up_and_an_incomplete_cost_is_null(self):
+        self.session("claude", "s1", [prompt_row(at("09:00:00"), "EX-1", seconds=89, cost=1.0),
+                                      prompt_row(at("09:10:00"), "IM-1", seconds=90, cost=2.0, complete=False)])
+        self.session("cursor", "c1", [prompt_row(at("10:00:00"), "EX-1", seconds=150, cost=3.0)], cost_complete=False)
+        sessions = self.sessions(self.match(EXPORT, IMPORT))
+        self.assertEqual([("s1", 1, 1.0), ("c1", 3, None)],
+                         [(entry["id"], entry["agentTimeMinutes"], entry["costUsd"]) for entry in sessions["Export"]])
+        self.assertEqual([("s1", 2, None)],
+                         [(entry["id"], entry["agentTimeMinutes"], entry["costUsd"]) for entry in sessions["Import"]])
 
-    def test_failed_calls_are_named_and_a_failed_usage_keeps_the_session_with_null_numbers(self):
+    def test_a_session_without_prompt_rows_is_counted_whole_and_named(self):
+        self.session_log.reply("claude list --json", [list_entry("claude", "old", at("09:00:00"), at("10:00:00"),
+                                                                 ["/implement docs/export-brief.md"], log="/abs/logs/old.md")])
+        self.session_log.reply("claude usage old --json", usage_payload("claude", "old", 600, total=1000, cost=2.5,
+                                                                        log="/abs/logs/old.md"))
+        output = self.match(EXPORT, IMPORT)
+        self.assertEqual({"Export": [{"harness": "claude", "id": "old", "path": None, "log": "/abs/logs/old.md", "prompts": None,
+                                      "agentTimeMinutes": 10, "tokens": tokens_of(1000), "costUsd": 2.5}],
+                          "Import": []}, self.sessions(output))
+        self.assertEqual(["session-log claude usage old has no prompt rows; the whole session is counted for Export"],
+                         output["missing"])
+
+    def test_feature_commits_made_while_no_listed_prompt_ran_are_named(self):
+        self.edit(EXPORT_BRIEF, at("08:00:00"))
+        self.edit(EXPORT_BRIEF, at("09:05:00"))
+        self.edit(IMPORT_BRIEF, at("12:00:00"))
+        self.session("omp", "s1", [prompt_row(at("09:00:00"), "go", seconds=600)])
+        output = self.match(EXPORT, IMPORT)
+        self.assertEqual({"Export": {"s1": [1]}, "Import": {}}, self.slices(output))
+        self.assertEqual(["Export: no session found for 1 of 2 commits", "Import: no session found for 1 of 1 commits"],
+                         output["missing"])
+
+    def test_failed_calls_are_named_and_a_failed_usage_counts_the_named_session_without_numbers(self):
         self.session_log.reply("codex list --json", code=1, stderr="session-log: codex store unreadable\n")
-        self.session_log.reply("omp list --json", [list_entry("omp", "o1", "2026-08-01T12:00:00+00:00",
-                                                              "2026-08-01T13:00:00+00:00", ["BE-1"], path="/abs/o1.jsonl")])
+        self.session_log.reply("omp list --json", [list_entry("omp", "o1", at("09:00:00"), at("10:00:00"), ["EX-1"],
+                                                              path="/abs/o1.jsonl")])
         self.session_log.reply("omp usage o1 --json", code=1, stderr="session-log: no such session\n")
         output = self.match(EXPORT)
         self.assertEqual(["session-log codex list failed (exit 1): session-log: codex store unreadable",
-                          "session-log omp usage o1 failed (exit 1): session-log: no such session"], output["missing"])
-        self.assertEqual([{"harness": "omp", "id": "o1", "path": "/abs/o1.jsonl", "log": None, "agentTimeMinutes": None,
-                           "tokens": {"input": None, "output": None, "reasoning": None, "cacheRead": None, "cacheWrite": None,
-                                      "total": None},
-                           "costUsd": None}], output["features"][0]["sessions"])
+                          "session-log omp usage o1 failed (exit 1): session-log: no such session",
+                          "session-log omp usage o1 has no prompt rows; the whole session is counted for Export"],
+                         output["missing"])
+        self.assertEqual({"Export": [{"harness": "omp", "id": "o1", "path": "/abs/o1.jsonl", "log": None, "prompts": None,
+                                      **NO_NUMBERS}]}, self.sessions(output))
 
     def test_session_log_runs_in_the_project_root_for_all_five_harnesses(self):
         os.makedirs(self.path("src"))

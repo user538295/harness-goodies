@@ -1,11 +1,12 @@
 """`record-commit <plan-file> <commit> --harness <h> [--session-log <path>]` (C3), the /implement step after each task commit: the
-commit's lines are added once per hash, the plan is refreshed from doc-stats, the latest session replaces its older numbers, and
-the status follows the ticked tasks."""
+commit's lines are added once per hash, the plan is refreshed from doc-stats, the feature's slice of the latest session (the prompts
+that name its docs or made its commits, by the `match-sessions` rule over every stored feature) replaces its older numbers, and the
+status follows the ticked tasks."""
 import os
 import unittest
 
-from tests.support import (EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, ProjectTestCase, document, new_feature,
-                           usage_payload)
+from tests.support import (EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, ProjectTestCase, agent_row, document, new_feature,
+                           prompt_row, tokens_of, usage_payload)
 
 PLAN = "docs/x-tasks.md"
 TASKS_OPEN = """## Task Breakdown
@@ -20,6 +21,11 @@ TASKS_ONE_DONE = TASKS_OPEN.replace("- [ ] **BE-1**", "- [x] **BE-1**")
 TASKS_ALL_DONE = TASKS_ONE_DONE.replace("- [ ] **BE-2**", "- [x] **BE-2**")
 TEN_MINUTES = 600
 THREE_HUNDRED_MINUTES = 18000
+OTHER_PLAN = "docs/y-tasks.md"
+
+
+def at(clock):
+    return "2026-10-01T%s+00:00" % clock
 
 
 class RecordCommitTest(ProjectTestCase):
@@ -28,13 +34,17 @@ class RecordCommitTest(ProjectTestCase):
         self.commit("plan", {PLAN: TASKS_OPEN})
         self.session_log = self.fake_session_log()
 
-    def seed_feature(self, **fields):
+    def seed_feature(self, *others, **fields):
         self.seed(document(new_feature("X", storyPoints=5, estimatedAt="2026-10-01",
-                                       sources={"docs": ["docs/x-brief.md", PLAN], "commits": [], "sessions": []}, **fields)))
+                                       sources={"docs": ["docs/x-brief.md", PLAN], "commits": [], "sessions": []}, **fields),
+                           *others))
 
-    def latest_usage(self, seconds, session_id="s1", **keywords):
+    def latest_usage(self, seconds, session_id="s1", rows=None, agents=(), **keywords):
+        """The latest session; by default one prompt naming the plan that ran `seconds` around the commits' time."""
+        rows = [prompt_row(at("11:59:00"), "/implement " + PLAN, seconds=seconds)] if rows is None else rows
         self.session_log.reply("claude usage --latest --json",
-                               usage_payload("claude", session_id, seconds, path="/abs/%s.jsonl" % session_id, **keywords))
+                               usage_payload("claude", session_id, seconds, path="/abs/%s.jsonl" % session_id, prompts=rows,
+                                             sub_agents=list(agents), **keywords))
 
     def record(self, commit, *extra, plan=PLAN, cwd=None):
         result = self.run_estimate("record-commit", plan, commit, "--harness", "claude", *extra, cwd=cwd)
@@ -102,6 +112,46 @@ class RecordCommitTest(ProjectTestCase):
         c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE})
         self.latest_usage(TEN_MINUTES)
         self.assertEqual("prompt", self.record_with_session(c1)["feature"]["usage"]["matchedBy"])
+
+    def test_only_the_prompts_of_the_feature_are_recorded_from_a_session_that_also_worked_on_another(self):
+        self.seed_feature(new_feature("Y", sources={"docs": [OTHER_PLAN], "commits": [], "sessions": []}))
+        c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE}, when=at("11:40:00"))
+        self.latest_usage(0, rows=[prompt_row(at("10:00:00"), "/implement " + OTHER_PLAN, seconds=3000, total=4000, cost=4.0),
+                                   prompt_row(at("11:00:00"), "go", seconds=600, total=400, cost=0.4),
+                                   prompt_row(at("11:30:00"), "/implement docs/x-tasks.md", seconds=600, total=200, cost=0.2),
+                                   prompt_row(at("11:45:00"), "A", seconds=60, total=100, cost=0.1)],
+                          agents=[agent_row(at("11:31:00"), total=1000, cost=1.0)])
+        feature = self.record_with_session(c1)["feature"]
+        # Prompts 3-4 (600 + 60 s) and the agent started under prompt 3; prompts 1-2 worked on Y.
+        self.assertEqual([{"harness": "claude", "id": "s1", "path": "/abs/s1.jsonl", "log": None, "prompts": [3, 4],
+                           "agentTimeMinutes": 11, "tokens": tokens_of(1300), "costUsd": 1.3}], feature["sources"]["sessions"])
+        self.assertEqual(("implement", 11), (feature["usage"]["matchedBy"], feature["usage"]["agentTimeMinutes"]))
+
+    def test_a_prompt_that_made_the_commit_belongs_to_the_feature_without_naming_it(self):
+        self.seed_feature(new_feature("Y", sources={"docs": [OTHER_PLAN], "commits": [], "sessions": []}))
+        c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE}, when=at("11:05:00"))
+        self.latest_usage(0, rows=[prompt_row(at("10:00:00"), "/implement " + OTHER_PLAN, seconds=600),
+                                   prompt_row(at("11:00:00"), "continue", seconds=600)])
+        self.assertEqual([2], self.record_with_session(c1)["feature"]["sources"]["sessions"][0]["prompts"])
+
+    def test_a_latest_session_without_a_prompt_of_the_feature_records_no_session(self):
+        self.seed_feature(new_feature("Y", sources={"docs": [OTHER_PLAN], "commits": [], "sessions": []}))
+        c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE}, when=at("09:00:00"))
+        self.latest_usage(0, rows=[prompt_row(at("10:00:00"), "/implement " + OTHER_PLAN, seconds=600)])
+        output = self.record_with_session(c1)
+        self.assertEqual([], output["feature"]["sources"]["sessions"])
+        self.assertIsNone(output["feature"]["usage"])
+        self.assertEqual(["the latest claude session s1 shows no prompt of X"], output["missing"])
+
+    def test_a_latest_session_without_prompt_rows_is_recorded_whole_and_named(self):
+        self.seed_feature()
+        c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE})
+        self.session_log.reply("claude usage --latest --json", usage_payload("claude", "s1", TEN_MINUTES))
+        output = self.record_with_session(c1)
+        self.assertEqual((None, 10), (output["feature"]["sources"]["sessions"][0]["prompts"],
+                                      output["feature"]["usage"]["agentTimeMinutes"]))
+        self.assertEqual(["session-log claude usage --latest has no prompt rows; the whole session is counted for X"],
+                         output["missing"])
 
     def test_without_session_log_the_session_numbers_are_reported_missing(self):
         self.seed_feature()

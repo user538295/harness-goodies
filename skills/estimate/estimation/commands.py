@@ -3,13 +3,14 @@ import json
 
 from estimation.doc_stats import doc_stats
 from estimation.errors import ArgumentError, EstimateError
+from estimation.evidence import SHARED_TASK_IDS, Evidence, FeatureClaim, feature_commits, shared_task_ids
 from estimation.features import (DELIVERED, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, Upsert, check_entry_shape, derive_usage,
                                  merge_plan, stored_matched_by, upsert_session, weakest)
 from estimation.git_history import GitHistory
-from estimation.sessions import FeatureQuery, SessionLog, SessionMatcher, session_from_usage
-from estimation.task_ids import mentions_any
+from estimation.sessions import NO_ROWS, SessionLog, SessionMatcher, SessionUsage
 
 STDIN_MARK = "-"
+NO_PROMPT_OF_FEATURE = "the latest %s session %s shows no prompt of %s"
 
 
 class Commands:
@@ -61,40 +62,42 @@ class Commands:
         script = self.plan_progress if plan_progress is None else self.project.absolute(plan_progress)
         return doc_stats(self.project.absolute(doc), script, self.environment.run), []
 
-    def git_stats(self, docs, task_ids):
-        if not docs and not task_ids:
-            raise ArgumentError("git-stats needs --doc or --task-id")
-        history = GitHistory(self.project.root, self.environment.run)
-        commits = history.commits()
-        changing_docs = history.changing([self.project.stored(doc) for doc in docs])
-        matched = [commit for commit in commits if commit.hash in changing_docs or mentions_any(commit.message, task_ids)]
-        dates = [commit.date for commit in matched]
-        return {"commits": [commit.hash for commit in matched], "count": len(matched),
-                "linesAdded": sum(commit.added for commit in matched),
-                "linesRemoved": sum(commit.removed for commit in matched),
-                "firstDate": min(dates, default=None), "lastDate": max(dates, default=None)}, []
-
-    def _feature_queries(self, payload):
+    def _features(self, features_text):
+        """The FeatureClaims of a `{"features": [{"name", "docs", "taskIds"}]}` argument, in its order."""
+        payload = self._json_argument(features_text, "features input")
         items = payload.get("features") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             raise ArgumentError('features input must be {"features": [...]}')
-        queries = []
+        features = []
         for item in items:
             if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]:
                 raise ArgumentError("each feature needs a name")
             docs, task_ids = item.get("docs") or [], item.get("taskIds") or []
             if not all(isinstance(value, str) and value for value in [*docs, *task_ids]):
                 raise ArgumentError("docs and taskIds of '%s' must be lists of strings" % item["name"])
-            queries.append(FeatureQuery(item["name"], [self.project.stored(doc) for doc in docs], task_ids,
-                                        item.get("firstDate"), item.get("lastDate")))
-        return queries
+            features.append(FeatureClaim(item["name"], tuple(self.project.stored(doc) for doc in docs), tuple(task_ids)))
+        return features
+
+    def _history(self):
+        return GitHistory(self.project.root, self.environment.run)
+
+    def git_stats(self, features_text):
+        features = self._features(features_text)
+        found = feature_commits(self._history(), features)
+        shared = shared_task_ids(features)
+        stats = [{"name": name, "commits": [commit.hash for commit in commits], "count": len(commits),
+                  "linesAdded": sum(commit.added for commit in commits), "linesRemoved": sum(commit.removed for commit in commits)}
+                 for name, commits in found.items()]
+        return {"features": stats}, [SHARED_TASK_IDS % ", ".join(shared)] if shared else []
 
     def _session_log(self, script):
         return SessionLog(self.project.absolute(script), self.project.root, self.environment.run)
 
     def match_sessions(self, features_text, session_log):
-        queries = self._feature_queries(self._json_argument(features_text, "features input"))
-        return SessionMatcher(self._session_log(session_log), self.environment.to_local).match(queries), []
+        features = self._features(features_text)
+        authored = {name: {commit.hash: commit.authored_at for commit in commits}
+                    for name, commits in feature_commits(self._history(), features).items()}
+        return SessionMatcher(self._session_log(session_log), Evidence(features, authored)).match(authored), []
 
     def _plan_owner(self, document, stored_plan, given_plan):
         owners = [feature for feature in document["features"] if stored_plan in feature["sources"]["docs"]]
@@ -105,8 +108,18 @@ class Commands:
                                                              ", ".join(feature["name"] for feature in owners)))
         return owners[0]
 
-    def _record_latest_session(self, feature, harness, session_log, missing):
-        """Upserts the harness's latest session of the project (matched by implement); returns the feature's new label."""
+    @staticmethod
+    def _stored_evidence(document, history):
+        """The evidence of every stored feature: its docs and its recorded commits (no task IDs are stored)."""
+        features = document["features"]
+        times = history.authored_at([commit for feature in features for commit in feature["sources"]["commits"]])
+        return Evidence([FeatureClaim(feature["name"], tuple(feature["sources"]["docs"]), ()) for feature in features],
+                        {feature["name"]: {commit: times[commit] for commit in feature["sources"]["commits"] if commit in times}
+                         for feature in features})
+
+    def _record_latest_session(self, document, feature, history, harness, session_log, missing):
+        """Upserts the feature's slice of the harness's latest session of the project (matched by implement); returns the feature's
+        new label."""
         matched_by = stored_matched_by(feature)
         if session_log is None:
             missing.append("session numbers not recorded: no --session-log")
@@ -116,14 +129,23 @@ class Commands:
         if failure or not isinstance(session_id, str):
             missing.append(failure or "session-log %s usage --latest named no session" % harness)
             return matched_by
-        upsert_session(feature, session_from_usage(harness, session_id, usage))
+        reply = SessionUsage("session-log %s usage --latest" % harness, harness, session_id, usage)
+        if reply.rows is None:
+            entry = reply.whole()
+            missing.append(NO_ROWS % (reply.label, feature["name"]))
+        else:
+            entry = reply.slices(self._stored_evidence(document, history)).get(feature["name"])
+        if entry is None:
+            missing.append(NO_PROMPT_OF_FEATURE % (harness, session_id, feature["name"]))
+            return matched_by
+        upsert_session(feature, entry)
         return MATCH_IMPLEMENT if matched_by in (None, MATCH_NONE) else weakest([matched_by, MATCH_IMPLEMENT])
 
     def record_commit(self, plan, commit, harness, session_log=None):
         stored_plan = self.project.stored(plan)
         document = self.store.load()
         feature = self._plan_owner(document, stored_plan, plan)
-        history = GitHistory(self.project.root, self.environment.run)
+        history = self._history()
         commit_hash = history.resolve(commit)
         if commit_hash not in feature["sources"]["commits"]:
             added, removed = history.line_counts(commit_hash)
@@ -134,7 +156,7 @@ class Commands:
         stats = doc_stats(self.project.absolute(plan), self.plan_progress, self.environment.run)
         merge_plan(feature["plan"], stats)
         missing = list(stats["missing"])
-        derive_usage(feature, self._record_latest_session(feature, harness, session_log, missing))
+        derive_usage(feature, self._record_latest_session(document, feature, history, harness, session_log, missing))
         all_ticked = stats["tasks"] is not None and stats["completed"] == stats["tasks"]
         feature["status"] = DELIVERED if all_ticked else IN_PROGRESS
         self.store.save(document)

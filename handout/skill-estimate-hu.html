@@ -33,13 +33,13 @@
       <pre><code>/estimate &lt;file.md&gt; [--from &lt;source.md&gt;]
 /estimate init</code></pre>
       <p><strong><code>/estimate &lt;file.md&gt;</code></strong> összeveti a munkát a 2–3 legközelebbi leszállított feature-rel (nagyobb, kisebb vagy ugyanakkora), és választ egy SP-t a skáláról — alapértelmezetten <code>0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 200, 500, 1000</code>. Megmutatja az SP-t, a legközelebbi feature-öket az indoklással, a fázisokat, feladatokat és becsült órákat, ha a fájlban vannak, a várható ágensidőt, tokeneket és költséget, 40 SP-től egy bontási javaslatot, és mindent, amit nem talált. Ezután <code>estimated</code> állapotban elmenti. A <code>--from</code> azt a dokumentumot nevezi meg, amelyből a fájl született (egy terv briefjét, egy feladatlista csapattervét), így annak a bejegyzése frissül, és nem jön létre egy második.</p>
-      <p><strong><code>/estimate init</code></strong> összegyűjti a referenciákat: leszállított tervezési dokumentumkészletenként (brief, terv, feladatfájl) egy feature-t. Feature-önként egy al-ágens megszámolja a fázisokat, feladatokat és órákat, és megkeresi a commitjait; ezután a fő ágens egyetlen menetben hozzárendeli mind az öt harness korábbi sessionjeit a feature-ökhöz, valódi méret szerint sorba rendezi a feature-öket, és mindegyikre javasol egy leszállítás utáni SP-t, ahol a közepes feature 5. A táblázatot még az írás előtt módosíthatod. Újrafuttatva felveszi az újonnan leszállított feature-öket, és frissíti a tényadatokat; az általad beállított SP-hez soha nem nyúl.</p>
+      <p><strong><code>/estimate init</code></strong> összegyűjti a referenciákat: leszállított tervezési dokumentumkészletenként (brief, terv, feladatfájl) egy feature-t. Feature-önként egy al-ágens megszámolja a fázisokat, feladatokat és órákat; ezután a fő ágens egyetlen menetben megkeresi minden feature commitjait, és hozzárendeli mind az öt harness korábbi sessionjeit a feature-ökhöz, valódi méret szerint sorba rendezi a feature-öket, és mindegyikre javasol egy leszállítás utáni SP-t, ahol a közepes feature 5. A táblázatot még az írás előtt módosíthatod. Újrafuttatva felveszi az újonnan leszállított feature-öket, és frissíti a tényadatokat; az általad beállított SP-hez soha nem nyúl.</p>
       <p><strong>Szabályok, amelyek hitelesen tartják a számokat:</strong></p>
       <ul>
         <li>A becslés minden dokumentummal pontosabb: brief, majd terv, majd feladatfájl. Mindegyik felülírja a feature SP-jét, így az első feladatcommit előtti utolsó becslés, általában a feladatfájlé, lesz az eredeti SP. Ha egy részletesebb dokumentum után egy kevésbé részleteset becsülsz újra, az csak a jóváhagyásoddal kerül mentésre.</li>
         <li>Az eredeti SP az első feladatcommitnál befagy; a leszállításkor megítélt méret az <code>updatedStoryPoints</code> mezőbe kerül. Ha a kettő egyezik, a becslés jó volt.</li>
         <li>Csak a leszállított feature-ök referenciák, és a leszállítás utáni SP-jük alapján hasonlítja őket.</li>
-        <li>A sessionöket az alapján rendeli hozzá, amit a promptjaik megneveznek (a feature dokumentumait vagy feladatazonosítóit), különben a feature commitdátumai alapján, és minden hozzárendelést <code>implement</code>, <code>prompt</code> vagy <code>dates</code> címkével jelöl.</li>
+        <li>A sessionöket promptonként rendeli hozzá: egy prompt ahhoz a feature-höz tartozik, amelynek a dokumentumait vagy feladatazonosítóit megnevezi, vagy amelynek a commitjai a futása alatt készültek; egy olyan folytatás, mint a „go”, az előtte lévő prompttal marad. Egy session, amely három feature-ön dolgozott, három részre oszlik, és nem számít háromszor; dátum alapján semmi nem kerül hozzárendelésre. Egy dokumentum, feladatazonosító vagy commit, amelyen több feature osztozik (minden terv <code>BE-1</code>-e), egyiknél sem számít.</li>
         <li>A hiányzó adat üres marad, és a riport felsorolja — semmit nem talál ki.</li>
         <li>Ha még nincs leszállított feature, akkor is kapsz SP-t, egy figyelmeztetéssel, hogy futtasd a <code>/estimate init</code>-et.</li>
         <li>Az össze nem adható méretű skálák (emoji, pólóméretek) nem kapnak bontási javaslatot.</li>
@@ -77,15 +77,15 @@ Saved as "CSV import" (estimated) in .estimation.json</code></pre>
         <p><strong>Bemenet:</strong></p>
         <pre><code>/estimate init</code></pre>
         <p><strong>Kimenet / eredmény:</strong></p>
-        <pre><code>| Feature            | Commits | Lines +/−   | Tasks | Hours | Agent time | Tokens | Cost   | Matched | SP          |
-| Invoice PDF export | 19      | 2140 / 310  | 17    | 38.5  | 412 min    | 64.2 M | $61.40 | prompt  | 13 proposed |
-| Bulk tag editor    | 9       | 880 / 120   | 8     | 16.0  | 305 min    | 44.0 M | $39.10 | dates   | 8 proposed  |
-| User avatar upload | 5       | 410 / 35    | 5     | 9.0   | —          | —      | —      | none    | 5 kept      |
+        <pre><code>| Feature            | Commits | Lines +/−   | Tasks | Hours | Sessions | Agent time | Tokens | Cost   | Matched | SP          |
+| Invoice PDF export | 19      | 2140 / 310  | 17    | 38.5  | 3        | 412 min    | 64.2 M | $61.40 | prompt  | 13 proposed |
+| Bulk tag editor    | 9       | 880 / 120   | 8     | 16.0  | 1        | 305 min    | 44.0 M | $39.10 | prompt  | 8 proposed  |
+| User avatar upload | 5       | 410 / 35    | 5     | 9.0   | 0        | —          | —      | —      | none    | 5 kept      |
 
 Adjust any SP, or confirm.
 
 Not found:
-- no session data for feature "User avatar upload"</code></pre>
+- User avatar upload: no session found for 5 of 5 commits</code></pre>
         <p><strong>Bemenet:</strong></p>
         <pre><code>Az Invoice PDF export legyen 8, a többi rendben van.</code></pre>
         <p><strong>Kimenet / eredmény:</strong></p>

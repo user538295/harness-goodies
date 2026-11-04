@@ -229,7 +229,7 @@ class PricingTests(unittest.TestCase):
         self.assertEqual((result.sub_agents[0].price.status, result.sub_agents[0].price.cents), ("partial", 50))
         self.assertEqual((result.total.price_cents, result.total.price_incomplete), (75, True))
 
-    def test_subagent_rows_with_same_start_ordered_by_id_at_each_level(self):
+    def test_subagent_rows_with_same_start_ordered_by_id_at_each_level_and_carry_their_start(self):
         def agent(agent_id, started=NOW, children=()):
             return SubAgent(agent_id=agent_id, type="worker", started_at=started, sub_agents=children)
 
@@ -237,6 +237,6 @@ class PricingTests(unittest.TestCase):
         result = report(agents=(
             agent("agent-c", children=(agent("agent-y", later), agent("agent-z"), agent("agent-x"))),
             agent("agent-late", later), agent("agent-b"), agent("agent-a", later)))
-        self.assertEqual([(row.agent_id, row.depth) for row in result.sub_agents], [
-            ("agent-b", 0), ("agent-c", 0), ("agent-x", 1), ("agent-z", 1), ("agent-y", 1),
-            ("agent-a", 0), ("agent-late", 0)])
+        self.assertEqual([(row.agent_id, row.depth, row.started_at) for row in result.sub_agents], [
+            ("agent-b", 0, NOW), ("agent-c", 0, NOW), ("agent-x", 1, NOW), ("agent-z", 1, NOW), ("agent-y", 1, later),
+            ("agent-a", 0, later), ("agent-late", 0, later)])

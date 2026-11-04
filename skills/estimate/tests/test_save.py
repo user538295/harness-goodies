@@ -11,12 +11,12 @@ HASH_B = "b" * 40
 HASH_C = "c" * 40
 
 
-def session(harness, session_id, minutes, tokens=None, cost=1.25, path=None, log=None):
+def session(harness, session_id, minutes, tokens=None, cost=1.25, path=None, log=None, prompts=None):
     """A C2 session entry; `tokens` overrides some token counts of the default 10/20/None/30/40 = 100 split."""
     counts = {"input": 10, "output": 20, "reasoning": None, "cacheRead": 30, "cacheWrite": 40, "total": 100}
     counts.update(tokens or {})
-    return {"harness": harness, "id": session_id, "path": path, "log": log, "agentTimeMinutes": minutes, "tokens": counts,
-            "costUsd": cost}
+    return {"harness": harness, "id": session_id, "path": path, "log": log, "prompts": prompts, "agentTimeMinutes": minutes,
+            "tokens": counts, "costUsd": cost}
 
 
 class SaveTestCase(ProjectTestCase):
@@ -187,12 +187,12 @@ class GitTest(SaveTestCase):
 
 
 class SessionTest(SaveTestCase):
-    def test_sessions_upsert_by_harness_and_id_and_the_usage_is_their_sum(self):
-        self.seed(document(new_feature("A", sources={"docs": [], "commits": [],
-                                                     "sessions": [session("claude", "s1", 10, cost=1.10)]},
-                                       usage={"matchedBy": "prompt", "sessions": 1, "agentTimeMinutes": 10,
-                                              "tokens": session("claude", "s1", 10)["tokens"], "costUsd": 1.10})))
-        newer = session("claude", "s1", 300, tokens={"input": 1000, "total": 1090}, cost=20.20, path="/abs/s1.jsonl")
+    def test_given_sessions_replace_the_stored_ones_and_the_usage_is_their_sum(self):
+        stored = [session("claude", "s1", 10, cost=1.10), session("omp", "no-longer-matched", 99)]
+        self.seed(document(new_feature("A", sources={"docs": [], "commits": [], "sessions": stored},
+                                       usage={"matchedBy": "prompt", "sessions": 2, "agentTimeMinutes": 109,
+                                              "tokens": session("claude", "s1", 10)["tokens"], "costUsd": 2.35})))
+        newer = session("claude", "s1", 300, tokens={"input": 1000, "total": 1090}, cost=20.20, path="/abs/s1.jsonl", prompts=[2, 3])
         other = session("codex", "s1", 45, cost=0.15)
         saved = self.assert_saved(self.save({"name": "A", "sources": {"sessions": [newer, other]}}))
         self.assertEqual([newer, other], saved["sources"]["sessions"])
@@ -205,7 +205,7 @@ class SessionTest(SaveTestCase):
     def test_a_total_is_null_when_any_session_lacks_it(self):
         sessions = [session("omp", "s1", 10, tokens={"reasoning": 5}), session("omp", "s2", None, tokens={"reasoning": None},
                                                                               cost=None)]
-        saved = self.assert_saved(self.save({"name": "A", "description": "x", "usage": {"matchedBy": "dates"},
+        saved = self.assert_saved(self.save({"name": "A", "description": "x", "usage": {"matchedBy": "prompt"},
                                              "sources": {"sessions": sessions}}))
         self.assertIsNone(saved["usage"]["agentTimeMinutes"])
         self.assertIsNone(saved["usage"]["tokens"]["reasoning"])
@@ -216,9 +216,9 @@ class SessionTest(SaveTestCase):
         self.seed(document(new_feature("A", sources={"docs": [], "commits": [], "sessions": [session("claude", "s1", 10)]},
                                        usage={"matchedBy": "prompt", "sessions": 1, "agentTimeMinutes": 10,
                                               "tokens": session("claude", "s1", 10)["tokens"], "costUsd": 1.25})))
-        result = self.save({"name": "A", "usage": {"matchedBy": "dates", "agentTimeMinutes": 999}})
+        result = self.save({"name": "A", "usage": {"matchedBy": "implement", "agentTimeMinutes": 999}})
         saved = self.assert_saved(result)
-        self.assertEqual(("dates", 10), (saved["usage"]["matchedBy"], saved["usage"]["agentTimeMinutes"]))
+        self.assertEqual(("implement", 10), (saved["usage"]["matchedBy"], saved["usage"]["agentTimeMinutes"]))
         self.assertIn("usage.agentTimeMinutes is derived from sources.sessions; ignored", result.err)
 
     def test_matching_that_found_no_session_is_recorded_as_none_with_empty_totals(self):

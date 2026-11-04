@@ -42,6 +42,12 @@
         "id": { "type": "string", "minLength": 1 },
         "path": { "type": ["string", "null"] },
         "log": { "type": ["string", "null"] },
+        "prompts": {
+          "description": "The 1-based numbers of the session's prompts counted for this feature (the rows of `session-log usage`); null: the whole session.",
+          "type": ["array", "null"],
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        },
         "agentTimeMinutes": { "$ref": "#/$defs/nullableCount" },
         "tokens": { "$ref": "#/$defs/tokens" },
         "costUsd": { "$ref": "#/$defs/nullableAmount" }
@@ -52,7 +58,7 @@
       "additionalProperties": false,
       "required": ["matchedBy", "sessions", "agentTimeMinutes", "tokens", "costUsd"],
       "properties": {
-        "matchedBy": { "enum": ["implement", "prompt", "dates", "none"] },
+        "matchedBy": { "enum": ["implement", "prompt", "none"] },
         "sessions": { "$ref": "#/$defs/count" },
         "agentTimeMinutes": { "$ref": "#/$defs/nullableCount" },
         "tokens": { "$ref": "#/$defs/tokens" },
