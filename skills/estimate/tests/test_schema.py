@@ -130,13 +130,23 @@ class FeatureSchemaTest(SchemaTestCase):
         feature["sources"]["sessions"][0]["harness"] = "vim"
         self.assert_rejected(feature)
 
-    def test_a_session_slice_names_its_prompts_from_one(self):
+    def test_a_session_slice_lists_each_counted_prompt_from_one_with_its_reason(self):
         feature = copy.deepcopy(self.delivered)
         session = feature["sources"]["sessions"][0]
-        session["prompts"] = [1, 2]
+        prompt = {"number": 1, "at": "2026-09-01T10:00:00+00:00", "text": "/implement docs/x.md", "reason": "names docs/x.md"}
+        session["prompts"] = [prompt]
         self.assert_valid(feature)
-        session["prompts"] = [0]
-        self.assert_rejected(feature)
+        for broken in ({**prompt, "number": 0}, {key: value for key, value in prompt.items() if key != "reason"}, 1):
+            with self.subTest(broken=broken):
+                session["prompts"] = [broken]
+                self.assert_rejected(feature)
+
+    def test_who_made_a_size_names_a_known_harness_and_its_models(self):
+        maker = {"harness": "claude", "models": ["claude-opus-5-5"]}
+        self.assert_valid({**self.delivered, "estimatedBy": maker, "updatedBy": {**maker, "models": None}})
+        for broken in ({**maker, "harness": "vim"}, {"harness": "claude"}, {**maker, "models": [""]}, "claude"):
+            with self.subTest(broken=broken):
+                self.assert_rejected({**self.delivered, "updatedBy": broken})
 
     def test_a_fractional_line_count_is_rejected(self):
         feature = copy.deepcopy(self.delivered)

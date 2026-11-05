@@ -4,7 +4,7 @@ import json
 
 from estimation.doc_stats import doc_stats
 from estimation.errors import ArgumentError, EstimateError
-from estimation.evidence import SHARED_TASK_IDS, Evidence, FeatureClaim, feature_commits, shared_task_ids
+from estimation.evidence import Evidence, FeatureClaim, feature_commits
 from estimation.features import (DELIVERED, FILE_KEY, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, Upsert, check_entry_shape,
                                  derive_usage, duplicates, files_of, merge_plan, stored_matched_by, upsert_session, weakest)
 from estimation.first_day import first_day
@@ -13,6 +13,12 @@ from estimation.sessions import NO_ROWS, SessionLog, SessionMatcher, SessionUsag
 
 STDIN_MARK = "-"
 NO_PROMPT_OF_FEATURE = "the latest %s session %s shows no prompt of %s"
+SHARED_COMMITS = "commits that several features claim count for none: %s"
+SHORT_HASH = 8
+LATEST_USAGE = "session-log %s usage --latest"
+LATEST_NAMED_NO_SESSION = LATEST_USAGE + " named no session"
+LAST_PROMPT_WITHOUT_MODELS = LATEST_USAGE + " names none for its last prompt"
+NO_MODELS = "models not recorded: %s"
 
 
 class Commands:
@@ -74,7 +80,7 @@ class Commands:
         return doc_stats(self.project.absolute(doc), script, self.environment.run), []
 
     def _features(self, features_text):
-        """The FeatureClaims of a `{"features": [{"name", "docs", "taskIds"}]}` argument, in its order."""
+        """The FeatureClaims of a `{"features": [{"name", "id", "docs", "taskIds"}]}` argument, in its order."""
         payload = self._json_argument(features_text, "features input")
         items = payload.get("features") if isinstance(payload, dict) else None
         if not isinstance(items, list):
@@ -83,23 +89,25 @@ class Commands:
         for item in items:
             if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]:
                 raise ArgumentError("each feature needs a name")
-            docs, task_ids = item.get("docs") or [], item.get("taskIds") or []
+            feature_id, docs, task_ids = item.get("id"), item.get("docs") or [], item.get("taskIds") or []
+            if feature_id is not None and not (isinstance(feature_id, str) and feature_id.strip()):
+                raise ArgumentError("id of '%s' must be text or null" % item["name"])
             if not all(isinstance(value, str) and value for value in [*docs, *task_ids]):
                 raise ArgumentError("docs and taskIds of '%s' must be lists of strings" % item["name"])
-            features.append(FeatureClaim(item["name"], tuple(self.project.stored(doc) for doc in docs), tuple(task_ids)))
+            features.append(FeatureClaim(item["name"], tuple(self.project.stored(doc) for doc in docs), tuple(task_ids),
+                                         feature_id))
         return features
 
     def _history(self):
         return GitHistory(self.project.root, self.environment.run)
 
     def git_stats(self, features_text):
-        features = self._features(features_text)
-        found = feature_commits(self._history(), features)
-        shared = shared_task_ids(features)
+        claimed = feature_commits(self._history(), self._features(features_text))
         stats = [{"name": name, "commits": [commit.hash for commit in commits], "count": len(commits),
                   "linesAdded": sum(commit.added for commit in commits), "linesRemoved": sum(commit.removed for commit in commits)}
-                 for name, commits in found.items()]
-        return {"features": stats}, [SHARED_TASK_IDS % ", ".join(shared)] if shared else []
+                 for name, commits in claimed.found.items()]
+        shared = ", ".join(commit.hash[:SHORT_HASH] for commit in claimed.shared)
+        return {"features": stats}, [SHARED_COMMITS % shared] if shared else []
 
     def _session_log(self, script):
         return SessionLog(self.project.absolute(script), self.project.root, self.environment.run)
@@ -107,7 +115,7 @@ class Commands:
     def match_sessions(self, features_text, session_log):
         features = self._features(features_text)
         authored = {name: {commit.hash: commit.authored_at for commit in commits}
-                    for name, commits in feature_commits(self._history(), features).items()}
+                    for name, commits in feature_commits(self._history(), features).found.items()}
         return SessionMatcher(self._session_log(session_log), Evidence(features, authored)).match(authored), []
 
     def _plan_owner(self, document, stored_plan, given_plan):
@@ -137,9 +145,9 @@ class Commands:
         usage, failure = self._session_log(session_log).latest_usage(harness)
         session_id = usage.get("id") if isinstance(usage, dict) else None
         if failure or not isinstance(session_id, str):
-            missing.append(failure or "session-log %s usage --latest named no session" % harness)
+            missing.append(failure or LATEST_NAMED_NO_SESSION % harness)
             return matched_by
-        reply = SessionUsage("session-log %s usage --latest" % harness, harness, session_id, usage)
+        reply = SessionUsage(LATEST_USAGE % harness, harness, session_id, usage)
         if reply.rows is None:
             entry = reply.whole()
             missing.append(NO_ROWS % (reply.label, feature["name"]))
@@ -172,3 +180,19 @@ class Commands:
         feature[FILE_KEY] = self.store.update(feature)
         return {"feature": feature, "needsResize": all_ticked and feature["updatedStoryPoints"] is None,
                 "missing": missing}, warnings
+
+    def estimator(self, harness, session_log=None):
+        """Who estimates now (`{"estimator": {"harness", "models"}, "missing"}`): `harness` and the models of the last prompt of
+        its latest session in the project, the prompt running now; null models when they cannot be read, named in `missing`."""
+        models, missing = None, []
+        if session_log is None:
+            missing.append(NO_MODELS % "no --session-log")
+        else:
+            usage, failure = self._session_log(session_log).latest_usage(harness)
+            if failure:
+                missing.append(failure)
+            else:
+                models = SessionUsage(LATEST_USAGE % harness, harness, None, usage).last_prompt_models()
+                if models is None:
+                    missing.append(NO_MODELS % (LAST_PROMPT_WITHOUT_MODELS % harness))
+        return {"estimator": {"harness": harness, "models": models}, "missing": missing}, []

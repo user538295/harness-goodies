@@ -146,7 +146,10 @@ class RecordCommitTest(ProjectTestCase):
                           agents=[agent_row(at("11:31:00"), total=1000, cost=1.0)])
         feature = self.record_with_session(c1)["feature"]
         # Prompts 3-4 (600 + 60 s) and the agent started under prompt 3; prompts 1-2 worked on Y.
-        self.assertEqual([{"harness": "claude", "id": "s1", "path": "/abs/s1.jsonl", "log": None, "prompts": [3, 4],
+        self.assertEqual([{"harness": "claude", "models": ["agent-model", "main-model"], "id": "s1", "path": "/abs/s1.jsonl", "log": None,
+                           "prompts": [{"number": 3, "at": at("11:30:00"), "text": "/implement docs/x-tasks.md",
+                                        "reason": "names docs/x-tasks.md"},
+                                       {"number": 4, "at": at("11:45:00"), "text": "A", "reason": "follows prompt 3"}],
                            "agentTimeMinutes": 11, "tokens": tokens_of(1300), "costUsd": 1.3}], feature["sources"]["sessions"])
         self.assertEqual(("implement", 11), (feature["usage"]["matchedBy"], feature["usage"]["agentTimeMinutes"]))
 
@@ -155,7 +158,9 @@ class RecordCommitTest(ProjectTestCase):
         c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE}, when=at("11:05:00"))
         self.latest_usage(0, rows=[prompt_row(at("10:00:00"), "/implement " + OTHER_PLAN, seconds=600),
                                    prompt_row(at("11:00:00"), "continue", seconds=600)])
-        self.assertEqual([2], self.record_with_session(c1)["feature"]["sources"]["sessions"][0]["prompts"])
+        self.assertEqual([(2, "made 1 of its commits")],
+                         [(prompt["number"], prompt["reason"])
+                          for prompt in self.record_with_session(c1)["feature"]["sources"]["sessions"][0]["prompts"]])
 
     def test_a_latest_session_without_a_prompt_of_the_feature_records_no_session(self):
         self.seed_feature(new_feature("Y", sources={"docs": [OTHER_PLAN], "commits": [], "sessions": []}))

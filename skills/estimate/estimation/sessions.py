@@ -1,9 +1,11 @@
 """Sessions through session-log's C1 JSON (`list --json`, `usage ... --json`), run as a subprocess in the project root, and
-`match-sessions`: each feature gets its slice of a session (the prompts the `evidence` rule gives it and the sub-agents started
-under them) as a C2 session entry. Every failed call, every session counted whole for want of prompt rows and every feature commit
-made while no listed prompt ran is named in `missing`, never guessed around."""
+`match-sessions`: each feature gets its slice of a session (the prompts the `evidence` rule gives it, each with its number, time,
+first 60 characters and reason, and the sub-agents started under them) as a C2 session entry. Every failed call, every session
+counted whole for want of prompt rows and every feature commit made while no listed prompt ran is named in `missing`, never guessed
+around."""
 import json
 import os
+import re
 import sys
 from bisect import bisect_right
 from dataclasses import dataclass
@@ -20,8 +22,19 @@ CENT = Decimal("0.01")
 SESSION_LOG_SUCCESS = 0
 TOKEN_FIELDS = "tokens"
 PROMPT_SEPARATOR = "\n"
+PROMPT_HEAD_LENGTH = 60
+_TAG = re.compile(r"<[^>]*>")
+_LINE_BREAKS_AND_TABS = re.compile(r"[\r\n\t]")
+_SPACE_RUN = re.compile(r" +")
 NO_ROWS = "%s has no prompt rows; the whole session is counted for %s"
 UNCOVERED_COMMITS = "%s: no session found for %d of %d commits"
+
+
+def prompt_head(text):
+    """The prompt as session-log's report shows it: every `<...>` tag and every line break or tab becomes a space, runs of spaces
+    collapse, and the first 60 characters are kept without the spaces at either end."""
+    spaced = _SPACE_RUN.sub(" ", _LINE_BREAKS_AND_TABS.sub(" ", _TAG.sub(" ", text)))
+    return spaced.lstrip(" ")[:PROMPT_HEAD_LENGTH].rstrip(" ")
 
 
 def _sessions_with_ids(listed):
@@ -56,6 +69,7 @@ class RowNumbers:
     tokens: Optional[dict]
     cost: Decimal
     complete: bool
+    models: Optional[tuple]  # None when the row does not say
 
 
 @dataclass(frozen=True)
@@ -73,9 +87,17 @@ class AgentRow:
     numbers: RowNumbers
 
 
+def _model_list(value):
+    """The model names of a C1 `models` value; None when it is no list of names."""
+    if not isinstance(value, list) or not all(isinstance(name, str) and name for name in value):
+        return None
+    return tuple(value)
+
+
 def _numbers(row):
     tokens = row.get(TOKEN_FIELDS)
-    return RowNumbers(tokens if isinstance(tokens, dict) else None, Decimal(str(row["costUsd"])), row["costComplete"] is True)
+    return RowNumbers(tokens if isinstance(tokens, dict) else None, Decimal(str(row["costUsd"])), row["costComplete"] is True,
+                      _model_list(row.get("models")))
 
 
 def _rows(usage):
@@ -103,8 +125,8 @@ class SessionUsage:
         self.listed = listed or {}
         self.rows = _rows(self.usage)
 
-    def _entry(self, prompts, agent_time_minutes, tokens, cost):
-        return session_entry({"harness": self.harness, "id": self.session_id,
+    def _entry(self, models, prompts, agent_time_minutes, tokens, cost):
+        return session_entry({"harness": self.harness, "models": models, "id": self.session_id,
                               "path": self.usage.get("path") or self.listed.get("path"),
                               "log": self.usage.get("log") or self.listed.get("log"), "prompts": prompts,
                               "agentTimeMinutes": agent_time_minutes, TOKEN_FIELDS: tokens, "costUsd": cost})
@@ -112,34 +134,47 @@ class SessionUsage:
     def whole(self):
         """The C2 entry of the whole session from its totals (every number null when the call failed)."""
         complete = self.usage.get("costComplete") is True
-        return self._entry(None, minutes(self.usage.get("agentTimeSeconds")), self.usage.get(TOKEN_FIELDS),
-                           self.usage.get("costUsd") if complete else None)
+        models = _model_list(self.usage.get("models"))
+        return self._entry(None if models is None else list(models), None, minutes(self.usage.get("agentTimeSeconds")),
+                           self.usage.get(TOKEN_FIELDS), self.usage.get("costUsd") if complete else None)
 
     def prompt_spans(self):
         """(submitted, last reply) of each prompt."""
         return [(prompt.at, prompt.reply_at) for prompt in self.rows[0]]
+
+    def last_prompt_models(self):
+        """The models of the session's last prompt (in a latest session, the prompt running now); None without one or without
+        names."""
+        if not self.rows or not self.rows[0] or not self.rows[0][-1].numbers.models:
+            return None
+        return list(self.rows[0][-1].numbers.models)
 
     def slices(self, evidence):
         """{feature name: the C2 entry of its slice} of a session with rows, by the `evidence` rule."""
         prompts, agents = self.rows
         owners = attribute([evidence.of_prompt(prompt.text, prompt.at, prompt.reply_at) for prompt in prompts])
         members = {}
-        for index, names in enumerate(owners):
-            for name in names:
-                members.setdefault(name, ([], []))[0].append(index)
+        for index, reasons in enumerate(owners):
+            for name, reason in reasons.items():
+                members.setdefault(name, ([], []))[0].append((index, reason))
         starts = [prompt.at for prompt in prompts]
         for agent in agents if prompts else []:
             for name in owners[prompt_under(starts, agent.started_at)]:
                 members[name][1].append(agent)
-        return {name: self._slice([prompts[index] for index in indices], chosen_agents, indices)
-                for name, (indices, chosen_agents) in members.items()}
+        return {name: self._slice(counted, chosen_agents) for name, (counted, chosen_agents) in members.items()}
 
-    def _slice(self, prompts, agents, indices):
+    def _slice(self, counted, agents):
+        """The C2 entry of the prompts `counted` ([(index, why it counts)]) and the sub-agents `agents`."""
+        prompts = [self.rows[0][index] for index, _ in counted]
         numbers = [row.numbers for row in [*prompts, *agents]]
         tokens = {key: _known_sum([row.tokens.get(key) for row in numbers if row.tokens is not None]) for key in TOKEN_KEYS}
         complete = self.usage.get("costComplete") is True and all(row.complete for row in numbers)
         cost = float(sum((row.cost for row in numbers), Decimal(0)).quantize(CENT, rounding=ROUND_HALF_UP)) if complete else None
-        return self._entry([index + 1 for index in indices], minutes(sum(prompt.seconds for prompt in prompts)), tokens, cost)
+        known = [row.models for row in numbers if row.models is not None]
+        models = sorted({name for names in known for name in names}) if known else None
+        entries = [{"number": index + 1, "at": prompt.at.isoformat(), "text": prompt_head(prompt.text), "reason": reason}
+                   for (index, reason), prompt in zip(counted, prompts)]
+        return self._entry(models, entries, minutes(sum(prompt.seconds for prompt in prompts)), tokens, cost)
 
 
 class SessionLog:

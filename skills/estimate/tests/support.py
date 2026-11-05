@@ -95,25 +95,29 @@ def tokens_of(total):
             "total": total}
 
 
+MAIN_MODEL = "main-model"
+AGENT_MODEL = "agent-model"
+
+
 def usage_payload(harness, session_id, seconds, total=1000, cost=1.25, cost_complete=True, path=None, log=None, prompts=None,
-                  sub_agents=None):
+                  sub_agents=None, models=(MAIN_MODEL,)):
     """A C1 `usage --json` reply; `prompts` and `sub_agents` are its rows (null: the session's prompts cannot be read)."""
     return {"harness": harness, "id": session_id, "projectDir": "/abs/project", "path": path, "log": log,
             "agentTimeSeconds": seconds, "tokens": tokens_of(total), "costUsd": cost, "costComplete": cost_complete,
-            "prompts": prompts, "subAgents": sub_agents}
+            "models": list(models), "prompts": prompts, "subAgents": sub_agents}
 
 
-def prompt_row(at, text, seconds=60, total=100, cost=0.5, complete=True):
+def prompt_row(at, text, seconds=60, total=100, cost=0.5, complete=True, models=(MAIN_MODEL,)):
     """One C1 prompt row submitted at `at` (UTC ISO) and answered `seconds` later."""
     reply_at = (datetime.fromisoformat(at) + timedelta(seconds=seconds)).isoformat()
     return {"at": at, "replyAt": reply_at, "text": text, "agentTimeSeconds": seconds, "tokens": tokens_of(total), "costUsd": cost,
-            "costComplete": complete}
+            "costComplete": complete, "models": list(models)}
 
 
-def agent_row(started_at, total=100, cost=0.5, complete=True, agent_id="agent", depth=0):
+def agent_row(started_at, total=100, cost=0.5, complete=True, agent_id="agent", depth=0, models=(AGENT_MODEL,)):
     """One C1 sub-agent row started at `started_at` (UTC ISO)."""
     return {"id": agent_id, "type": "task", "startedAt": started_at, "depth": depth, "tokens": tokens_of(total), "costUsd": cost,
-            "costComplete": complete}
+            "costComplete": complete, "models": list(models)}
 
 
 def list_entry(harness, session_id, started, last_activity, prompts, path=None, log=None):
@@ -221,7 +225,7 @@ def new_feature(name, file=None, **fields):
     """A complete C2 feature in the `read` shape with the `save` defaults, overridden by `fields`; its `file` defaults to a
     seeded name of the feature."""
     feature = {"id": None, "name": name, "description": "About " + name, "status": "estimated", "storyPoints": None,
-               "updatedStoryPoints": None, "estimatedAt": None,
+               "updatedStoryPoints": None, "estimatedAt": None, "estimatedBy": None, "updatedBy": None,
                "plan": {"phases": None, "tasks": None, "estimatedHours": None},
                "git": {"commits": 0, "linesAdded": 0, "linesRemoved": 0}, "usage": None,
                "sources": {"docs": [], "commits": [], "sessions": []}}

@@ -21,9 +21,11 @@ TOKEN_KEYS = ("input", "output", "reasoning", "cacheRead", "cacheWrite", "total"
 PLAN_KEYS = ("phases", "tasks", "estimatedHours")
 GIT_KEYS = ("commits", "linesAdded", "linesRemoved")
 SOURCE_KEYS = ("docs", "commits", "sessions")
-SESSION_KEYS = ("harness", "id", "path", "log", "prompts", "agentTimeMinutes", "tokens", "costUsd")
-ENTRY_KEYS = ("id", "name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "plan", "git", "usage",
-              "sources")
+SESSION_KEYS = ("harness", "models", "id", "path", "log", "prompts", "agentTimeMinutes", "tokens", "costUsd")
+ENTRY_KEYS = ("id", "name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "estimatedBy", "updatedBy",
+              "plan", "git", "usage", "sources")
+SIZE_MAKERS = (("estimatedBy", "storyPoints"), ("updatedBy", "updatedStoryPoints"))  # who made a size, saved with that size
+MAKER_KEYS = ("harness", "models")
 REPLACED_KEYS = ("name", "description", "status")
 MATCHED_BY_KEY = "matchedBy"
 ID_KEY = "id"
@@ -34,8 +36,9 @@ FULL_HASH = re.compile(r"[0-9a-f]{40,64}")  # a SHA-1 or SHA-256 commit hash
 
 def new_feature(name, description):
     return {ID_KEY: None, "name": name, "description": description, "status": ESTIMATED, "storyPoints": None,
-            "updatedStoryPoints": None, "estimatedAt": None, "plan": dict.fromkeys(PLAN_KEYS), "git": dict.fromkeys(GIT_KEYS, 0),
-            "usage": None, "sources": {key: [] for key in SOURCE_KEYS}}
+            "updatedStoryPoints": None, "estimatedAt": None, "estimatedBy": None, "updatedBy": None,
+            "plan": dict.fromkeys(PLAN_KEYS), "git": dict.fromkeys(GIT_KEYS, 0), "usage": None,
+            "sources": {key: [] for key in SOURCE_KEYS}}
 
 
 def files_of(features):
@@ -134,6 +137,7 @@ def check_entry_shape(entry):
     _require(entry.get("usage") is None or isinstance(entry["usage"], dict), "usage must be an object or null")
     _require("name" not in entry or isinstance(entry["name"], str) and entry["name"].strip(), "name must be text")
     _check_id(entry)
+    _check_makers(entry)
     sources = entry.get("sources", {})
     for key in SOURCE_KEYS:
         _require(isinstance(sources.get(key, []), list), "sources.%s must be a list" % key)
@@ -151,6 +155,24 @@ def _check_id(entry):
         return
     _require(isinstance(given, str) and given.strip(), "id must be text or null")
     _require(_id_form(given), "id '%s' has no letter or digit for its file name" % given)
+
+
+def _is_maker(value):
+    """Whether `value` names who made a size: {"harness": one of HARNESSES, "models": a list of names or null}."""
+    if not isinstance(value, dict) or sorted(value) != sorted(MAKER_KEYS) or value["harness"] not in HARNESSES:
+        return False
+    models = value["models"]
+    return models is None or isinstance(models, list) and all(isinstance(name, str) and name for name in models)
+
+
+def _check_makers(entry):
+    """Refuses who made a size without that size, or in another shape than `estimator` prints."""
+    for maker, size in SIZE_MAKERS:
+        if maker not in entry:
+            continue
+        _require(size in entry, "%s is saved with %s" % (maker, size))
+        _require(entry[maker] is None or _is_maker(entry[maker]),
+                 '%s must be {"harness": <harness>, "models": [<model>, ...] or null} or null' % maker)
 
 
 def _is_number(value):
@@ -258,6 +280,7 @@ class Upsert:
                 self._ignore(feature, "storyPoints", value, frozen_reason)
             elif not frozen:
                 feature["storyPoints"] = value
+                feature["estimatedBy"] = None if value is None else entry.get("estimatedBy")
                 if value is not None and "estimatedAt" not in entry:
                     feature["estimatedAt"] = self.today.isoformat()
         if "estimatedAt" in entry:
@@ -269,6 +292,7 @@ class Upsert:
             value = _scale_value(scale, entry["updatedStoryPoints"], "updatedStoryPoints")
             if feature["updatedStoryPoints"] is None:
                 feature["updatedStoryPoints"] = value
+                feature["updatedBy"] = None if value is None else entry.get("updatedBy")
             elif value != feature["updatedStoryPoints"]:
                 self._ignore(feature, "updatedStoryPoints", value, "a set after-delivery size is never changed")
 

@@ -1,8 +1,8 @@
 """`match-sessions <features-json | -> --session-log <path>` (C3) against a fake `session_log.py` run as a real subprocess and a real
 repository: each prompt of a session goes to the features it names or whose commits were made while it ran (a name or commit two
 features share is no evidence), a prompt without evidence follows the prompt before it, sub-agents follow the prompt they started
-under, each feature gets its own slice of the session's numbers, nothing is matched by dates, and every failed call and every
-commit made while no listed prompt ran is named in `missing`."""
+under, each feature gets its own slice of the session's numbers with every counted prompt's number, time, first 60 characters and
+reason, nothing is matched by dates, and every failed call and every commit made while no listed prompt ran is named in `missing`."""
 import json
 import os
 import unittest
@@ -55,8 +55,9 @@ class MatchSessionsTest(ProjectTestCase):
 
     @staticmethod
     def slices(output):
-        """{feature: {session id: counted prompt numbers}}."""
-        return {feature["name"]: {session["id"]: session["prompts"] for session in feature["sessions"]}
+        """{feature: {session id: [(counted prompt number, why it counts)]}}."""
+        return {feature["name"]: {session["id"]: [(prompt["number"], prompt["reason"]) for prompt in session["prompts"]]
+                                  for session in feature["sessions"]}
                 for feature in output["features"]}
 
     @staticmethod
@@ -72,7 +73,8 @@ class MatchSessionsTest(ProjectTestCase):
         self.session("claude", "by-task-id", [prompt_row(at("12:00:00"), "hello"), prompt_row(at("12:05:00"), "/implement (EX-1)")])
         self.session("claude", "wider-id", [prompt_row(at("13:00:00"), "EX-10 please")])
         output = self.match(EXPORT)
-        self.assertEqual({"Export": {"by-path": [1], "by-basename": [1], "by-task-id": [1, 2]}}, self.slices(output))
+        self.assertEqual({"Export": {"by-path": [(1, "names docs/export-brief.md")], "by-basename": [(1, "names export-brief.md")],
+                                     "by-task-id": [(1, "before prompt 2"), (2, "names EX-1")]}}, self.slices(output))
         self.assertEqual({"Export": "prompt"}, self.labels(output))
         self.assertEqual([], output["missing"])
         self.assertNotIn(["claude", "usage", "wider-id", "--json"], self.usage_calls())
@@ -84,14 +86,22 @@ class MatchSessionsTest(ProjectTestCase):
                 prompt_row(at("11:30:00"), "A", seconds=60, total=800, cost=8.0)]
         agents = [agent_row(at("10:21:00"), total=1000, cost=10.0, agent_id="a1"),
                   agent_row(at("10:22:00"), total=3000, cost=30.0, agent_id="a1.1", depth=1),
-                  agent_row(at("11:31:00"), total=2000, cost=20.0, agent_id="a2")]
+                  agent_row(at("11:31:00"), total=2000, cost=20.0, agent_id="a2", models=("review-model",))]
         self.session("omp", "s1", rows, agents, path="/abs/s1.jsonl", log="/abs/logs/s1.md")
         output = self.match(EXPORT, IMPORT)
         # Export: prompts 1-2 (600 + 300 s) and the two agents started under prompt 2; Import: prompts 3-4 (1200 + 60 s), agent a2.
-        self.assertEqual({"Export": [{"harness": "omp", "id": "s1", "path": "/abs/s1.jsonl", "log": "/abs/logs/s1.md",
-                                      "prompts": [1, 2], "agentTimeMinutes": 15, "tokens": tokens_of(4300), "costUsd": 43.0}],
-                          "Import": [{"harness": "omp", "id": "s1", "path": "/abs/s1.jsonl", "log": "/abs/logs/s1.md",
-                                      "prompts": [3, 4], "agentTimeMinutes": 21, "tokens": tokens_of(3200), "costUsd": 32.0}]},
+        self.assertEqual({"Export": [{"harness": "omp", "models": ["agent-model", "main-model"], "id": "s1", "path": "/abs/s1.jsonl",
+                                      "log": "/abs/logs/s1.md",
+                                      "prompts": [{"number": 1, "at": at("10:00:00"), "text": "/implement docs/export-brief.md",
+                                                   "reason": "names docs/export-brief.md"},
+                                                  {"number": 2, "at": at("10:20:00"), "text": "go", "reason": "follows prompt 1"}],
+                                      "agentTimeMinutes": 15, "tokens": tokens_of(4300), "costUsd": 43.0}],
+                          "Import": [{"harness": "omp", "models": ["main-model", "review-model"], "id": "s1", "path": "/abs/s1.jsonl",
+                                      "log": "/abs/logs/s1.md",
+                                      "prompts": [{"number": 3, "at": at("11:00:00"), "text": "/plan-maker import-brief.md",
+                                                   "reason": "names import-brief.md"},
+                                                  {"number": 4, "at": at("11:30:00"), "text": "A", "reason": "follows prompt 3"}],
+                                      "agentTimeMinutes": 21, "tokens": tokens_of(3200), "costUsd": 32.0}]},
                          self.sessions(output))
         self.assertEqual([["omp", "usage", "s1", "--json"]], self.usage_calls())
 
@@ -103,7 +113,8 @@ class MatchSessionsTest(ProjectTestCase):
                                      prompt_row(at("09:30:00"), "continue", seconds=600),
                                      prompt_row(at("09:50:00"), "thanks")])
         output = self.match(EXPORT, IMPORT)
-        self.assertEqual({"Export": {"s1": [1, 2]}, "Import": {"s1": [3, 4]}}, self.slices(output))
+        self.assertEqual({"Export": {"s1": [(1, "before prompt 2"), (2, "made 1 of its commits")]},
+                          "Import": {"s1": [(3, "made 1 of its commits"), (4, "follows prompt 3")]}}, self.slices(output))
         self.assertEqual([], output["missing"])
 
     def test_a_named_feature_beats_commits_and_otherwise_the_most_commits_win_a_tie_counting_for_each(self):
@@ -116,7 +127,17 @@ class MatchSessionsTest(ProjectTestCase):
         self.session("omp", "s1", [prompt_row(at("09:00:00"), "go", seconds=600),
                                    prompt_row(at("09:30:00"), "/implement docs/import-brief.md", seconds=600),
                                    prompt_row(at("10:00:00"), "go on", seconds=600)])
-        self.assertEqual({"Export": {"s1": [1, 3]}, "Import": {"s1": [2, 3]}}, self.slices(self.match(EXPORT, IMPORT)))
+        self.assertEqual({"Export": {"s1": [(1, "made 2 of its commits"), (3, "made 1 of its commits")]},
+                          "Import": {"s1": [(2, "names docs/import-brief.md"), (3, "made 1 of its commits")]}},
+                         self.slices(self.match(EXPORT, IMPORT)))
+
+    def test_a_counted_prompt_shows_its_first_60_characters_without_tags_or_line_breaks(self):
+        text = ("<command-name>/implement</command-name>\n<command-args>docs/export-brief.md\tthen run every remaining"
+                " task</command-args>")
+        self.session("claude", "s1", [prompt_row(at("10:00:00"), text)])
+        (prompt,) = self.sessions(self.match(EXPORT))["Export"][0]["prompts"]
+        self.assertEqual({"number": 1, "at": at("10:00:00"), "text": "/implement docs/export-brief.md then run every remaining tas",
+                          "reason": "names docs/export-brief.md"}, prompt)
 
     def test_names_and_commits_two_features_share_are_no_evidence(self):
         export = {"name": "Export", "docs": [EXPORT_BRIEF, "docs/shared-plan.md"], "taskIds": ["EX-1", "BE-1"]}
@@ -125,7 +146,7 @@ class MatchSessionsTest(ProjectTestCase):
         self.session("claude", "shared", [prompt_row(at("09:00:00"), "read docs/shared-plan.md, then BE-1", seconds=600)])
         self.session("claude", "own", [prompt_row(at("10:00:00"), "EX-1")])
         output = self.match(export, imported)
-        self.assertEqual({"Export": {"own": [1]}, "Import": {}}, self.slices(output))
+        self.assertEqual({"Export": {"own": [(1, "names EX-1")]}, "Import": {}}, self.slices(output))
         self.assertEqual({"Export": "prompt", "Import": "none"}, self.labels(output))
 
     def test_a_session_inside_a_features_commit_dates_without_evidence_is_not_matched(self):
@@ -152,8 +173,9 @@ class MatchSessionsTest(ProjectTestCase):
         self.session_log.reply("claude usage old --json", usage_payload("claude", "old", 600, total=1000, cost=2.5,
                                                                         log="/abs/logs/old.md"))
         output = self.match(EXPORT, IMPORT)
-        self.assertEqual({"Export": [{"harness": "claude", "id": "old", "path": None, "log": "/abs/logs/old.md", "prompts": None,
-                                      "agentTimeMinutes": 10, "tokens": tokens_of(1000), "costUsd": 2.5}],
+        self.assertEqual({"Export": [{"harness": "claude", "models": ["main-model"], "id": "old", "path": None,
+                                      "log": "/abs/logs/old.md", "prompts": None, "agentTimeMinutes": 10, "tokens": tokens_of(1000),
+                                      "costUsd": 2.5}],
                           "Import": []}, self.sessions(output))
         self.assertEqual(["session-log claude usage old has no prompt rows; the whole session is counted for Export"],
                          output["missing"])
@@ -164,7 +186,7 @@ class MatchSessionsTest(ProjectTestCase):
         self.edit(IMPORT_BRIEF, at("12:00:00"))
         self.session("omp", "s1", [prompt_row(at("09:00:00"), "go", seconds=600)])
         output = self.match(EXPORT, IMPORT)
-        self.assertEqual({"Export": {"s1": [1]}, "Import": {}}, self.slices(output))
+        self.assertEqual({"Export": {"s1": [(1, "made 1 of its commits")]}, "Import": {}}, self.slices(output))
         self.assertEqual(["Export: no session found for 1 of 2 commits", "Import: no session found for 1 of 1 commits"],
                          output["missing"])
 
@@ -178,8 +200,8 @@ class MatchSessionsTest(ProjectTestCase):
                           "session-log omp usage o1 failed (exit 1): session-log: no such session",
                           "session-log omp usage o1 has no prompt rows; the whole session is counted for Export"],
                          output["missing"])
-        self.assertEqual({"Export": [{"harness": "omp", "id": "o1", "path": "/abs/o1.jsonl", "log": None, "prompts": None,
-                                      **NO_NUMBERS}]}, self.sessions(output))
+        self.assertEqual({"Export": [{"harness": "omp", "models": None, "id": "o1", "path": "/abs/o1.jsonl", "log": None,
+                                      "prompts": None, **NO_NUMBERS}]}, self.sessions(output))
 
     def test_session_log_runs_in_the_project_root_for_all_five_harnesses(self):
         os.makedirs(self.path("src"))

@@ -1,6 +1,6 @@
 """The project's git history through the injected process runner: every commit reachable from HEAD with its author time, message
-and numstat line counts; the commits that change given paths; the author times of given commits; the author time of the commit that
-first added a path; one commit resolved to its full hash."""
+and numstat line counts; the commits that change a path, followed back through its moves and copies; the author times of given
+commits; the author time of the commit that first added a path; one commit resolved to its full hash."""
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -66,11 +66,12 @@ class GitHistory:
             commits.append(Commit(commit_hash, datetime.fromisoformat(authored_at), message, *_line_counts(numstat)))
         return commits
 
-    def changing(self, paths):
-        """The hashes of the commits reachable from HEAD that change any of `paths` (root-relative)."""
-        if not paths or not self._has_commits():
+    def following(self, path):
+        """The hashes of the commits reachable from HEAD that change `path` (root-relative), followed back through its moves and
+        copies (`git log --follow`), so a plan archived from `Backlog/` to `Completed/` keeps the commits made before the move."""
+        if not self._has_commits():
             return set()
-        return set(self._git("log", "--format=%H", "--", *paths).split())
+        return set(self._git("log", "--follow", "--format=%H", "--", path).split())
 
     def authored_at(self, hashes):
         """{hash: author time} of the given commits that the repository holds."""

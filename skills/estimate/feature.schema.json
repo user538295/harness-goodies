@@ -15,6 +15,14 @@
     "storyPoints": { "$ref": "#/$defs/storyPoints" },
     "updatedStoryPoints": { "$ref": "#/$defs/storyPoints" },
     "estimatedAt": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "estimatedBy": {
+      "description": "Who made `storyPoints`, as `estimate.py estimator` printed it when the size was saved; null: not recorded.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sizeMaker" }]
+    },
+    "updatedBy": {
+      "description": "Who set `updatedStoryPoints`, as `estimate.py estimator` printed it when the size was saved; null: not recorded.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sizeMaker" }]
+    },
     "plan": {
       "type": "object",
       "additionalProperties": false,
@@ -49,6 +57,15 @@
   },
   "$defs": {
     "storyPoints": { "type": ["number", "string", "null"] },
+    "sizeMaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "models"],
+      "properties": {
+        "harness": { "enum": ["claude", "codex", "cursor", "omp", "opencode"] },
+        "models": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 } }
+      }
+    },
     "count": { "type": "integer", "minimum": 0 },
     "nullableCount": { "type": ["integer", "null"], "minimum": 0 },
     "nullableAmount": { "type": ["number", "null"], "minimum": 0 },
@@ -71,14 +88,28 @@
       "required": ["harness", "id", "path", "log", "agentTimeMinutes", "tokens", "costUsd"],
       "properties": {
         "harness": { "enum": ["claude", "codex", "cursor", "omp", "opencode"] },
+        "models": {
+          "description": "The models the counted prompts and sub-agents of the session ran on, as session-log names them; null: session-log did not say.",
+          "type": ["array", "null"],
+          "items": { "type": "string", "minLength": 1 }
+        },
         "id": { "type": "string", "minLength": 1 },
         "path": { "type": ["string", "null"] },
         "log": { "type": ["string", "null"] },
         "prompts": {
-          "description": "The 1-based numbers of the session's prompts counted for this feature (the rows of `session-log usage`); null: the whole session.",
+          "description": "Each prompt of the session counted for this feature (the rows of `session-log usage`, numbered from 1), with when it was sent, its first 60 characters and why it counts; null: the whole session.",
           "type": ["array", "null"],
-          "uniqueItems": true,
-          "items": { "type": "integer", "minimum": 1 }
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["number", "at", "text", "reason"],
+            "properties": {
+              "number": { "type": "integer", "minimum": 1 },
+              "at": { "type": "string", "minLength": 1 },
+              "text": { "type": "string" },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
         },
         "agentTimeMinutes": { "$ref": "#/$defs/nullableCount" },
         "tokens": { "$ref": "#/$defs/tokens" },

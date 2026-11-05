@@ -15,12 +15,12 @@ HASH_B = "b" * 40
 HASH_C = "c" * 40
 
 
-def session(harness, session_id, minutes, tokens=None, cost=1.25, path=None, log=None, prompts=None):
+def session(harness, session_id, minutes, tokens=None, cost=1.25, path=None, log=None, prompts=None, models=None):
     """A C2 session entry; `tokens` overrides some token counts of the default 10/20/None/30/40 = 100 split."""
     counts = {"input": 10, "output": 20, "reasoning": None, "cacheRead": 30, "cacheWrite": 40, "total": 100}
     counts.update(tokens or {})
-    return {"harness": harness, "id": session_id, "path": path, "log": log, "prompts": prompts, "agentTimeMinutes": minutes,
-            "tokens": counts, "costUsd": cost}
+    return {"harness": harness, "models": models, "id": session_id, "path": path, "log": log, "prompts": prompts,
+            "agentTimeMinutes": minutes, "tokens": counts, "costUsd": cost}
 
 
 class SaveTestCase(ProjectTestCase):
@@ -56,7 +56,8 @@ class NewFeatureTest(SaveTestCase):
     def test_the_stored_file_starts_with_its_version_and_keeps_the_brief_key_order(self):
         self.save({"name": "Export", "description": "PDF export"})
         self.assertEqual(["version", "id", "name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt",
-                          "plan", "git", "usage", "sources"], list(self.raw(FEATURES_PATH + "/2026-11-04-export.json")))
+                          "estimatedBy", "updatedBy", "plan", "git", "usage", "sources"],
+                         list(self.raw(FEATURES_PATH + "/2026-11-04-export.json")))
 
     def test_saving_one_feature_leaves_the_other_files_untouched(self):
         self.seed(document(new_feature("A"), new_feature("B")))
@@ -347,6 +348,42 @@ class LatestValueRulesTest(SaveTestCase):
         self.assert_error(self.save({"name": "A", "status": "done"}), EXIT_RUNTIME_ERROR, "unknown status 'done'")
 
 
+OPUS = {"harness": "claude", "models": ["claude-opus-5-5"]}
+CODEX = {"harness": "codex", "models": ["gpt-5.5"]}
+
+
+class EstimatorTest(SaveTestCase):
+    def test_an_estimate_keeps_who_made_it_and_a_new_estimate_without_one_clears_it(self):
+        self.seed(document(new_feature("A")))
+        self.assertEqual(OPUS, self.assert_saved(self.save({"name": "A", "storyPoints": 5, "estimatedBy": OPUS}))["estimatedBy"])
+        self.assertIsNone(self.assert_saved(self.save({"name": "A", "storyPoints": 8}))["estimatedBy"])
+
+    def test_a_frozen_estimate_keeps_who_made_it(self):
+        self.seed(document(new_feature("A", status="in-progress", storyPoints=8, estimatedBy=OPUS)))
+        saved = self.assert_saved(self.save({"name": "A", "storyPoints": 13, "estimatedBy": CODEX}))
+        self.assertEqual((8, OPUS), (saved["storyPoints"], saved["estimatedBy"]))
+
+    def test_the_after_delivery_size_keeps_who_set_it_and_neither_changes_after(self):
+        self.seed(document(new_feature("A", status="delivered")))
+        self.assert_saved(self.save({"name": "A", "updatedStoryPoints": 13, "updatedBy": OPUS}))
+        saved = self.assert_saved(self.save({"name": "A", "updatedStoryPoints": 8, "updatedBy": CODEX}))
+        self.assertEqual((13, OPUS), (saved["updatedStoryPoints"], saved["updatedBy"]))
+
+    def test_who_made_a_size_without_the_size_is_a_bad_argument(self):
+        for field, size in (("estimatedBy", "storyPoints"), ("updatedBy", "updatedStoryPoints")):
+            with self.subTest(field=field):
+                self.assert_error(self.save({"name": "A", "description": "x", field: OPUS}), EXIT_BAD_ARGUMENTS,
+                                  "%s is saved with %s" % (field, size))
+
+    def test_who_made_a_size_in_another_shape_is_a_bad_argument(self):
+        for value in ({"harness": "vim", "models": None}, {"harness": "claude"}, {"harness": "claude", "models": [3]},
+                      {**OPUS, "effort": "high"}, "claude"):
+            with self.subTest(value=value):
+                self.assert_error(self.save({"name": "A", "description": "x", "storyPoints": 5, "estimatedBy": value}),
+                                  EXIT_BAD_ARGUMENTS, "estimatedBy must be")
+
+
+
 class PathTest(SaveTestCase):
     def test_docs_are_stored_root_relative_from_any_folder_and_outside_paths_absolute(self):
         os.makedirs(self.path("src"))
@@ -395,7 +432,9 @@ class SessionTest(SaveTestCase):
         self.seed(document(new_feature("A", sources={"docs": [], "commits": [], "sessions": stored},
                                        usage={"matchedBy": "prompt", "sessions": 2, "agentTimeMinutes": 109,
                                               "tokens": session("claude", "s1", 10)["tokens"], "costUsd": 2.35})))
-        newer = session("claude", "s1", 300, tokens={"input": 1000, "total": 1090}, cost=20.20, path="/abs/s1.jsonl", prompts=[2, 3])
+        prompts = [{"number": 2, "at": "2026-10-01T10:00:00+00:00", "text": "go on", "reason": "follows prompt 1"}]
+        newer = session("claude", "s1", 300, tokens={"input": 1000, "total": 1090}, cost=20.20, path="/abs/s1.jsonl", prompts=prompts,
+                        models=["claude-opus-5-5"])
         other = session("codex", "s1", 45, cost=0.15)
         saved = self.assert_saved(self.save({"name": "A", "sources": {"sessions": [newer, other]}}))
         self.assertEqual([newer, other], saved["sources"]["sessions"])

@@ -40,6 +40,8 @@
         <li>The original SP freezes at the first task commit; the size judged at delivery goes into <code>updatedStoryPoints</code>. The same number in both means the estimate was right.</li>
         <li>Only delivered features are references, compared by their after-delivery SP.</li>
         <li>Sessions are matched prompt by prompt: a prompt belongs to the feature whose documents or task IDs it names, or whose commits were made while it ran; a follow-up like "go" stays with the prompt before it. A session that worked on three features is split three ways, never counted three times, and nothing is matched by dates. A document, task ID or commit that several features share (every plan's <code>BE-1</code>) counts for none of them.</li>
+        <li>A feature's commits are those that change its planning documents, followed back through moves (a plan archived from <code>Backlog/</code> to <code>Completed/</code> keeps its earlier commits), and those whose subject names the feature's own ID in its scope (<code>feat(A7): …</code>). An ID anywhere else in a message, and task IDs, link nothing; a commit several features claim, like one that archives several plans, counts for none of them.</li>
+        <li>Every saved SP records who made it (<code>estimatedBy</code>, <code>updatedBy</code>: the harness and the model), and every session its harness and models; each counted prompt shows its time, its opening text and why it counts.</li>
         <li>Missing data stays empty and is listed in the report — nothing is guessed.</li>
         <li>With no delivered features yet, you still get an SP, with a warning to run <code>/estimate init</code>.</li>
         <li>Scales whose sizes can't be added up (emoji, T-shirt sizes) get no split suggestion.</li>

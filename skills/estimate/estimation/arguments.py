@@ -30,6 +30,7 @@ COMMANDS = {
     "git-stats": Spec(("<features-json | ->",), {}),
     "match-sessions": Spec(("<features-json | ->",), {"--session-log": Kind.REQUIRED}),
     "record-commit": Spec(("<plan-file>", "<commit>"), {HARNESS_OPTION: Kind.REQUIRED, "--session-log": Kind.SINGLE}),
+    "estimator": Spec((), {HARNESS_OPTION: Kind.REQUIRED, "--session-log": Kind.SINGLE}),
 }
 
 
