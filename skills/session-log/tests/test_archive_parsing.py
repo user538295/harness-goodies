@@ -59,11 +59,15 @@ class LogParsingTest(unittest.TestCase):
             self.assertIsNone(out.read_log(path))
 
 
-def _totals(total):
+REPORT_MODELS = ("known", "unpriced")  # the models of `ReportParsingTest._report`
+
+
+def _totals(total, models=REPORT_MODELS):
     return ReportTotals(working_seconds=int(total.working_time.total_seconds()), input_tokens=total.input_tokens,
                         output_tokens=total.output_tokens, reasoning_tokens=total.reasoning_tokens,
                         cache_read_tokens=total.cache_read_tokens, cache_write_tokens=total.cache_write_tokens,
-                        total_tokens=total.total_tokens, price_cents=total.price_cents, price_complete=not total.price_incomplete)
+                        total_tokens=total.total_tokens, price_cents=total.price_cents, price_complete=not total.price_incomplete,
+                        models=models)
 
 
 class ReportParsingTest(unittest.TestCase):
@@ -92,6 +96,13 @@ class ReportParsingTest(unittest.TestCase):
                 self.assertEqual(_totals(report.total), parsed)
         long = replace(self._report(), total=replace(base, working_time=LONG_WORK))
         self.assertEqual(LONG_WORK_SECONDS, writer().parse_report(writer().render_report(long)).working_seconds)
+
+    def test_the_parsed_totals_name_every_model_of_the_report_and_none_for_a_report_without_one(self):
+        base = self._report().total
+        for model_names, models in (("claude-opus-5-5:fast+gpt-5.5", ("claude-opus-5-5:fast", "gpt-5.5")), ("-", ())):
+            with self.subTest(model_names=model_names):
+                report = replace(self._report(), total=replace(base, model_names=model_names))
+                self.assertEqual(models, writer().parse_report(writer().render_report(report)).models)
 
     def test_totals_of_a_usage_report_equal_its_total_block(self):
         report = self._report(Harness.OMP)

@@ -15,7 +15,7 @@ from tests.test_usage_target import ONE_SECOND, PROJECT, _reply, _user
 
 # `_install` writes one request of 1 input and 1 output token on the unpriced `claude-x` per prompt, answered a second later.
 TWO_PROMPTS = ReportTotals(working_seconds=2, input_tokens=2, output_tokens=2, reasoning_tokens=None, cache_read_tokens=0,
-                           cache_write_tokens=0, total_tokens=4, price_cents=0, price_complete=False)
+                           cache_write_tokens=0, total_tokens=4, price_cents=0, price_complete=False, models=("claude-x",))
 
 
 class UsageDataTest(ListTestCase):

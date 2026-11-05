@@ -173,7 +173,8 @@ class UsageRenderingTest(unittest.TestCase):
 
 
 TOTALS = ReportTotals(working_seconds=11280, input_tokens=190200, output_tokens=121300, reasoning_tokens=None, cache_read_tokens=27805100,
-                      cache_write_tokens=1046900, total_tokens=29163500, price_cents=2795, price_complete=True)
+                      cache_write_tokens=1046900, total_tokens=29163500, price_cents=2795, price_complete=True,
+                      models=("claude-opus-5-5", "claude-opus-5-5:fast"))
 PLUS_TWO = timezone(timedelta(hours=2))
 
 
@@ -188,7 +189,8 @@ class UsageJsonRenderingTest(unittest.TestCase):
             "harness": "claude", "id": SESSION_ID, "projectDir": "/work/proj", "path": SESSION_SOURCE, "log": PROMPT_LOG,
             "agentTimeSeconds": 11280,
             "tokens": {"input": 190200, "output": 121300, "reasoning": None, "cacheRead": 27805100, "cacheWrite": 1046900, "total": 29163500},
-            "costUsd": 27.95, "costComplete": True, "prompts": None, "subAgents": None,
+            "costUsd": 27.95, "costComplete": True, "models": ["claude-opus-5-5", "claude-opus-5-5:fast"], "prompts": None,
+            "subAgents": None,
         }, json.loads(render_usage_json(UsageResult("report\n", data))))
 
     def test_a_live_session_without_source_log_or_project_renders_nulls_reasoning_and_an_incomplete_cost(self):
@@ -215,17 +217,17 @@ class UsageJsonRenderingTest(unittest.TestCase):
             {"at": "2026-03-04T05:06:07+00:00", "replyAt": "2026-03-04T05:06:12+00:00", "text": "first <b>line</b>\nsecond line",
              "agentTimeSeconds": 4,
              "tokens": {"input": 1000, "output": 500, "reasoning": None, "cacheRead": 2000, "cacheWrite": 100, "total": 3600},
-             "costUsd": 0.02325, "costComplete": True},
+             "costUsd": 0.02325, "costComplete": True, "models": ["known"]},
             {"at": "2026-03-04T05:07:07+00:00", "replyAt": None, "text": "open", "agentTimeSeconds": 0,
              "tokens": {"input": 5, "output": 0, "reasoning": None, "cacheRead": 0, "cacheWrite": 0, "total": 5},
-             "costUsd": 0.0, "costComplete": False},
+             "costUsd": 0.0, "costComplete": False, "models": ["unpriced"]},
         ], parsed["prompts"])
         self.assertEqual([
             {"id": "parent", "type": "worker", "startedAt": "2026-03-04T05:06:17+00:00", "depth": 0, "tokens": None,
-             "costUsd": 0.5, "costComplete": False},
+             "costUsd": 0.5, "costComplete": False, "models": ["known"]},
             {"id": "child", "type": "explore", "startedAt": "2026-03-04T05:06:27+00:00", "depth": 1,
              "tokens": {"input": 0, "output": 7, "reasoning": None, "cacheRead": 0, "cacheWrite": 0, "total": 7},
-             "costUsd": 0.25, "costComplete": True},
+             "costUsd": 0.25, "costComplete": True, "models": ["known"]},
         ], parsed["subAgents"])
 
 

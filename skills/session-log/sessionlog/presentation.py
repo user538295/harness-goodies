@@ -12,7 +12,7 @@ from typing import Callable, List, Optional, Sequence
 from .commands import LatestSession, ListedSession, ListResult, OffResult, OnResult, StatusResult, UnreadableItem, UsageResult
 from .leftover_port import Leftover
 from .model import Prompt
-from .pricing import PRICED, PromptRow, SubAgentRow, Usage
+from .pricing import PRICED, PromptRow, SubAgentRow, Usage, model_list
 from .probe_port import MINIMUM_TEXT, ProbeResult
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
@@ -125,12 +125,12 @@ def _cost_json(row: Usage) -> dict:
 def _prompt_json(prompt: Prompt, row: PromptRow) -> dict:
     return {"at": _utc_text(prompt.submitted_at), "replyAt": None if prompt.reply_at is None else _utc_text(prompt.reply_at),
             "text": prompt.text, "agentTimeSeconds": int(row.working_time.total_seconds()), "tokens": _tokens_json(row),
-            **_cost_json(row)}
+            **_cost_json(row), "models": list(model_list(row.model_names))}
 
 
 def _sub_agent_json(row: SubAgentRow) -> dict:
     return {"id": row.agent_id, "type": row.type, "startedAt": _utc_text(row.started_at), "depth": row.depth,
-            "tokens": _tokens_json(row), **_cost_json(row)}
+            "tokens": _tokens_json(row), **_cost_json(row), "models": list(model_list(row.model_names))}
 
 
 def render_usage_json(result: UsageResult) -> str:
@@ -144,7 +144,7 @@ def render_usage_json(result: UsageResult) -> str:
         "agentTimeSeconds": totals.working_seconds,
         "tokens": {"input": totals.input_tokens, "output": totals.output_tokens, "reasoning": totals.reasoning_tokens,
                    "cacheRead": totals.cache_read_tokens, "cacheWrite": totals.cache_write_tokens, "total": totals.total_tokens},
-        "costUsd": totals.price_cents / CENTS_PER_DOLLAR, "costComplete": totals.price_complete,
+        "costUsd": totals.price_cents / CENTS_PER_DOLLAR, "costComplete": totals.price_complete, "models": list(totals.models),
         "prompts": None if rows is None else [_prompt_json(prompt, row) for prompt, row in rows.prompts],
         "subAgents": None if rows is None else [_sub_agent_json(row) for row in rows.sub_agents]})
 

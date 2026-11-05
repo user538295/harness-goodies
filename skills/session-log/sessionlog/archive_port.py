@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import NamedTuple, Optional, Protocol, Tuple
 
 from .model import Session
-from .pricing import Total, UsageReport
+from .pricing import Total, UsageReport, model_list
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,8 @@ class ArchivedLog:
 @dataclass(frozen=True)
 class ReportTotals:
     """The numbers of a report's TOTAL block: working time in whole seconds, tokens (`reasoning_tokens` None when the harness
-    records none), the price in whole cents and whether it is complete (the report shows an incomplete one as `≥ $x (incomplete)`)."""
+    records none), the price in whole cents and whether it is complete (the report shows an incomplete one as `≥ $x (incomplete)`),
+    and the models the session's requests name."""
 
     working_seconds: int
     input_tokens: int
@@ -52,12 +53,14 @@ class ReportTotals:
     total_tokens: int
     price_cents: int
     price_complete: bool
+    models: Tuple[str, ...]
 
     @classmethod
     def of(cls, total: Total) -> "ReportTotals":
         """The numbers the TOTAL block of `total`'s report shows."""
         return cls(max(0, int(total.working_time.total_seconds())), total.input_tokens, total.output_tokens, total.reasoning_tokens,
-                   total.cache_read_tokens, total.cache_write_tokens, total.total_tokens, total.price_cents, not total.price_incomplete)
+                   total.cache_read_tokens, total.cache_write_tokens, total.total_tokens, total.price_cents, not total.price_incomplete,
+                   model_list(total.model_names))
 
 
 class Archive(Protocol):

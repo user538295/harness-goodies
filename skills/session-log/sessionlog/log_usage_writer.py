@@ -10,7 +10,7 @@ from typing import Callable, List, Optional, Tuple
 
 from .archive_port import ArchivedLog, ArchiveFiles, ReportTotals, WriteOutcome
 from .model import Prompt, Session
-from .pricing import PARTIAL, PRICED, UNKNOWN, Price, UsageReport
+from .pricing import PARTIAL, PRICED, UNKNOWN, Price, UsageReport, model_list
 from .safe_paths import FOLDER_LINK_REASON, LINK_REASON, is_link, make_real_folders
 from .temp_files import STALE_TEMP_TAIL, publish, remove_stale_temps, temp_name
 
@@ -46,8 +46,8 @@ _TOTAL_WORKING_TIME = re.compile(r"working time: (?P<hours>\d+):(?P<minutes>\d{2
 _TOTAL_ESTIMATE = re.compile(  # what `_estimate` writes for the total: a price is always known there, complete or not
     r"est\. used token: input: (?P<input>\d+), output: (?P<output>\d+)(?:, reasoning: (?P<reasoning>\d+))?, "
     r"cache_create: (?P<cache_write>\d+), cache_read: (?P<cache_read>\d+), total_tokens: (?P<total>\d+), "
-    r"price: (?P<incomplete>%s)?(?P<sign>-?)\$(?P<dollars>\d+)\.(?P<cents>\d{2})(?(incomplete) \(incomplete\))(?:%s)?, model: "
-    % (INCOMPLETE_MARK, re.escape(API_EQUIVALENT)))
+    r"price: (?P<incomplete>%s)?(?P<sign>-?)\$(?P<dollars>\d+)\.(?P<cents>\d{2})(?(incomplete) \(incomplete\))(?:%s)?, "
+    r"model: (?P<models>.+?), effort: " % (INCOMPLETE_MARK, re.escape(API_EQUIVALENT)))
 
 
 def _offset_label(moment: datetime) -> str:
@@ -264,7 +264,8 @@ class LogUsageWriter:
             input_tokens=int(tokens["input"]), output_tokens=int(tokens["output"]),
             reasoning_tokens=None if tokens["reasoning"] is None else int(tokens["reasoning"]),
             cache_read_tokens=int(tokens["cache_read"]), cache_write_tokens=int(tokens["cache_write"]), total_tokens=int(tokens["total"]),
-            price_cents=-cents if tokens["sign"] else cents, price_complete=tokens["incomplete"] is None)
+            price_cents=-cents if tokens["sign"] else cents, price_complete=tokens["incomplete"] is None,
+            models=model_list(tokens["models"]))
 
     @staticmethod
     def _report_path(log_path: str) -> str:

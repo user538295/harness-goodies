@@ -17,6 +17,13 @@ PRICED = "priced"
 PARTIAL = "partial"
 UNKNOWN = "unknown"
 REASONING_HARNESSES = (Harness.OMP, Harness.OPENCODE)  # the harnesses whose requests record reasoning tokens; the old report showed them
+NO_MODEL = "-"  # `model_names` of a row whose requests name no model
+MODEL_SEPARATOR = "+"
+
+
+def model_list(model_names: str) -> Tuple[str, ...]:
+    """The model names a `model_names` text joins, in its order; none for `NO_MODEL`."""
+    return () if model_names == NO_MODEL else tuple(model_names.split(MODEL_SEPARATOR))
 
 
 def _whole_seconds(span: timedelta) -> timedelta:
@@ -183,7 +190,8 @@ class PricingRules:
                     cache_read_tokens=cache_read, cache_write_tokens=cache_write,
                     total_tokens=None if missing else input_tokens + output_tokens + cache_read + cache_write,
                     price=Price(_cents(amount), status, amount),
-                    model_names="+".join(sorted({r.model_name + (":fast" if r.fast else "") for r in requests if r.model_name})) or "-",
+                    model_names=MODEL_SEPARATOR.join(sorted({r.model_name + (":fast" if r.fast else "") for r in requests if r.model_name}))
+                    or NO_MODEL,
                     effort="+".join(sorted({r.effort for r in requests if r.effort})) or None,
                     reasoning_tokens=sum(r.reasoning_tokens or 0 for r in requests) if records_reasoning else None)
 
@@ -216,7 +224,7 @@ class PricingRules:
                       output_tokens=sum(row.output_tokens for row in rows),
                       cache_read_tokens=sum(row.cache_read_tokens for row in rows),
                       cache_write_tokens=sum(row.cache_write_tokens for row in rows),
-                      model_names="+".join(sorted({name for row in rows for name in row.model_names.split("+") if name != "-"})) or "-",
+                      model_names=MODEL_SEPARATOR.join(sorted({name for row in rows for name in model_list(row.model_names)})) or NO_MODEL,
                       effort="+".join(sorted({effort for row in rows if row.effort for effort in row.effort.split("+")})) or None,
                       label="tokens: main session only — Cursor does not record sub-agent tokens" if cursor else None,
                       reasoning_tokens=sum(row.reasoning_tokens for row in rows) if records_reasoning else None)
