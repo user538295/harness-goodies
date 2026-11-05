@@ -1,15 +1,21 @@
 """The C3 commands. Each returns (payload printed as JSON on stdout, warnings printed as `estimate:` lines on stderr); every command
 that reads the estimate files also warns about each name, id and doc that several feature files hold."""
 import json
+import os
 
 from estimation.doc_stats import doc_stats
 from estimation.errors import ArgumentError, EstimateError
 from estimation.evidence import Evidence, FeatureClaim, feature_commits
 from estimation.features import (DELIVERED, FILE_KEY, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, Upsert, check_entry_shape,
-                                 derive_usage, duplicates, files_of, merge_plan, stored_matched_by, upsert_session, weakest)
+                                 derive_usage, duplicates, files_of, is_reference, merge_plan, stored_matched_by, upsert_session,
+                                 weakest)
+from estimation.findings import texts
 from estimation.first_day import first_day
 from estimation.git_history import GitHistory
+from estimation.report_data import analyse
+from estimation.report_page import render
 from estimation.sessions import NO_ROWS, SessionLog, SessionMatcher, SessionUsage
+from estimation.store import DATA_FOLDER
 
 STDIN_MARK = "-"
 NO_PROMPT_OF_FEATURE = "the latest %s session %s shows no prompt of %s"
@@ -19,15 +25,21 @@ LATEST_USAGE = "session-log %s usage --latest"
 LATEST_NAMED_NO_SESSION = LATEST_USAGE + " named no session"
 LAST_PROMPT_WITHOUT_MODELS = LATEST_USAGE + " names none for its last prompt"
 NO_MODELS = "models not recorded: %s"
+REPORT_FILE = "estimation-report.html"  # under DATA_FOLDER when no --out is given
+REPORT_TEMPLATE = "estimation-report.html"
+CHART_SOURCE = "chart.umd.js"
+MISSING_COMMITS = "%d %s not found in git: %s"
 
 
 class Commands:
-    def __init__(self, project, store, environment, plan_progress):
-        """`plan_progress` is the default `plan-progress.sh` (the /implement skill's, next to this skill)."""
+    def __init__(self, project, store, environment, plan_progress, report_assets):
+        """`plan_progress` is the default `plan-progress.sh` (the /implement skill's, next to this skill); `report_assets` is the
+        folder of the report's page template and its vendored Chart.js."""
         self.project = project
         self.store = store
         self.environment = environment
         self.plan_progress = plan_progress
+        self.report_assets = report_assets
 
     def _json_argument(self, text, what):
         """The JSON of an argument (`-` reads stdin); unparseable JSON is a bad argument."""
@@ -46,8 +58,7 @@ class Commands:
     def read(self, references):
         document, warnings = self._load()
         if references:
-            document["features"] = [feature for feature in document["features"]
-                                    if feature.get("status") == DELIVERED and feature.get("updatedStoryPoints") is not None]
+            document["features"] = [feature for feature in document["features"] if is_reference(feature)]
         return document, warnings
 
     def save(self, entry_text):
@@ -80,7 +91,8 @@ class Commands:
         return doc_stats(self.project.absolute(doc), script, self.environment.run), []
 
     def _features(self, features_text):
-        """The FeatureClaims of a `{"features": [{"name", "id", "docs", "taskIds"}]}` argument, in its order."""
+        """The FeatureClaims of a `{"features": [{"name", "id", "docs", "taskIds", "commits"}]}` argument, in its order; `commits`
+        (optional) holds the full hashes a checker accepted for the feature."""
         payload = self._json_argument(features_text, "features input")
         items = payload.get("features") if isinstance(payload, dict) else None
         if not isinstance(items, list):
@@ -94,8 +106,11 @@ class Commands:
                 raise ArgumentError("id of '%s' must be text or null" % item["name"])
             if not all(isinstance(value, str) and value for value in [*docs, *task_ids]):
                 raise ArgumentError("docs and taskIds of '%s' must be lists of strings" % item["name"])
+            commits = item.get("commits") or []
+            if not (isinstance(commits, list) and all(isinstance(value, str) and value for value in commits)):
+                raise ArgumentError("commits of '%s' must be a list of strings" % item["name"])
             features.append(FeatureClaim(item["name"], tuple(self.project.stored(doc) for doc in docs), tuple(task_ids),
-                                         feature_id))
+                                         feature_id, tuple(commits)))
         return features
 
     def _history(self):
@@ -104,13 +119,21 @@ class Commands:
     def git_stats(self, features_text):
         claimed = feature_commits(self._history(), self._features(features_text))
         stats = [{"name": name, "commits": [commit.hash for commit in commits], "count": len(commits),
-                  "linesAdded": sum(commit.added for commit in commits), "linesRemoved": sum(commit.removed for commit in commits)}
+                  "linesAdded": sum(commit.added for commit in commits),
+                  "linesRemoved": sum(commit.removed for commit in commits),
+                  "candidates": [{"hash": commit.hash, "subject": commit.message.split("\n", 1)[0]}
+                                 for commit in claimed.candidates[name]]}
                  for name, commits in claimed.found.items()]
         shared = ", ".join(commit.hash[:SHORT_HASH] for commit in claimed.shared)
         return {"features": stats}, [SHARED_COMMITS % shared] if shared else []
 
-    def _session_log(self, script):
-        return SessionLog(self.project.absolute(script), self.project.root, self.environment.run)
+    def _session_log(self, script, session_dir=None):
+        """session-log run in the project root, or in `session_dir` (relative to the working folder): the folder the running
+        session was started in, where `usage --latest` finds that session even when the project is another folder."""
+        folder = self.project.root if session_dir is None else self.project.absolute(session_dir)
+        if not os.path.isdir(folder):
+            raise ArgumentError("--session-dir %s is not a folder" % session_dir)
+        return SessionLog(self.project.absolute(script), folder, self.environment.run)
 
     def match_sessions(self, features_text, session_log):
         features = self._features(features_text)
@@ -135,14 +158,14 @@ class Commands:
                         {feature["name"]: {commit: times[commit] for commit in feature["sources"]["commits"] if commit in times}
                          for feature in features})
 
-    def _record_latest_session(self, document, feature, history, harness, session_log, missing):
-        """Upserts the feature's slice of the harness's latest session of the project (matched by implement); returns the feature's
-        new label."""
+    def _record_latest_session(self, document, feature, history, harness, session_log, session_dir, missing):
+        """Upserts the feature's slice of the harness's latest session of the session folder (matched by implement); returns the
+        feature's new label."""
         matched_by = stored_matched_by(feature)
         if session_log is None:
             missing.append("session numbers not recorded: no --session-log")
             return matched_by
-        usage, failure = self._session_log(session_log).latest_usage(harness)
+        usage, failure = self._session_log(session_log, session_dir).latest_usage(harness)
         session_id = usage.get("id") if isinstance(usage, dict) else None
         if failure or not isinstance(session_id, str):
             missing.append(failure or LATEST_NAMED_NO_SESSION % harness)
@@ -159,7 +182,7 @@ class Commands:
         upsert_session(feature, entry)
         return MATCH_IMPLEMENT if matched_by in (None, MATCH_NONE) else weakest([matched_by, MATCH_IMPLEMENT])
 
-    def record_commit(self, plan, commit, harness, session_log=None):
+    def record_commit(self, plan, commit, harness, session_log=None, session_dir=None):
         stored_plan = self.project.stored(plan)
         document, warnings = self._load()
         feature = self._plan_owner(document, stored_plan, plan)
@@ -174,21 +197,22 @@ class Commands:
         stats = doc_stats(self.project.absolute(plan), self.plan_progress, self.environment.run)
         merge_plan(feature["plan"], stats)
         missing = list(stats["missing"])
-        derive_usage(feature, self._record_latest_session(document, feature, history, harness, session_log, missing))
+        derive_usage(feature, self._record_latest_session(document, feature, history, harness, session_log, session_dir, missing))
         all_ticked = stats["tasks"] is not None and stats["completed"] == stats["tasks"]
         feature["status"] = DELIVERED if all_ticked else IN_PROGRESS
         feature[FILE_KEY] = self.store.update(feature)
         return {"feature": feature, "needsResize": all_ticked and feature["updatedStoryPoints"] is None,
                 "missing": missing}, warnings
 
-    def estimator(self, harness, session_log=None):
+    def estimator(self, harness, session_log=None, session_dir=None):
         """Who estimates now (`{"estimator": {"harness", "models"}, "missing"}`): `harness` and the models of the last prompt of
-        its latest session in the project, the prompt running now; null models when they cannot be read, named in `missing`."""
+        its latest session in the session folder (the project root by default), the prompt running now; null models when they
+        cannot be read, named in `missing`."""
         models, missing = None, []
         if session_log is None:
             missing.append(NO_MODELS % "no --session-log")
         else:
-            usage, failure = self._session_log(session_log).latest_usage(harness)
+            usage, failure = self._session_log(session_log, session_dir).latest_usage(harness)
             if failure:
                 missing.append(failure)
             else:
@@ -196,3 +220,25 @@ class Commands:
                 if models is None:
                     missing.append(NO_MODELS % (LAST_PROMPT_WITHOUT_MODELS % harness))
         return {"estimator": {"harness": harness, "models": models}, "missing": missing}, []
+
+    def _asset(self, name):
+        with open(os.path.join(self.report_assets, name), encoding="utf-8") as handle:
+            return handle.read()
+
+    def report(self, out=None):
+        """Writes the HTML report of the references to `out` (relative to the working folder), by default REPORT_FILE under the
+        project's DATA_FOLDER; prints its stored path, the counts and the commits git lacks. Nothing is written on a failure."""
+        document, warnings = self._load()
+        hashes = sorted({commit for feature in document["features"] if is_reference(feature)
+                         for commit in feature["sources"]["commits"]})
+        data = analyse(document, self._history().changes(hashes), os.path.basename(self.project.root), self.environment.today())
+        page = render(self._asset(REPORT_TEMPLATE), self._asset(CHART_SOURCE), data, texts(data))
+        target = self.project.absolute(out) if out else os.path.join(self.project.root, DATA_FOLDER, REPORT_FILE)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(page)
+        absent = data["lines"]["missing_commits"]
+        noun = "commit" if len(absent) == 1 else "commits"
+        missing = [MISSING_COMMITS % (len(absent), noun, ", ".join(absent))] if absent else []
+        return {"report": self.project.stored(target), "features": data["counts"]["references"],
+                "forecasts": data["forecast"]["n"], "missing": missing}, warnings

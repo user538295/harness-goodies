@@ -1,6 +1,7 @@
-"""The C3 ID boundary rule shared by `git-stats` (a feature's own id in a commit subject's scope) and `match-sessions` (task IDs in
-prompts): an ID counts when it is not preceded by a word character, `.` or `-`, and not followed by a word character, `-` or
-`.<digit>` — so `BE-1` is found in `(BE-1)` and `BE-1.` but not in `BE-10`, `BE-1.2` or `pre-BE-1`."""
+"""The C3 ID boundary rule shared by `git-stats` (a feature's own id anywhere in a commit message, in any case, which makes the
+commit only a candidate for the feature) and `match-sessions` (task IDs in prompts): an ID counts when it is not preceded by a
+word character, `.` or `-`, and not followed by a word character, `-` or `.<digit>` — so `BE-1` is found in `(BE-1)` and `BE-1.`
+but not in `BE-10`, `BE-1.2` or `pre-BE-1`."""
 import re
 
 BEFORE = r"(?<![\w.-])"

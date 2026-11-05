@@ -1,6 +1,7 @@
-"""`record-commit <plan-file> <commit> --harness <h> [--session-log <path>]` (C3), the /implement step after each task commit: the
-commit's lines are added once per hash, the plan is refreshed from doc-stats, the feature's slice of the latest session (the prompts
-that name its docs or made its commits, by the `match-sessions` rule over every stored feature) replaces its older numbers, and the
+"""`record-commit <plan-file> <commit> --harness <h> [--session-log <path>] [--session-dir <folder>]` (C3), the /implement step after
+each task commit: the commit's lines are added once per hash, the plan is refreshed from doc-stats, the feature's slice of the latest
+session of the session folder (the folder the running session was started in; the project root when not given; the prompts that
+name its docs or made its commits, by the `match-sessions` rule over every stored feature) replaces its older numbers, and the
 status follows the ticked tasks."""
 import os
 import unittest
@@ -204,6 +205,16 @@ class RecordCommitTest(ProjectTestCase):
         self.assertEqual(["session-log claude usage --latest failed (exit 1): session-log: no session of this project"],
                          output["missing"])
         self.assertEqual(self.root, os.path.realpath(self.session_log.calls()[0]["cwd"]))
+
+    def test_the_latest_session_is_read_in_the_session_folder(self):
+        self.seed_feature()
+        c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE})
+        self.latest_usage(TEN_MINUTES)
+        session_folder = os.path.join(self.base, "session-home")
+        os.makedirs(session_folder)
+        output = self.record(c1, "--session-log", self.session_log.path, "--session-dir", session_folder)
+        self.assertEqual("s1", output["feature"]["sources"]["sessions"][0]["id"])
+        self.assertEqual([session_folder], [os.path.realpath(call["cwd"]) for call in self.session_log.calls()])
 
     def test_the_plan_path_is_relative_to_the_working_folder(self):
         self.seed_feature()

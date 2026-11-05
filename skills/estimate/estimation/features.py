@@ -72,6 +72,11 @@ def weakest(labels):
     return min(labels, key=MATCH_STRENGTH.index)
 
 
+def is_reference(feature):
+    """Whether `feature` is a reference: delivered, with its size re-assessed after delivery."""
+    return feature.get("status") == DELIVERED and feature.get("updatedStoryPoints") is not None
+
+
 def session_entry(fields):
     """A C2 session entry from `fields`, every missing number null."""
     tokens = fields.get("tokens") or {}

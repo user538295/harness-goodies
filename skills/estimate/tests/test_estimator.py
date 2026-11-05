@@ -1,6 +1,8 @@
-"""`estimator --harness <h> [--session-log <path>]` (C3): who estimates now, for the `estimatedBy` or `updatedBy` of a save: the
-harness given and the models session-log names for the last prompt of that harness's latest session in the project (the prompt
-now running). The models are null, with the reason in `missing`, when they cannot be read."""
+"""`estimator --harness <h> [--session-log <path>] [--session-dir <folder>]` (C3): who estimates now, for the `estimatedBy` or
+`updatedBy` of a save: the harness given and the models session-log names for the last prompt of that harness's latest session in
+the session folder (the folder the running session was started in; the project root when not given), which is the prompt now
+running. The models are null, with the reason in `missing`, when they cannot be read."""
+import os
 import unittest
 
 from tests.support import EXIT_BAD_ARGUMENTS, EXIT_OK, ProjectTestCase, agent_row, prompt_row, usage_payload
@@ -53,6 +55,25 @@ class EstimatorCommandTest(ProjectTestCase):
     def test_the_harness_is_required_and_must_be_known(self):
         self.assert_error(self.run_estimate("estimator"), EXIT_BAD_ARGUMENTS, "estimator needs --harness <value>")
         self.assert_error(self.run_estimate("estimator", "--harness", "vim"), EXIT_BAD_ARGUMENTS, "unsupported harness 'vim'")
+
+    def test_the_latest_session_is_read_in_the_session_folder(self):
+        session_folder = os.path.join(self.base, "session-home")
+        os.makedirs(session_folder)
+        self.session_log.reply(LATEST, usage_payload("claude", "s1", 0, prompts=[
+            prompt_row(at("10:30:00"), "/estimate init", models=("claude-opus-5-5",))], sub_agents=[]))
+        output = self.estimator("--session-log", self.session_log.path, "--session-dir", session_folder)
+        self.assertEqual(["claude-opus-5-5"], output["estimator"]["models"])
+        self.assertEqual([session_folder], [os.path.realpath(call["cwd"]) for call in self.session_log.calls()])
+
+    def test_without_a_session_folder_the_latest_session_is_read_in_the_project_root(self):
+        self.session_log.reply(LATEST, usage_payload("claude", "s1", 0, prompts=[], sub_agents=[]))
+        self.with_session_log()
+        self.assertEqual([self.root], [os.path.realpath(call["cwd"]) for call in self.session_log.calls()])
+
+    def test_a_session_folder_that_is_not_a_folder_is_a_bad_argument(self):
+        missing = os.path.join(self.base, "no-such-folder")
+        result = self.run_estimate("estimator", "--harness", "claude", "--session-log", self.session_log.path, "--session-dir", missing)
+        self.assert_error(result, EXIT_BAD_ARGUMENTS, "--session-dir %s is not a folder" % missing)
 
 
 if __name__ == "__main__":

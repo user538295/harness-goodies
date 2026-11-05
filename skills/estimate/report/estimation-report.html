@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Story points vs. delivered work — estimation report</title>
+<style>
+:root{
+  --bg:#f5f4ef;--card:#ffffff;--ink:#1b1b1f;--muted:#66666e;--line:#e3e1da;--soft:#efeee8;
+  --accent:#3b5bdb;--good:#2b8a3e;--warn:#d9480f;--bad:#c92a2a;--dup:#ced4da;
+  --serif:ui-serif,"New York","Iowan Old Style",Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#111214;--card:#1a1b1f;--ink:#ececef;--muted:#9b9ba5;--line:#2b2c32;--soft:#222328;
+  --accent:#7c93ff;--good:#51cf66;--warn:#ff922b;--bad:#ff6b6b;--dup:#495057;}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px 80px}
+h1,h2,h3{font-family:var(--serif);font-weight:600;letter-spacing:-.01em;margin:0}
+h1{font-size:44px;line-height:1.1}
+h2{font-size:28px;margin-bottom:6px}
+h3{font-size:18px;margin-bottom:8px}
+p{margin:.4em 0 .8em}
+code{font:12.5px var(--mono);background:var(--soft);padding:1px 5px;border-radius:4px}
+.num{font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}
+.hero{padding:56px 0 28px}
+.eyebrow{font:600 12px var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin-bottom:14px}
+.lede{font-size:18px;max-width:820px;color:var(--ink);opacity:.9}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-top:26px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.kpi b{display:block;font:600 26px var(--serif);font-variant-numeric:tabular-nums}
+.kpi span{font-size:12.5px;color:var(--muted)}
+nav.toc{position:sticky;top:0;z-index:5;background:color-mix(in oklab,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);margin:0 -28px;padding:10px 28px;display:flex;gap:18px;flex-wrap:wrap;font-size:13.5px}
+nav.toc a{color:var(--muted);text-decoration:none}
+nav.toc a:hover{color:var(--accent)}
+section{padding-top:46px;scroll-margin-top:30px}
+.sub{color:var(--muted);max-width:860px;margin-bottom:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 24px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.verdict{display:grid;grid-template-columns:1.15fr 1fr;gap:18px}
+.big{font:600 25px/1.3 var(--serif);margin:4px 0 12px}
+.tag{display:inline-block;font:600 11px var(--sans);letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:99px}
+.tag.good{background:color-mix(in oklab,var(--good) 16%,transparent);color:var(--good)}
+.tag.warn{background:color-mix(in oklab,var(--warn) 16%,transparent);color:var(--warn)}
+.tag.bad{background:color-mix(in oklab,var(--bad) 16%,transparent);color:var(--bad)}
+.catch{display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.catch:first-of-type{border-top:0}
+.catch .n{flex:0 0 28px;height:28px;border-radius:50%;background:var(--soft);display:grid;place-items:center;font:600 13px var(--sans)}
+.rho-row{display:grid;grid-template-columns:190px 1fr 54px 64px;align-items:center;gap:12px;padding:7px 0;border-top:1px solid var(--line);font-size:14px}
+.rho-row.head{border-top:0;font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.track{position:relative;height:18px;background:linear-gradient(90deg,var(--soft) 0 50%,color-mix(in oklab,var(--soft) 60%,var(--card)) 50% 70%,var(--soft) 70%);border-radius:5px}
+.track .ci{position:absolute;top:6px;height:6px;border-radius:3px;opacity:.35}
+.track .dot{position:absolute;top:3px;width:12px;height:12px;border-radius:50%;margin-left:-6px;border:2px solid var(--card)}
+.track .tick{position:absolute;top:-2px;bottom:-2px;width:1px;background:var(--line)}
+.legend-scale{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin:4px 0 0 202px;width:calc(100% - 202px - 142px)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{padding:7px 9px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+th:first-child,td:first-child{text-align:left}
+td.name{white-space:normal;max-width:330px}
+.heat td,.heat th{text-align:center;padding:9px 6px;border:1px solid var(--card)}
+.heat th{font-size:11px}
+.heat td{font-variant-numeric:tabular-nums;font-weight:600;border-radius:4px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.tabs button{font:500 13px var(--sans);padding:7px 13px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+.tabs button.on{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.chip{border:1px solid var(--line);border-radius:10px;padding:7px 11px;font-size:12.5px;background:var(--card)}
+.chip b{font-variant-numeric:tabular-nums}
+.statline{display:flex;gap:22px;flex-wrap:wrap;font-size:13.5px;margin:4px 0 12px}
+.statline b{font-variant-numeric:tabular-nums}
+.chartbox{position:relative;height:430px}
+.chartbox.sm{height:340px}
+.scroll{max-height:560px;overflow:auto;border-radius:10px}
+.spchip{display:inline-block;min-width:34px;text-align:center;padding:2px 7px;border-radius:7px;color:#fff;font:600 12px var(--sans)}
+.dir-up{color:var(--warn);font-weight:600}
+.dir-down{color:var(--accent);font-weight:600}
+.callout{border-left:3px solid var(--accent);padding:10px 16px;background:color-mix(in oklab,var(--accent) 7%,var(--card));border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:color-mix(in oklab,var(--warn) 8%,var(--card))}
+ol.find{padding-left:20px;margin:0}
+ol.find li{margin:0 0 10px}
+input.filter{font:14px var(--sans);padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);width:280px;margin-bottom:12px}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--accent)}
+.method li{margin-bottom:8px}
+footer{margin-top:50px;color:var(--muted);font-size:12.5px}
+.kpis.four{grid-template-columns:repeat(4,1fr);margin-top:0}
+ul.points{padding-left:18px;margin:0}
+ul.points li{margin-bottom:8px}
+ul.points li:last-child{margin-bottom:0}
+@media (max-width:900px){.kpis{grid-template-columns:repeat(3,1fr)}.kpis.four{grid-template-columns:repeat(2,1fr)}.grid2,.grid3,.verdict{grid-template-columns:1fr}h1{font-size:34px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow"><!--@eyebrow--></div>
+  <h1>Do the story points track the work?</h1>
+  <p class="lede"><!--@lede--></p>
+  <div class="kpis" id="kpis"></div>
+</header>
+
+<nav class="toc">
+  <a href="#verdict">Verdict</a><a href="#forecast">Forecast accuracy</a><a href="#matrix">Correlation matrix</a><a href="#explorer">Metric explorer</a><a href="#scaling">Scale shape</a><a href="#quality">Data quality</a><a href="#outliers">Re-size candidates</a><a href="#usage">Agent usage</a><a href="#data">All features</a><a href="#method">Method</a>
+</nav>
+
+<section id="verdict">
+  <h2>Verdict: story points vs. the data</h2>
+  <p class="sub">Spearman rank correlation of each metric with SP, with a 95% bootstrap confidence band. Concordance: of all feature pairs with different SP, the share where the higher-SP feature also has the higher metric value (50% = coin flip).</p>
+  <div class="verdict">
+    <div class="card">
+      <div class="rho-row head"><div>Metric (n)</div><div>Spearman ρ with SP, 95% CI</div><div>ρ</div><div>Concord.</div></div>
+      <div id="rhoRows"></div>
+      <div class="legend-scale"><span>0</span><span>0.25</span><span>0.5</span><span>0.75</span><span>1.0</span></div>
+      <p class="muted" style="font-size:12.5px;margin-top:14px"><!--@rho_note--></p>
+    </div>
+    <div class="card">
+      <!--@verdict_tag-->
+      <div class="big"><!--@verdict_big--></div>
+      <!--@catches-->
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:18px">
+    <h3>Key findings</h3>
+    <ol class="find"><!--@findings--></ol>
+  </div>
+</section>
+
+<section id="forecast">
+  <h2>Forecast accuracy</h2>
+  <p class="sub"><!--@forecast_sub--></p>
+  <div id="forecastBody">
+    <div class="kpis four" id="fcKpis"></div>
+    <div class="grid2" style="margin-top:18px">
+      <div class="card">
+        <h3>Error in scale steps</h3>
+        <div class="chartbox sm"><canvas id="fcErrors"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Estimate × delivered</h3>
+        <table class="heat" id="fcGrid"></table>
+        <p class="muted" style="font-size:12.5px;margin-top:10px">Rows: SP estimated before work. Columns: SP after delivery. Outlined cells are exact forecasts.</p>
+      </div>
+    </div>
+    <div class="grid2" style="grid-template-columns:1fr 2fr;margin-top:18px">
+      <div class="card">
+        <h3>What stands out</h3>
+        <ul class="points"><!--@forecast_points--></ul>
+      </div>
+      <div class="card"><div class="scroll"><table id="fcTable"></table></div></div>
+    </div>
+  </div>
+</section>
+
+<section id="matrix">
+  <h2>Correlation matrix</h2>
+  <p class="sub">Pairwise Spearman ρ over features where both values exist (hover a cell for n). "Lines (raw)" is the stored value. "Code lines" and "Source lines" are recomputed from git: shared commits split evenly, docs and vendored files excluded.</p>
+  <div class="grid2" style="grid-template-columns:1fr">
+    <div class="card"><table class="heat" id="heat"></table></div>
+    <div class="card">
+      <h3>SP vs. each metric</h3>
+      <table id="spTable"></table>
+      <p class="muted" style="font-size:12.5px;margin-top:10px"><!--@spcore_note--></p>
+    </div>
+  </div>
+</section>
+
+<section id="explorer">
+  <h2>Metric explorer</h2>
+  <p class="sub">Each dot is one feature (hover for its name). Boxes show the interquartile range per SP value, the thin line runs from min to max, the bar marks the median, and the dashed line is the power-law fit <i>metric ≈ c·SP<sup>b</sup></i>. The y axis is logarithmic.</p>
+  <div class="card">
+    <div class="tabs" id="tabs"></div>
+    <div class="statline" id="statline"></div>
+    <div class="chartbox"><canvas id="strip"></canvas></div>
+    <div class="chips" id="chips"></div>
+    <div class="callout" id="metricNote" style="margin-bottom:0"></div>
+  </div>
+</section>
+
+<section id="scaling">
+  <h2>How the metrics grow as SP grows</h2>
+  <p class="sub">Median of each metric per SP value, divided by its median at SP <span class="baseSp"></span>. The dashed line is perfect proportionality (SP ÷ <span class="baseSp"></span>). Lines above it grow faster than SP, lines below it grow slower. Both axes are logarithmic.</p>
+  <div class="grid2" style="grid-template-columns:1.4fr 1fr">
+    <div class="card"><div class="chartbox"><canvas id="scale"></canvas></div></div>
+    <div class="card">
+      <h3>Power-law exponents</h3>
+      <table id="expTable"></table>
+      <div class="callout" style="margin-top:14px"><!--@scaling_callout--></div>
+    </div>
+  </div>
+</section>
+
+<section id="quality">
+  <h2>Data quality: what "lines changed" really counts</h2>
+  <p class="sub"><!--@quality_sub--></p>
+  <div class="grid2" style="grid-template-columns:1fr 1.5fr">
+    <div class="card">
+      <h3>Where the lines come from (dependencies not counted)</h3>
+      <div class="chartbox sm"><canvas id="donut"></canvas></div>
+      <p class="muted" style="font-size:12.5px"><!--@quality_note--></p>
+    </div>
+    <div class="card">
+      <h3>Most-shared commits</h3>
+      <table id="sharedTable"></table>
+      <div class="callout warn" id="qualityCallout" style="margin-top:12px"><!--@quality_callout--></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:18px">
+    <h3>What each feature's lines are made of</h3>
+    <p class="muted" style="font-size:13px;margin-top:0">100% = the lines git counts for the feature's commits plus their committed dependency lines, shown apart as not counted. Sorted by code share, lowest first. Hover a bar for absolute counts.</p>
+    <div class="scroll"><div id="compBox" style="position:relative"><canvas id="comp"></canvas></div></div>
+  </div>
+</section>
+
+<section id="outliers">
+  <h2>Re-size candidates</h2>
+  <p class="sub"><!--@outliers_sub--></p>
+  <div class="card"><table id="outTable"></table></div>
+</section>
+
+<section id="usage">
+  <h2><!--@usage_title--></h2>
+  <p class="sub"><!--@usage_sub--></p>
+  <div class="grid2" style="grid-template-columns:1.5fr 1fr">
+    <div class="card"><table id="usageTable"></table></div>
+    <div class="card">
+      <h3>What stands out</h3>
+      <ul class="points"><!--@usage_points--></ul>
+    </div>
+  </div>
+</section>
+
+<section id="data">
+  <h2>All features</h2>
+  <p class="sub">Click a column to sort. Hover a name for its description.</p>
+  <input class="filter" id="filter" placeholder="Filter by name…">
+  <div class="card" style="padding:8px 10px"><div class="scroll" style="max-height:640px"><table id="allTable"></table></div></div>
+</section>
+
+<section id="method">
+  <h2>Method</h2>
+  <div class="card method">
+    <ul style="padding-left:18px;margin:0"><!--@method--></ul>
+  </div>
+  <footer><!--@footer--></footer>
+</section>
+
+</div>
+<script>/*@chartjs*/</script>
+<script>
+/*@data*/
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const C = {ink:css('--ink'),muted:css('--muted'),line:css('--line'),card:css('--card'),accent:css('--accent'),good:css('--good'),warn:css('--warn'),bad:css('--bad'),dup:css('--dup'),soft:css('--soft')};
+Chart.defaults.color = C.muted; Chart.defaults.borderColor = C.line;
+Chart.defaults.font.family = css('--sans'); Chart.defaults.font.size = 12;
+const SPC = D.colors;
+const CAT = {src:'#3b5bdb',tests:'#2f9e44',docs:'#f59f00',vendored:'#e03131',other:'#868e96',dup:C.dup};
+const CATL = {src:'Source code',tests:'Test code',docs:'Docs',vendored:'Dependencies (not counted)',other:'Other (config, CI, data, fixtures)',dup:'Double-counted (shared commits)'};
+const ESC = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ESC[c]);
+const fmt = (v,d=0) => v==null ? '—' : Number(v).toLocaleString('en-US',{maximumFractionDigits:d,minimumFractionDigits:d});
+const fix = (v,d=2) => v==null ? '—' : v.toFixed(d);
+const kfmt = v => v==null ? '—' : v>=1e9 ? (v/1e9).toFixed(1)+'B' : v>=1e6 ? (v/1e6).toFixed(1)+'M' : v>=1e3 ? (v/1e3).toFixed(v>=1e4?0:1).replace(/\.0$/,'')+'k' : String(v);
+const nice125 = v => { const m = v/Math.pow(10,Math.floor(Math.log10(v)+1e-9)); return [1,2,5].some(x=>Math.abs(m-x)<1e-6); };
+const ticks125 = (lo,hi) => { const t = []; for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) for (const m of [1,2,5]) { const v = +(m*Math.pow(10,e)).toPrecision(6); if (v>=lo && v<=hi) t.push(v); } return t; };
+const pct = v => v==null ? '—' : Math.round(v*100)+'%';
+const ratio = (a,b) => a==null || b==null || b===0 ? null : a/b;
+const clamp01 = v => Math.min(1,Math.max(0,v));
+const R = D.rows;
+const BUCKETS = [...new Set(R.map(r=>r.sp))].sort((a,b)=>a-b);
+const spChip = sp => sp==null ? '—' : `<span class="spchip" style="background:${SPC[String(sp)]}">${sp}</span>`;
+const rhoColor = v => v==null ? C.muted : v>=0.8 ? C.good : v>=0.7 ? C.accent : v>=0.5 ? C.warn : C.bad;
+const nameCell = r => `<td class="name" title="${esc(r.desc)}">${esc(r.label)}</td>`;
+const emptyRow = (cols,text) => `<tr><td colspan="${cols}" class="muted" style="text-align:left">${text}</td></tr>`;
+const META = Object.fromEntries(D.metrics.map(([k,label])=>[k,{label}]));
+Object.assign(META.tasks, {desc:'Checklist tasks in the plan / tasks document.'});
+Object.assign(META.hours, {desc:`Sum of the per-task <code>· Nh</code> estimates in the plan. Present for ${R.filter(r=>r.hours!=null).length} of ${R.length} features.`});
+Object.assign(META.commits_excl, {desc:'Commits listed only under this feature. Commits shared with other features are removed.'});
+Object.assign(META.code, {desc:'Added + removed lines in source and test code (see Method). Commits shared by k features are split 1/k.'});
+Object.assign(META.src, {desc:'Added + removed lines in source code only, tests excluded (deduplicated).'});
+Object.assign(META.phases, {desc:'Phase headings in the plan.'});
+Object.assign(META.commits, {desc:'<code>git.commits</code> as stored, including shared commits.'});
+Object.assign(META.churn, {desc:'<code>linesAdded + linesRemoved</code> exactly as stored.'});
+const BY_RHO = D.metrics.map(([k])=>k).sort((a,b)=>(D.res[b].spearman ?? -2)-(D.res[a].spearman ?? -2));
+document.title = 'Story points vs. delivered work — ' + D.project;
+
+/* KPIs */
+(() => {
+  const L = D.lines, cost = R.reduce((s,r)=>s+(r.cost||0),0);
+  const k = [
+    [R.length,'delivered features'],
+    [fmt(L.unique_commits),'unique commits ('+fmt(L.commit_refs)+' refs)'],
+    [kfmt(L.unique_total),'unique lines changed ('+kfmt(L.raw_total)+' recorded)'],
+    [R.filter(r=>r.hours!=null).length+' / '+R.length,'have estimated hours'],
+    [R.filter(r=>r.sessions>0).length+' / '+R.length,'have agent-session data'],
+    ['$'+fmt(cost),'recorded agent cost']
+  ];
+  document.getElementById('kpis').innerHTML = k.map(([b,s])=>`<div class="kpi"><b>${b}</b><span>${s}</span></div>`).join('');
+})();
+
+/* Verdict rho rows */
+(() => {
+  document.getElementById('rhoRows').innerHTML = BY_RHO.map(k=>{
+    const s = D.res[k], col = rhoColor(s.spearman);
+    const ci = s.ci ? `<div class="ci" style="left:${clamp01(s.ci[0])*100}%;width:${(clamp01(s.ci[1])-clamp01(s.ci[0]))*100}%;background:${col}"></div>` : '';
+    const dot = s.spearman!=null ? `<div class="dot" style="left:${clamp01(s.spearman)*100}%;background:${col}"></div>` : '';
+    return `<div class="rho-row"><div>${esc(s.label)} <span class="muted">(${s.n})</span></div>
+      <div class="track">${[0.25,0.5,0.75].map(t=>`<div class="tick" style="left:${t*100}%"></div>`).join('')}${ci}${dot}</div>
+      <div class="num" style="font-weight:600;color:${col}">${fix(s.spearman)}</div><div class="num">${pct(s.conc)}</div></div>`;
+  }).join('');
+})();
+
+/* Forecast accuracy */
+(() => {
+  const F = D.forecast;
+  if (!F || !F.n) { document.getElementById('forecastBody').hidden = true; return; }
+  const k = [
+    [F.n,'forecasts (estimated before work)'],
+    [pct(F.exact/F.n),'exact ('+F.exact+' of '+F.n+')'],
+    [pct(F.within1/F.n),'within one scale step ('+F.within1+')'],
+    [F.under+' / '+F.over,'delivered bigger / smaller than estimated']
+  ];
+  document.getElementById('fcKpis').innerHTML = k.map(([b,s])=>`<div class="kpi"><b>${b}</b><span>${s}</span></div>`).join('');
+  const steps = Object.keys(F.errors).map(Number).sort((a,b)=>a-b);
+  const signed = v => v>0 ? '+'+v : String(v);
+  new Chart(document.getElementById('fcErrors'),{type:'bar',data:{labels:steps.map(signed),datasets:[{label:'features',data:steps.map(s=>F.errors[String(s)]),
+      backgroundColor:steps.map(s=>s===0?C.good:s>0?C.warn:C.accent),borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{grid:{display:false},title:{display:true,text:'Delivered − estimated (scale steps)'}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'Features'}}},
+      plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>{const s=steps[i[0].dataIndex];return s===0?'Exact':s>0?`Delivered ${s} step${s>1?'s':''} bigger`:`Delivered ${-s} step${s<-1?'s':''} smaller`;},
+        label:c=>`${c.raw} feature${c.raw===1?'':'s'}`}}}}});
+  const G = F.grid, top = Math.max(1,...G.counts.flat());
+  document.getElementById('fcGrid').innerHTML = '<tr><th style="text-align:right">Est. ↓ · Delivered →</th>'+G.sp.map(v=>`<th>${spChip(v)}</th>`).join('')+'</tr>'+
+    G.est.map((e,i)=>'<tr><th style="text-align:right">'+spChip(e)+'</th>'+G.sp.map((v,j)=>{
+      const n = G.counts[i][j], w = n/top*78, txt = w>45 ? '#fff' : C.ink, hit = e===v ? `;box-shadow:inset 0 0 0 2px ${C.good}` : '';
+      return `<td title="estimated ${e} → delivered ${v}: ${n} feature${n===1?'':'s'}" style="background:color-mix(in oklab, ${C.accent} ${w}%, ${C.card});color:${txt}${hit}">${n||''}</td>`;
+    }).join('')+'</tr>').join('');
+  const reading = s => s===0 ? '<span style="color:var(--good);font-weight:600">0 · exact</span>' : `<span class="${s>0?'dir-up':'dir-down'}">${signed(s)} · ${s>0?'bigger':'smaller'}</span>`;
+  document.getElementById('fcTable').innerHTML = '<tr><th>Feature</th><th>Estimate</th><th>Delivered</th><th title="delivered − estimated, in scale steps">Steps</th><th>Estimated at</th><th>By</th></tr>' +
+    F.rows.map(r=>`<tr><td class="name">${esc(r.label)}</td><td>${spChip(r.est)}</td><td>${spChip(r.sp)}</td><td>${reading(r.steps)}</td><td>${esc(r.estimated_at ?? '—')}</td><td>${esc(r.by ?? '—')}</td></tr>`).join('');
+})();
+
+/* Heatmap */
+(() => {
+  const v = D.mvars, h = ['<tr><th></th>'+v.map(x=>`<th>${esc(x[1])}</th>`).join('')+'</tr>'];
+  v.forEach((a,i)=>{
+    h.push('<tr><th style="text-align:right">'+esc(a[1])+'</th>'+v.map((b,j)=>{
+      const x = D.corr[i][j], w = Math.max(0,x ?? 0)*78, txt = w>45 ? '#fff' : C.ink;
+      return `<td title="${esc(a[1])} × ${esc(b[1])}: ρ=${fix(x,3)}, n=${D.corrn[i][j]}" style="background:color-mix(in oklab, ${C.accent} ${w}%, ${C.card});color:${txt}">${i===j?'—':fix(x)}</td>`;
+    }).join('')+'</tr>');
+  });
+  document.getElementById('heat').innerHTML = h.join('');
+  const core = D.core ? `<th>ρ SP≤${D.core.max_sp}</th>` : '';
+  document.getElementById('spTable').innerHTML = `<tr><th>Metric</th><th>n</th><th>ρ</th><th>r</th><th>r log</th>${core}</tr>` +
+    BY_RHO.map(k=>{const s=D.res[k];return `<tr><td>${esc(s.label)}</td><td class="num">${s.n}</td><td class="num" style="color:${rhoColor(s.spearman)};font-weight:600">${fix(s.spearman)}</td><td class="num">${fix(s.pearson)}</td><td class="num">${fix(s.pearson_log)}</td>${D.core?`<td class="num">${fix(s.spearman_core)}</td>`:''}</tr>`;}).join('');
+})();
+
+/* Explorer */
+const xIdx = sp => BUCKETS.indexOf(sp);
+const jitter = name => { let h=0; for (const c of name) h=(h*31+c.charCodeAt(0))>>>0; return ((h%1000)/1000-0.5)*0.5; };
+let strip;
+function renderMetric(k){
+  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));
+  const bs = D.bstats[k] || {}, p = D.pred[k], s = D.res[k];
+  const boxes = Object.entries(bs).map(([sp,v])=>({sp:+sp,...v}));
+  const pts = R.filter(r=>r[k]!=null && r[k]>0).map(r=>({x:xIdx(r.sp)+jitter(r.label),y:r[k],r}));
+  const fit = p ? BUCKETS.filter(sp=>sp>0 && bs[String(sp)]).map(sp=>({x:xIdx(sp),y:Math.exp(p.a+p.exp*Math.log(sp))})) : [];
+  const ds = [
+    {type:'bar',label:'min–max',data:boxes.map(b=>({x:xIdx(b.sp),y:[Math.max(b.min,0.5),b.max],b})),backgroundColor:C.muted,barThickness:2,grouped:false,order:5},
+    {type:'bar',label:'IQR',data:boxes.map(b=>({x:xIdx(b.sp),y:[Math.max(b.q1,0.5),Math.max(b.q3,0.6)],b})),backgroundColor:boxes.map(b=>SPC[String(b.sp)]+'33'),borderColor:boxes.map(b=>SPC[String(b.sp)]),borderWidth:1.5,barThickness:34,grouped:false,order:4},
+    {type:'scatter',label:'median',data:boxes.map(b=>({x:xIdx(b.sp),y:Math.max(b.med,0.5),b})),pointStyle:'line',pointRadius:17,pointHoverRadius:17,borderWidth:3,borderColor:C.ink,order:2},
+    ...(p ? [{type:'line',label:`power fit c·SP^${p.exp.toFixed(2)}`,data:fit,borderColor:C.muted,borderDash:[5,5],borderWidth:1.5,pointRadius:0,order:3}] : []),
+    {type:'scatter',label:'features',data:pts,pointRadius:4.5,pointHoverRadius:7,backgroundColor:pts.map(q=>SPC[String(q.r.sp)]+'cc'),borderColor:C.card,borderWidth:1,order:1}
+  ];
+  const opts = {responsive:true,maintainAspectRatio:false,animation:{duration:350},
+    scales:{x:{type:'linear',min:-0.6,max:BUCKETS.length-0.4,grid:{display:false},ticks:{stepSize:1,callback:v=>Number.isInteger(v)&&BUCKETS[v]!=null?[BUCKETS[v]+' SP','n='+pts.filter(q=>q.r.sp===BUCKETS[v]).length]:''},title:{display:true,text:'Story points'}},
+            y:{type:'logarithmic',title:{display:true,text:META[k].label},ticks:{callback:v=>nice125(v)?kfmt(v):''}}},
+    plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8,filter:i=>i.text!=='min–max'}},
+      tooltip:{callbacks:{title:items=>{const d=items[0].raw;return d.r?d.r.label:(d.b?BUCKETS[Math.round(d.x)]+' SP · n='+d.b.n:'');},
+        label:c=>{const d=c.raw;if(d.r)return `SP ${d.r.sp} · ${META[k].label}: ${fmt(d.r[k],1)}`;if(c.dataset.label==='IQR')return `IQR ${fmt(d.b.q1,1)} – ${fmt(d.b.q3,1)}`;if(c.dataset.label==='min–max')return `range ${fmt(d.b.min,1)} – ${fmt(d.b.max,1)}`;if(c.dataset.label==='median')return `median ${fmt(d.b.med,1)}`;return `fit ${fmt(d.y,1)}`;}}}}};
+  if (strip) strip.destroy();
+  strip = new Chart(document.getElementById('strip'),{data:{datasets:ds},options:opts});
+  const ci = s.ci ? ` <span class="muted">[${fix(s.ci[0])}, ${fix(s.ci[1])}]</span>` : '';
+  document.getElementById('statline').innerHTML = `<span>n = <b>${s.n}</b></span><span>Spearman ρ <b style="color:${rhoColor(s.spearman)}">${fix(s.spearman)}</b>${ci}</span><span>Pearson r <b>${fix(s.pearson)}</b></span><span>concordance <b>${pct(s.conc)}</b></span><span>×<b>${p?Math.pow(2,p.exp).toFixed(2):'—'}</b> per SP doubling</span><span>predicts exact SP <b>${pct(p&&p.exact)}</b>, ±1 step <b>${pct(p&&p.within1)}</b></span>`;
+  const sep = D.sep[k] || {};
+  document.getElementById('chips').innerHTML = '<span class="chip muted">Adjacent separation P(higher SP has more):</span>' + Object.entries(sep).filter(([,v])=>v[0]!=null).map(([lab,v])=>{
+    const col = v[0]>=0.85?C.good:v[0]>=0.7?C.warn:C.bad;
+    return `<span class="chip">${esc(lab)} <b style="color:${col}">${pct(v[0])}</b> <span class="muted">(${v[1]} vs ${v[2]})</span></span>`;}).join('');
+  document.getElementById('metricNote').innerHTML = `<b>${esc(META[k].label)}.</b> ${META[k].desc} ${D.notes[k] ?? ''}`;
+}
+document.getElementById('tabs').innerHTML = D.metrics.map(([k,label])=>`<button data-k="${k}">${esc(label)}</button>`).join('');
+document.getElementById('tabs').addEventListener('click',e=>{if(e.target.dataset.k)renderMetric(e.target.dataset.k);});
+renderMetric(D.metrics[0][0]);
+
+/* Scaling chart + exponent table */
+(() => {
+  const B = D.base_sp, PAD = 1.3;
+  document.querySelectorAll('.baseSp').forEach(e=>{e.textContent = B ?? '—';});
+  const keys = [['code','#2f9e44'],['hours','#e8590c'],['commits_excl','#3b5bdb'],['tasks','#ae3ec9'],['phases','#868e96'],['churn','#e03131']];
+  const ds = keys.flatMap(([k,col])=>{
+    const b = D.bstats[k] || {}, base = B!=null && b[String(B)] ? b[String(B)].med : 0;
+    if (!(base>0)) return [];
+    const data = Object.entries(b).filter(([sp,v])=>+sp>0 && v.med>0).map(([sp,v])=>({x:+sp,y:v.med/base,n:v.n})).sort((p,q)=>p.x-q.x);
+    return [{label:META[k].label,data,borderColor:col,backgroundColor:col,borderWidth:2,pointRadius:4,tension:0.15,borderDash:k==='churn'?[2,3]:[]}];
+  });
+  const xs = [...new Set(ds.flatMap(d=>d.data.map(q=>q.x)))].sort((a,b)=>a-b);
+  if (xs.length) ds.push({label:`Proportional (SP ÷ ${B})`,data:[{x:xs[0],y:xs[0]/B},{x:xs[xs.length-1],y:xs[xs.length-1]/B}],borderColor:C.ink,borderDash:[6,6],borderWidth:1.5,pointRadius:0});
+  const ys = ds.flatMap(d=>d.data.map(q=>q.y)), ylo = Math.min(1,...ys)/PAD, yhi = Math.max(1,...ys)*PAD;
+  new Chart(document.getElementById('scale'),{type:'line',data:{datasets:ds},options:{responsive:true,maintainAspectRatio:false,
+    scales:{x:{type:'logarithmic',min:xs.length?xs[0]/1.1:undefined,max:xs.length?xs[xs.length-1]*1.1:undefined,title:{display:true,text:'Story points (log)'},afterBuildTicks:ax=>{ax.ticks=xs.map(value=>({value}));},ticks:{callback:v=>v}},
+            y:{type:'logarithmic',min:ylo,max:yhi,title:{display:true,text:`Median ÷ median at SP ${B ?? '—'} (log)`},afterBuildTicks:ax=>{ax.ticks=ticks125(ylo,yhi).map(value=>({value}));},ticks:{callback:v=>'×'+v}}},
+    plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>`${c.dataset.label}: ×${c.raw.y.toFixed(2)} at SP ${c.raw.x}${c.raw.n?' (n='+c.raw.n+')':''}`}}}}});
+  const ek = ['code','hours','churn','commits_excl','tasks','phases'];
+  document.getElementById('expTable').innerHTML = '<tr><th>Metric</th><th title="metric ≈ c·SP^b">Exponent b</th><th>× per 2× SP</th><th>R²</th></tr>' +
+    ek.map(k=>{const p=D.pred[k];return `<tr><td>${esc(META[k].label)}</td><td class="num">${fix(p&&p.exp)}</td><td class="num">${p?'×'+Math.pow(2,p.exp).toFixed(2):'—'}</td><td class="num">${fix(p&&p.r2)}</td></tr>`;}).join('');
+})();
+
+/* Data quality */
+(() => {
+  const L = D.lines;
+  const parts = [['dup',L.inflation],['tests',L.cats.tests],['docs',L.cats.docs],['src',L.cats.src],['other',L.cats.other],['vendored',L.cats.vendored]].filter(p=>p[1]>0);
+  const total = parts.reduce((s,p)=>s+p[1],0);
+  new Chart(document.getElementById('donut'),{type:'doughnut',data:{labels:parts.map(p=>CATL[p[0]]),datasets:[{data:parts.map(p=>p[1]),backgroundColor:parts.map(p=>CAT[p[0]]),borderColor:C.card,borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:11.5}}},
+      tooltip:{callbacks:{label:c=>`${c.label}: ${fmt(c.raw)} lines (${(c.raw/total*100).toFixed(1)}%)`}}}}});
+  document.getElementById('sharedTable').innerHTML = '<tr><th>Commit</th><th style="text-align:left">Subject</th><th>Features</th><th>Lines</th></tr>' +
+    (L.shared_top.length ? L.shared_top.map(s=>`<tr><td><code>${esc(s.hash)}</code></td><td class="name" style="font-size:12.5px;text-align:left">${esc(s.subj)}</td><td class="num">${s.n}</td><td class="num">${fmt(s.lines)}</td></tr>`).join('')
+      : emptyRow(4,'No commit is listed by more than one feature.'));
+  const callout = document.getElementById('qualityCallout');
+  callout.hidden = !callout.innerHTML.trim();
+  const share = r => ratio(r.code,r.git_churn) ?? 0;
+  const rows = R.map(r=>{const dup=Math.max(0,r.git_churn-(r.src+r.tests+r.docs+r.other));return {...r,dup,all:r.git_churn+r.vendored};}).sort((a,b)=>share(a)-share(b));
+  const cats = ['src','tests','docs','other','dup','vendored'], ROW_PX = 15, AXES_PX = 90;
+  document.getElementById('compBox').style.height = (rows.length*ROW_PX+AXES_PX)+'px';
+  new Chart(document.getElementById('comp'),{type:'bar',data:{labels:rows.map(r=>r.label),datasets:cats.map(c=>({label:CATL[c],data:rows.map(r=>(ratio(r[c],r.all) ?? 0)*100),raw:rows.map(r=>r[c]),backgroundColor:CAT[c],barThickness:11}))},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true,max:100,position:'top',ticks:{callback:v=>v+'%'}},y:{stacked:true,grid:{display:false},ticks:{autoSkip:false,font:{size:10.5}}}},
+      plugins:{legend:{position:'top',labels:{boxWidth:10}},tooltip:{callbacks:{afterTitle:i=>{const r=rows[i[0].dataIndex];return `SP ${r.sp} · ${fmt(r.git_churn)} counted lines (${fmt(r.churn)} recorded) · ${fmt(r.vendored)} dependency lines, not counted · code ${pct(ratio(r.code,r.git_churn))} of counted`;},label:c=>`${c.dataset.label}: ${fmt(c.dataset.raw[c.dataIndex])} (${c.raw.toFixed(1)}%)`}}}}});
+})();
+
+/* Outliers */
+(() => {
+  const o = R.filter(r=>r.resid!=null && r.resid!==0).sort((a,b)=>b.resid_log-a.resid_log);
+  document.getElementById('outTable').innerHTML = '<tr><th>Feature</th><th>SP</th><th>Combined fit</th><th>Nearest scale</th><th>Tasks</th><th>Commits excl.</th><th>Code lines</th><th>Est. hours</th><th>Reading</th></tr>' +
+    (o.length ? o.map(r=>`<tr>${nameCell(r)}<td>${spChip(r.sp)}</td><td class="num">${fix(r.fit_sp,1)}</td><td>${spChip(D.scale[r.fit_step])}</td><td class="num">${fmt(r.tasks)}</td><td class="num">${fmt(r.commits_excl)}</td><td class="num">${fmt(r.code)}</td><td class="num">${fmt(r.hours,1)}</td><td class="${r.resid>0?'dir-up':'dir-down'}">${r.resid>0?'SP high vs. actuals':'SP low vs. actuals'}</td></tr>`).join('')
+      : emptyRow(9,'Every feature sits on the scale step its actuals predict.'));
+})();
+
+/* Usage */
+(() => {
+  const u = R.filter(r=>r.sessions>0).sort((a,b)=>b.sp-a.sp);
+  const PARTIAL = new Set(D.partial);
+  document.getElementById('usageTable').innerHTML = '<tr><th>Feature</th><th>SP</th><th>Sessions</th><th>Plan h</th><th>Agent h</th><th>Plan ÷ agent</th><th>Tokens</th><th>Cost</th><th>$ / SP</th></tr>' +
+    (u.length ? u.map(r=>{const ah=r.agent_min!=null?r.agent_min/60:null, part=PARTIAL.has(r.label), plan=ratio(r.hours,ah), perSp=ratio(r.cost,r.sp);
+      return `<tr><td class="name">${esc(r.label)}${part?' <span class="muted" style="font-size:11.5px">(likely partial match)</span>':''}</td><td>${spChip(r.sp)}</td><td class="num">${r.sessions}</td><td class="num">${fmt(r.hours,1)}</td><td class="num">${fix(ah,1)}</td><td class="num">${part?'<span class="muted">n/a</span>':plan!=null?plan.toFixed(1)+'×':'—'}</td><td class="num">${kfmt(r.tokens)}</td><td class="num">${r.cost!=null?'$'+fmt(r.cost,0):'—'}</td><td class="num">${perSp!=null?'$'+perSp.toFixed(1):'—'}</td></tr>`;}).join('')
+      : emptyRow(9,'No feature has agent sessions matched to it.'));
+})();
+
+/* All features table */
+(() => {
+  const cols = [['label','Feature'],['sp','SP'],['phases','Phases'],['tasks','Tasks'],['hours','Est. h'],['commits','Commits'],['commits_excl','Excl.'],['churn','Lines (raw)'],['code','Code lines'],['codeShare','Code %'],['fit_sp','Fit SP'],['sessions','Sessions'],['cost','Cost $']];
+  const data = R.map(r=>{const s=ratio(r.code,r.churn);return {...r,codeShare:s==null?null:s*100};});
+  let key='sp', dir=-1, q='';
+  const cell = (r,k) => k==='label'?nameCell(r):k==='sp'?`<td>${spChip(r.sp)}</td>`:`<td class="num">${k==='codeShare'?(r[k]==null?'—':r[k].toFixed(0)+'%'):k==='fit_sp'?fix(r[k],1):fmt(r[k],k==='hours'?1:0)}</td>`;
+  function draw(){
+    const rows = data.filter(r=>r.label.toLowerCase().includes(q)).sort((a,b)=>{const x=a[key],y=b[key];if(x==null)return 1;if(y==null)return -1;return (x<y?-1:x>y?1:0)*dir;});
+    document.getElementById('allTable').innerHTML = '<thead><tr>'+cols.map(([k,l])=>`<th class="sortable" data-k="${k}">${l}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(([k])=>cell(r,k)).join('')+'</tr>').join('')+'</tbody>';
+  }
+  document.getElementById('allTable').addEventListener('click',e=>{const k=e.target.dataset.k;if(!k)return;dir=k===key?-dir:-1;key=k;draw();});
+  document.getElementById('filter').addEventListener('input',e=>{q=e.target.value.toLowerCase();draw();});
+  draw();
+})();
+</script>
+</body>
+</html>

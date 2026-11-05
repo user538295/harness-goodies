@@ -1,8 +1,9 @@
 """`match-sessions <features-json | -> --session-log <path>` (C3) against a fake `session_log.py` run as a real subprocess and a real
-repository: each prompt of a session goes to the features it names or whose commits were made while it ran (a name or commit two
-features share is no evidence), a prompt without evidence follows the prompt before it, sub-agents follow the prompt they started
-under, each feature gets its own slice of the session's numbers with every counted prompt's number, time, first 60 characters and
-reason, nothing is matched by dates, and every failed call and every commit made while no listed prompt ran is named in `missing`."""
+repository: each prompt of a session goes to the features it names or whose commits (doc commits and the commits its input accepts,
+never commits that only name its id) were made while it ran (a name or commit two features share is no evidence), a prompt without
+evidence follows the prompt before it, sub-agents follow the prompt they started under, each feature gets its own slice of the
+session's numbers with every counted prompt's number, time, first 60 characters and reason, nothing is matched by dates, and
+every failed call and every commit made while no listed prompt ran is named in `missing`."""
 import json
 import os
 import unittest
@@ -116,6 +117,21 @@ class MatchSessionsTest(ProjectTestCase):
         self.assertEqual({"Export": {"s1": [(1, "before prompt 2"), (2, "made 1 of its commits")]},
                           "Import": {"s1": [(3, "made 1 of its commits"), (4, "follows prompt 3")]}}, self.slices(output))
         self.assertEqual([], output["missing"])
+
+    def test_an_accepted_commit_made_while_a_prompt_ran_is_evidence_and_a_candidate_is_not(self):
+        accepted = self.commit("feat(EX): write the file", {"src/export.py": "e\n"}, when=at("09:05:00"))
+        self.commit("feat(IM): parse the file", {"src/import.py": "i\n"}, when=at("10:05:00"))
+        self.session("omp", "s1", [prompt_row(at("09:00:00"), "go", seconds=600),
+                                   prompt_row(at("10:00:00"), "go on", seconds=600)])
+        output = self.match({**EXPORT, "id": "EX", "commits": [accepted]}, {**IMPORT, "id": "IM"})
+        self.assertEqual({"Export": {"s1": [(1, "made 1 of its commits"), (2, "follows prompt 1")]}, "Import": {}},
+                         self.slices(output))
+
+    def test_a_given_hash_that_is_no_commit_reachable_from_head_is_a_bad_argument(self):
+        unknown = "f" * 40
+        result = self.run_estimate("match-sessions", json.dumps({"features": [{**EXPORT, "commits": [unknown]}]}),
+                                   "--session-log", self.session_log.path)
+        self.assert_error(result, EXIT_BAD_ARGUMENTS, "'%s' of 'Export'" % unknown)
 
     def test_a_named_feature_beats_commits_and_otherwise_the_most_commits_win_a_tie_counting_for_each(self):
         self.edit(EXPORT_BRIEF, at("09:03:00"))

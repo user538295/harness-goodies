@@ -13,6 +13,7 @@ EXIT_RUNTIME_ERROR = 1
 EXIT_BAD_ARGUMENTS = 2
 ERROR_PREFIX = "estimate: "
 PLAN_PROGRESS_FROM_SKILL = (os.pardir, "implement", "scripts", "plan-progress.sh")
+REPORT_ASSETS = "report"  # the skill's folder of the report template and the vendored Chart.js
 
 
 def _line(message):
@@ -40,7 +41,8 @@ def _dispatch(invocation, environment, skill_dir):
     project = Project(environment.get_cwd(), environment.run)
     check = SchemaCheck(skill_dir, environment.which, environment.run)
     commands = Commands(project, EstimationStore(project.root, check), environment,
-                        os.path.normpath(os.path.join(skill_dir, *PLAN_PROGRESS_FROM_SKILL)))
+                        os.path.normpath(os.path.join(skill_dir, *PLAN_PROGRESS_FROM_SKILL)),
+                        os.path.join(skill_dir, REPORT_ASSETS))
     options = invocation.options
     positionals = invocation.positionals
     handlers = {
@@ -51,8 +53,9 @@ def _dispatch(invocation, environment, skill_dir):
         "git-stats": lambda: commands.git_stats(positionals[0]),
         "match-sessions": lambda: commands.match_sessions(positionals[0], options["--session-log"]),
         "record-commit": lambda: commands.record_commit(positionals[0], positionals[1], options["--harness"],
-                                                        options["--session-log"]),
-        "estimator": lambda: commands.estimator(options["--harness"], options["--session-log"]),
+                                                        options["--session-log"], options["--session-dir"]),
+        "estimator": lambda: commands.estimator(options["--harness"], options["--session-log"], options["--session-dir"]),
+        "report": lambda: commands.report(options["--out"]),
     }
     return handlers[invocation.command]()
 

@@ -1,51 +1,50 @@
 """The C3 evidence rule shared by `git-stats`, `match-sessions` and `record-commit`: what ties a commit or a prompt to a feature.
 
-A commit belongs to a feature when it changes one of the feature's docs, followed back through their moves and copies, or names
-the feature's own id in the scope of its subject (`feat(A7): …`; the `task_ids` boundary rule, in any case). An id anywhere else
-in a message is no evidence (`e2e` is also a word, `C1` also a contract), and task IDs find no commit, since every plan reuses
-`BE-1`. A prompt is evidence for the features its text names (a doc path, a doc basename or a task ID), else for the feature(s)
-with the most commits authored while it ran (from its submission to its last reply). A name, task ID or commit that more than one
-feature claims ties nothing to any of them: a task ID two plans list, or a commit that archives two features' docs, is no
-evidence. A prompt without evidence belongs to the features of the prompt before it, and prompts before the first evidence to the
-first evidence's features; a sub-agent belongs to the prompt it started under. Each prompt carries why it counts for each of its
-features."""
+A feature claims the commits that change one of its docs, followed back through their moves and copies, and the commits a checker
+accepted for it (given by full hash, each reachable from HEAD). An id never ties a commit: the commits whose message (subject or
+body) names the feature's own id (the `task_ids` boundary rule, in any case) and that no feature claims are only its candidates,
+for a checker to accept or reject by the feature's name and description (`test(e2e): …` names the id `e2e` but is other work).
+Task IDs find no commit, since every plan reuses `BE-1`. A prompt is evidence for the features its text names (a doc path, a doc
+basename or a task ID), else for the feature(s) with the most claimed commits authored while it ran (from its submission to its
+last reply). A name, task ID or commit that more than one feature claims ties nothing to any of them: a task ID two plans list, or
+a commit that archives two features' docs, is no evidence. A prompt without evidence belongs to the features of the prompt before
+it, and prompts before the first evidence to the first evidence's features; a sub-agent belongs to the prompt it started under.
+Each prompt carries why it counts for each of its features."""
 import os
-import re
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass
 from typing import Optional
 
+from estimation.errors import ArgumentError
 from estimation.task_ids import finder
 
 NAMES = "names %s"
 MADE_COMMITS = "made %d of its commits"
 FOLLOWS_PROMPT = "follows prompt %d"
 BEFORE_PROMPT = "before prompt %d"
-_SUBJECT_SCOPE = re.compile(r"[\w-]+\(([^)\n]*)\)!?:")  # the Conventional Commits `type(scope):` that opens a subject
-
-
-def subject_scope(message):
-    """The scope of a commit message's subject (`A7` of `feat(A7): …`); empty when the subject has none."""
-    found = _SUBJECT_SCOPE.match(message)
-    return found.group(1) if found else ""
+UNREACHABLE_COMMIT = "commit '%s' of '%s' is not a full hash of a commit reachable from HEAD"
 
 
 @dataclass(frozen=True)
 class FeatureClaim:
-    """One feature as the evidence rule sees it; docs in their stored form, `feature_id` its own id (None without one)."""
+    """One feature as the evidence rule sees it; docs in their stored form, `feature_id` its own id (None without one), `commits`
+    the full hashes a checker accepted for it."""
     name: str
     docs: tuple
     task_ids: tuple
     feature_id: Optional[str] = None
+    commits: tuple = ()
 
 
 @dataclass(frozen=True)
 class FeatureCommits:
     """`found`: {feature name: its commits, oldest first} in the order of the features; `shared`: the commits that more than one
-    feature claims, oldest first, which count for none of them."""
+    feature claims, oldest first, which count for none of them; `candidates`: {feature name: the commits naming its id that no
+    feature claims, oldest first} in the order of the features."""
     found: dict
     shared: list
+    candidates: dict
 
 
 def _sole_owners(claims):
@@ -57,23 +56,40 @@ def _sole_owners(claims):
     return {value: name for value, name in owners.items() if name is not None}
 
 
+def _given(feature, reachable):
+    """The hashes `feature` was given; one that is not a commit reachable from HEAD is a bad argument."""
+    for commit_hash in feature.commits:
+        if commit_hash not in reachable:
+            raise ArgumentError(UNREACHABLE_COMMIT % (commit_hash, feature.name))
+    return set(feature.commits)
+
+
+def _candidates(commits, feature, claimed):
+    """The commits naming `feature`'s own id in their message (the boundary rule, any case) that are not `claimed`."""
+    if feature.feature_id is None:
+        return []
+    names_id = finder([feature.feature_id], ignore_case=True)
+    return [commit for commit in commits if commit.hash not in claimed and names_id(commit.message)]
+
+
 def feature_commits(history, features):
     """The FeatureCommits of `features`: each claims the commits changing one of its docs (followed back through their moves and
-    copies) or naming its own id in their subject's scope, and keeps those no other feature claims."""
+    copies) and the commits it was given, keeps those no other feature claims, and gets as candidates the unclaimed commits
+    naming its id."""
     commits = history.commits()
+    reachable = {commit.hash for commit in commits}
     claims = {}
     for feature in features:
-        followed = set()
+        hashes = _given(feature, reachable)
         for doc in feature.docs:
-            followed |= history.following(doc)
-        names_id = finder([feature.feature_id] if feature.feature_id else [], ignore_case=True)
-        claims[feature.name] = [commit.hash for commit in commits
-                                if commit.hash in followed or names_id(subject_scope(commit.message))]
+            hashes |= history.following(doc)
+        claims[feature.name] = [commit.hash for commit in commits if commit.hash in hashes]
     owners = _sole_owners(claims)
     claimed = {commit_hash for hashes in claims.values() for commit_hash in hashes}
     return FeatureCommits({feature.name: [commit for commit in commits if owners.get(commit.hash) == feature.name]
                            for feature in features},
-                          [commit for commit in commits if commit.hash in claimed and commit.hash not in owners])
+                          [commit for commit in commits if commit.hash in claimed and commit.hash not in owners],
+                          {feature.name: _candidates(commits, feature, claimed) for feature in features})
 
 
 def attribute(prompt_evidence):

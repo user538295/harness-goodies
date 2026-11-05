@@ -19,7 +19,7 @@ Severity rubric — use this consistently across all agents:
 1. **Use the `/double-check` skill**.
 
 - First run `/double-check status` and print it to the user. Do not prose it!
-- Then run the `/double-check` and orovide what is need to be reviewed and do not stop or ask the user, because this is an automated review and this may be invoked by a sub-agent.
+- Then run the `/double-check` and provide what is need to be reviewed and do not stop or ask the user, because this is an automated review and this may be invoked by a sub-agent.
 
 3. Get all of the findings and if there is no Critical, Major, Moderate issues — the review loop is complete. Go to the [Review summary](#Review-Summary) below.
 
