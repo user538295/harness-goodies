@@ -43,14 +43,14 @@ REAL_IDS_PRICED = (
     ("gpt-5-high", GPT_5),
     ("gpt-5.5-xhigh", GPT_5_5),
     ("gpt-5.5-2026-04-23", GPT_5_5),
+    ("codex-auto-review", GPT_5_6_LUNA),  # Codex's guardian (auto-review) sub-agents
 )
 SIBLINGS_AND_SUCCESSORS = (
     "gpt-5.7", "gpt-5.3", "gpt-5.5-mini", "gpt-6-sol-mini", "gpt-6.2-sol", "gpt-5.6-sol-mini",
     "claude-opus-5-6", "claude-sonnet-4-7", "claude-sonnet-5-6", "claude-fable-5-2", "claude-haiku-4-6",
     "gpt-55", "claude-opus-50", "openai-codex/gpt-5.7",
 )
-NEVER_PRICED = ("fable", "opus", "sonnet", "<synthetic>", "codex-auto-review",
-                "deepseek-v4-pro", "ollama-cloud/nemotron-3-ultra")
+NEVER_PRICED = ("fable", "opus", "sonnet", "<synthetic>", "deepseek-v4-pro", "ollama-cloud/nemotron-3-ultra")
 
 
 class RealStoreModelIdTests(unittest.TestCase):

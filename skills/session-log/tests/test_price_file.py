@@ -17,12 +17,16 @@ CLAUDE_PAGE = "https://platform.claude.com/docs/en/about-claude/pricing"
 OPENAI_PAGE = "https://developers.openai.com/api/docs/pricing"
 CURSOR_PAGE = "https://cursor.com/docs/models-and-pricing"
 OFFICIAL_PAGES = (CLAUDE_PAGE, OPENAI_PAGE, CURSOR_PAGE)
+# OpenAI publishes no price for Codex's `codex-auto-review` alias; this third-party page is the only one found that lists one
+# (in $0.20, out $1.20, the same as gpt-5.6-luna's official price), so its entry cites it and takes the rest of Luna's rates.
+AUTO_REVIEW = "codex-auto-review"
+AUTO_REVIEW_PAGE = "https://www.getmaxim.ai/bifrost/llm-cost-calculator/provider/openai/model/codex-auto-review"
 OPUS_5_5_FAST = (8, 40, 0.4, 10, 16)
 OPUS_5_FAST = (10, 50, 1, 12.5, 20)
 OPUS_4_7_FAST = (30, 150, 3, 37.5, 60)
 GPT_5_FAST = (2.5, 20, 0.25, 0, 0)
 COMPOSER_FAST = (3, 15, 0.5, 0, 0)
-# prefix -> (normal, fast or None) in USD per million tokens, typed from the three official pages
+# prefix -> (normal, fast or None) in USD per million tokens, typed from the three official pages and, for AUTO_REVIEW, its page
 # (in, out, cache read, cache write 5m / OpenAI 30m, cache write 1h / OpenAI 12h).
 PUBLISHED = {
     "claude-opus-5-5": ((4, 20, 0.2, 5, 8), OPUS_5_5_FAST),
@@ -53,6 +57,7 @@ PUBLISHED = {
     "gpt-5.6-sol": ((4, 20, 0.4, 5, 10), None),
     "gpt-5.6-terra": ((2, 12, 0.2, 2.5, 5), None),
     "gpt-5.6-luna": ((0.2, 1.2, 0.02, 0.25, 0.5), None),
+    AUTO_REVIEW: ((0.2, 1.2, 0.02, 0.25, 0.5), None),
     "gpt-5.6-cyber": ((12.5, 75, 1.25, 15.625, 31.25), None),
     "gpt-5.5": ((5, 30, 0.5, 0, 0), None),
     "gpt-5.5-pro": ((30, 180, 30, 0, 0), None),
@@ -232,7 +237,7 @@ class ShippedPricesTests(unittest.TestCase):
         self.assertIsNone(self.book.problem())
         for model in self.document["models"]:
             with self.subTest(prefixes=model["prefixes"]):
-                self.assertIn(model["source"], OFFICIAL_PAGES)
+                self.assertIn(model["source"], (AUTO_REVIEW_PAGE,) if model["prefixes"] == [AUTO_REVIEW] else OFFICIAL_PAGES)
                 self.assertRegex(model["as_of"], r"^\d{4}-\d{2}-\d{2}$")
 
     def test_every_shipped_prefix_resolves_to_its_published_rates(self):
