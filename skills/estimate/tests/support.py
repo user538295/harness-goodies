@@ -22,6 +22,7 @@ SEEDED_DAY = "2026-10-01"
 GIT_IDENTITY = ("-c", "user.name=Estimate Test", "-c", "user.email=estimate@example.invalid")
 TODAY = date(2026, 11, 4)
 DEFAULT_SCALE = [0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 200, 500, 1000]
+DEFAULT_ANCHOR = {"sp": 13, "hours": 75}
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
 EXIT_BAD_ARGUMENTS = 2
@@ -171,8 +172,12 @@ class ProjectTestCase(unittest.TestCase):
         return FakeSessionLog(folder)
 
     def seed(self, document):
-        """Writes `document` (the `read` shape) as the scale file and one file per feature, named by its `file`."""
-        self.write(SCALE_PATH, json.dumps({"version": document["version"], "scale": document["scale"]}))
+        """Writes `document` (the `read` shape) as the scale file, with its anchor only when it has one, and one file per feature,
+        named by its `file`."""
+        settings = {"version": document["version"], "scale": document["scale"]}
+        if document["anchor"] is not None:
+            settings["anchor"] = document["anchor"]
+        self.write(SCALE_PATH, json.dumps(settings))
         for feature in document["features"]:
             stored = {"version": 1, **{key: value for key, value in feature.items() if key != "file"}}
             self.write(FEATURES_PATH + "/" + feature["file"], json.dumps(stored))
@@ -191,7 +196,7 @@ class ProjectTestCase(unittest.TestCase):
         scale = self.raw(SCALE_PATH)
         features = [{**{key: value for key, value in self.raw(FEATURES_PATH + "/" + name).items() if key != "version"},
                      "file": name} for name in self.feature_files()]
-        return {"version": scale["version"], "scale": scale["scale"], "features": features}
+        return {"version": scale["version"], "scale": scale["scale"], "anchor": scale.get("anchor"), "features": features}
 
     def feature(self, name):
         return next(feature for feature in self.estimation()["features"] if feature["name"] == name)
@@ -224,8 +229,8 @@ def date_file(path, day):
 def new_feature(name, file=None, **fields):
     """A complete C2 feature in the `read` shape with the `save` defaults, overridden by `fields`; its `file` defaults to a
     seeded name of the feature."""
-    feature = {"id": None, "name": name, "description": "About " + name, "status": "estimated", "storyPoints": None,
-               "updatedStoryPoints": None, "estimatedAt": None, "estimatedBy": None, "updatedBy": None,
+    feature = {"id": None, "name": name, "description": "About " + name, "effort": "Work of " + name, "status": "estimated",
+               "storyPoints": None, "updatedStoryPoints": None, "estimatedAt": None, "estimatedBy": None, "updatedBy": None,
                "plan": {"phases": None, "tasks": None, "estimatedHours": None},
                "git": {"commits": 0, "linesAdded": 0, "linesRemoved": 0}, "usage": None,
                "sources": {"docs": [], "commits": [], "sessions": []}}
@@ -234,5 +239,11 @@ def new_feature(name, file=None, **fields):
     return feature
 
 
-def document(*features, scale=None):
-    return {"version": 1, "scale": DEFAULT_SCALE if scale is None else scale, "features": list(features)}
+def before_effort(feature):
+    """`feature` as a file saved before features had an `effort` holds it."""
+    return {key: value for key, value in feature.items() if key != "effort"}
+
+
+def document(*features, scale=None, anchor=None):
+    """The `read` shape; `anchor` None is a scale file without one."""
+    return {"version": 1, "scale": DEFAULT_SCALE if scale is None else scale, "anchor": anchor, "features": list(features)}

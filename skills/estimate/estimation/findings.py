@@ -6,6 +6,7 @@ rows, no forecasts, no shared commits, no hours, no sessions, null statistics) d
 import html
 import math
 
+from estimation.anchor import DEFAULT_ANCHOR
 from estimation.statistics import median, quantile
 
 STRONG = 0.7
@@ -47,7 +48,6 @@ NUMBER_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven", "ei
 VOWEL_SOUND_NUMBERS = ("8", "11", "18")
 STORE = "<code>.harness-goodies/estimations</code>"
 INIT_STEP = 6
-INIT_QUOTE = "Size the features by effort, relatively"
 CHART_JS_VERSION = "4.4.7"
 PROSE = {"tasks": "tasks", "hours": "planned hours", "commits_excl": "exclusive commits", "code": "code lines",
          "phases": "phases", "churn": "recorded lines", "commits": "raw commits", "src": "source lines"}
@@ -231,8 +231,8 @@ def _lede(data):
                          % (_int(forecast["n"]), _plural(len(data["rows"]), "feature"),
                             _pct(forecast["within1"], forecast["n"])))
     elif data["rows"] and _without_estimate(data) == len(data["rows"]):
-        sentences.append("There's a catch, though: the SP values were assigned <i>after</i> delivery, from the same tasks, "
-                         "planned hours and agent time.")
+        sentences.append("There's a catch, though: init calculated these SP values from the same planned hours, or placed them "
+                         "by comparison after delivery.")
     return " ".join(sentences)
 
 
@@ -251,9 +251,10 @@ def _circular_catch(data):
         return None
     who = "All %s SP values are" % _int(total) if count == total else "%s of %s SP values are" % (_int(count), _int(total))
     return ("<b>Circular by construction.</b> %s <code>updatedStoryPoints</code>, assigned after delivery without an earlier "
-            "estimate. <code>/estimate init</code> step %d tells the agent to <i>\"%s\"</i> from the tasks, planned hours and "
-            "agent time and then propose SP. So a high correlation with those numbers is what that process is built to produce. "
-            "It shows the sizing is consistent, not that it predicts anything." % (who, INIT_STEP, INIT_QUOTE))
+            "estimate. <code>/estimate init</code> step %d calculates the SP of every feature with planned hours from those "
+            "hours (the anchor, %s SP = %s h by default) and places the others by comparison with picked references, so the "
+            "correlation with planned hours is built in. It shows consistency, not prediction."
+            % (who, INIT_STEP, DEFAULT_ANCHOR["sp"], DEFAULT_ANCHOR["hours"]))
 
 
 def _forecast_catch(data):

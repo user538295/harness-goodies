@@ -1,12 +1,13 @@
-"""The C2 feature rules: a new feature's defaults, the `save` upsert (target selection, latest value, the freeze of the pre-work
-size, the never-changed after-delivery size, scale membership, the kept id), the replacement of the sessions, the usage totals
-derived from them, and the duplicates that several feature files hold. Everything here works on plain JSON data; paths arrive
-already in their stored form, and each stored feature carries the name of its file under FILE_KEY."""
+"""The C2 feature rules: a new feature's defaults, the `save` upsert (target selection, latest value, the effort saved with each
+size, the freeze of the pre-work size, the never-changed after-delivery size, scale membership, the kept id), the replacement of
+the sessions, the usage totals derived from them, and the duplicates that several feature files hold. Everything here works on
+plain JSON data; paths arrive already in their stored form, and each stored feature carries the name of its file under FILE_KEY."""
 import json
 import re
 
 from estimation.errors import ArgumentError, EstimateError
 from estimation.naming import slug
+from estimation.text_rules import TEXT_KEYS, problems
 
 ESTIMATED, IN_PROGRESS, DELIVERED = "estimated", "in-progress", "delivered"
 STATUSES = (ESTIMATED, IN_PROGRESS, DELIVERED)
@@ -22,11 +23,13 @@ PLAN_KEYS = ("phases", "tasks", "estimatedHours")
 GIT_KEYS = ("commits", "linesAdded", "linesRemoved")
 SOURCE_KEYS = ("docs", "commits", "sessions")
 SESSION_KEYS = ("harness", "models", "id", "path", "log", "prompts", "agentTimeMinutes", "tokens", "costUsd")
-ENTRY_KEYS = ("id", "name", "description", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "estimatedBy", "updatedBy",
-              "plan", "git", "usage", "sources")
+ENTRY_KEYS = ("id", "name", "description", "effort", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "estimatedBy",
+              "updatedBy", "plan", "git", "usage", "sources")
 SIZE_MAKERS = (("estimatedBy", "storyPoints"), ("updatedBy", "updatedStoryPoints"))  # who made a size, saved with that size
+SIZES = tuple(size for _, size in SIZE_MAKERS)
 MAKER_KEYS = ("harness", "models")
-REPLACED_KEYS = ("name", "description", "status")
+EFFORT_KEY = "effort"  # what makes the work big or small; explains the size saved with it
+REPLACED_KEYS = ("name", "description", EFFORT_KEY, "status")
 MATCHED_BY_KEY = "matchedBy"
 ID_KEY = "id"
 FILE_KEY = "file"  # the stored feature's file name; never part of the file itself
@@ -34,8 +37,8 @@ COST_DECIMALS = 2
 FULL_HASH = re.compile(r"[0-9a-f]{40,64}")  # a SHA-1 or SHA-256 commit hash
 
 
-def new_feature(name, description):
-    return {ID_KEY: None, "name": name, "description": description, "status": ESTIMATED, "storyPoints": None,
+def new_feature(name, description, effort):
+    return {ID_KEY: None, "name": name, "description": description, EFFORT_KEY: effort, "status": ESTIMATED, "storyPoints": None,
             "updatedStoryPoints": None, "estimatedAt": None, "estimatedBy": None, "updatedBy": None,
             "plan": dict.fromkeys(PLAN_KEYS), "git": dict.fromkeys(GIT_KEYS, 0), "usage": None,
             "sources": {key: [] for key in SOURCE_KEYS}}
@@ -132,7 +135,8 @@ def _require(condition, message):
 
 
 def check_entry_shape(entry):
-    """Refuses an entry whose containers have the wrong type, so the rules below can rely on them."""
+    """Refuses an entry whose containers have the wrong type, so the rules below can rely on them, and one whose given texts
+    break the text rules (texts already stored are never re-checked)."""
     _require(isinstance(entry, dict), "entry must be a JSON object")
     unknown = [key for key in entry if key not in ENTRY_KEYS]
     if unknown:
@@ -141,6 +145,10 @@ def check_entry_shape(entry):
         _require(key not in entry or isinstance(entry[key], dict), "%s must be an object" % key)
     _require(entry.get("usage") is None or isinstance(entry["usage"], dict), "usage must be an object or null")
     _require("name" not in entry or isinstance(entry["name"], str) and entry["name"].strip(), "name must be text")
+    _require(EFFORT_KEY not in entry or isinstance(entry[EFFORT_KEY], str) and entry[EFFORT_KEY].strip(), "effort must be text")
+    _require("description" not in entry or isinstance(entry["description"], str), "description must be text")
+    found = problems({key: entry[key] for key in TEXT_KEYS if key in entry})
+    _require(not found, "; ".join(found))
     _check_id(entry)
     _check_makers(entry)
     sources = entry.get("sources", {})
@@ -180,19 +188,27 @@ def _check_makers(entry):
                  '%s must be {"harness": <harness>, "models": [<model>, ...] or null} or null' % maker)
 
 
-def _is_number(value):
+def is_number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _scale_value(scale, value, field):
-    """The scale's own element equal to `value` (null stays null); a boolean is never a number and 8 never equals "8"."""
-    if value is None:
-        return None
+def scale_element(scale, value):
+    """The scale's own element equal to `value`, None when it holds none; a boolean is never a number and 8 never equals "8"."""
     for element in scale:
-        same_kind = _is_number(value) and _is_number(element) or isinstance(value, str) and isinstance(element, str)
+        same_kind = is_number(value) and is_number(element) or isinstance(value, str) and isinstance(element, str)
         if same_kind and element == value:
             return element
-    raise EstimateError("%s %s is not in the scale %s" % (field, _text(value), _text(scale)))
+    return None
+
+
+def _scale_value(scale, value, field):
+    """The scale's own element equal to `value` (null stays null)."""
+    if value is None:
+        return None
+    element = scale_element(scale, value)
+    if element is None:
+        raise EstimateError("%s %s is not in the scale %s" % (field, _text(value), _text(scale)))
+    return element
 
 
 def _text(value):
@@ -228,14 +244,19 @@ class Upsert:
         feature = _target(self.document["features"], entry)
         is_new = feature is None
         before = None if is_new else (feature["name"], _id_form(feature[ID_KEY]))
+        if is_new and (not entry.get("name") or "description" not in entry):
+            raise EstimateError("a new feature needs name and description")
+        if (is_new or any(size in entry for size in SIZES)) and EFFORT_KEY not in entry:
+            raise ArgumentError("a size needs its effort: '%s'" % (entry.get("name") or feature["name"]))
         if is_new:
-            if not entry.get("name") or "description" not in entry:
-                raise EstimateError("a new feature needs name and description")
-            feature = new_feature(entry["name"], entry["description"])
+            feature = new_feature(entry["name"], entry["description"], entry[EFFORT_KEY])
         frozen = feature["status"] in FROZEN_STATUSES
+        kept_effort = feature.get(EFFORT_KEY) if self._ignores_its_sizes(feature, frozen) else None
         for key in REPLACED_KEYS:
             if key in entry:
                 feature[key] = entry[key]
+        if kept_effort is not None:
+            feature[EFFORT_KEY] = kept_effort
         if feature["status"] not in STATUSES:
             raise EstimateError("unknown status '%s' (expected %s)" % (feature["status"], ", ".join(STATUSES)))
         self._id(feature)
@@ -248,6 +269,13 @@ class Upsert:
         if is_new:
             self.document["features"].append(feature)
         return feature
+
+    def _ignores_its_sizes(self, feature, frozen):
+        """Whether the entry carries a size and the save ignores each one it carries (a frozen `storyPoints`, an
+        `updatedStoryPoints` already set): the stored effort then keeps explaining the size it was saved with."""
+        ignored = {"storyPoints": frozen, "updatedStoryPoints": feature["updatedStoryPoints"] is not None}
+        carried = [size for size in SIZES if size in self.entry]
+        return bool(carried) and all(ignored[size] for size in carried)
 
     def _check_unique(self, feature, before):
         """Refuses a name or id (by its file-name form) that this save gives the feature while another feature holds it;

@@ -1,21 +1,28 @@
 """The C3 commands. Each returns (payload printed as JSON on stdout, warnings printed as `estimate:` lines on stderr); every command
 that reads the estimate files also warns about each name, id and doc that several feature files hold."""
 import json
+import math
 import os
 
+from estimation.anchor import ANCHOR_KEY, hours_size, off_reason
+from estimation.calculation import calculate, check_cards
+from estimation.doc_sets import doc_sets
 from estimation.doc_stats import doc_stats
 from estimation.errors import ArgumentError, EstimateError
 from estimation.evidence import Evidence, FeatureClaim, feature_commits
-from estimation.features import (DELIVERED, FILE_KEY, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, Upsert, check_entry_shape,
-                                 derive_usage, duplicates, files_of, is_reference, merge_plan, stored_matched_by, upsert_session,
-                                 weakest)
+from estimation.features import (DELIVERED, EFFORT_KEY, FILE_KEY, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, Upsert,
+                                 check_entry_shape, derive_usage, duplicates, files_of, is_number, is_reference, merge_plan,
+                                 scale_element, stored_matched_by, upsert_session, weakest)
 from estimation.findings import texts
 from estimation.first_day import first_day
 from estimation.git_history import GitHistory
+from estimation.neighbours import pick
+from estimation.placement import place
 from estimation.report_data import analyse
 from estimation.report_page import render
 from estimation.sessions import NO_ROWS, SessionLog, SessionMatcher, SessionUsage
 from estimation.store import DATA_FOLDER
+from estimation.text_rules import check_texts, problems
 
 STDIN_MARK = "-"
 NO_PROMPT_OF_FEATURE = "the latest %s session %s shows no prompt of %s"
@@ -29,6 +36,23 @@ REPORT_FILE = "estimation-report.html"  # under DATA_FOLDER when no --out is giv
 REPORT_TEMPLATE = "estimation-report.html"
 CHART_SOURCE = "chart.umd.js"
 MISSING_COMMITS = "%d %s not found in git: %s"
+PICK_FIELDS = ("name", "pool")
+PLACE_FIELDS = ("hours", "verdicts", "pickVerdicts")
+NUMERIC_SCALE = "%s needs a numeric scale (every value a number); found %s"
+OFF_SCALE = "sp %s%s is not in the scale %s"
+
+
+def _check_size(scale, value, owner=""):
+    """Refuses a size the scale does not hold; `owner` (e.g. " of pool item 'A'") says whose size it is."""
+    if scale_element(scale, value) is None:
+        raise ArgumentError(OFF_SCALE % (json.dumps(value, ensure_ascii=False), owner, json.dumps(scale, ensure_ascii=False)))
+
+
+def _pool_item(reference):
+    """A stored reference as `neighbours` compares it: its after-delivery SP, and its plan's tasks and hours."""
+    return {"name": reference["name"], "id": reference["id"], "description": reference["description"],
+            "effort": reference.get(EFFORT_KEY), "sp": reference["updatedStoryPoints"], "tasks": reference["plan"]["tasks"],
+            "estimatedHours": reference["plan"]["estimatedHours"]}
 
 
 class Commands:
@@ -220,6 +244,82 @@ class Commands:
                 if models is None:
                     missing.append(NO_MODELS % (LAST_PROMPT_WITHOUT_MODELS % harness))
         return {"estimator": {"harness": harness, "models": models}, "missing": missing}, []
+
+    def _picked(self, command, request_text, fields):
+        """The request, its stored document's scale and `pick()`'s result for a `{"name", "pool"?}` request that may also hold
+        `fields`: `pool` (each item `{"name", "id", "description", "effort", "sp", "tasks", "estimatedHours"}`) takes the place of
+        the stored references."""
+        request = self._json_argument(request_text, "request")
+        if not isinstance(request, dict):
+            raise ArgumentError("request must be a JSON object")
+        unknown = [key for key in request if key not in (*PICK_FIELDS, *fields)]
+        if unknown:
+            raise ArgumentError("unknown field '%s'" % unknown[0])
+        name = request.get("name")
+        if not (isinstance(name, str) and name.strip()):
+            raise ArgumentError("request needs a name")
+        document, warnings = self._load()
+        scale = document["scale"]
+        if "pool" not in request:
+            pool = [_pool_item(feature) for feature in document["features"] if is_reference(feature)]
+        elif not isinstance(request["pool"], list):
+            raise ArgumentError("pool must be a list")
+        else:
+            pool = request["pool"]
+            for item in pool:
+                if not (isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip()):
+                    raise ArgumentError("each pool item needs a name")
+                _check_size(scale, item.get("sp"), " of pool item '%s'" % item["name"])
+        wrong = [value for value in scale if not is_number(value)]
+        if wrong:
+            raise EstimateError(NUMERIC_SCALE % (command, ", ".join(map(repr, wrong))))
+        return request, scale, pick(pool, scale, name), warnings
+
+    def neighbours(self, request_text):
+        """The features to compare a feature with (`pick`), from a `{"name", "pool"?}` request."""
+        _, _, picked, warnings = self._picked("neighbours", request_text, ())
+        return picked, warnings
+
+    def place(self, request_text):
+        """The size of a feature among its picks (`place`), from a `{"name", "pool"?, "hours"?, "verdicts", "pickVerdicts"}`
+        request: the same picks as `neighbours` gives, and the two judge calls' verdicts on them."""
+        request, scale, picked, warnings = self._picked("place", request_text, PLACE_FIELDS)
+        hours = request.get("hours")
+        if hours is not None and not (is_number(hours) and math.isfinite(hours) and hours > 0):
+            raise ArgumentError("hours must be a number above 0 or null: %s" % json.dumps(hours, ensure_ascii=False))
+        return place(scale, picked, request.get("verdicts"), request.get("pickVerdicts"), hours), warnings
+
+    def anchor(self, hours_text):
+        """The value of the scale that `hours_text` planned hours give at the scale file's anchor (`{"hours", "sp", "missing"}`);
+        `sp` is null, with the reason in `missing`, when the anchor is off."""
+        try:
+            hours = json.loads(hours_text)
+        except ValueError:
+            hours = None
+        if not (is_number(hours) and math.isfinite(hours) and hours > 0):
+            raise ArgumentError("hours must be a number above 0: %s" % hours_text)
+        document, warnings = self._load()
+        anchor, scale = document[ANCHOR_KEY], document["scale"]
+        sp = hours_size(anchor, scale, hours)
+        return {"hours": hours, "sp": sp, "missing": [] if sp is not None else [off_reason(anchor, scale)]}, warnings
+
+    def find_sets(self):
+        """The planning-doc sets of the project and whether each is delivered (`doc_sets`)."""
+        return doc_sets(self.project, self._history(), self.plan_progress, self.environment.run), []
+
+    def check_text(self, texts_text):
+        """The problems of a `{"description"?, "effort"?}` request's texts (`{"problems": [...]}`, [] when they pass)."""
+        texts = self._json_argument(texts_text, "texts")
+        check_texts(texts)
+        return {"problems": problems(texts)}, []
+
+    def calculate(self, features_text):
+        """The SP that each feature card's planned hours give at the scale file's anchor, and the pool of the sized cards that
+        `neighbours` and `place` accept (`calculate`), from a `{"features": [{"name", "id", "description", "effort", "tasks",
+        "estimatedHours"}]}` request."""
+        cards = check_cards(self._json_argument(features_text, "features"))
+        document, warnings = self._load()
+        return calculate(cards, document[ANCHOR_KEY], document["scale"]), warnings
 
     def _asset(self, name):
         with open(os.path.join(self.report_assets, name), encoding="utf-8") as handle:

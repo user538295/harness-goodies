@@ -6,8 +6,8 @@ status follows the ticked tasks."""
 import os
 import unittest
 
-from tests.support import (EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, FEATURES_PATH, ProjectTestCase, agent_row, document,
-                           new_feature, prompt_row, tokens_of, usage_payload)
+from tests.support import (EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, FEATURES_PATH, ProjectTestCase, agent_row,
+                           before_effort, document, new_feature, prompt_row, tokens_of, usage_payload)
 
 PLAN = "docs/x-tasks.md"
 TASKS_OPEN = """## Task Breakdown
@@ -128,6 +128,13 @@ class RecordCommitTest(ProjectTestCase):
         output = self.record(c1)
         self.assertEqual("delivered", output["feature"]["status"])
         self.assertFalse(output["needsResize"])
+
+    def test_a_feature_saved_before_efforts_still_takes_its_commits(self):
+        self.seed(document(before_effort(new_feature("X", storyPoints=5, sources={"docs": [PLAN], "commits": [], "sessions": []}))))
+        c1 = self.commit("BE-1 store", {PLAN: TASKS_ONE_DONE})
+        feature = self.record(c1)["feature"]
+        self.assertEqual(([c1], "in-progress"), (feature["sources"]["commits"], feature["status"]))
+        self.assertNotIn("effort", self.feature("X"))
 
     def test_the_label_stays_the_weakest_of_prompt_and_implement(self):
         self.seed_feature(usage={"matchedBy": "prompt", "sessions": 0, "agentTimeMinutes": None,

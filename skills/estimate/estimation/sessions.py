@@ -1,6 +1,7 @@
 """Sessions through session-log's C1 JSON (`list --json`, `usage ... --json`), run as a subprocess in the project root, and
 `match-sessions`: each feature gets its slice of a session (the prompts the `evidence` rule gives it, each with its number, time,
-first 60 characters and reason, and the sub-agents started under them) as a C2 session entry. Every failed call, every session
+first 60 characters and reason, and the sub-agents started under them) as a C2 session entry, and the `usage` totals `save` derives
+from those entries. Every failed call, every session
 counted whole for want of prompt rows and every feature commit made while no listed prompt ran is named in `missing`, never guessed
 around."""
 import json
@@ -14,7 +15,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from estimation.evidence import attribute, prompt_under
-from estimation.features import HARNESSES, MATCH_NONE, MATCH_PROMPT, TOKEN_KEYS, session_entry
+from estimation.features import HARNESSES, MATCH_NONE, MATCH_PROMPT, TOKEN_KEYS, derive_usage, session_entry
 
 SECONDS_PER_MINUTE = Decimal(60)
 WHOLE = Decimal(1)
@@ -254,9 +255,7 @@ class SessionMatcher:
             uncovered = sum(not covered(moment) for moment in times.values())
             if uncovered:
                 self.missing.append(UNCOVERED_COMMITS % (name, uncovered, len(times)))
-        return {"features": [{"name": name, "matchedBy": MATCH_PROMPT if sessions else MATCH_NONE, "sessions": sessions}
-                             for name, sessions in found.items()],
-                "missing": self.missing}
+        return {"features": [_matched(name, sessions) for name, sessions in found.items()], "missing": self.missing}
 
     def _read(self, harness, session, found):
         """Reads the usage of a session that names a feature or ran while a feature commit was made, and files its slices."""
@@ -283,3 +282,11 @@ class SessionMatcher:
             for name in names:
                 found[name].append(entry)
             self.missing.append(NO_ROWS % (reply.label, ", ".join(names)))
+
+
+def _matched(name, sessions):
+    """A `match-sessions` feature: its slices and the usage `save` derives from them for its label."""
+    feature = {"name": name, "matchedBy": MATCH_PROMPT if sessions else MATCH_NONE, "sessions": sessions}
+    derived = {"sources": {"sessions": sessions}}
+    derive_usage(derived, feature["matchedBy"])
+    return feature | {"usage": derived["usage"]}

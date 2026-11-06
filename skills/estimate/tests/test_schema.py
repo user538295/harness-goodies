@@ -18,6 +18,7 @@ SCALE_FIXTURE = os.path.join(FIXTURES, "estimation.json")
 DELIVERED_FIXTURE = os.path.join(FIXTURES, "estimations", "2026-09-14-inv-7-invoice-pdf-export.json")
 ESTIMATED_FIXTURE = os.path.join(FIXTURES, "estimations", "2026-11-03-estimate-skill.json")
 DESCRIPTION_LIMIT = 300
+EFFORT_LIMIT = 300
 VALIDATOR = shutil.which("check-jsonschema")
 
 
@@ -61,6 +62,17 @@ class ScaleSchemaTest(SchemaTestCase):
 
     def test_an_emoji_scale_is_valid(self):
         self.assert_valid({"version": 1, "scale": ["😇", "😉", "🙂"]})
+
+    def test_an_anchor_may_be_off(self):
+        for anchor in (None, {}, {"sp": 13, "hours": 0}, {"sp": 13, "hours": None}):
+            with self.subTest(anchor=anchor):
+                self.assert_valid({**self.example, "anchor": anchor})
+
+    def test_a_malformed_anchor_is_rejected(self):
+        for anchor in ("", 75, {"sp": 13, "hours": "75"}, {"sp": 13, "hours": -1}, {"sp": 0, "hours": 75},
+                       {"sp": 13, "hours": 75, "days": 10}):
+            with self.subTest(anchor=anchor):
+                self.assert_rejected({**self.example, "anchor": anchor})
 
     def test_an_empty_or_repeating_scale_is_rejected(self):
         for scale in ([], [1, 2, 2]):
@@ -106,6 +118,12 @@ class FeatureSchemaTest(SchemaTestCase):
 
     def test_a_description_over_the_limit_is_rejected(self):
         self.assert_rejected({**self.delivered, "description": "x" * (DESCRIPTION_LIMIT + 1)})
+
+    def test_an_effort_is_optional_text_up_to_the_limit(self):
+        self.assert_valid({**self.delivered, "effort": "x" * EFFORT_LIMIT})
+        for value in ("x" * (EFFORT_LIMIT + 1), None, 3):
+            with self.subTest(value=value):
+                self.assert_rejected({**self.delivered, "effort": value})
 
     def test_an_unknown_status_is_rejected(self):
         self.assert_rejected({**self.delivered, "status": "done"})

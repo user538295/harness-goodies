@@ -183,6 +183,32 @@ class MatchSessionsTest(ProjectTestCase):
         self.assertEqual([("s1", 2, None)],
                          [(entry["id"], entry["agentTimeMinutes"], entry["costUsd"]) for entry in sessions["Import"]])
 
+    def test_a_feature_matched_by_prompt_gets_the_summed_usage_of_its_slices(self):
+        self.session("claude", "s1", [prompt_row(at("09:00:00"), "EX-1", seconds=600, total=100, cost=1.0)])
+        self.session("codex", "x1", [prompt_row(at("10:00:00"), "EX-1", seconds=300, total=200, cost=2.25)])
+        export = self.match(EXPORT)["features"][0]
+        self.assertEqual(["name", "matchedBy", "sessions", "usage"], list(export))
+        self.assertEqual({"matchedBy": "prompt", "sessions": 2, "agentTimeMinutes": 15, "tokens": tokens_of(300), "costUsd": 3.25},
+                         export["usage"])
+
+    def test_a_feature_without_sessions_gets_the_usage_of_no_match(self):
+        export = self.match(EXPORT)["features"][0]
+        self.assertEqual({"matchedBy": "none", "sessions": 0, **NO_NUMBERS}, export["usage"])
+
+    def test_a_session_with_an_unknown_cost_makes_the_cost_total_null(self):
+        self.session("claude", "s1", [prompt_row(at("09:00:00"), "EX-1", cost=1.0)])
+        self.session("cursor", "c1", [prompt_row(at("10:00:00"), "EX-1", cost=3.0)], cost_complete=False)
+        self.assertIsNone(self.match(EXPORT)["features"][0]["usage"]["costUsd"])
+
+    def test_save_stores_the_usage_match_sessions_printed(self):
+        self.session("claude", "s1", [prompt_row(at("09:00:00"), "EX-1", seconds=600, total=100, cost=1.0)])
+        export = self.match(EXPORT)["features"][0]
+        entry = {"name": "Export", "description": "x", "effort": "x", "usage": {"matchedBy": export["matchedBy"]},
+                 "sources": {"sessions": export["sessions"]}}
+        result = self.run_estimate("save", json.dumps(entry))
+        self.assertEqual(EXIT_OK, result.code, result.err)
+        self.assertEqual(export["usage"], self.estimation()["features"][0]["usage"])
+
     def test_a_session_without_prompt_rows_is_counted_whole_and_named(self):
         self.session_log.reply("claude list --json", [list_entry("claude", "old", at("09:00:00"), at("10:00:00"),
                                                                  ["/implement docs/export-brief.md"], log="/abs/logs/old.md")])

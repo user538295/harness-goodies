@@ -107,12 +107,15 @@ class VerdictTest(unittest.TestCase):
         self.assertIn("No forecasts to grade", result["catches"])
         self.assertIn("/estimate &lt;file&gt;", result["forecast_sub"])
         self.assertEqual("", result["forecast_points"])
-        self.assertIn("assigned <i>after</i> delivery, from the same tasks, planned hours and agent time.", result["lede"])
+        self.assertIn("There's a catch, though: init calculated these SP values from the same planned hours, or placed them by "
+                      "comparison after delivery.", result["lede"])
 
-    def test_the_circular_catch_quotes_the_init_step_that_sizes_by_effort(self):
+    def test_the_circular_catch_says_init_calculates_from_hours_and_places_the_rest_by_comparison(self):
         catches = texts(make_data())["html"]["catches"]
-        self.assertIn("<code>/estimate init</code> step 6 tells the agent to <i>\"Size the features by effort, relatively\"</i>",
-                      catches)
+        self.assertIn("<code>/estimate init</code> step 6 calculates the SP of every feature with planned hours from those hours "
+                      "(the anchor, 13 SP = 75 h by default) and places the others by comparison with picked references, so the "
+                      "correlation with planned hours is built in. It shows consistency, not prediction.", catches)
+        self.assertNotIn("agent time", catches)
         self.assertNotIn("real size", catches)
 
     def test_graded_forecasts_drive_the_verdict(self):

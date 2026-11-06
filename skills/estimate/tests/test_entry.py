@@ -7,8 +7,8 @@ import sys
 import tempfile
 import unittest
 
-from tests.support import (DEFAULT_SCALE, ENTRY_PATH, EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR, FEATURES_PATH,
-                           ProjectTestCase, date_file)
+from tests.support import (DEFAULT_ANCHOR, DEFAULT_SCALE, ENTRY_PATH, EXIT_BAD_ARGUMENTS, EXIT_OK, EXIT_RUNTIME_ERROR,
+                           FEATURES_PATH, ProjectTestCase, date_file)
 
 OLD_PYTHON = (3, 9, 6, "final", 0)
 SYSTEM_PYTHON = "/usr/bin/python3"
@@ -71,7 +71,7 @@ class RealProcessTest(unittest.TestCase):
     def test_read_without_a_file_prints_the_empty_document_and_writes_nothing(self):
         result = self.run_entry("read")
         self.assertEqual(EXIT_OK, result.returncode, result.stderr)
-        self.assertEqual({"version": 1, "scale": DEFAULT_SCALE, "features": []}, json.loads(result.stdout))
+        self.assertEqual({"version": 1, "scale": DEFAULT_SCALE, "anchor": DEFAULT_ANCHOR, "features": []}, json.loads(result.stdout))
         self.assertEqual([], os.listdir(self.folder))
 
     def test_save_outside_a_git_repository_dates_the_feature_by_its_docs_file_time(self):
@@ -79,7 +79,8 @@ class RealProcessTest(unittest.TestCase):
         with open(doc, "w", encoding="utf-8") as handle:
             handle.write("# A\n")
         date_file(doc, "2026-07-04")
-        result = self.run_entry("save", json.dumps({"name": "A", "description": "x", "sources": {"docs": ["a-brief.md"]}}))
+        result = self.run_entry("save", json.dumps({"name": "A", "description": "x", "effort": "x",
+                                                    "sources": {"docs": ["a-brief.md"]}}))
         self.assertEqual(EXIT_OK, result.returncode, result.stderr)
         self.assertEqual(["2026-07-04-a.json"], os.listdir(os.path.join(self.folder, *FEATURES_PATH.split("/"))))
 

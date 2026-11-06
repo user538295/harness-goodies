@@ -18,8 +18,8 @@
 
     <section data-section="1-summary">
       <h2>Summary</h2>
-      <p><strong>A Story Point size you can check later, measured against your own delivered work.</strong> Sizes a brief, plan, task list, epic or single task by comparing it with the features your project has already delivered, and tells you the agent time, tokens and cost that features of that size took.</p>
-      <p>Every feature's estimate sits next to its real effort — commits, lines added and removed, agent time, tokens, cost — in its own file under <code>.harness-goodies/estimations/</code> at the project root, while the Story Point scale lives in <code>.harness-goodies/estimation.json</code>. Each file is named after the feature's first day, its ID when it has one, and its name, e.g. <code>2026-11-04-pm-12-csv-import.json</code>. One file per feature means features estimated on parallel branches no longer cause merge conflicts. Committing <code>.harness-goodies/</code> is your call; no skill ever commits it.</p>
+      <p><strong>A Story Point size you can check later, measured against your own delivered work.</strong> Sizes a brief, plan, task list, epic or single task — calculated from its planned hours at the scale's anchor, or else by a blind comparison with the features your project has already delivered — and tells you the agent time, tokens and cost that features of that size took.</p>
+      <p>Every feature's estimate sits next to its real effort — commits, lines added and removed, agent time, tokens, cost — in its own file under <code>.harness-goodies/estimations/</code> at the project root, while the Story Point scale and its anchor live in <code>.harness-goodies/estimation.json</code>. Each file is named after the feature's first day, its ID when it has one, and its name, e.g. <code>2026-11-04-pm-12-csv-import.json</code>. One file per feature means features estimated on parallel branches no longer cause merge conflicts. Committing <code>.harness-goodies/</code> is your call; no skill ever commits it.</p>
     </section>
 
     <section data-section="2-when-to-use">
@@ -33,18 +33,20 @@
       <pre><code>/estimate &lt;file.md&gt; [--from &lt;source.md&gt;]
 /estimate init
 /estimate report [--out &lt;path&gt;]</code></pre>
-      <p><strong><code>/estimate &lt;file.md&gt;</code></strong> compares the work with the 2–3 closest delivered features (bigger, smaller or the same) and picks an SP from the scale — by default <code>0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 200, 500, 1000</code>. It shows the SP, the closest features with the reason, phases, tasks and estimated hours when the file has them, the expected agent time, tokens and cost, a split suggestion at 40 SP or more, and everything it could not find. Then it saves the item as <code>estimated</code>. <code>--from</code> names the document the file grew out of (the brief of a plan, the team plan of a task list), so that document's entry is updated instead of a second one being created.</p>
-      <p><strong><code>/estimate init</code></strong> collects the references: one feature per delivered set of planning documents (brief, plan, tasks file). One sub-agent per feature counts phases, tasks and hours; the main agent then finds every feature's commits in one pass, has each commit that only names a feature's ID checked against that feature's name and description, and matches the past sessions of all five harnesses to the features. It sizes the features by effort — the scope the docs describe, tasks, planned hours, agent time — never by lines changed: the first time by comparing them with each other, with 5 as a mid-size feature; later, each new feature against the saved ones, naming the 2–3 closest. It shows them in one table and saves them right away, without waiting for you. Running it again adds newly delivered features and refreshes the actuals; a saved after-delivery SP is never changed.</p>
+      <p><strong><code>/estimate &lt;file.md&gt;</code></strong> finds the size on the scale — by default <code>0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 200, 500, 1000</code> — in one of two ways. When the file has planned hours, the anchor calculates the size from them (see the rules below), and no judge is asked. Otherwise the work is compared once with delivered features: the script picks up to 3 features from every size that holds one, at random but repeatable for the same feature name, and shows them without their SP. Two fresh sub-agents that have seen no SP then judge, each given the same short card for the work and for every pick (name, ID, description, effort, tasks, and planned hours when the anchor is off): the first says whether the work is bigger than, about the same as or smaller than each pick, the second whether each pick, shown in reverse order, is bigger than, about the same as or smaller than the work. The script turns both answers into the size where the work fits: bigger than the picks below it, about the same as that size's picks, smaller than those above; with conflicting answers, the size that contradicts the fewest. When the work fits exactly between two sizes, the one whose picks' planned hours are nearest the work's wins when the work has hours, else the bigger one. So a verdict comes from the work, never from a size already given. It shows the SP, the verdicts, e.g. "bigger than A6 (3), same as C4 (5)", or "calculated from 24.5 h", phases, tasks and estimated hours when the file has them, the expected agent time, tokens and cost, a split suggestion at 40 SP or more, and everything it could not find. Then it saves the item as <code>estimated</code>, with a <code>description</code> (what is built) and an <code>effort</code> (what makes the work big or small: parts changed, new storage or migrations, outside services, unknowns, risky areas; no numbers), each at most 300 characters. <code>--from</code> names the document the file grew out of (the brief of a plan, the team plan of a task list), so that document's entry is updated instead of a second one being created.</p>
+      <p><strong><code>/estimate init</code></strong> collects the references: one feature per delivered set of planning documents (brief, plan, tasks file). One sub-agent per feature reads the brief, plan and tasks file together, counts phases, tasks and hours, and returns the feature's description and effort; the main agent then finds every feature's commits in one run over all features, has each commit that only names a feature's ID checked against that feature's name and description, and matches the past sessions of all five harnesses to the features. The main agent alone sizes the features the same way; the verdicts come from blind sub-agent judges that see no SP, at most 8 at a time so the API's rate limit is never hit. Lines changed or commits never decide a size. The first time, it calculates every feature with planned hours from the anchor, then places each other feature among the calculated ones. When nothing can be calculated (the anchor is off, or no feature has planned hours), it asks you to name an example feature for a few sizes — at least one at 13 SP and one small one — and places the rest among those: the only time it waits for you. Later, features with a saved after-delivery SP keep it, and each other feature is calculated, or placed among the saved references. It shows them in one table with the verdicts or "calculated from N h", and saves them right away. Running it again adds newly delivered features and refreshes the actuals; a saved after-delivery SP is never changed.</p>
       <p><strong><code>/estimate report</code></strong> writes one HTML page about your delivered features to <code>.harness-goodies/estimation-report.html</code> (or to <code>--out &lt;path&gt;</code>): how closely the SPs track planned hours, tasks, commits and lines changed, how those numbers grow with the size, where the line counts are inflated (commits counted for several features) and how many lines of committed dependencies, shown but not counted, a feature's commits hold, which features look over- or under-sized next to their actuals, the agent time and cost per feature, and how accurate the estimates made before work turned out. Every number and sentence on it comes from your data by fixed rules, and Chart.js is bundled inside, so the page opens offline.</p>
       <p><strong>Rules that keep the numbers honest:</strong></p>
       <ul>
         <li>The estimate sharpens with each document: brief, then plan, then tasks file. Each one replaces the feature's SP, so the last estimate before the first task commit, normally the tasks file's, becomes the original SP. A rougher document estimated again after a more detailed one is saved only when you confirm.</li>
         <li>The original SP freezes at the first task commit; the size judged at delivery goes into <code>updatedStoryPoints</code>. The same number in both means the estimate was right.</li>
-        <li>Only delivered features are references, compared by their after-delivery SP.</li>
+        <li>Only delivered features are references, compared by their after-delivery SP. A comparison never changes a reference's SP, and its verdicts are reported, never saved.</li>
+        <li>Every saved SP comes with its <code>effort</code> text, and a new SP replaces the effort with it, so the effort always explains the SP next to it. Feature files saved before <code>effort</code> existed still load.</li>
+        <li>The scale file holds an <code>anchor</code>, <code>{"sp": 13, "hours": 75}</code> by default (13 SP is about one developer's two-week sprint). It decides the size of a feature with planned hours: the nearest size by ratio (30 h → 5 SP, 60 h → 13 SP), with no judge. The anchor is off when the scale file has none, when it is null or <code>{}</code>, when its hours are null or 0, and on a scale that is not all numbers; then nothing is calculated, and a feature with planned hours is compared like the rest, its hours shown to the judges.</li>
         <li>Sessions are matched prompt by prompt: a prompt belongs to the feature whose documents or task IDs it names, or whose commits were made while it ran; a follow-up like "go" stays with the prompt before it. A session that worked on three features is split three ways, never counted three times, and nothing is matched by dates. A document, task ID or commit that several features share (every plan's <code>BE-1</code>) counts for none of them.</li>
         <li>A feature's commits are those that change its planning documents, followed back through moves (a plan archived from <code>Backlog/</code> to <code>Completed/</code> keeps its earlier commits), and those a check accepted after reading them against the feature's name and description. An ID never ties a commit on its own: a commit that names the feature's ID is only a candidate, and <code>test(e2e): …</code> is rejected for a feature whose ID is <code>e2e</code> when it is other work. Task IDs link nothing; a commit several features claim, like one that archives several plans, counts for none of them.</li>
         <li>Lines changed skip committed dependencies: <code>node_modules</code>, <code>vendor</code>, <code>Pods</code>, <code>.venv</code> and similar folders, lockfiles and minified files.</li>
-        <li>Commits and lines are recorded only to check how accurate the estimates were; they never set a size. A delivered feature is re-sized by effort against the saved references, so the sizes stay consistent.</li>
+        <li>Commits and lines changed never decide a size; they are recorded only to check how accurate the estimates were. A delivered feature is re-sized the same way — calculated from its planned hours as delivered, else placed among the saved references — so the sizes stay consistent.</li>
         <li>Every saved SP records who made it (<code>estimatedBy</code>, <code>updatedBy</code>: the harness and the model), and every session its harness and models; each counted prompt shows its time, its opening text and why it counts.</li>
         <li>Missing data stays empty and is listed in the report — nothing is guessed.</li>
         <li>With no delivered features yet, you still get an SP, with a warning to run <code>/estimate init</code>.</li>
@@ -62,17 +64,20 @@
         <p><strong>Output / Result:</strong></p>
         <pre><code>Story Points: 8
 
-Closest delivered features:
-- Bigger than "User avatar upload" (5): two import paths and a validation report instead of one upload.
-- Smaller than "Invoice PDF export" (13): no layout engine, no server-side rendering.
-- Like "Bulk tag editor" (8): same shape — one parser, one preview screen, one write path.
+Compared with (two blind judges):
+bigger than User avatar upload (5), bigger than Tag filter (5), same as Bulk tag editor (8), same as / smaller than Report scheduler (8), smaller than Invoice PDF export (13)
 
-Plan: 3 phases, 11 tasks, 24.5 estimated hours
-Expected effort (features at 8 SP: Bulk tag editor, Report scheduler):
+Effort: a parser for CSV and XLSX files, a new staging table with a migration, a validation report screen; unknown: encodings of customer files.
+
+Plan: 3 phases, 11 tasks, no estimated hours
+Expected agent time and cost (features at 8 SP: Bulk tag editor, Report scheduler):
   agent time 260–410 min · tokens 31–58 M · cost $28–$52
 
 Not found:
-- no estimated hours on 2 tasks
+- no estimated hours on the plan's tasks
+- only 2 references at 5 SP
+- only 2 references at 8 SP
+- only 1 reference at 13 SP
 
 Saved as "CSV import" (estimated) in .harness-goodies/estimations/2026-11-04-csv-import.json</code></pre>
       </div>
@@ -84,13 +89,14 @@ Saved as "CSV import" (estimated) in .harness-goodies/estimations/2026-11-04-csv
         <p><strong>Input:</strong></p>
         <pre><code>/estimate init</code></pre>
         <p><strong>Output / Result:</strong></p>
-        <pre><code>| Feature            | Commits | Lines +/−   | Tasks | Hours | Sessions | Agent time | Tokens | Cost   | Matched | SP          |
-| Invoice PDF export | 19      | 2140 / 310  | 17    | 38.5  | 3        | 412 min    | 64.2 M | $61.40 | prompt  | 13 proposed |
-| Bulk tag editor    | 9       | 880 / 120   | 8     | 16.0  | 1        | 305 min    | 44.0 M | $39.10 | prompt  | 8 proposed  |
-| User avatar upload | 5       | 410 / 35    | 5     | 9.0   | 0        | —          | —      | —      | none    | 5 kept      |
+        <pre><code>| Feature            | Commits | Lines +/−   | Tasks | Hours | Sessions | Agent time | Tokens | Cost   | Matched | SP           | Size found by                       |
+| Invoice PDF export | 19      | 2140 / 310  | 17    | 38.5  | 3        | 412 min    | 64.2 M | $61.40 | prompt  | 8 calculated | calculated from 38.5 h              |
+| Bulk tag editor    | 9       | 880 / 120   | 8     | —     | 1        | 305 min    | 44.0 M | $39.10 | prompt  | 8 placed     | bigger than User avatar upload (5)  |
+| User avatar upload | 5       | 410 / 35    | 5     | 9.0   | 0        | —          | —      | —      | none    | 5 kept       | —                                   |
 
 Not found:
 - User avatar upload: no session found for 5 of 5 commits
+- Bulk tag editor: no estimated hours; only 1 reference at 5 SP
 
 Saved 3 delivered features to .harness-goodies/estimations/</code></pre>
       </div>

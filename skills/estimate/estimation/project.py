@@ -11,7 +11,9 @@ class Project:
     def __init__(self, cwd, run):
         self.cwd = os.path.realpath(cwd)
         self.run = run
-        self.root = self._git_top_level() or self.cwd
+        top_level = self._git_top_level()
+        self.in_git = top_level is not None
+        self.root = top_level or self.cwd
 
     def _git_top_level(self):
         result = self.run(["git", "rev-parse", "--show-toplevel"], self.cwd)

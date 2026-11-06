@@ -32,6 +32,12 @@ COMMANDS = {
     "record-commit": Spec(("<plan-file>", "<commit>"), {HARNESS_OPTION: Kind.REQUIRED, "--session-log": Kind.SINGLE,
                                                         "--session-dir": Kind.SINGLE}),
     "estimator": Spec((), {HARNESS_OPTION: Kind.REQUIRED, "--session-log": Kind.SINGLE, "--session-dir": Kind.SINGLE}),
+    "neighbours": Spec(("<request-json | ->",), {}),
+    "place": Spec(("<request-json | ->",), {}),
+    "anchor": Spec(("<hours>",), {}),
+    "find-sets": Spec((), {}),
+    "check-text": Spec(("<texts-json | ->",), {}),
+    "calculate": Spec(("<features-json | ->",), {}),
     "report": Spec((), {"--out": Kind.SINGLE}),
 }
 

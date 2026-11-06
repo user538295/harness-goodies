@@ -108,6 +108,7 @@ Save the new plan as `[ID]-[kebab-feature-name].md` in the identified location.
 ## Step 4 — Write the Plan
 
 Follow the mandatory format below exactly. Never omit a section — write `N/A` if a section genuinely does not apply, but keep the heading.
+- Every task has an estimate in decimal hours (e.g. `1.0h`, `2.0h`, `4.0h`), written as `- **Estimate** · <n>h`, never days, T-shirt sizes or ranges.
 
 **References:** Collect all files and resources discovered during context gathering and referenced in the plan (source files, docs, specs, ADRs, related plans). Copy them into the `## References` section as formatted entries. Every file path must be a markdown link `[path](path)`. If the Reference List is empty, write `N/A` under the heading — do not omit it.
 
@@ -170,6 +171,7 @@ Follow the mandatory format below exactly. Never omit a section — write `N/A` 
 
 #### Task 1.1 — [Task name]
 - [ ] **File**: [path/to/file.ext](path/to/file.ext)
+- **Estimate** · 4.0h
 - **Depends on**: [Task X.Y | nothing]
 - **Description**:
   - Exact method/function signatures with type hints
@@ -191,6 +193,7 @@ Follow the mandatory format below exactly. Never omit a section — write `N/A` 
 
 #### Task N.N — Final verification & documentation update
 - [ ] **File**: N/A (agent task)
+- **Estimate** · 2.0h
 - **Depends on**: [all prior tasks]
 - **Description**:
   - Spawn an agent to discover all documentation in the project (READMEs, ADRs, API docs,
@@ -281,6 +284,7 @@ If no scheme exists: `FEAT-001`, `FIX-001`, `REFACTOR-001`, `INFRA-001`, or `TAS
 ```
 #### Task 2.1 — JWT token validation middleware
 - [ ] **File**: [src/auth/jwt_middleware.py](src/auth/jwt_middleware.py)
+- **Estimate** · 3.0h
 - **Depends on**: Task 1.3 (User model), Task 1.4 (Config loader)
 - **Description**:
   - `JWTMiddleware` class validates Bearer tokens on every protected route

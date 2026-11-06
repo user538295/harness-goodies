@@ -1,5 +1,5 @@
 """Entry script of the estimate skill: `estimate.py read|save|remove|doc-stats|git-stats|match-sessions|record-commit|estimator|
-report ...`.
+neighbours|place|anchor|find-sets|check-text|calculate|report ...`.
 
 This file must parse on Python 3.4, so a Python that is too old gets a clear message instead of a SyntaxError: it uses no
 f-strings, no variable annotations and no other newer syntax, and it imports the `estimation` package only after the version

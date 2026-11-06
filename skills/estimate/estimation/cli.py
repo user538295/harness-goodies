@@ -55,6 +55,12 @@ def _dispatch(invocation, environment, skill_dir):
         "record-commit": lambda: commands.record_commit(positionals[0], positionals[1], options["--harness"],
                                                         options["--session-log"], options["--session-dir"]),
         "estimator": lambda: commands.estimator(options["--harness"], options["--session-log"], options["--session-dir"]),
+        "neighbours": lambda: commands.neighbours(positionals[0]),
+        "place": lambda: commands.place(positionals[0]),
+        "anchor": lambda: commands.anchor(positionals[0]),
+        "find-sets": lambda: commands.find_sets(),
+        "check-text": lambda: commands.check_text(positionals[0]),
+        "calculate": lambda: commands.calculate(positionals[0]),
         "report": lambda: commands.report(options["--out"]),
     }
     return handlers[invocation.command]()

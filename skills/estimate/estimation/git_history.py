@@ -1,9 +1,9 @@
 """The project's git history through the injected process runner: every commit reachable from HEAD with its author time, message
 and numstat line counts; the commits that change a path, followed back through its moves and copies; the author times of given
 commits; the per-file changes of given commits; the author time of the commit that first added a path; one commit resolved to its
-full hash. Line counts (`commits()`, `line_counts()`) leave out committed dependency files (line_kinds' vendored kind), judging a
-renamed path by its new path; the per-file changes (`changes()`) keep every file, so the report can show those lines as not
-counted."""
+full hash; the tracked and untracked-not-ignored files. Line counts (`commits()`, `line_counts()`) leave out committed dependency
+files (line_kinds' vendored kind), judging a renamed path by its new path; the per-file changes (`changes()`) keep every file, so
+the report can show those lines as not counted."""
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -149,3 +149,7 @@ class GitHistory:
     def line_counts(self, commit_hash):
         """(added, removed) of one commit, without committed dependency files."""
         return _line_counts(self._git("show", "--numstat", "--format=", commit_hash))
+
+    def files(self):
+        """The root-relative paths of the tracked files and the untracked ones git does not ignore."""
+        return [path for path in self._git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0") if path]

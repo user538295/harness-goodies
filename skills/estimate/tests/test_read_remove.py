@@ -5,8 +5,8 @@ import os
 import stat
 import unittest
 
-from tests.support import (DATA_FOLDER, DEFAULT_SCALE, EXIT_OK, EXIT_RUNTIME_ERROR, FEATURES_PATH, SCALE_PATH, ProjectTestCase,
-                           document, new_feature)
+from tests.support import (DATA_FOLDER, DEFAULT_ANCHOR, DEFAULT_SCALE, EXIT_OK, EXIT_RUNTIME_ERROR, FEATURES_PATH, SCALE_PATH,
+                           ProjectTestCase, before_effort, document, new_feature)
 
 # Fails for the schema file named in place of `%s`, passes any other; check-jsonschema is run as `--schemafile <schema> <file>`.
 FAILING_VALIDATOR = """#!/bin/sh
@@ -23,7 +23,7 @@ class ReadTest(ProjectTestCase):
     def test_without_a_folder_it_prints_the_empty_document_and_writes_nothing(self):
         result = self.run_estimate("read")
         self.assertEqual(EXIT_OK, result.code, result.err)
-        self.assertEqual({"version": 1, "scale": DEFAULT_SCALE, "features": []}, result.json)
+        self.assertEqual({"version": 1, "scale": DEFAULT_SCALE, "anchor": DEFAULT_ANCHOR, "features": []}, result.json)
         self.assertFalse(os.path.exists(self.path(DATA_FOLDER)))
 
     def test_it_prints_the_folder_of_the_git_top_level_from_a_subfolder(self):
@@ -46,6 +46,11 @@ class ReadTest(ProjectTestCase):
                            reference))
         result = self.run_estimate("read", "--references")
         self.assertEqual(document(reference), result.json)
+
+    def test_a_feature_saved_before_efforts_still_loads(self):
+        stored = document(before_effort(new_feature("A", status="delivered", updatedStoryPoints=8)))
+        self.seed(stored)
+        self.assertEqual(stored, self.run_estimate("read", "--references").json)
 
     def test_an_unreadable_feature_file_is_a_runtime_error_naming_it(self):
         self.seed(document(new_feature("A")))
@@ -127,7 +132,7 @@ class ValidatedWriteTest(ProjectTestCase):
     def test_a_failed_feature_validation_leaves_the_old_file_and_no_temp_file(self):
         stored = document(new_feature("Keep", storyPoints=3))
         self.seed(stored)
-        result = self.run_estimate("save", json.dumps({"name": "Keep", "storyPoints": 5}),
+        result = self.run_estimate("save", json.dumps({"name": "Keep", "storyPoints": 5, "effort": "x"}),
                                    which=self.install_failing_validator("feature.schema.json"))
         self.assert_error(result, EXIT_RUNTIME_ERROR, "$.status: 'done' is not one of ['estimated']")
         self.assertIn("fails feature.schema.json", result.err)
@@ -137,14 +142,15 @@ class ValidatedWriteTest(ProjectTestCase):
     def test_a_first_save_failing_either_schema_writes_nothing(self):
         for schema in ("estimation.schema.json", "feature.schema.json"):
             with self.subTest(schema=schema):
-                result = self.run_estimate("save", json.dumps({"name": "New", "description": "x"}),
+                result = self.run_estimate("save", json.dumps({"name": "New", "description": "x", "effort": "x"}),
                                            which=self.install_failing_validator(schema))
                 self.assert_error(result, EXIT_RUNTIME_ERROR, "fails " + schema)
                 self.assertEqual([], [name for _, _, names in os.walk(self.path(DATA_FOLDER)) for name in names])
 
     def test_without_check_jsonschema_the_write_is_not_validated(self):
         self.seed(document(new_feature("Keep")))
-        result = self.run_estimate("save", json.dumps({"name": "Keep", "storyPoints": 5}), which=lambda name: None)
+        result = self.run_estimate("save", json.dumps({"name": "Keep", "storyPoints": 5, "effort": "x"}),
+                                   which=lambda name: None)
         self.assertEqual(EXIT_OK, result.code, result.err)
         self.assertEqual(5, self.feature("Keep")["storyPoints"])
 

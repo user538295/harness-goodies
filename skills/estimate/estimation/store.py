@@ -1,7 +1,8 @@
 """The estimate files under `.harness-goodies/` at the project root (C2): the scale file `estimation.json` and one file per feature
-in `estimations/`, each with its `version`. `load` reads them into one document (the default scale and no features when absent;
-each feature without its `version` and with its file name under FILE_KEY). `create` writes a new feature's file and `update` a
-stored one's, moving it to its new name first when its name changes; either writes the scale file when there is none yet. `remove`
+in `estimations/`, each with its `version`. `load` reads them into one document (the default scale and anchor and no features when
+absent; a scale file without an anchor has it off; each feature without its `version` and with its file name under FILE_KEY).
+`create` writes a new feature's file and `update` a stored one's, moving it to its new name first when its name changes; either
+writes the scale file, with the default anchor, when there is none yet. `remove`
 deletes one. A write goes to a temp `.json` next to its file, is checked with `check-jsonschema` against its shipped schema when
 that tool is on PATH, and replaces the file (`os.replace`) only once every check of the save passed; a failed check leaves every
 file as it was and removes the temps."""
@@ -10,6 +11,7 @@ import json
 import os
 import tempfile
 
+from estimation.anchor import ANCHOR_KEY, DEFAULT_ANCHOR, check
 from estimation.errors import EstimateError
 from estimation.features import FILE_KEY, ID_KEY
 from estimation.naming import FILE_SUFFIX, day_of_file, file_name
@@ -36,7 +38,7 @@ def to_json(value):
 
 
 def empty_document():
-    return {VERSION_KEY: FORMAT_VERSION, SCALE_KEY: list(DEFAULT_SCALE), "features": []}
+    return {VERSION_KEY: FORMAT_VERSION, SCALE_KEY: list(DEFAULT_SCALE), ANCHOR_KEY: dict(DEFAULT_ANCHOR), "features": []}
 
 
 def _shown(*parts):
@@ -111,6 +113,11 @@ class EstimationStore:
             if not isinstance(settings.get(SCALE_KEY), list):
                 raise EstimateError("cannot read %s: no scale list" % _shown(SCALE_FILE))
             document[SCALE_KEY] = settings[SCALE_KEY]
+            document[ANCHOR_KEY] = settings.get(ANCHOR_KEY)
+            try:
+                check(document[ANCHOR_KEY], document[SCALE_KEY])
+            except EstimateError as error:
+                raise EstimateError("cannot read %s: %s" % (_shown(SCALE_FILE), error)) from error
         document["features"] = [self._feature(file) for file in self._feature_files()]
         return document
 
@@ -143,7 +150,8 @@ class EstimationStore:
         """The write of the default scale file when there is none yet (the first write), else nothing."""
         if os.path.exists(self._path(SCALE_FILE)):
             return []
-        return [((SCALE_FILE,), {VERSION_KEY: FORMAT_VERSION, SCALE_KEY: list(DEFAULT_SCALE)}, SCALE_SCHEMA)]
+        return [((SCALE_FILE,), {VERSION_KEY: FORMAT_VERSION, SCALE_KEY: list(DEFAULT_SCALE), ANCHOR_KEY: dict(DEFAULT_ANCHOR)},
+                 SCALE_SCHEMA)]
 
     @staticmethod
     def _feature_write(file, feature):

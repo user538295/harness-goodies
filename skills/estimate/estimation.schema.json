@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": ".harness-goodies/estimation.json",
-  "description": "The Story Point scale of one project's estimates. Each feature has its own file in `.harness-goodies/estimations/` (feature.schema.json).",
+  "description": "The Story Point scale of one project's estimates, and its anchor. Each feature has its own file in `.harness-goodies/estimations/` (feature.schema.json).",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "scale"],
@@ -12,6 +12,15 @@
       "minItems": 1,
       "uniqueItems": true,
       "items": { "type": ["number", "string"] }
+    },
+    "anchor": {
+      "description": "The SP that a number of planned hours equals (default 13 SP = 75 h, about one developer's two-week sprint). It sets where a comparison starts for a feature with planned hours and cross-checks every saved SP; it never decides a size. Off when absent, null, {} or with hours null or 0, and on a scale that is not all numbers. estimate.py checks that sp is a value of the scale.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "sp": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "hours": { "type": ["number", "null"], "minimum": 0 }
+      }
     }
   }
 }
