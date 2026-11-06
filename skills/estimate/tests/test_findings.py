@@ -37,7 +37,7 @@ def make_data(rho=0.9):
     keys = [key for key, _ in METRICS]
     return {
         "project": "demo", "generated_on": "2026-11-05", "store": ".harness-goodies/estimations", "scale": [1, 2, 3, 5, 8],
-        "counts": {"stored": 6, "references": 6, "not_delivered": 0, "unsized": 0}, "colors": {}, "rows": rows,
+        "counts": {"stored": 6, "references": 6, "not_delivered": 0, "unsized": 0}, "colors": {}, "rows": rows, "pending": [],
         "metrics": copy.deepcopy(METRICS), "res": {key: _res(rho) for key in keys},
         "pred": {key: None for key in keys}, "bstats": {key: {} for key in keys}, "sep": {key: {} for key in keys},
         "mvars": copy.deepcopy(MVARS), "corr": [[rho] * len(MVARS) for _ in MVARS], "corrn": [[6] * len(MVARS) for _ in MVARS],
@@ -301,6 +301,14 @@ class SectionsTest(unittest.TestCase):
         self.assertIn("<b>Lines changed</b> (stored and recomputed from git) leave out committed dependency files (deps). The "
                       "report shows those lines apart as <b>Dependencies (not counted)</b>.", method)
         self.assertIn("<b>Dependencies (not counted)</b> = deps.", method)
+
+    def test_method_names_the_estimate_only_features_and_that_no_statistic_uses_them(self):
+        data = make_data()
+        self.assertNotIn("Estimate only", texts(data)["html"]["method"])
+        data["pending"] = [{"label": "P1", "sp": 5, "status": "estimated"}, {"label": "P2", "sp": 3, "status": "in-progress"}]
+        self.assertIn("<b>Estimate only.</b> 2 features have an estimated SP but no after-delivery SP; they appear in Pipeline, "
+                      "All features and the Tasks, Estimated hours and Phases tabs of the Metric explorer, and in no statistic.",
+                      texts(data)["html"]["method"])
 
     def test_spcore_note(self):
         data = make_data()

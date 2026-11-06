@@ -133,7 +133,7 @@ Running `init` again adds newly delivered features and refreshes the actuals of 
 1. Run `report`, with `--out <path>` when the user names one.
 2. Report the page's path (it opens offline in any browser; offer to open it), how many features it analyses, how many forecasts it grades, and every `missing` value. With no forecasts, say the forecast-accuracy section fills once features estimated with `/estimate <file>` before work are delivered. On a "run /estimate init" failure, tell the user to run `/estimate init` first.
 
-Never edit the page by hand: run `report` again after more features are delivered. Whether to commit it is the user's call.
+Features that are only estimated (no after-delivery SP) are shown apart, in their own color: in Pipeline, in All features and, at their estimated SP, on the Tasks, Estimated hours and Phases tabs of the Metric explorer. They feed no statistic. Never edit the page by hand: run `report` again after more features are delivered. Whether to commit it is the user's call.
 
 ## Record a commit
 

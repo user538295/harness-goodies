@@ -7,14 +7,14 @@
 <style>
 :root{
   --bg:#f5f4ef;--card:#ffffff;--ink:#1b1b1f;--muted:#66666e;--line:#e3e1da;--soft:#efeee8;
-  --accent:#3b5bdb;--good:#2b8a3e;--warn:#d9480f;--bad:#c92a2a;--dup:#ced4da;
+  --accent:#3b5bdb;--good:#2b8a3e;--warn:#d9480f;--bad:#c92a2a;--dup:#ced4da;--pending:#f59f00;
   --serif:ui-serif,"New York","Iowan Old Style",Georgia,serif;
   --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,sans-serif;
   --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#111214;--card:#1a1b1f;--ink:#ececef;--muted:#9b9ba5;--line:#2b2c32;--soft:#222328;
-  --accent:#7c93ff;--good:#51cf66;--warn:#ff922b;--bad:#ff6b6b;--dup:#495057;}}
+  --accent:#7c93ff;--good:#51cf66;--warn:#ff922b;--bad:#ff6b6b;--dup:#495057;--pending:#fcc419;}}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
@@ -48,6 +48,7 @@ section{padding-top:46px;scroll-margin-top:30px}
 .tag.good{background:color-mix(in oklab,var(--good) 16%,transparent);color:var(--good)}
 .tag.warn{background:color-mix(in oklab,var(--warn) 16%,transparent);color:var(--warn)}
 .tag.bad{background:color-mix(in oklab,var(--bad) 16%,transparent);color:var(--bad)}
+.tag.est{background:color-mix(in oklab,var(--pending) 22%,transparent);color:var(--ink);border:1px solid var(--pending)}
 .catch{display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
 .catch:first-of-type{border-top:0}
 .catch .n{flex:0 0 28px;height:28px;border-radius:50%;background:var(--soft);display:grid;place-items:center;font:600 13px var(--sans)}
@@ -63,6 +64,7 @@ th,td{padding:7px 9px;text-align:right;border-bottom:1px solid var(--line);white
 th{font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 th:first-child,td:first-child{text-align:left}
 td.name{white-space:normal;max-width:330px}
+tr.pending td{color:var(--muted)}
 .heat td,.heat th{text-align:center;padding:9px 6px;border:1px solid var(--card)}
 .heat th{font-size:11px}
 .heat td{font-variant-numeric:tabular-nums;font-weight:600;border-radius:4px}
@@ -107,7 +109,7 @@ ul.points li:last-child{margin-bottom:0}
 </header>
 
 <nav class="toc">
-  <a href="#verdict">Verdict</a><a href="#forecast">Forecast accuracy</a><a href="#matrix">Correlation matrix</a><a href="#explorer">Metric explorer</a><a href="#scaling">Scale shape</a><a href="#quality">Data quality</a><a href="#outliers">Re-size candidates</a><a href="#usage">Agent usage</a><a href="#data">All features</a><a href="#method">Method</a>
+  <a href="#verdict">Verdict</a><a href="#forecast">Forecast accuracy</a><a href="#pipeline" id="pipelineLink" hidden>Pipeline</a><a href="#matrix">Correlation matrix</a><a href="#explorer">Metric explorer</a><a href="#scaling">Scale shape</a><a href="#quality">Data quality</a><a href="#outliers">Re-size candidates</a><a href="#usage">Agent usage</a><a href="#data">All features</a><a href="#method">Method</a>
 </nav>
 
 <section id="verdict">
@@ -159,6 +161,12 @@ ul.points li:last-child{margin-bottom:0}
   </div>
 </section>
 
+<section id="pipeline" hidden>
+  <h2>Pipeline</h2>
+  <p class="sub">Features per SP value. Delivered features count at their after-delivery SP; the others count at their estimated SP. Only the delivered ones feed the statistics.</p>
+  <div class="card"><div class="chartbox sm"><canvas id="pipe"></canvas></div></div>
+</section>
+
 <section id="matrix">
   <h2>Correlation matrix</h2>
   <p class="sub">Pairwise Spearman ρ over features where both values exist (hover a cell for n). "Lines (raw)" is the stored value. "Code lines" and "Source lines" are recomputed from git: shared commits split evenly, docs and vendored files excluded.</p>
@@ -174,7 +182,7 @@ ul.points li:last-child{margin-bottom:0}
 
 <section id="explorer">
   <h2>Metric explorer</h2>
-  <p class="sub">Each dot is one feature (hover for its name). Boxes show the interquartile range per SP value, the thin line runs from min to max, the bar marks the median, and the dashed line is the power-law fit <i>metric ≈ c·SP<sup>b</sup></i>. The y axis is logarithmic.</p>
+  <p class="sub">Each dot is one feature (hover for its name). Boxes show the interquartile range per SP value, the thin line runs from min to max, the bar marks the median, and the dashed line is the power-law fit <i>metric ≈ c·SP<sup>b</sup></i>. The y axis is logarithmic. Hollow amber diamonds are features that are only estimated: they sit at their estimated SP on the plan-based tabs (Tasks, Estimated hours, Phases) and take no part in any statistic or fit.</p>
   <div class="card">
     <div class="tabs" id="tabs"></div>
     <div class="statline" id="statline"></div>
@@ -257,7 +265,7 @@ ul.points li:last-child{margin-bottom:0}
 <script>
 /*@data*/
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const C = {ink:css('--ink'),muted:css('--muted'),line:css('--line'),card:css('--card'),accent:css('--accent'),good:css('--good'),warn:css('--warn'),bad:css('--bad'),dup:css('--dup'),soft:css('--soft')};
+const C = {ink:css('--ink'),muted:css('--muted'),line:css('--line'),card:css('--card'),accent:css('--accent'),good:css('--good'),warn:css('--warn'),bad:css('--bad'),dup:css('--dup'),soft:css('--soft'),pending:css('--pending')};
 Chart.defaults.color = C.muted; Chart.defaults.borderColor = C.line;
 Chart.defaults.font.family = css('--sans'); Chart.defaults.font.size = 12;
 const SPC = D.colors;
@@ -274,7 +282,7 @@ const pct = v => v==null ? '—' : Math.round(v*100)+'%';
 const ratio = (a,b) => a==null || b==null || b===0 ? null : a/b;
 const clamp01 = v => Math.min(1,Math.max(0,v));
 const R = D.rows;
-const BUCKETS = [...new Set(R.map(r=>r.sp))].sort((a,b)=>a-b);
+const BUCKETS = [...new Set([...R,...D.pending].map(r=>r.sp))].sort((a,b)=>a-b);
 const spChip = sp => sp==null ? '—' : `<span class="spchip" style="background:${SPC[String(sp)]}">${sp}</span>`;
 const rhoColor = v => v==null ? C.muted : v>=0.8 ? C.good : v>=0.7 ? C.accent : v>=0.5 ? C.warn : C.bad;
 const nameCell = r => `<td class="name" title="${esc(r.desc)}">${esc(r.label)}</td>`;
@@ -347,6 +355,19 @@ document.title = 'Story points vs. delivered work — ' + D.project;
     F.rows.map(r=>`<tr><td class="name">${esc(r.label)}</td><td>${spChip(r.est)}</td><td>${spChip(r.sp)}</td><td>${reading(r.steps)}</td><td>${esc(r.estimated_at ?? '—')}</td><td>${esc(r.by ?? '—')}</td></tr>`).join('');
 })();
 
+/* Pipeline */
+(() => {
+  if (!D.pending.length) return;
+  document.getElementById('pipeline').hidden = false;
+  document.getElementById('pipelineLink').hidden = false;
+  const pendingBy = status => D.pending.filter(r=>r.status===status);
+  const groups = [['Delivered',C.accent,R],['In progress',C.warn,pendingBy('in-progress')],['Estimated',C.pending,pendingBy('estimated')],['Delivered, not re-sized',C.muted,pendingBy('delivered')]].filter(g=>g[2].length);
+  new Chart(document.getElementById('pipe'),{type:'bar',data:{labels:BUCKETS.map(sp=>sp+' SP'),datasets:groups.map(([label,col,rows])=>({label,data:BUCKETS.map(sp=>rows.filter(r=>r.sp===sp).length),backgroundColor:col,borderRadius:4}))},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{x:{stacked:true,grid:{display:false},title:{display:true,text:'Story points'}},y:{stacked:true,beginAtZero:true,ticks:{precision:0},title:{display:true,text:'Features'}}},
+      plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.raw} feature${c.raw===1?'':'s'}`}}}}});
+})();
+
 /* Heatmap */
 (() => {
   const v = D.mvars, h = ['<tr><th></th>'+v.map(x=>`<th>${esc(x[1])}</th>`).join('')+'</tr>'];
@@ -371,20 +392,22 @@ function renderMetric(k){
   const bs = D.bstats[k] || {}, p = D.pred[k], s = D.res[k];
   const boxes = Object.entries(bs).map(([sp,v])=>({sp:+sp,...v}));
   const pts = R.filter(r=>r[k]!=null && r[k]>0).map(r=>({x:xIdx(r.sp)+jitter(r.label),y:r[k],r}));
+  const pend = D.pending.filter(r=>r[k]!=null && r[k]>0).map(r=>({x:xIdx(r.sp)+jitter(r.label),y:r[k],r,pending:true}));
   const fit = p ? BUCKETS.filter(sp=>sp>0 && bs[String(sp)]).map(sp=>({x:xIdx(sp),y:Math.exp(p.a+p.exp*Math.log(sp))})) : [];
   const ds = [
     {type:'bar',label:'min–max',data:boxes.map(b=>({x:xIdx(b.sp),y:[Math.max(b.min,0.5),b.max],b})),backgroundColor:C.muted,barThickness:2,grouped:false,order:5},
     {type:'bar',label:'IQR',data:boxes.map(b=>({x:xIdx(b.sp),y:[Math.max(b.q1,0.5),Math.max(b.q3,0.6)],b})),backgroundColor:boxes.map(b=>SPC[String(b.sp)]+'33'),borderColor:boxes.map(b=>SPC[String(b.sp)]),borderWidth:1.5,barThickness:34,grouped:false,order:4},
     {type:'scatter',label:'median',data:boxes.map(b=>({x:xIdx(b.sp),y:Math.max(b.med,0.5),b})),pointStyle:'line',pointRadius:17,pointHoverRadius:17,borderWidth:3,borderColor:C.ink,order:2},
     ...(p ? [{type:'line',label:`power fit c·SP^${p.exp.toFixed(2)}`,data:fit,borderColor:C.muted,borderDash:[5,5],borderWidth:1.5,pointRadius:0,order:3}] : []),
-    {type:'scatter',label:'features',data:pts,pointRadius:4.5,pointHoverRadius:7,backgroundColor:pts.map(q=>SPC[String(q.r.sp)]+'cc'),borderColor:C.card,borderWidth:1,order:1}
+    {type:'scatter',label:'features',data:pts,pointRadius:4.5,pointHoverRadius:7,backgroundColor:pts.map(q=>SPC[String(q.r.sp)]+'cc'),borderColor:C.card,borderWidth:1,order:1},
+    ...(pend.length ? [{type:'scatter',label:'estimate only',data:pend,pointStyle:'rectRot',pointRadius:6,pointHoverRadius:8,backgroundColor:'transparent',borderColor:C.pending,borderWidth:2,order:0}] : [])
   ];
   const opts = {responsive:true,maintainAspectRatio:false,animation:{duration:350},
-    scales:{x:{type:'linear',min:-0.6,max:BUCKETS.length-0.4,grid:{display:false},ticks:{stepSize:1,callback:v=>Number.isInteger(v)&&BUCKETS[v]!=null?[BUCKETS[v]+' SP','n='+pts.filter(q=>q.r.sp===BUCKETS[v]).length]:''},title:{display:true,text:'Story points'}},
+    scales:{x:{type:'linear',min:-0.6,max:BUCKETS.length-0.4,grid:{display:false},ticks:{stepSize:1,callback:v=>{if(!Number.isInteger(v)||BUCKETS[v]==null)return '';const est=pend.filter(q=>q.r.sp===BUCKETS[v]).length;return [BUCKETS[v]+' SP','n='+pts.filter(q=>q.r.sp===BUCKETS[v]).length+(est?' + '+est+' est.':'')];}},title:{display:true,text:'Story points'}},
             y:{type:'logarithmic',title:{display:true,text:META[k].label},ticks:{callback:v=>nice125(v)?kfmt(v):''}}},
     plugins:{legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:8,filter:i=>i.text!=='min–max'}},
       tooltip:{callbacks:{title:items=>{const d=items[0].raw;return d.r?d.r.label:(d.b?BUCKETS[Math.round(d.x)]+' SP · n='+d.b.n:'');},
-        label:c=>{const d=c.raw;if(d.r)return `SP ${d.r.sp} · ${META[k].label}: ${fmt(d.r[k],1)}`;if(c.dataset.label==='IQR')return `IQR ${fmt(d.b.q1,1)} – ${fmt(d.b.q3,1)}`;if(c.dataset.label==='min–max')return `range ${fmt(d.b.min,1)} – ${fmt(d.b.max,1)}`;if(c.dataset.label==='median')return `median ${fmt(d.b.med,1)}`;return `fit ${fmt(d.y,1)}`;}}}}};
+        label:c=>{const d=c.raw;if(d.pending)return `Estimated SP ${d.r.sp} (${d.r.status}) · ${META[k].label}: ${fmt(d.r[k],1)}`;if(d.r)return `SP ${d.r.sp} · ${META[k].label}: ${fmt(d.r[k],1)}`;if(c.dataset.label==='IQR')return `IQR ${fmt(d.b.q1,1)} – ${fmt(d.b.q3,1)}`;if(c.dataset.label==='min–max')return `range ${fmt(d.b.min,1)} – ${fmt(d.b.max,1)}`;if(c.dataset.label==='median')return `median ${fmt(d.b.med,1)}`;return `fit ${fmt(d.y,1)}`;}}}}};
   if (strip) strip.destroy();
   strip = new Chart(document.getElementById('strip'),{data:{datasets:ds},options:opts});
   const ci = s.ci ? ` <span class="muted">[${fix(s.ci[0])}, ${fix(s.ci[1])}]</span>` : '';
@@ -393,7 +416,8 @@ function renderMetric(k){
   document.getElementById('chips').innerHTML = '<span class="chip muted">Adjacent separation P(higher SP has more):</span>' + Object.entries(sep).filter(([,v])=>v[0]!=null).map(([lab,v])=>{
     const col = v[0]>=0.85?C.good:v[0]>=0.7?C.warn:C.bad;
     return `<span class="chip">${esc(lab)} <b style="color:${col}">${pct(v[0])}</b> <span class="muted">(${v[1]} vs ${v[2]})</span></span>`;}).join('');
-  document.getElementById('metricNote').innerHTML = `<b>${esc(META[k].label)}.</b> ${META[k].desc} ${D.notes[k] ?? ''}`;
+  const estNote = pend.length ? ` <span class="muted">◇ ${pend.length} estimate-only feature${pend.length===1?'':'s'} at the estimated SP, not in the statistics.</span>` : D.pending.length ? ` <span class="muted">Estimate-only features have no ${esc(META[k].label.toLowerCase())} yet.</span>` : '';
+  document.getElementById('metricNote').innerHTML = `<b>${esc(META[k].label)}.</b> ${META[k].desc} ${D.notes[k] ?? ''}${estNote}`;
 }
 document.getElementById('tabs').innerHTML = D.metrics.map(([k,label])=>`<button data-k="${k}">${esc(label)}</button>`).join('');
 document.getElementById('tabs').addEventListener('click',e=>{if(e.target.dataset.k)renderMetric(e.target.dataset.k);});
@@ -464,13 +488,14 @@ renderMetric(D.metrics[0][0]);
 
 /* All features table */
 (() => {
-  const cols = [['label','Feature'],['sp','SP'],['phases','Phases'],['tasks','Tasks'],['hours','Est. h'],['commits','Commits'],['commits_excl','Excl.'],['churn','Lines (raw)'],['code','Code lines'],['codeShare','Code %'],['fit_sp','Fit SP'],['sessions','Sessions'],['cost','Cost $']];
-  const data = R.map(r=>{const s=ratio(r.code,r.churn);return {...r,codeShare:s==null?null:s*100};});
+  const cols = [['label','Feature'],['sp','SP'],['status','Status'],['phases','Phases'],['tasks','Tasks'],['hours','Est. h'],['commits','Commits'],['commits_excl','Excl.'],['churn','Lines (raw)'],['code','Code lines'],['codeShare','Code %'],['fit_sp','Fit SP'],['sessions','Sessions'],['cost','Cost $']];
+  const data = [...R.map(r=>{const s=ratio(r.code,r.churn);return {...r,status:'delivered',pending:false,codeShare:s==null?null:s*100};}), ...D.pending.map(r=>({...r,pending:true}))];
   let key='sp', dir=-1, q='';
-  const cell = (r,k) => k==='label'?nameCell(r):k==='sp'?`<td>${spChip(r.sp)}</td>`:`<td class="num">${k==='codeShare'?(r[k]==null?'—':r[k].toFixed(0)+'%'):k==='fit_sp'?fix(r[k],1):fmt(r[k],k==='hours'?1:0)}</td>`;
+  const tag = r => r.pending && r.status==='delivered' ? ['est','not re-sized'] : [{delivered:'good','in-progress':'warn',estimated:'est'}[r.status], r.status];
+  const cell = (r,k) => k==='label'?nameCell(r):k==='sp'?`<td>${spChip(r.sp)}</td>`:k==='status'?`<td><span class="tag ${tag(r)[0]}">${esc(tag(r)[1])}</span></td>`:`<td class="num">${k==='codeShare'?(r[k]==null?'—':r[k].toFixed(0)+'%'):k==='fit_sp'?fix(r[k],1):fmt(r[k],k==='hours'?1:0)}</td>`;
   function draw(){
     const rows = data.filter(r=>r.label.toLowerCase().includes(q)).sort((a,b)=>{const x=a[key],y=b[key];if(x==null)return 1;if(y==null)return -1;return (x<y?-1:x>y?1:0)*dir;});
-    document.getElementById('allTable').innerHTML = '<thead><tr>'+cols.map(([k,l])=>`<th class="sortable" data-k="${k}">${l}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+cols.map(([k])=>cell(r,k)).join('')+'</tr>').join('')+'</tbody>';
+    document.getElementById('allTable').innerHTML = '<thead><tr>'+cols.map(([k,l])=>`<th class="sortable" data-k="${k}">${l}${k===key?(dir>0?' ▲':' ▼'):''}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>`<tr${r.pending?' class="pending"':''}>`+cols.map(([k])=>cell(r,k)).join('')+'</tr>').join('')+'</tbody>';
   }
   document.getElementById('allTable').addEventListener('click',e=>{const k=e.target.dataset.k;if(!k)return;dir=k===key?-dir:-1;key=k;draw();});
   document.getElementById('filter').addEventListener('input',e=>{q=e.target.value.toLowerCase();draw();});

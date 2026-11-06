@@ -92,6 +92,39 @@ class SelectionTest(unittest.TestCase):
                 run(reference("Alpha", 1), scale=scale)
 
 
+class PendingTest(unittest.TestCase):
+    def setUp(self):
+        self.data = run(reference("Done", 5, plan=plan(tasks=2)),
+                        new_feature("Planned", id="P-1", status="estimated", storyPoints=8, estimatedAt="2026-10-01",
+                                    estimatedBy={"harness": "omp", "models": None}, plan=plan(tasks=6, hours=9.5, phases=2)),
+                        new_feature("Running", status="in-progress", storyPoints=3, plan=plan(tasks=2)),
+                        new_feature("Unsized", status="delivered", storyPoints=13),
+                        new_feature("Unestimated", status="estimated"))
+
+    def test_features_with_only_an_estimate_are_listed_in_store_order_at_their_estimated_size(self):
+        self.assertEqual([("Planned", "estimated", 8), ("Running", "in-progress", 3), ("Unsized", "delivered", 13)],
+                         [(item["name"], item["status"], item["sp"]) for item in self.data["pending"]])
+
+    def test_a_pending_row_carries_the_plan_values_and_no_delivered_actuals(self):
+        planned = self.data["pending"][0]
+        self.assertEqual(("P-1 · Planned", "About Planned", 2, 6, 9.5, "2026-10-01", "omp"),
+                         tuple(planned[key] for key in ("label", "desc", "phases", "tasks", "hours", "estimated_at", "estimated_by")))
+        self.assertNotIn("commits", planned)
+        self.assertNotIn("code", planned)
+
+    def test_pending_features_stay_out_of_the_statistics(self):
+        self.assertEqual(["Done"], [item["name"] for item in self.data["rows"]])
+        self.assertEqual(1, self.data["res"]["tasks"]["n"])
+        self.assertEqual(["5"], list(self.data["bstats"]["tasks"]))
+
+    def test_pending_sizes_get_palette_colors(self):
+        self.assertEqual({"3", "5", "8", "13"}, set(self.data["colors"]))
+
+    def test_no_pending_feature_gives_an_empty_list(self):
+        self.assertEqual([], run(reference("Alpha", 5))["pending"])
+
+
+
 class LinesTest(unittest.TestCase):
     """Alpha lists commits 1 and 2, Beta lists 2, 3 and a commit git lacks; commit 2 is shared (k = 2) and holds a lockfile, whose
     lines are dependency lines: kept per kind, never counted."""

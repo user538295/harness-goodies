@@ -8,8 +8,10 @@ dependency files) is shown but never counted, so git's counted lines, the stored
 as `git-stats` does. Per metric come the Spearman/Pearson/concordance statistics (also on the "core": without the largest SP
 buckets that together hold at most a tenth of the rows), box summaries and adjacent-bucket separation per SP, and a power fit in
 log space whose reverse fit predicts an SP from the metric; the combined fit averages those predictions over FIT_METRICS.
-Forecasts grade the SP estimated before work (storyPoints) against the delivered one in scale steps. Floats are rounded: ratios
-and correlations to RATIO_DECIMALS, lines to LINE_DECIMALS, fit coefficients to COEFFICIENT_DECIMALS."""
+Forecasts grade the SP estimated before work (storyPoints) against the delivered one in scale steps. Every other feature that
+has an estimate (`pending`: estimated, in progress, or delivered but not re-sized) gets a row of its estimated SP and plan values
+only; no statistic uses it. Floats are rounded: ratios and correlations to RATIO_DECIMALS, lines to LINE_DECIMALS, fit
+coefficients to COEFFICIENT_DECIMALS."""
 import math
 from collections import Counter
 
@@ -136,6 +138,15 @@ def _row(feature, listers, changes, kind_lines):
     row.update(_usage_fields(feature.get("usage")))
     row.update({"first": days[0] if days else None, "last": days[-1] if days else None})
     return row
+
+
+def _pending_row(feature):
+    """A feature that is only an estimate (no after-delivery SP): its estimated SP and the plan values; no git or usage."""
+    plan, estimated_by = feature.get("plan") or {}, feature.get("estimatedBy")
+    return {"label": _label(feature), "name": feature["name"], "id": feature.get("id"), "desc": feature.get("description"),
+            "status": feature["status"], "sp": feature["storyPoints"], "estimated_at": feature.get("estimatedAt"),
+            "estimated_by": estimated_by["harness"] if estimated_by else None,
+            "phases": plan.get("phases"), "tasks": plan.get("tasks"), "hours": plan.get("estimatedHours")}
 
 
 # ---- per-metric statistics --------------------------------------------------------------------------------------------------
@@ -290,8 +301,9 @@ def _color(index, count):
     return _hex([low + (high - low) * share for low, high in zip(_rgb(PALETTE[below]), _rgb(PALETTE[above]))])
 
 
-def _colors(rows):
-    values = sorted({row[key] for row in rows for key in ("sp", "est") if row[key] is not None})
+def _colors(rows, pending):
+    values = sorted({row[key] for row in rows for key in ("sp", "est") if row[key] is not None}
+                    | {row["sp"] for row in pending})
     return {sp_key(value): _color(index, len(values)) for index, value in enumerate(values)}
 
 
@@ -386,6 +398,8 @@ def analyse(document, changes, project, today):
     listers = _listers(references)
     kind_lines = {commit_hash: _kind_lines(changes[commit_hash]) for commit_hash in listers if commit_hash in changes}
     rows = [_row(feature, listers, changes, kind_lines) for feature in references]
+    pending = [_pending_row(feature) for feature in features
+               if not is_reference(feature) and feature.get("storyPoints") is not None]
     core = _core(rows)
     predictions = {metric: _prediction(rows, metric, scale) for metric, _ in METRICS}
     _apply_fit(rows, predictions, scale)
@@ -394,7 +408,7 @@ def analyse(document, changes, project, today):
     days = [row[key] for row in rows for key in ("first", "last") if row[key] is not None]
     return {
         "project": project, "generated_on": today.isoformat(), "store": "/".join((DATA_FOLDER, FEATURES_FOLDER)),
-        "scale": scale, "counts": _counts(features, references), "colors": _colors(rows), "rows": rows,
+        "scale": scale, "counts": _counts(features, references), "colors": _colors(rows, pending), "rows": rows, "pending": pending,
         "metrics": [list(metric) for metric in METRICS],
         "res": {metric: _result(rows, metric, label, core) for metric, label in METRICS},
         "pred": predictions,

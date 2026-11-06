@@ -756,6 +756,9 @@ def _method(data):
                                         _code(data["project"]), _plural(lines["unique_commits"], "unique commit")),
         "<b>SP</b> = <code>updatedStoryPoints</code>, set after delivery. <b>Forecast</b> = <code>storyPoints</code>, set "
         "before work starts; %s one." % _plural(len(data["rows"]) - _without_estimate(data), "feature has", "features have"),
+        data["pending"] and "<b>Estimate only.</b> %s an estimated SP but no after-delivery SP; they appear in Pipeline, All "
+        "features and the Tasks, Estimated hours and Phases tabs of the Metric explorer, and in no statistic."
+        % _plural(len(data["pending"]), "feature has", "features have"),
         "<b>Commits (excl.)</b> = commits listed only under this feature. <b>Code lines</b> = added+removed lines in source "
         "and test files; a commit shared by k features adds 1/k of its lines to each. " + kinds,
         "<b>Lines changed</b> (stored and recomputed from git) leave out committed dependency files (%s). The report shows "
