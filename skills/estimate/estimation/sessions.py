@@ -80,6 +80,8 @@ class PromptRow:
     text: str
     seconds: int
     numbers: RowNumbers
+    after_reset: bool = False  # the user cleared the context before this prompt
+    written: tuple = ()  # the files its tool calls wrote
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,12 @@ def _numbers(row):
                       _model_list(row.get("models")))
 
 
+def _written_paths(row):
+    """The `writtenPaths` of a C1 prompt row; none when the row has none or it is no list; entries that are no text are skipped."""
+    paths = row.get("writtenPaths")
+    return tuple(path for path in paths if isinstance(path, str) and path) if isinstance(paths, list) else ()
+
+
 def _rows(usage):
     """(prompt rows, sub-agent rows) of a C1 usage reply; None when it has none or they cannot be read."""
     prompts, agents = usage.get("prompts"), usage.get("subAgents")
@@ -108,7 +116,7 @@ def _rows(usage):
         return None
     try:
         return ([PromptRow(datetime.fromisoformat(row["at"]), _moment(row.get("replyAt")), row["text"], int(row["agentTimeSeconds"]),
-                           _numbers(row)) for row in prompts],
+                           _numbers(row), row.get("afterReset") is True, _written_paths(row)) for row in prompts],
                 [AgentRow(datetime.fromisoformat(row["startedAt"]), _numbers(row)) for row in agents])
     except (KeyError, TypeError, ValueError, ArithmeticError):
         return None
@@ -153,7 +161,8 @@ class SessionUsage:
     def slices(self, evidence):
         """{feature name: the C2 entry of its slice} of a session with rows, by the `evidence` rule."""
         prompts, agents = self.rows
-        owners = attribute([evidence.of_prompt(prompt.text, prompt.at, prompt.reply_at) for prompt in prompts])
+        owners = attribute([evidence.of_prompt(prompt.text, prompt.at, prompt.reply_at, prompt.written) for prompt in prompts],
+                           [prompt.after_reset for prompt in prompts])
         members = {}
         for index, reasons in enumerate(owners):
             for name, reason in reasons.items():

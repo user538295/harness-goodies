@@ -2,15 +2,19 @@
 messages and the answers to them (OMP, OpenCode); no file access.
 
 A transcript is a sequence of events: an `Opening` (a user message that opens a prompt) and answers (an assistant message or a
-helper request: an `Answer`, or any object with its six attributes). A turn is an opening and the answers up to the next opening;
+helper request: an `Answer`, or any object with its seven attributes). A turn is an opening and the answers up to the next opening;
 answers before the first opening belong to the first turn. A turn's reply is its last answer that stops it. A turn works from its
 opening to its last answer that has a time, whatever stopped it (an error, an abort, a steering prompt, a limit), except for the
 spans in which an answer put a question to the user: from the time it asked to the start of the next answer, the turn waited for
 the user and works no time. A turn whose opening has no usable time gives no prompt: its replies are dropped from the prompts and its
 requests, with those of a transcript that has no opening at all, fall under no prompt: `group_turns` returns them apart (and, like
 every request, in the list a sub-agent reports) and `with_unprompted` shows them as the leading row `NO_PROMPT_TEXT`, so their tokens
-and cost still reach the TOTAL (the convention of Cursor's lone `stop`)."""
-from dataclasses import dataclass
+and cost still reach the TOTAL (the convention of Cursor's lone `stop`).
+
+A `ResetMark` event says the user cleared the context at that point: the next opening that gives a prompt is flagged `after_reset`
+(a mark with no later prompt flags nothing; a mark before a dropped opening carries over to the next prompt). The paths the answers
+of a turn wrote become the prompt's `written_paths`."""
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Iterable, List, NamedTuple, Optional, Protocol, Tuple, Union
 
@@ -24,6 +28,10 @@ class Opening(NamedTuple):
     text: str
 
 
+class ResetMark(NamedTuple):
+    """The user cleared the context here."""
+
+
 class Answer(NamedTuple):
     """What an assistant message or a helper request contributes to its turn: the request it made, whether it stops the turn, its reply
     text, the time it ended, the time it started and, when it put a question to the user, the time it asked (the user's wait begins
@@ -35,6 +43,7 @@ class Answer(NamedTuple):
     moment: Optional[datetime]
     began: Optional[datetime] = None
     asked_at: Optional[datetime] = None
+    written_paths: Tuple[str, ...] = ()
 
 
 class AnswerLike(Protocol):
@@ -58,11 +67,15 @@ class AnswerLike(Protocol):
     @property
     def asked_at(self) -> Optional[datetime]: ...
 
+    @property
+    def written_paths(self) -> Tuple[str, ...]: ...
+
 
 @dataclass
 class _Turn:
     opening: Opening
     answers: List[AnswerLike]
+    after_reset: bool = False
 
     def _working_time(self, opening_moment: datetime) -> timedelta:
         """From the opening to the last answer end, less the spans the user was asked a question in: a span runs from the time the
@@ -98,6 +111,8 @@ class _Turn:
             reply_text=reply.text if reply is not None else None,
             working_time=self._working_time(self.opening.moment) if reply_at is not None else timedelta(0),
             requests=tuple(answer.request for answer in self.answers if answer.request is not None),
+            after_reset=self.after_reset,
+            written_paths=tuple(dict.fromkeys(path for answer in self.answers for path in answer.written_paths)),
         )
 
 
@@ -109,15 +124,20 @@ class Grouping(NamedTuple):
     unprompted: Tuple[RequestUsage, ...]
 
 
-def group_turns(events: Iterable[Union[Opening, AnswerLike]]) -> Grouping:
+def group_turns(events: Iterable[Union[Opening, ResetMark, AnswerLike]]) -> Grouping:
     """The prompts of the events in order, every request in order (also the ones under a dropped opening, and those before the first
     opening) and, in order, the requests under no prompt: those of a dropped opening and, with no opening at all, every one."""
     turns: List[_Turn] = []
     leading: List[AnswerLike] = []
     requests: List[RequestUsage] = []
+    reset_pending = False
     for event in events:
+        if isinstance(event, ResetMark):
+            reset_pending = True
+            continue
         if isinstance(event, Opening):
-            turns.append(_Turn(event, []))
+            turns.append(_Turn(event, [], reset_pending))
+            reset_pending = False
             continue
         if event.request is not None:
             requests.append(event.request)
@@ -127,12 +147,15 @@ def group_turns(events: Iterable[Union[Opening, AnswerLike]]) -> Grouping:
         turns[0].answers = leading + turns[0].answers
     prompts: List[Prompt] = []
     orphans: List[AnswerLike] = [] if turns else leading
+    carried_reset = False
     for turn in turns:
         prompt = turn.to_prompt()
         if prompt is None:
             orphans += turn.answers
+            carried_reset = carried_reset or turn.after_reset
         else:
-            prompts.append(prompt)
+            prompts.append(replace(prompt, after_reset=True) if carried_reset else prompt)
+            carried_reset = False
     unprompted = tuple(answer.request for answer in orphans if answer.request is not None)
     return Grouping(tuple(prompts), tuple(requests), unprompted)
 

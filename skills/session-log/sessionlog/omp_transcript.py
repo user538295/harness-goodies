@@ -26,19 +26,25 @@ last copy, which also decides the prompt the response falls under. Tokens are OM
 `thinking_level_change.thinkingLevel`, carried forward, unless the message names its own `thinkingLevel` or `effort`. A reasoning
 count (`reasoning`) is kept apart as information only: OMP's `totalTokens` leaves it out, so it is part of `output`.
 
+A `reset_boundary` record is what OMP writes into the same file when the user clears the context (`/clear`); the first prompt after
+one (on the active branch) is flagged `after_reset`. A prompt's `written_paths` are the files the `write` and `edit` tool calls of
+its replies named: a `write` or `edit` call's `path` argument and the `[path#tag]` headers of an edit's `input`; a call of a
+branch the conversation left counts nothing.
+
 A prompt's reply is the last assistant message of its turn whose `stopReason` is `stop`: its text blocks joined by blank lines. A
 turn works from its prompt to the last assistant message it completed, whatever its `stopReason` (`toolUse` when a steering prompt cut
 the run, `aborted`, `error`): that message's `completedAt` (else the record's own `completedAt`, else the time of the record). A turn
 without such a message has no reply time and works no time."""
 from dataclasses import dataclass
 from datetime import datetime
+import re
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple, Union
 
 from .json_records import (Record, decode_record, model_label, parse_cost, parse_epoch_milliseconds, parse_moment,
                            parse_whole_count)
 from .model import Prompt, RequestUsage
 from .omp_branches import SessionTree, Standing
-from .prompt_turns import Grouping, Opening, group_turns
+from .prompt_turns import Grouping, Opening, ResetMark, group_turns
 
 _SESSION = "session"
 _SESSION_INIT = "session_init"
@@ -62,6 +68,10 @@ _REASONING_NAMES = ("reasoning", "reasoningTokens", "reasoning_tokens")
 _ONE_HOUR_CACHE_NAME = "ephemeral1h"
 _RESPONSE_ID_NAMES = ("responseId", "messageId", "id")
 _PARENT_ID = "parentId"
+_RESET_BOUNDARY = "reset_boundary"
+_TOOL_CALL_BLOCK = "toolCall"
+_WRITING_TOOLS = ("write", "edit")
+_HASHLINE_HEADER = re.compile(r"^\[([^\]\n]+?)#[0-9A-Fa-f]{4}\]\s*$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -105,6 +115,7 @@ class _Answer(NamedTuple):
     moment: Optional[datetime]
     began: Optional[datetime] = None
     asked_at: Optional[datetime] = None
+    written_paths: Tuple[str, ...] = ()
 
 
 def _text(value: Any) -> Optional[str]:
@@ -210,6 +221,31 @@ def _reply_text(content: Any) -> Optional[str]:
     return _REPLY_PARAGRAPH_SEPARATOR.join(text for text in _texts_of(content) if text.strip()) or None
 
 
+def _is_writing_call(block: Any) -> bool:
+    """Whether a content block is a call of the `write` or `edit` tool."""
+    return isinstance(block, dict) and block.get("type") == _TOOL_CALL_BLOCK and block.get("name") in _WRITING_TOOLS
+
+
+def _written_paths(content: Any) -> Tuple[str, ...]:
+    """The files the `write` and `edit` tool calls among the content blocks of an assistant message wrote or edited, each once, in
+    order: a call's `path` argument, and the `[path#tag]` headers of an edit's `input` (OMP's hashline edit format, whose headers
+    always carry the 4-hex tag; a bracketed row without one is no header). Other ways to change a file (`apply_patch`, a shell
+    command, a sub-agent's own calls) are not seen, and a call that failed still counts. Blocks and arguments that are not what is
+    expected are skipped."""
+    paths: List[str] = []
+    for block in content if isinstance(content, list) else ():
+        if not _is_writing_call(block):
+            continue
+        arguments = block.get("arguments")
+        if not isinstance(arguments, dict):
+            continue
+        if _text(arguments.get("path")):
+            paths.append(arguments["path"])
+        if isinstance(arguments.get("input"), str):
+            paths.extend(_HASHLINE_HEADER.findall(arguments["input"]))
+    return tuple(dict.fromkeys(paths))
+
+
 def _is_user_custom_message(record: Record) -> bool:
     custom_type = record.get("customType")
     if custom_type in _USER_NOTICES:
@@ -233,7 +269,7 @@ class _Collector:
         self._last_moment: Optional[datetime] = None
         self._effort: Optional[str] = None
         self._count = 0
-        self._events: List[Tuple[Optional[str], Union[Opening, _Answer]]] = []
+        self._events: List[Tuple[Optional[str], Union[Opening, ResetMark, _Answer]]] = []
         self._latest_copy: Dict[str, int] = {}
         self._tree = SessionTree()
 
@@ -261,6 +297,8 @@ class _Collector:
         elif kind == _MODEL_USAGE:
             self._note_activity(_entry_time(record))
             self._events.append((entry_id, _Answer(index, None, _request_of(record, self._effort), False, None, None)))
+        elif kind == _RESET_BOUNDARY:
+            self._events.append((entry_id, ResetMark()))
 
     def _note_activity(self, start: Optional[datetime], end: Optional[datetime] = None) -> None:
         """Records that something happened from `start` to `end` (a point in time when `end` is None)."""
@@ -283,20 +321,21 @@ class _Collector:
                 self._latest_copy[key] = index
             is_stop = message.get("stopReason") == _STOP
             self._events.append((entry_id, _Answer(index, key, _request_of(message, effort), is_stop,
-                                                   _reply_text(message.get("content")) if is_stop else None, completed)))
+                                                   _reply_text(message.get("content")) if is_stop else None, completed,
+                                                   written_paths=_written_paths(message.get("content")))))
         else:
             self._note_activity(start)
 
-    def _is_replaced_copy(self, event: Union[Opening, _Answer]) -> bool:
+    def _is_replaced_copy(self, event: Union[Opening, ResetMark, _Answer]) -> bool:
         """Whether the event is a streamed copy of a response that a later copy replaced."""
         return isinstance(event, _Answer) and event.key is not None and self._latest_copy[event.key] != event.index
 
-    def _active_events(self) -> List[Union[Opening, _Answer]]:
+    def _active_events(self) -> List[Union[Opening, ResetMark, _Answer]]:
         """The events that count for the prompts, in file order, without the streamed copies that a later copy of the same response
         replaced. An event of a branch the conversation left is no prompt and no reply, only a request: the request of a sibling of the
         active reply (a response tried again, a helper request beside it) stays in its turn, and those further down the branch wait for
         the next prompt of the active branch, the one that replaced it (without one, they end up with the last turn)."""
-        events: List[Union[Opening, _Answer]] = []
+        events: List[Union[Opening, ResetMark, _Answer]] = []
         waiting: List[_Answer] = []
         for entry_id, event in self._events:
             if self._is_replaced_copy(event):
@@ -308,7 +347,7 @@ class _Collector:
                     events.extend(waiting)
                     waiting.clear()
             elif isinstance(event, _Answer) and event.request is not None:
-                request_only = event._replace(is_stop=False, text=None, moment=None)
+                request_only = event._replace(is_stop=False, text=None, moment=None, written_paths=())
                 (events if standing is Standing.SIBLING else waiting).append(request_only)
         return events + waiting
 

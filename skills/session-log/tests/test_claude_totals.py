@@ -86,3 +86,43 @@ class SlashCommandTextTests(ClaudeReaderTestCase):
 
     def test_a_command_with_only_a_name_tag_is_its_name(self):
         self.assertEqual(self._command("<command-name>/x</command-name>"), "/x")
+
+
+def _tool_use(name, **tool_input) -> dict:
+    return {"type": "tool_use", "id": "toolu_%s" % name, "name": name, "input": tool_input}
+
+
+class WrittenPathsTests(ClaudeReaderTestCase):
+    """The files a prompt's Write, Edit, MultiEdit and NotebookEdit calls named: the evidence of which work a prompt did."""
+
+    def _written(self, *blocks):
+        (prompt,) = self._prompts([_typed(10, "ask"), _answer(11, "m1", _usage(), blocks=list(blocks))])
+        return prompt.written_paths
+
+    def test_write_edit_multiedit_and_notebook_edit_give_their_file_in_order_once_each(self):
+        self.assertEqual(("a.md", "b.py", "c.md", "d.ipynb"),
+                         self._written(_tool_use("Write", file_path="a.md", content="x"), _tool_use("Edit", file_path="b.py", old_string="a", new_string="b"),
+                                       _tool_use("MultiEdit", file_path="c.md", edits=[]), _tool_use("Edit", file_path="a.md"),
+                                       _tool_use("NotebookEdit", notebook_path="d.ipynb")))
+
+    def test_reads_searches_shell_commands_text_and_unusable_inputs_give_nothing(self):
+        self.assertEqual((), self._written(_tool_use("Read", file_path="a.md"), _tool_use("Bash", command="echo x > a.md"), {"type": "text", "text": "a.md"},
+                                           _tool_use("Write", file_path=""), _tool_use("Write", file_path=3), {"type": "tool_use", "name": "Write", "input": "a.md"}))
+
+    def test_a_tool_name_that_is_no_text_is_skipped_without_aborting_the_read(self):
+        self.assertEqual(("a.md",), self._written({"type": "tool_use", "name": ["Write"], "input": {"file_path": "x.md"}},
+                                                  {"type": "tool_use", "name": {"Write": 1}, "input": {"file_path": "y.md"}},
+                                                  _tool_use("Write", file_path="a.md")))
+
+    def test_a_plain_user_entry_hands_the_paths_its_replies_wrote_to_the_prompt_before_it(self):
+        records = [_typed(10, "ask"), _answer(11, "m1", _usage(), blocks=[_tool_use("Write", file_path="a.md")]),
+                   _plain_user(15, "more"), _answer(16, "m2", _usage(), blocks=[_tool_use("Write", file_path="b.md")])]
+        (prompt,) = self._prompts(records)
+        self.assertEqual(("a.md", "b.md"), prompt.written_paths)
+
+    def test_the_paths_of_several_records_of_one_message_and_of_later_messages_all_count_for_the_prompt(self):
+        records = [_typed(10, "ask"), _answer(11, "m1", _usage(), blocks=[_tool_use("Write", file_path="a.md")]),
+                   _answer(12, "m1", _usage(), blocks=[_tool_use("Write", file_path="b.md")]),
+                   _answer(13, "m2", _usage(), blocks=[_tool_use("Write", file_path="a.md"), _tool_use("Write", file_path="c.md")]),
+                   _typed(20, "next"), _answer(21, "m3", _usage(), blocks=[_tool_use("Write", file_path="d.md")])]
+        self.assertEqual([("a.md", "b.md", "c.md"), ("d.md",)], [prompt.written_paths for prompt in self._prompts(records)])

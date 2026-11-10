@@ -87,6 +87,16 @@ def assistant_record(second, text="", stop="stop", response_id=None, usage=None,
     return {"type": "message", "id": "a%s" % second, "timestamp": iso(second + (done or 0)), "message": body}
 
 
+def reset_record(second) -> dict:
+    """The entry OMP writes into the same file when the user clears the context (`/clear`)."""
+    return {"type": "reset_boundary", "id": "r%s" % second, "timestamp": iso(second)}
+
+
+def tool_call(name, **arguments) -> dict:
+    """A tool call block of an assistant message."""
+    return {"type": "toolCall", "id": "call-%s" % name, "name": name, "arguments": arguments}
+
+
 def helper_record(second, usage, model="claude-haiku-5", provider="anthropic") -> dict:
     return {"type": "model_usage", "id": "h%s" % second, "timestamp": iso(second), "provider": provider, "model": model, "usage": usage}
 

@@ -170,6 +170,17 @@ class RecordCommitTest(ProjectTestCase):
                          [(prompt["number"], prompt["reason"])
                           for prompt in self.record_with_session(c1)["feature"]["sources"]["sessions"][0]["prompts"]])
 
+    def test_prompts_before_a_cleared_context_are_not_recorded_for_the_feature_that_follows_it(self):
+        self.seed_feature()
+        c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE}, when=at("11:40:00"))
+        self.latest_usage(0, rows=[prompt_row(at("10:00:00"), "tidy my notes", seconds=3000, total=4000, cost=4.0),
+                                   prompt_row(at("11:30:00"), "/implement docs/x-tasks.md", seconds=600, total=200, cost=0.2, after_reset=True),
+                                   prompt_row(at("11:45:00"), "A", seconds=60, total=100, cost=0.1)])
+        feature = self.record_with_session(c1)["feature"]
+        self.assertEqual([(2, "names docs/x-tasks.md"), (3, "follows prompt 2")],
+                         [(prompt["number"], prompt["reason"]) for prompt in feature["sources"]["sessions"][0]["prompts"]])
+        self.assertEqual(11, feature["usage"]["agentTimeMinutes"])
+
     def test_a_latest_session_without_a_prompt_of_the_feature_records_no_session(self):
         self.seed_feature(new_feature("Y", sources={"docs": [OTHER_PLAN], "commits": [], "sessions": []}))
         c1 = self.commit("BE-1", {PLAN: TASKS_ONE_DONE}, when=at("09:00:00"))

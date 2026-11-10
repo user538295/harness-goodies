@@ -84,7 +84,11 @@ class RequestUsage:
 @dataclass(frozen=True)
 class Prompt:
     """One user prompt and its reply. `working_time` runs from submission to the last reply, so `reply_at` covers it.
-    `working_time` is 0 when there is no reply."""
+    `working_time` is 0 when there is no reply. `after_reset` is True when the user cleared the context between the previous prompt
+    and this one (OMP's `/clear` writes a boundary into the same session file), so the prompt opens a new conversation.
+    `written_paths` are the files the prompt's own tool calls wrote or edited, as the calls named them, in order of first write, each
+    once (only the harnesses whose transcripts name them: OMP and Claude Code; a sub-agent's own calls are not the prompt's); reads,
+    searches and shell commands are not among them."""
 
     submitted_at: datetime
     text: str
@@ -92,11 +96,14 @@ class Prompt:
     reply_text: Optional[str] = None
     working_time: Optional[timedelta] = None
     requests: Tuple[RequestUsage, ...] = ()
+    after_reset: bool = False
+    written_paths: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_aware(self.submitted_at, "Prompt.submitted_at")
         _require_aware_if_present(self.reply_at, "Prompt.reply_at")
         _as_tuple(self, "requests")
+        _as_tuple(self, "written_paths")
 
 
 @dataclass(frozen=True)

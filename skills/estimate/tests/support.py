@@ -108,11 +108,17 @@ def usage_payload(harness, session_id, seconds, total=1000, cost=1.25, cost_comp
             "models": list(models), "prompts": prompts, "subAgents": sub_agents}
 
 
-def prompt_row(at, text, seconds=60, total=100, cost=0.5, complete=True, models=(MAIN_MODEL,)):
-    """One C1 prompt row submitted at `at` (UTC ISO) and answered `seconds` later."""
+def prompt_row(at, text, seconds=60, total=100, cost=0.5, complete=True, models=(MAIN_MODEL,), after_reset=None, written=None):
+    """One C1 prompt row submitted at `at` (UTC ISO) and answered `seconds` later. `after_reset` and `written` (the files its tool calls
+    wrote) are `afterReset` and `writtenPaths` when given; without them the row is what an older session-log printed."""
     reply_at = (datetime.fromisoformat(at) + timedelta(seconds=seconds)).isoformat()
-    return {"at": at, "replyAt": reply_at, "text": text, "agentTimeSeconds": seconds, "tokens": tokens_of(total), "costUsd": cost,
-            "costComplete": complete, "models": list(models)}
+    row = {"at": at, "replyAt": reply_at, "text": text, "agentTimeSeconds": seconds, "tokens": tokens_of(total), "costUsd": cost,
+           "costComplete": complete, "models": list(models)}
+    if after_reset is not None:
+        row["afterReset"] = after_reset
+    if written is not None:
+        row["writtenPaths"] = written
+    return row
 
 
 def agent_row(started_at, total=100, cost=0.5, complete=True, agent_id="agent", depth=0, models=(AGENT_MODEL,)):

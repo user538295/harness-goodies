@@ -2,7 +2,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 from sessionlog.model import Prompt, RequestUsage
-from sessionlog.prompt_turns import NO_PROMPT_TEXT, Answer, Opening, group_turns, with_unprompted
+from sessionlog.prompt_turns import NO_PROMPT_TEXT, Answer, Opening, ResetMark, group_turns, with_unprompted
 
 BASE = datetime(2026, 10, 13, 8, 42, 0, tzinfo=timezone.utc)
 
@@ -66,6 +66,22 @@ class GroupTurnsTest(unittest.TestCase):
     def test_nothing_gives_nothing(self):
         self.assertEqual(((), (), ()), group_turns([]))
         self.assertEqual(((), (request(2),), (request(2),)), group_turns([Answer(request(2), False, None, None)]))
+
+
+class ResetAndPathsTest(unittest.TestCase):
+    def test_a_reset_mark_flags_the_next_prompt_only(self):
+        prompts, *_ = group_turns([Opening(at(10), "a"), ResetMark(), Opening(at(20), "b"), Opening(at(30), "c")])
+        self.assertEqual([False, True, False], [prompt.after_reset for prompt in prompts])
+
+    def test_a_reset_mark_before_an_opening_without_a_time_flags_the_next_prompt(self):
+        prompts, *_ = group_turns([Opening(at(10), "a"), ResetMark(), Opening(None, "dropped"), Opening(at(30), "c")])
+        self.assertEqual([("a", False), ("c", True)], [(prompt.text, prompt.after_reset) for prompt in prompts])
+
+    def test_the_paths_the_answers_of_a_turn_wrote_are_the_prompts_once_each_in_order(self):
+        written = Answer(request(1), False, None, at(11), written_paths=("b.md", "a.md"))
+        again = Answer(request(1), True, "done", at(12), written_paths=("a.md", "c.md"))
+        (prompt,), *_ = group_turns([Opening(at(10), "ask"), written, again])
+        self.assertEqual(("b.md", "a.md", "c.md"), prompt.written_paths)
 
 
 class WithUnpromptedTest(unittest.TestCase):

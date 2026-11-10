@@ -6,7 +6,7 @@ from datetime import timedelta
 
 from sessionlog.omp_transcript import ParentLink, Transcript, parse_parent_link, parse_transcript
 from tests.omp_records import (assistant_record, at, chained, custom_record, effort_record, header_record, helper_record, init_record, iso, jsonl, ms,
-                               parse, usage_of, user_record)
+                               parse, reset_record, tool_call, usage_of, user_record)
 
 SESSION_ID = "01a10000-0000-7000-8000-000000000001"
 
@@ -334,6 +334,91 @@ class OmpActivityTest(unittest.TestCase):
     def test_a_transcript_without_a_timed_activity_record_has_no_bounds(self):
         transcript = parse(header_record("s"), {"type": "custom", "customType": "x"}, {"type": "message", "message": {"role": "user"}})
         self.assertEqual((None, None), (transcript.first_moment, transcript.last_moment))
+
+
+class OmpResetTest(unittest.TestCase):
+    """`/clear` writes a `reset_boundary` entry into the same file: the first prompt after it opens a new context."""
+
+    def test_the_first_prompt_after_a_reset_is_flagged_and_the_others_are_not(self):
+        prompts = prompts_of(user_record(10, "one"), assistant_record(11, "a", done=1), reset_record(20), user_record(30, "two"),
+                             assistant_record(31, "b", done=1), user_record(40, "three"))
+        self.assertEqual([False, True, False], [prompt.after_reset for prompt in prompts])
+
+    def test_several_resets_before_one_prompt_flag_it_once_and_a_prompt_before_any_reset_is_not_flagged(self):
+        prompts = prompts_of(user_record(10, "one"), reset_record(20), reset_record(21), user_record(30, "two"))
+        self.assertEqual([False, True], [prompt.after_reset for prompt in prompts])
+
+    def test_a_reset_before_the_first_prompt_flags_it_and_a_reset_after_the_last_prompt_flags_nothing(self):
+        self.assertEqual([True], [prompt.after_reset for prompt in prompts_of(reset_record(5), user_record(10, "one"))])
+        self.assertEqual([False], [prompt.after_reset for prompt in prompts_of(user_record(10, "one"), reset_record(20))])
+
+    def test_a_reset_on_the_branch_of_a_retried_prompt_flags_the_retry(self):
+        first = chained(None, user_record(10, "first"), assistant_record(11, "reply one", usage=usage_of(100, 1), done=1))
+        abandoned = chained("a11", user_record(20, "same ask"), assistant_record(21, "", stop="aborted", usage=usage_of(7, 1), done=1))
+        retry = chained("a11", reset_record(25), user_record(30, "same ask"), assistant_record(31, "done", usage=usage_of(9, 1), done=2))
+        prompts = parse(header_record(SESSION_ID), *first, *abandoned, *retry).prompts
+        self.assertEqual([("first", False), ("same ask", True)], [(prompt.text, prompt.after_reset) for prompt in prompts])
+
+    def test_a_reset_on_an_abandoned_branch_flags_nothing(self):
+        first = chained(None, user_record(10, "first"), assistant_record(11, "reply one", usage=usage_of(100, 1), done=1))
+        abandoned = chained("a11", reset_record(20), user_record(21, "old"), assistant_record(22, "old reply", usage=usage_of(7, 1), done=1))
+        retry = chained("a11", user_record(30, "new"), assistant_record(31, "new reply", usage=usage_of(9, 1), done=1))
+        prompts = parse(header_record(SESSION_ID), *first, *abandoned, *retry).prompts
+        self.assertEqual([("first", False), ("new", False)], [(prompt.text, prompt.after_reset) for prompt in prompts])
+
+    def test_a_session_without_resets_has_no_flagged_prompt(self):
+        self.assertEqual([False, False], [prompt.after_reset for prompt in prompts_of(user_record(10, "one"), user_record(20, "two"))])
+
+
+class OmpWrittenPathsTest(unittest.TestCase):
+    """The files a prompt's tool calls wrote or edited (`write`, `edit`): the evidence of which work a prompt did when its text names none."""
+
+    def paths_of(self, *blocks, **message):
+        (prompt,) = prompts_of(user_record(10, "ask"), assistant_record(11, "", content=list(blocks), stop="toolUse", done=1, **message))
+        return prompt.written_paths
+
+    def test_a_write_gives_its_path_and_an_edit_the_paths_of_its_hashline_headers(self):
+        edit = "[docs/a.md#1A2B]\nPUT 1*:\n+x\n[docs/b.md#c0de]\nPUT >$:\n+y\n[src/a b.py#00FF]\nCUT 2.=3"
+        self.assertEqual(("docs/new.md", "docs/a.md", "docs/b.md", "src/a b.py"),
+                         self.paths_of(tool_call("write", path="docs/new.md", content="# x"), tool_call("edit", input=edit)))
+
+    def test_a_header_without_a_tag_and_a_bracketed_body_row_are_no_paths(self):
+        edit = "[docs/untagged.md]\nPUT 1*:\n+[docs/body.md#1A2B]\n+[x]\n[docs/real.md#1A2B]\nPUT >1:\n+y"
+        self.assertEqual(("docs/real.md",), self.paths_of(tool_call("edit", input=edit)))
+
+    def test_a_call_of_a_branch_the_conversation_left_counts_no_path(self):
+        first = chained(None, user_record(10, "first"), assistant_record(11, "reply", usage=usage_of(100, 1), done=1))
+        old = chained("a11", user_record(20, "old"), assistant_record(21, "", content=[tool_call("write", path="old.md")], stop="toolUse", usage=usage_of(7, 1), done=1))
+        new = chained("a11", user_record(30, "new"), assistant_record(31, "", content=[tool_call("write", path="new.md")], stop="toolUse", usage=usage_of(9, 1), done=1))
+        prompts = parse(header_record(SESSION_ID), *first, *old, *new).prompts
+        self.assertEqual([(), ("new.md",)], [prompt.written_paths for prompt in prompts])
+
+    def test_an_edit_with_a_path_argument_gives_that_path(self):
+        self.assertEqual(("docs/a.md",), self.paths_of(tool_call("edit", path="docs/a.md", old_text="a", new_text="b")))
+
+    def test_reads_searches_and_shell_commands_write_nothing(self):
+        self.assertEqual((), self.paths_of(tool_call("read", path="docs/a.md"), tool_call("grep", pattern="x", path="docs/a.md"),
+                                           tool_call("bash", command="echo x > docs/a.md")))
+
+    def test_a_path_written_twice_counts_once_in_the_order_of_its_first_write(self):
+        self.assertEqual(("b.md", "a.md"), self.paths_of(tool_call("write", path="b.md"), tool_call("write", path="a.md"),
+                                                         tool_call("write", path="b.md")))
+
+    def test_text_blocks_and_calls_with_unusable_arguments_are_skipped_without_a_report(self):
+        blocks = ({"type": "text", "text": "[x.md#1234]"}, tool_call("write", path=""), tool_call("write", path=3), tool_call("write"),
+                  tool_call("edit", input=7), {"type": "toolCall", "name": "write", "arguments": "path"}, {"type": "toolCall", "name": 4})
+        self.assertEqual((), self.paths_of(*blocks))
+
+    def test_the_paths_belong_to_the_prompt_the_message_falls_under(self):
+        prompts = prompts_of(user_record(10, "one"), assistant_record(11, "", content=[tool_call("write", path="one.md")], stop="toolUse", done=1),
+                             user_record(20, "two"), assistant_record(21, "", content=[tool_call("write", path="two.md")], stop="toolUse", done=1))
+        self.assertEqual([("one.md",), ("two.md",)], [prompt.written_paths for prompt in prompts])
+
+    def test_a_streamed_copy_that_a_later_copy_replaced_counts_no_paths(self):
+        prompts = prompts_of(user_record(10, "ask"),
+                             assistant_record(11, "", response_id="r1", content=[tool_call("write", path="early.md")], stop="toolUse", done=1),
+                             assistant_record(12, "", response_id="r1", content=[tool_call("write", path="late.md")], stop="toolUse", done=1))
+        self.assertEqual(("late.md",), prompts[0].written_paths)
 
 
 class OmpTimeTest(unittest.TestCase):

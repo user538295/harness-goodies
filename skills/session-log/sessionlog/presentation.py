@@ -125,7 +125,8 @@ def _cost_json(row: Usage) -> dict:
 def _prompt_json(prompt: Prompt, row: PromptRow) -> dict:
     return {"at": _utc_text(prompt.submitted_at), "replyAt": None if prompt.reply_at is None else _utc_text(prompt.reply_at),
             "text": prompt.text, "agentTimeSeconds": int(row.working_time.total_seconds()), "tokens": _tokens_json(row),
-            **_cost_json(row), "models": list(model_list(row.model_names))}
+            **_cost_json(row), "models": list(model_list(row.model_names)), "afterReset": prompt.after_reset,
+            "writtenPaths": list(prompt.written_paths)}
 
 
 def _sub_agent_json(row: SubAgentRow) -> dict:

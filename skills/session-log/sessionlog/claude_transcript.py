@@ -35,6 +35,8 @@ _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _FORKED_FROM = "forkedFrom"
 _COMMAND_PART_SEPARATOR = " "
 _TEXT_BLOCK = "text"
+_TOOL_USE_BLOCK = "tool_use"
+_WRITING_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
 _REPLY_PARAGRAPH_SEPARATOR = "\n\n"
 _PROMPT_TEXT_SEPARATOR = "\n"
 _FAST_SPEED = "fast"
@@ -99,6 +101,29 @@ def _texts_of(content: Any) -> Tuple[str, ...]:
 
 def _text_blocks(record: Record) -> Tuple[str, ...]:
     return _texts_of(_message_of(record).get("content"))
+
+
+def _is_writing_call(block: Any) -> bool:
+    """Whether a content block is a call of one of the file-writing tools."""
+    if not isinstance(block, dict) or block.get("type") != _TOOL_USE_BLOCK:
+        return False
+    name = block.get("name")
+    return isinstance(name, str) and name in _WRITING_TOOLS
+
+
+def _written_paths(record: Record) -> Tuple[str, ...]:
+    """The files the file-writing tool calls among the content blocks of an assistant record name: Claude's `file_path`, or a
+    notebook's `notebook_path`. Blocks and inputs that are not what is expected are skipped."""
+    content = _message_of(record).get("content")
+    paths: List[str] = []
+    for block in content if isinstance(content, list) else ():
+        if not _is_writing_call(block):
+            continue
+        tool_input = block.get("input")
+        path = tool_input.get(_WRITING_TOOLS[block["name"]]) if isinstance(tool_input, dict) else None
+        if isinstance(path, str) and path:
+            paths.append(path)
+    return tuple(dict.fromkeys(paths))
 
 
 class _Kind(Enum):
@@ -229,6 +254,7 @@ class _Reply:
     request: Optional[RequestUsage]
     texts: Tuple[str, ...]
     moment: Optional[datetime]
+    written_paths: Tuple[str, ...] = ()
 
 
 def _earliest(current: Optional[datetime], moment: Optional[datetime]) -> Optional[datetime]:
@@ -250,6 +276,7 @@ class _Turn:
         self._keep_replies = keep_replies
         self._requests: Dict[_MessageKey, RequestUsage] = {}
         self._texts: Dict[_MessageKey, List[str]] = {}
+        self._written: List[str] = []
         self._latest_reply: Optional[datetime] = None
         self._last_key: Optional[_MessageKey] = None
         self._kept_replies: List[_Reply] = []
@@ -273,6 +300,7 @@ class _Turn:
         for text in reply.texts:
             if text not in collected:
                 collected.append(text)
+        self._written.extend(reply.written_paths)
         self._latest_reply = _latest(self._latest_reply, reply.moment)
         self._last_key = reply.message_key
 
@@ -307,6 +335,7 @@ class _Turn:
             reply_text=reply_text,
             working_time=reply_at - self._submitted_at if reply_at else timedelta(0),
             requests=tuple(self._requests.values()),
+            written_paths=tuple(dict.fromkeys(self._written)),
         )
 
 
@@ -365,7 +394,8 @@ class _Folder(_RecordFolder):
         elif self._turns and record.get("type") == _ASSISTANT and _is_api_error(record):
             self._turns[-1].add_api_error(_Reply(_message_key(record, line_number), None, _text_blocks(record), moment))
         elif self._turns and record.get("type") == _ASSISTANT and not _is_synthetic(record):
-            self._turns[-1].add(_Reply(_message_key(record, line_number), _request_of(record), _text_blocks(record), moment))
+            self._turns[-1].add(_Reply(_message_key(record, line_number), _request_of(record), _text_blocks(record), moment,
+                                            _written_paths(record)))
 
     def _counted_turns(self) -> List[_Turn]:
         """A plain user entry outside a Remote Control session is no prompt and hands its replies to the turn before

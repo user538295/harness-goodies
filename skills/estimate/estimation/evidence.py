@@ -6,9 +6,12 @@ body) names the feature's own id (the `task_ids` boundary rule, in any case) and
 for a checker to accept or reject by the feature's name and description (`test(e2e): …` names the id `e2e` but is other work).
 Task IDs find no commit, since every plan reuses `BE-1`. A prompt is evidence for the features its text names (a doc path, a doc
 basename or a task ID), else for the feature(s) with the most claimed commits authored while it ran (from its submission to its
-last reply). A name, task ID or commit that more than one feature claims ties nothing to any of them: a task ID two plans list, or
+last reply). A prompt is also evidence for the features whose docs its tool calls wrote (never task IDs, and never a doc it only
+read). A name, task ID or commit that more than one feature claims ties nothing to any of them: a task ID two plans list, or
 a commit that archives two features' docs, is no evidence. A prompt without evidence belongs to the features of the prompt before
 it, and prompts before the first evidence to the first evidence's features; a sub-agent belongs to the prompt it started under.
+Clearing the context ends a run: the first prompt after a clear opens a segment, and a prompt follows or precedes evidence only
+inside its own segment; a segment without any evidence counts for no feature.
 Each prompt carries why it counts for each of its features."""
 import os
 from bisect import bisect_left, bisect_right
@@ -21,6 +24,8 @@ from estimation.task_ids import finder
 
 NAMES = "names %s"
 MADE_COMMITS = "made %d of its commits"
+WRITES = "writes %s"
+REASON_SEPARATOR = "; "
 FOLLOWS_PROMPT = "follows prompt %d"
 BEFORE_PROMPT = "before prompt %d"
 UNREACHABLE_COMMIT = "commit '%s' of '%s' is not a full hash of a commit reachable from HEAD"
@@ -92,10 +97,8 @@ def feature_commits(history, features):
                           {feature.name: _candidates(commits, feature, claimed) for feature in features})
 
 
-def attribute(prompt_evidence):
-    """{feature: why it counts} of each prompt, from each prompt's own evidence (`prompt_evidence`: one such dict per prompt in
-    order): a prompt without evidence takes the features of the last earlier prompt that has some (`follows prompt N`), prompts
-    before the first evidence take the first evidence's (`before prompt N`); N counts from 1."""
+def _attribute_segment(prompt_evidence, offset):
+    """`attribute` for the prompts of one context (`prompt_evidence`), the first of them being prompt `offset` + 1 of the session."""
     first = next((index for index, evidence in enumerate(prompt_evidence) if evidence), None)
     attributed = []
     source = first
@@ -106,8 +109,21 @@ def attribute(prompt_evidence):
         elif first is None:
             attributed.append({})
         else:
-            why = (BEFORE_PROMPT if index < first else FOLLOWS_PROMPT) % (source + 1)
+            why = (BEFORE_PROMPT if index < first else FOLLOWS_PROMPT) % (offset + source + 1)
             attributed.append(dict.fromkeys(prompt_evidence[source], why))
+    return attributed
+
+
+def attribute(prompt_evidence, after_reset):
+    """{feature: why it counts} of each prompt, from each prompt's own evidence (`prompt_evidence`: one such dict per prompt in
+    order; `after_reset`: whether each prompt is the first after the user cleared the context). Within a context, a prompt without
+    evidence takes the features of the last earlier prompt of that context that has some (`follows prompt N`), prompts before the
+    first evidence take the first evidence's (`before prompt N`), and a context without evidence gives none; N counts from 1 in the
+    session."""
+    starts = [index for index, cleared in enumerate(after_reset) if cleared and index]
+    attributed = []
+    for start, end in zip([0, *starts], [*starts, len(prompt_evidence)]):
+        attributed += _attribute_segment(prompt_evidence[start:end], start)
     return attributed
 
 
@@ -129,6 +145,12 @@ class Evidence:
         self._owners = [name for _, name in owned]
         self._all_times = sorted(times.values())
 
+    @staticmethod
+    def _outermost(found):
+        """{feature: its needles sorted, without one inside another needle of the same feature}."""
+        return {name: sorted(needle for needle in needles if not any(needle != other and needle in other for other in needles))
+                for name, needles in found.items()}
+
     def naming(self, text):
         """{feature: what of it `text` names, sorted}: doc paths, doc basenames (not one inside a named path) and task IDs."""
         found = {}
@@ -137,19 +159,31 @@ class Evidence:
                 found.setdefault(name, set()).add(needle)
         for task_id in self._find_task_ids(text):
             found.setdefault(self._task_ids[task_id], set()).add(task_id)
-        return {name: sorted(needle for needle in needles if not any(needle != other and needle in other for other in needles))
-                for name, needles in found.items()}
+        return self._outermost(found)
 
     def named(self, text):
         """The features `text` names."""
         return set(self.naming(text))
 
-    def of_prompt(self, text, start, end):
-        """{feature: why} of the features a prompt (or a whole session) is evidence for: those its text names (`names <what>`),
+    def wrote(self, paths):
+        """{feature: the docs of it that `paths` (the files written) hold, sorted}: a doc is held by a path that is it or ends with
+        it after a `/` (a doc path under a folder, or a doc basename), never by a longer name that merely contains it."""
+        found = {}
+        for needle, name in self._names.items():
+            if any(path == needle or path.endswith("/" + needle) for path in paths):
+                found.setdefault(name, set()).add(needle)
+        return self._outermost(found)
+
+    def of_prompt(self, text, start, end, written=()):
+        """{feature: why} of the features a prompt (or a whole session) is evidence for: those its text names (`names <what>`) and
+        those whose docs its tool calls wrote (`writes <what>`; `written` holds the written paths; both reasons when both hold),
         else those with the most commits authored from `start` to `end` (`made <n> of its commits`; none without an end)."""
-        naming = self.naming(text)
-        if naming or end is None:
-            return {name: NAMES % ", ".join(needles) for name, needles in naming.items()}
+        reasons = {name: NAMES % ", ".join(needles) for name, needles in self.naming(text).items()}
+        for name, needles in self.wrote(written).items():
+            wrote = WRITES % ", ".join(needles)
+            reasons[name] = REASON_SEPARATOR.join((reasons[name], wrote)) if name in reasons else wrote
+        if reasons or end is None:
+            return reasons
         made = Counter(self._owners[bisect_left(self._owned_times, start):bisect_right(self._owned_times, end)])
         most = max(made.values(), default=0)
         return {name: MADE_COMMITS % count for name, count in made.items() if count == most}
