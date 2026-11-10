@@ -695,6 +695,184 @@ class ForkOwnTurnInReplayTest(unittest.TestCase):
         self.assertEqual((["ask"], [(8, 2, 0, 0)]), ([p.text for p in rollout.prompts], [_shape(r) for r in rollout.requests]))
 
 
+def _patch(*headers) -> str:
+    body = "".join(f"{header}\n@@\n-old\n+new\n" for header in headers)
+    return f"*** Begin Patch\n{body}*** End Patch\n"
+
+
+def _custom_call(second, name, input_text, call_id="call") -> dict:
+    return {"timestamp": STAMP % second, "type": "response_item",
+            "payload": {"type": "custom_tool_call", "status": "completed", "call_id": call_id, "name": name, "input": input_text}}
+
+
+def _function_call(second, name, arguments, call_id="call") -> dict:
+    return {"timestamp": STAMP % second, "type": "response_item",
+            "payload": {"type": "function_call", "name": name, "arguments": arguments, "call_id": call_id}}
+
+
+def _call_output(second, call_id, *texts, kind="custom_tool_call_output") -> dict:
+    """The output record of a call, in the shape of a real `exec` output: a list of `input_text` blocks."""
+    return {"timestamp": STAMP % second, "type": "response_item",
+            "payload": {"type": kind, "id": "ctco_1", "call_id": call_id, "output": [{"type": "input_text", "text": text} for text in texts]}}
+
+
+def _failed_output(second, call_id) -> dict:
+    return _call_output(second, call_id, "Script failed\nWall time 0.0 seconds\nOutput:\n",
+                        "Script error:\napply_patch verification failed: Failed to find expected lines in /w/a.md:\n  old")
+
+
+def _rollout_written(*records, meta=None):
+    return _parse(list(records), meta=meta).written_paths
+
+
+def _written(*records, meta=None):
+    return [prompt.written_paths for prompt in _parse(list(records), meta=meta).prompts]
+
+
+class WrittenPathsTest(unittest.TestCase):
+    """A prompt's `written_paths` are the files its own `apply_patch` calls named in their patch headers, grouped by the turn the call
+    lies in. Which call shapes count is the job of `test_codex_patch`; shell, read and other calls name none. The native, `exec` and
+    output records are the shapes of real rollouts; the shell fixture is built from Codex's documented form (UNVERIFIED, none in a local
+    rollout)."""
+
+    def test_a_call_names_the_paths_of_its_headers_in_order(self):
+        patch = _patch("*** Add File: /w/a.md", "*** Update File: /w/b.py", "*** Move to: /w/c.py")
+        self.assertEqual([("/w/a.md", "/w/b.py", "/w/c.py")], _written(_user(2), _custom_call(3, "apply_patch", patch)))
+
+    def test_every_call_shape_of_codex_patch_reaches_the_prompt(self):
+        source = "await tools.apply_patch(%s);" % json.dumps(_patch("*** Add File: /w/exec.md"))
+        shell = json.dumps({"command": ["apply_patch", _patch("*** Add File: /w/shell.md")]})
+        records = [_user(2), _custom_call(3, "exec", source), _function_call(4, "shell", shell),
+                   _function_call(5, "apply_patch", json.dumps({"input": _patch("*** Add File: /w/function.md")}))]
+        self.assertEqual([("/w/exec.md", "/w/shell.md", "/w/function.md")], _written(*records))
+
+    def test_several_patches_of_one_prompt_name_each_path_once_in_order_of_first_write(self):
+        first, second = _patch("*** Add File: /w/a.md", "*** Update File: /w/b.md"), _patch("*** Update File: /w/a.md", "*** Update File: /w/c.md")
+        self.assertEqual([("/w/a.md", "/w/b.md", "/w/c.md")],
+                         _written(_user(2), _custom_call(3, "apply_patch", first), _answer(4), _custom_call(5, "apply_patch", second)))
+
+    def test_a_call_that_is_no_patch_names_nothing(self):
+        patch = _patch("*** Add File: /w/a.md")
+        records = [_user(2), _function_call(3, "read_file", json.dumps({"input": patch})), _custom_call(4, "apply_patch", 7),
+                   _custom_call(5, "write_file", patch), _custom_call(6, "apply_patch", "Docs\n*** Add File: /w/doc.md\n")]
+        self.assertEqual([()], _written(*records))
+
+    def test_each_prompt_gets_the_paths_written_after_it_and_before_the_next_one(self):
+        records = [_user(2, "one"), _custom_call(3, "apply_patch", _patch("*** Add File: /w/a.md")), _user(4, "two"),
+                   _custom_call(5, "apply_patch", _patch("*** Add File: /w/b.md")), _user(6, "three")]
+        self.assertEqual([("/w/a.md",), ("/w/b.md",), ()], _written(*records))
+
+    def test_a_call_before_the_first_prompt_belongs_to_none(self):
+        self.assertEqual([()], _written(_custom_call(2, "apply_patch", _patch("*** Add File: /w/a.md")), _user(3)))
+
+    def test_a_prompt_read_from_old_events_gets_the_paths_too(self):
+        records = [_event(2, {"type": "user_message", "message": "ask"}), _custom_call(3, "apply_patch", _patch("*** Add File: /w/a.md"))]
+        self.assertEqual([("/w/a.md",)], _written(*records))
+
+    def test_a_replayed_turn_of_a_fork_contributes_nothing_but_the_forks_own_turn_does(self):
+        fork = _meta(session_id=ROOT, parent_thread_id=ROOT, source={"subagent": {"other": "guardian"}})
+        replay = {"type": "task_started", "turn_id": "rollout-1", "started_at": 1}
+        records = [_event(2, replay), _user(3, "parent ask"), _custom_call(4, "apply_patch", _patch("*** Add File: /w/parent.md")),
+                   _recorded(5, _usage(9, output=1), thread_id=ROOT), _started(6, "turn-2"), _user(7, "own"),
+                   _custom_call(8, "apply_patch", _patch("*** Add File: /w/own.md"))]
+        self.assertEqual([("/w/own.md",)], _written(*records, meta=fork))
+
+    def test_a_replay_wrapper_that_holds_a_record_of_the_forks_own_thread_keeps_its_calls(self):
+        fork = _meta(session_id=ROOT, parent_thread_id=ROOT, source={"subagent": {"other": "guardian"}})
+        records = [_event(2, {"type": "task_started", "turn_id": "rollout-1", "started_at": 1}), _user(3, "review"),
+                   _custom_call(4, "apply_patch", _patch("*** Add File: /w/own.md")), _recorded(5, _usage(9, output=1), thread_id=THREAD)]
+        self.assertEqual([("/w/own.md",)], _written(*records, meta=fork))
+
+    def test_a_rollout_that_is_no_fork_keeps_the_calls_of_a_wrapper_turn(self):
+        records = [_event(2, {"type": "task_started", "turn_id": "rollout-1", "started_at": 1}), _user(3, "ask"),
+                   _custom_call(4, "apply_patch", _patch("*** Add File: /w/a.md"))]
+        self.assertEqual([("/w/a.md",)], _written(*records))
+
+
+class FailedPatchTest(unittest.TestCase):
+    """A call whose output says `apply_patch verification failed` wrote nothing (real rollout 2026-10-28T20-41-10: an `exec` patch call
+    answered by `Script failed` and `Script error: apply_patch verification failed`, with no file changed)."""
+
+    def test_the_paths_of_a_call_that_failed_verification_are_not_written(self):
+        records = [_user(2), _custom_call(3, "apply_patch", _patch("*** Update File: /w/a.md"), call_id="call_1"), _failed_output(4, "call_1"),
+                   _custom_call(5, "apply_patch", _patch("*** Update File: /w/b.md"), call_id="call_2"),
+                   _call_output(6, "call_2", "Script completed\nWall time 0.1 seconds\nOutput:\n", "{}")]
+        parsed = _parse(records)
+        self.assertEqual(([("/w/b.md",)], ("/w/b.md",)), ([prompt.written_paths for prompt in parsed.prompts], parsed.written_paths))
+
+    def test_a_failed_exec_call_is_taken_back_as_well(self):
+        source = "await tools.apply_patch(%s);" % json.dumps(_patch("*** Update File: /w/a.md"))
+        records = [_user(2), _custom_call(3, "exec", source, call_id="call_1"), _failed_output(4, "call_1")]
+        self.assertEqual([()], _written(*records))
+
+    def test_a_retry_of_the_same_file_after_a_failure_counts(self):
+        patch = _patch("*** Update File: /w/a.md")
+        records = [_user(2), _custom_call(3, "apply_patch", patch, call_id="call_1"), _failed_output(4, "call_1"),
+                   _custom_call(5, "apply_patch", patch, call_id="call_2")]
+        self.assertEqual([("/w/a.md",)], _written(*records))
+
+    def test_a_failure_takes_back_only_the_call_it_names(self):
+        records = [_user(2), _custom_call(3, "apply_patch", _patch("*** Add File: /w/a.md"), call_id="call_1"),
+                   _custom_call(4, "apply_patch", _patch("*** Add File: /w/b.md"), call_id="call_2"), _failed_output(5, "call_2"),
+                   _failed_output(6, "call_unknown"), _call_output(7, None, "apply_patch verification failed")]
+        self.assertEqual([("/w/a.md",)], _written(*records))
+
+    def test_calls_and_outputs_without_a_call_id_cannot_be_linked_and_count(self):
+        call = _custom_call(3, "apply_patch", _patch("*** Add File: /w/a.md"))
+        del call["payload"]["call_id"]
+        self.assertEqual([("/w/a.md",)], _written(_user(2), call, _call_output(4, "", "apply_patch verification failed")))
+
+    def test_a_successful_output_and_a_failure_of_another_kind_keep_the_call(self):
+        records = [_user(2), _custom_call(3, "apply_patch", _patch("*** Add File: /w/a.md"), call_id="call_1"),
+                   _call_output(4, "call_1", "Script completed\nOutput:\n", "{}"),
+                   _custom_call(5, "apply_patch", _patch("*** Add File: /w/b.md"), call_id="call_2"),
+                   _call_output(6, "call_2", "Script failed\nWall time 0.0 seconds\nOutput:\n", "Script error:\nboom")]
+        self.assertEqual([("/w/a.md", "/w/b.md")], _written(*records))
+
+
+class PatchDirectoryTest(unittest.TestCase):
+    """Relative header paths start at the working directory: the `cwd` of the newest turn context, else that of the session header
+    (the turn context carries `cwd` in the real rollouts: 13 of 13 local ones name it, always the header's)."""
+    RELATIVE = _patch("*** Add File: docs/a.md", "*** Update File: /abs/b.py")
+
+    def test_a_relative_path_starts_at_the_header_directory_without_any_turn_context(self):
+        self.assertEqual([("/work/proj/docs/a.md", "/abs/b.py")], _written(_user(2), _custom_call(3, "apply_patch", self.RELATIVE)))
+
+    def test_the_newest_turn_context_directory_wins_and_one_without_a_directory_keeps_the_last(self):
+        records = [_context(2, cwd="/turn/one"), _user(3), _custom_call(4, "apply_patch", self.RELATIVE), _context(5, cwd="/turn/two"),
+                   _custom_call(6, "apply_patch", _patch("*** Add File: x.md")), _context(7), _custom_call(8, "apply_patch", _patch("*** Add File: y.md")),
+                   {"timestamp": STAMP % 9, "type": "turn_context", "payload": {"cwd": "/turn/three"}},
+                   _custom_call(10, "apply_patch", _patch("*** Add File: z.md"))]
+        self.assertEqual([("/turn/one/docs/a.md", "/abs/b.py", "/turn/two/x.md", "/turn/two/y.md", "/turn/three/z.md")], _written(*records))
+
+    def test_the_workdir_of_a_shell_call_and_the_target_of_its_cd_prefix_move_the_start(self):
+        heredoc = "cd pkg && apply_patch <<'EOF'\n%sEOF\n" % self.RELATIVE
+        records = [_user(2), _context(3, cwd="/turn"), _function_call(4, "exec_command", json.dumps({"cmd": heredoc, "workdir": "sub"}))]
+        self.assertEqual([("/turn/sub/pkg/docs/a.md", "/abs/b.py")], _written(*records))
+
+    def test_a_relative_path_stays_relative_when_the_rollout_names_no_directory(self):
+        records = [_user(2), _custom_call(3, "apply_patch", self.RELATIVE)]
+        self.assertEqual([("docs/a.md", "/abs/b.py")], _written(*records, meta=_meta(cwd=None)))
+
+    def test_a_relative_path_of_a_replay_wrapper_that_is_the_forks_own_starts_at_the_header_directory(self):
+        fork = _meta(session_id=ROOT, parent_thread_id=ROOT, source={"subagent": {"other": "guardian"}})
+        records = [_event(2, {"type": "task_started", "turn_id": "rollout-1", "started_at": 1}), _user(3, "review"),
+                   _custom_call(4, "apply_patch", self.RELATIVE), _recorded(5, _usage(9, output=1), thread_id=THREAD)]
+        self.assertEqual([("/work/proj/docs/a.md", "/abs/b.py")], _written(*records, meta=fork))
+
+
+class RolloutWrittenPathsTest(unittest.TestCase):
+    """A rollout's own `written_paths` are all the files its own writing calls named, whether or not a prompt holds them."""
+
+    def test_a_rollout_without_any_prompt_lists_its_files_in_order_of_first_write_each_once(self):
+        first, second = _patch("*** Add File: /w/a.md", "*** Update File: /w/b.py"), _patch("*** Update File: /w/a.md", "*** Add File: /w/c.py")
+        self.assertEqual(("/w/a.md", "/w/b.py", "/w/c.py"),
+                         _rollout_written(_custom_call(2, "apply_patch", first), _custom_call(3, "apply_patch", second)))
+
+    def test_a_rollout_that_writes_nothing_lists_nothing(self):
+        self.assertEqual((), _rollout_written(_user(2), _answer(3)))
+
+
 class SafetyTest(unittest.TestCase):
     def test_a_deeply_nested_line_is_skipped_not_raised(self):
         deep = "[" * 100000 + "]" * 100000 + "\n"

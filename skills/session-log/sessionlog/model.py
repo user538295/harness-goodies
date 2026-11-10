@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Iterable, Optional, Tuple
 
 MAX_ID_LENGTH = 128
 _SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,%d}" % MAX_ID_LENGTH)
@@ -42,6 +42,11 @@ def _require_aware(moment: object, field: str) -> None:
 def _require_aware_if_present(moment: object, field: str) -> None:
     if moment is not None:
         _require_aware(moment, field)
+
+
+def unique_in_order(paths: Iterable[str]) -> Tuple[str, ...]:
+    """The paths in order of first appearance, each once: how a `written_paths` field is built from the calls that wrote."""
+    return tuple(dict.fromkeys(paths))
 
 
 def _as_tuple(entity: object, field: str, key: Optional[Callable[[Any], Any]] = None) -> None:
@@ -87,8 +92,9 @@ class Prompt:
     `working_time` is 0 when there is no reply. `after_reset` is True when the user cleared the context between the previous prompt
     and this one (OMP's `/clear` writes a boundary into the same session file), so the prompt opens a new conversation.
     `written_paths` are the files the prompt's own tool calls wrote or edited, as the calls named them, in order of first write, each
-    once (only the harnesses whose transcripts name them: OMP and Claude Code; a sub-agent's own calls are not the prompt's); reads,
-    searches and shell commands are not among them."""
+    once (every harness names them: OMP, Claude Code and OpenCode from their transcripts, Codex from its `apply_patch` calls, Cursor
+    from its `afterFileEdit` hook; Codex's relative paths are made absolute where its rollout names the working directory; a sub-agent's
+    own calls are on its `SubAgent.written_paths`, not the prompt's); reads, searches and shell commands are not among them."""
 
     submitted_at: datetime
     text: str
@@ -109,6 +115,7 @@ class Prompt:
 @dataclass(frozen=True)
 class SubAgent:
     """Belongs to the session, not to a prompt. `sub_agents` are its children; they are kept ordered by start, then id.
+    `written_paths` are the files its own tool calls wrote or edited, in order of first write, each once (its children's are theirs).
     `transcript_path` is the path of its own transcript when the harness names one (Cursor's hooks do); it is shown, never opened."""
 
     agent_id: str
@@ -119,10 +126,12 @@ class SubAgent:
     tokens_not_recorded: bool = False
     sub_agents: Tuple["SubAgent", ...] = ()
     transcript_path: Optional[str] = None
+    written_paths: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_aware(self.started_at, "SubAgent.started_at")
         _as_tuple(self, "requests")
+        _as_tuple(self, "written_paths")
         _as_tuple(self, "sub_agents", _by_start_then_id)
 
     @property

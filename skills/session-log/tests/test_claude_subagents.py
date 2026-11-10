@@ -537,8 +537,37 @@ def _read_agent(agent_id, parent=None, start=10, requests=(), working_time=timed
     return ReadSubAgent(agent_id, meta, started_at, working_time, tuple(requests))
 
 
-def _request(message_id, output_tokens=1):
-    return MessageRequest(message_id, RequestUsage("m", 0, output_tokens, 0, 0, 0))
+class ClaudeSubAgentWrittenPathsTest(ClaudeSubAgentTestCase):
+    def test_a_sub_agent_reports_the_files_its_own_tool_calls_wrote_once_each_over_every_record_of_a_message(self):
+        self._main()
+        write = lambda path: {"type": "tool_use", "id": "t", "name": "Edit", "input": {"file_path": path}}
+        self._agent("a1", [_agent_user(10, "a1"), _answer(11, "m1", _usage(1), blocks=[write("a.md")]), _answer(12, "m1", _usage(1), blocks=[write("b.md")]),
+                           _answer(13, "m2", _usage(1), blocks=[write("a.md"), TOOL_CALL])], {"agentType": "general-purpose"})
+        (agent,) = self._agents()
+        self.assertEqual(agent.written_paths, ("a.md", "b.md"))
+
+    def test_an_edit_in_a_record_without_usage_counts_for_the_message_it_shares_its_id_with_before_or_after_the_counted_record(self):
+        self._main()
+        write = lambda path: {"type": "tool_use", "id": "t", "name": "Edit", "input": {"file_path": path}}
+        self._agent("a1", [_agent_user(10, "a1"), _answer(11, "m1", None, blocks=[write("early.md")]), _answer(12, "m1", _usage(1), blocks=[write("mid.md")]),
+                           _answer(13, "m1", None, blocks=[write("late.md")]), _answer(14, "m2", None, blocks=[write("no-request.md")])],
+                    {"agentType": "general-purpose"})
+        (agent,) = self._agents()
+        self.assertEqual(agent.written_paths, ("early.md", "mid.md", "late.md"))
+
+    def test_a_forked_agent_is_not_credited_with_the_writes_of_the_messages_it_replays(self):
+        self._main()
+        write = lambda path: {"type": "tool_use", "id": "t", "name": "Write", "input": {"file_path": path}}
+        self._agent("z-origin", [_agent_user(10, "o"), _answer(11, "shared", _usage(5), blocks=[write("parent.md")])], {"agentType": "origin"})
+        self._agent("a-fork", [_agent_user(20, "f"), _answer(11, "shared", _usage(5), blocks=[write("parent.md")]),
+                               _answer(21, "own", _usage(7), blocks=[write("child.md")])], {"agentType": "fork", "parentAgentId": "z-origin"})
+        (origin,) = self._agents()
+        (fork,) = origin.sub_agents
+        self.assertEqual((origin.written_paths, fork.written_paths), (("parent.md",), ("child.md",)))
+
+
+def _request(message_id, output_tokens=1, *written_paths):
+    return MessageRequest(message_id, RequestUsage("m", 0, output_tokens, 0, 0, 0), written_paths)
 
 
 class NestSubAgentsTest(unittest.TestCase):
@@ -578,6 +607,12 @@ class NestSubAgentsTest(unittest.TestCase):
         result = {agent.agent_id: [request.output_tokens for request in agent.requests]
                   for agent in nest_sub_agents(agents, counted_message_ids={"main"})}
         self.assertEqual(result, {"agent-a": [1, 5], "agent-b": [3, 4]})
+
+    def test_a_messages_paths_follow_its_requests_so_a_replayed_message_credits_its_writes_to_the_earliest_agent_only(self):
+        agents = [_read_agent("agent-b", start=11, requests=[_request("m1", 2, "a.md"), _request("m2", 3, "b.md", "a.md"), _request(None, 4, "c.md")]),
+                  _read_agent("agent-a", start=10, requests=[_request("m1", 1, "a.md"), _request("main", 9, "main.md")])]
+        result = {agent.agent_id: agent.written_paths for agent in nest_sub_agents(agents, counted_message_ids={"main"})}
+        self.assertEqual(result, {"agent-a": ("a.md",), "agent-b": ("b.md", "a.md", "c.md")})
 
 
 class ClaudeSubAgentOutputTest(ClaudeSubAgentTestCase):

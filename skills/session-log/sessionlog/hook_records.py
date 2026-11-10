@@ -2,17 +2,19 @@
 of the record temps a killed hook left behind.
 
 A record is `.records/<conversation_id>/<arrival_ns>-<event>-<pid>.json` (format: `cursor_records`), published through an
-exclusive temp and a rename (`temp_files`). The hook parses its input only to read the top-level `conversation_id` for the folder
-name; invalid JSON, a missing id or an id that fails the C2 id rule files the record under `.records/.invalid/`. Everything else in
-the input is parsed later, in sync. Nothing is written through a symlinked or junctioned `.records` or conversation folder: such a
-call records nothing. Callers swallow every failure; this module raises on them.
+exclusive temp and a rename (`temp_files`). The hook parses its input to read the top-level `conversation_id` for the folder name;
+invalid JSON, a missing id or an id that fails the C2 id rule files the record under `.records/.invalid/`. The input is kept whole and
+parsed later, in sync, except for an event listed in `RETAINED_INPUT_KEYS` (`afterFileEdit`): its record keeps only those keys, so the
+edited code never reaches the log (an input that is no JSON object is kept as it came). Nothing is written through a symlinked or
+junctioned `.records` or conversation folder: such a call records nothing. Callers swallow every failure; this module raises on them.
 """
 import json
 import os
 import time
-from typing import Callable, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
-from .cursor_records import HOOK_CONVERSATION_ID_KEY, INVALID_FOLDER, RECORDS_FOLDER, STALE_RECORD_TEMP, record_fields, record_file_name
+from .cursor_records import (HOOK_CONVERSATION_ID_KEY, INVALID_FOLDER, RECORDS_FOLDER, RETAINED_INPUT_KEYS, STALE_RECORD_TEMP, record_fields,
+                             record_file_name)
 from .model import is_safe_id
 from .safe_paths import is_real_folder, make_real_folders
 from .temp_files import publish, remove_stale_temps, temp_name
@@ -21,16 +23,27 @@ NANOSECONDS_PER_SECOND = 10 ** 9
 BYTE_ORDER_MARK = "\ufeff"
 
 
-def _conversation_id(text: str) -> Optional[str]:
-    """The `conversation_id` of the hook input when it is a safe id, else None."""
+def _hook_input(text: str) -> Optional[Dict[str, Any]]:
+    """The hook input as a JSON object; None for anything else."""
     try:
         data = json.loads(text)
     except (ValueError, RecursionError):
         return None
-    if not isinstance(data, dict):
-        return None
-    value = data.get(HOOK_CONVERSATION_ID_KEY)
+    return data if isinstance(data, dict) else None
+
+
+def _conversation_id(hook_input: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The `conversation_id` of the hook input when it is a safe id, else None."""
+    value = None if hook_input is None else hook_input.get(HOOK_CONVERSATION_ID_KEY)
     return value if is_safe_id(value) else None
+
+
+def _raw_input_of(event: str, text: str, hook_input: Optional[Dict[str, Any]]) -> str:
+    """The input text a record keeps: the whole of it, or for an event in `RETAINED_INPUT_KEYS` the retained keys of the parsed input."""
+    keys = RETAINED_INPUT_KEYS.get(event)
+    if keys is None or hook_input is None:
+        return text
+    return json.dumps({key: hook_input[key] for key in keys if key in hook_input}, ensure_ascii=False)
 
 
 class HookRecords:
@@ -47,12 +60,13 @@ class HookRecords:
         errors replaced and a byte order mark stripped. The arrival time is taken before the input is read, which may wait."""
         received_at, pid = self._time_ns(), self._pid()
         text = read_input().decode("utf-8", errors="replace").removeprefix(BYTE_ORDER_MARK)
-        conversation_id = _conversation_id(text)
+        hook_input = _hook_input(text)
+        conversation_id = _conversation_id(hook_input)
         folder = self._folder(conversation_id or INVALID_FOLDER)
         if folder is None:
             return
         name = record_file_name(received_at, event, pid)
-        content = json.dumps(record_fields(event, conversation_id, received_at, pid, text), ensure_ascii=False)
+        content = json.dumps(record_fields(event, conversation_id, received_at, pid, _raw_input_of(event, text, hook_input)), ensure_ascii=False)
         publish(os.path.join(folder, temp_name(name, pid)), os.path.join(folder, name), content.encode("utf-8"))
 
     def remove_stale_temps(self) -> None:

@@ -18,7 +18,7 @@ same way. The other fixtures predate the on-time of this run (the sandbox runs o
 archived for them, and their archive path is covered by the entry tests, which inject a clock.
 
 The hook test is the Cursor half of S30 that a script can check: the installed `hook` launcher is executable and runs as the shipped
-`hooks.json` commands (all five events) under `sh`, a sub-agent's hook call is filed in its parent's record folder, and `usage` shows the
+`hooks.json` commands (all six events) under `sh`, a sub-agent's hook call is filed in its parent's record folder, and `usage` shows the
 sub-agent from those records. The mode is that of the copied checkout; that a marketplace install keeps mode 755 is checked by T-13 on the public install.
 Real Cursor's own behaviour is manual too: whether it waits for the `sessionStart` hook, and whether a sub-agent's own calls arrive under
 its own conversation id (the hook files every call under the `conversation_id` of the input, so the guarantee here is for the input shape
@@ -45,7 +45,7 @@ from pathlib import Path
 import session_log
 from tests import test_codex_entry, test_cursor_entry, test_omp_entry, test_opencode_entry
 from tests import test_e2e_skeleton as skeleton
-from tests.cursor_record_files import CONVERSATION, prompt_input, response_input, stop_input, subagent_input, write_record
+from tests.cursor_record_files import CONVERSATION, file_edit_input, prompt_input, response_input, stop_input, subagent_input, write_record
 from tests.omp_records import CHILD_FIXTURE, FIXTURE_ROOT_ID, FIXTURE_ROOT_STEM, PROJECT, ROOT_FIXTURE, read_text
 from tests.opencode_db import OpenCodeDatabase, folder_snapshot
 from tests.test_e2e_claude_hook import NOT_INSTALLED_FOLDERS, SKILL_RELATIVE
@@ -95,6 +95,7 @@ SUB_AGENT_DURATION_MS = 1000
 GENERATION = "g1"
 FIRST_PROMPT = "first prompt"
 FIRST_REPLY = "first reply"
+EDITED_FILE = "/work/proj/brief.md"
 CURSOR_SUB_AGENT_LINE = "sub-agent: %s (%s)" % (SUB_AGENT_TYPE, SUB_AGENT_CONVERSATION)
 CODEX_SESSION_FILE = os.path.join(".codex", "sessions", test_codex_entry.DAY_FOLDER, test_codex_entry.ROOT_NAME)
 OMP_CHILD_NAME = "ChildTask"
@@ -231,6 +232,7 @@ class InstalledCursorHookTests(InstalledCopyCase):
         self.assertNotEqual(synced_before, self.cursor_sync_time())  # the launcher reached the entry, which synced
         self.run_hook("beforeSubmitPrompt", prompt_input(GENERATION, FIRST_PROMPT))
         self.run_hook("afterAgentResponse", response_input(GENERATION, FIRST_REPLY))
+        self.run_hook("afterFileEdit", file_edit_input(GENERATION, EDITED_FILE))
         self.run_hook("subagentStop", subagent_input(SUB_AGENT_CONVERSATION, subagent_type=SUB_AGENT_TYPE, duration_ms=SUB_AGENT_DURATION_MS))
         self.run_hook("stop", stop_input(GENERATION, **test_cursor_entry.TOKENS))
 
@@ -242,6 +244,8 @@ class InstalledCursorHookTests(InstalledCopyCase):
         self.assertIn(CURSOR_SUB_AGENT_LINE, report)  # the sub-agent's call is a record of its parent
         self.assertIn(test_cursor_entry.TOKEN_LINE, report)
         self.assertIn(FIRST_PROMPT, report)
+        rows = json.loads(self.run_installed(self.skill, "cursor", "usage", "--json", CONVERSATION))["prompts"]
+        self.assertEqual([[EDITED_FILE]], [row["writtenPaths"] for row in rows])  # the edit hook's record reaches the prompt's row
         (log_path,) = [path for path in self.saved_files_of("cursor") if path.endswith(skeleton.LOG_SUFFIX)]
         log = Path(log_path).read_text(encoding="utf-8")
         self.assertIn("%s\n" % FIRST_PROMPT, log)

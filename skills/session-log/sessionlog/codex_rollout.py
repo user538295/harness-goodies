@@ -33,7 +33,14 @@ message that opens with a heading (`#`) and holds such a line is read as the tex
 `strip_user_message_prefix` does. Any other message, also one that only mentions the marker, is read as written.
 
 A prompt is dropped, with its replies and requests, when its record has no usable time (as in the Claude reader), and a
-rollout without any prompt has no rows. Requests before the first prompt belong to it; replies before it belong to none."""
+rollout without any prompt has no rows. Requests before the first prompt belong to it; replies before it belong to none.
+
+A prompt's `written_paths` are the files its own `apply_patch` calls name (`codex_patch` lists the call shapes that count and where a
+relative path starts, `patch_headers` the headers that name a file), each once in order; a delete names none. They go to the prompt
+whose turn the call lies in, a call of a replayed turn counts like a reply of it, and a call before the first prompt belongs to none.
+A call whose output says `apply_patch verification failed` writes nothing (the output is linked to its call by `call_id`; any other
+failure of a call is not recorded in a shape known here, and counts like a success). A relative path is joined to the working
+directory of the newest `turn_context` (`cwd`) before the call, else of the header; with neither it stays relative."""
 import math
 import re
 from bisect import bisect_right
@@ -41,9 +48,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import AbstractSet, Any, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
+from .codex_patch import failed_call_id, paths_of_call
 from .json_records import Record, decode_record, parse_moment
-from .model import Prompt, RequestUsage
+from .model import Prompt, RequestUsage, unique_in_order
 
+_RESPONSE_ITEM = "response_item"
 _SESSION_META = "session_meta"
 _TURN_CONTEXT = "turn_context"
 _TOKEN_USAGE_RECORD = "token_usage_record"
@@ -100,7 +109,9 @@ class Rollout:
     `unparsable` False) or unparsable (a first line that is no usable `session_meta`: `meta` None and `unparsable` True).
     `requests` are all its requests in file order, also those of a rollout without any prompt (a sub-agent usually has
     none); `last_moment` is the newest time of any record, None when no record has a usable one; `first_moment` is the oldest
-    time of the records after the header line (the header's own time is `meta.started_at`), None when none of them has one."""
+    time of the records after the header line (the header's own time is `meta.started_at`), None when none of them has one;
+    `written_paths` are the files all its own writing calls named, in order of first write, each once, whether or not a prompt
+    holds them (what a sub-agent reports)."""
 
     meta: Optional[RolloutMeta]
     prompts: Tuple[Prompt, ...]
@@ -108,6 +119,7 @@ class Rollout:
     requests: Tuple[RequestUsage, ...] = ()
     last_moment: Optional[datetime] = None
     first_moment: Optional[datetime] = None
+    written_paths: Tuple[str, ...] = ()
 
 
 class _Opening(NamedTuple):
@@ -123,6 +135,13 @@ class _Reply(NamedTuple):
     text: str
     final: bool
     replay: Optional[int]
+
+
+class _Write(NamedTuple):
+    index: int
+    paths: Tuple[str, ...]
+    replay: Optional[int]
+    call_id: Optional[str]  # what a failed output names, None when the call has none
 
 
 class _IndexedRequest(NamedTuple):
@@ -242,9 +261,10 @@ class _Collector:
     (see `_is_replay`), except in a replayed turn that holds a record of the fork's own thread (see `_take_recorded`). The first
     record added is the header."""
 
-    def __init__(self, thread_id: str, forked: bool, started_at: Optional[datetime]) -> None:
+    def __init__(self, thread_id: str, forked: bool, started_at: Optional[datetime], directory: Optional[str]) -> None:
         self._thread_id = thread_id
         self._forked = forked
+        self._directory = directory  # the working directory relative patch paths start from: the newest turn context's, else the header's
         self._header_second = math.floor(started_at.timestamp()) if started_at is not None else None
         self._replay: Optional[int] = None  # the number of the replayed turn being read, None outside one
         self._replays = 0
@@ -256,6 +276,7 @@ class _Collector:
         self._items = _Track()
         self._events = _Track()
         self._recorded: List[_IndexedRequest] = []
+        self._writes: List[_Write] = []
         self._grown: List[_IndexedRequest] = []
         self.last_moment: Optional[datetime] = None
         self.first_moment: Optional[datetime] = None
@@ -273,19 +294,34 @@ class _Collector:
         kind = record.get("type")
         if kind == _TURN_CONTEXT:
             self._take_context(payload)
+        elif kind == _RESPONSE_ITEM:
+            self._take_call(index, payload)
         elif kind == _TOKEN_USAGE_RECORD:
             self._take_recorded(index, payload)
         elif kind == _EVENT:
             self._take_event(index, moment, payload)
 
     def _take_context(self, payload: Record) -> None:
-        """A turn context names the model of the requests after it and its effort; one without a model changes nothing."""
+        """A turn context names the working directory of the calls after it (one without a directory keeps the one before), and the
+        model of the requests after it and its effort; one without a model changes neither."""
+        self._directory = _text(payload.get("cwd")) or self._directory
         model = _text(payload.get("model"))
         if model is None:
             return
         settings = _object_or_empty(_object_or_empty(payload.get("collaboration_mode")).get("settings"))
         self._model = model
         self._effort = _text(payload.get("effort")) or _text(settings.get("reasoning_effort"))
+
+    def _take_call(self, index: int, payload: Record) -> None:
+        """A call that applies a patch writes the files its patch headers name, relative ones taken from the turn's directory; the call
+        of a replayed turn is that turn's. The output of a call that failed its patch verification takes the call's writes back."""
+        failed = failed_call_id(payload)
+        if failed is not None:
+            self._writes = [write for write in self._writes if write.call_id != failed]
+            return
+        paths = paths_of_call(payload, self._directory)
+        if paths:
+            self._writes.append(_Write(index, paths, self._replay, _text(payload.get("call_id"))))
 
     def _request_of(self, tokens: _Tokens) -> RequestUsage:
         cached = tokens[_CACHED]
@@ -373,7 +409,7 @@ class _Collector:
             self._grown.append(_IndexedRequest(index, self._request_of(growth)))
 
     def prompts(self) -> Tuple[Prompt, ...]:
-        """Each opening with the replies and requests up to the next opening."""
+        """Each opening with the replies, requests and written paths up to the next opening."""
         items, events = self._items.outside(self._own_replays), self._events.outside(self._own_replays)
         track = items if items.openings else events
         if not track.openings:
@@ -381,22 +417,33 @@ class _Collector:
         starts = [opening.index for opening in track.openings]
         replies: List[List[_Reply]] = [[] for _ in track.openings]
         requests: List[List[RequestUsage]] = [[] for _ in track.openings]
+        writes: List[List[_Write]] = [[] for _ in track.openings]
         for reply in track.replies:
             position = bisect_right(starts, reply.index) - 1
             if position >= 0:
                 replies[position].append(reply)
         for used in self._recorded or self._grown:
             requests[max(0, bisect_right(starts, used.index) - 1)].append(used.request)
-        prompts = (_prompt(opening, turn_replies, turn_requests)
-                   for opening, turn_replies, turn_requests in zip(track.openings, replies, requests))
+        for write in self._own_writes():
+            position = bisect_right(starts, write.index) - 1
+            if position >= 0:
+                writes[position].append(write)
+        prompts = (_prompt(opening, *turn) for opening, *turn in zip(track.openings, replies, requests, writes))
         return tuple(prompt for prompt in prompts if prompt is not None)
+
+    def _own_writes(self) -> List[_Write]:
+        return [write for write in self._writes if write.replay is None or write.replay in self._own_replays]
+
+    def written_paths(self) -> Tuple[str, ...]:
+        """Every file the rollout's own calls wrote, in file order, each once, whether or not a prompt carries it."""
+        return unique_in_order(path for write in self._own_writes() for path in write.paths)
 
     def requests(self) -> Tuple[RequestUsage, ...]:
         """Every request of the rollout in file order, whether or not a prompt carries it."""
         return tuple(used.request for used in (self._recorded or self._grown))
 
 
-def _prompt(opening: _Opening, replies: List[_Reply], requests: List[RequestUsage]) -> Optional[Prompt]:
+def _prompt(opening: _Opening, replies: List[_Reply], requests: List[RequestUsage], writes: List[_Write]) -> Optional[Prompt]:
     if opening.moment is None:
         return None
     reply_moments = [reply.moment for reply in replies if reply.moment is not None]
@@ -410,6 +457,7 @@ def _prompt(opening: _Opening, replies: List[_Reply], requests: List[RequestUsag
         reply_text=chosen.text if chosen else None,
         working_time=reply_at - opening.moment if reply_at is not None else timedelta(0),
         requests=tuple(requests),
+        written_paths=unique_in_order(path for write in writes for path in write.paths),
     )
 
 
@@ -426,10 +474,11 @@ def parse_rollout(lines: Iterable[str]) -> Rollout:
             meta = _meta_of(record)
             if meta is None:
                 return Rollout(meta=None, prompts=(), unparsable=True)
-            collector = _Collector(meta.thread_id, meta.forked, meta.started_at)
+            collector = _Collector(meta.thread_id, meta.forked, meta.started_at, meta.project_dir)
         if record is not None:
             collector.add(index, record)
     if collector is None:
         return Rollout(meta=None, prompts=(), unparsable=False)
     return Rollout(meta=meta, prompts=collector.prompts(), unparsable=False, requests=collector.requests(),
-                   last_moment=collector.last_moment, first_moment=collector.first_moment)
+                   last_moment=collector.last_moment, first_moment=collector.first_moment,
+                   written_paths=collector.written_paths())

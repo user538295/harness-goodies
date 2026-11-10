@@ -84,11 +84,13 @@ def _threads_of(root_id: str, root_stem: str, children: Sequence[Member]) -> Lis
         else:
             parent_id = root_id if parent == root_stem else parent
         transcript = child.transcript
-        # Only a thread with prompts can become the session, so only it needs the row of its unprompted requests: one without prompts
-        # (every sub-agent whose task is an agent message) reports them as a sub-agent row and must not look promotable.
-        prompts = with_unprompted(transcript.prompts, transcript.unprompted_requests, started_at) if transcript.prompts else ()
+        # Only a thread with prompts can become the session, so only it needs the row of its unprompted requests and paths: one without
+        # prompts (every sub-agent whose task is an agent message) reports them as a sub-agent row and must not look promotable.
+        prompts = with_unprompted(transcript.prompts, transcript.unprompted_requests, started_at,
+                                  transcript.unprompted_written_paths) if transcript.prompts else ()
         threads.append(Thread(thread_id=child.agent_id, parent_thread_id=parent_id, agent_type=transcript.agent_type,
                               started_at=started_at, working_time=child.working_time, requests=transcript.requests,
+                              written_paths=transcript.written_paths,
                               prompts=prompts, project_dir=transcript.project_dir))
     return threads
 
@@ -107,7 +109,7 @@ def build_session(root_id: str, root_stem: str, root: Optional[Member], children
         if started_at is None:
             return None
         return Session(harness=Harness.OMP, session_id=root_id, started_at=started_at, project_dir=transcript.project_dir,
-                       prompts=with_unprompted(transcript.prompts, transcript.unprompted_requests, started_at),
+                       prompts=with_unprompted(transcript.prompts, transcript.unprompted_requests, started_at, transcript.unprompted_written_paths),
                        sub_agents=nest_threads(threads))
     family = split_orphan_family(root_id, threads)
     if family is None:

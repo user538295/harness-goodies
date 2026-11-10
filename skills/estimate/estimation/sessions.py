@@ -12,7 +12,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Optional
+from typing import Optional, Tuple
 
 from estimation.evidence import attribute, prompt_under
 from estimation.features import HARNESSES, MATCH_NONE, MATCH_PROMPT, TOKEN_KEYS, derive_usage, session_entry
@@ -81,13 +81,14 @@ class PromptRow:
     seconds: int
     numbers: RowNumbers
     after_reset: bool = False  # the user cleared the context before this prompt
-    written: tuple = ()  # the files its tool calls wrote
+    written: Tuple[str, ...] = ()  # the files its tool calls wrote
 
 
 @dataclass(frozen=True)
 class AgentRow:
     started_at: datetime
     numbers: RowNumbers
+    written: Tuple[str, ...] = ()  # the files its tool calls wrote
 
 
 def _model_list(value):
@@ -104,7 +105,7 @@ def _numbers(row):
 
 
 def _written_paths(row):
-    """The `writtenPaths` of a C1 prompt row; none when the row has none or it is no list; entries that are no text are skipped."""
+    """The `writtenPaths` of a C1 prompt or sub-agent row; none when the row has none or it is no list; entries that are no text are skipped."""
     paths = row.get("writtenPaths")
     return tuple(path for path in paths if isinstance(path, str) and path) if isinstance(paths, list) else ()
 
@@ -117,7 +118,7 @@ def _rows(usage):
     try:
         return ([PromptRow(datetime.fromisoformat(row["at"]), _moment(row.get("replyAt")), row["text"], int(row["agentTimeSeconds"]),
                            _numbers(row), row.get("afterReset") is True, _written_paths(row)) for row in prompts],
-                [AgentRow(datetime.fromisoformat(row["startedAt"]), _numbers(row)) for row in agents])
+                [AgentRow(datetime.fromisoformat(row["startedAt"]), _numbers(row), _written_paths(row)) for row in agents])
     except (KeyError, TypeError, ValueError, ArithmeticError):
         return None
 
@@ -159,18 +160,23 @@ class SessionUsage:
         return list(self.rows[0][-1].numbers.models)
 
     def slices(self, evidence):
-        """{feature name: the C2 entry of its slice} of a session with rows, by the `evidence` rule."""
+        """{feature name: the C2 entry of its slice} of a session with rows, by the `evidence` rule. A prompt's written files include
+        those of the sub-agents that started under it."""
         prompts, agents = self.rows
-        owners = attribute([evidence.of_prompt(prompt.text, prompt.at, prompt.reply_at, prompt.written) for prompt in prompts],
-                           [prompt.after_reset for prompt in prompts])
+        starts = [prompt.at for prompt in prompts]
+        agent_rows = {index: [] for index in range(len(prompts))}
+        for agent in agents if prompts else []:
+            agent_rows[prompt_under(starts, agent.started_at)].append(agent)
+        owners = attribute([evidence.of_prompt(prompt.text, prompt.at, prompt.reply_at,
+                                               (*prompt.written, *(path for agent in agent_rows[index] for path in agent.written)))
+                            for index, prompt in enumerate(prompts)], [prompt.after_reset for prompt in prompts])
         members = {}
         for index, reasons in enumerate(owners):
             for name, reason in reasons.items():
                 members.setdefault(name, ([], []))[0].append((index, reason))
-        starts = [prompt.at for prompt in prompts]
-        for agent in agents if prompts else []:
-            for name in owners[prompt_under(starts, agent.started_at)]:
-                members[name][1].append(agent)
+        for index, reasons in enumerate(owners):
+            for name in reasons:
+                members[name][1].extend(agent_rows[index])
         return {name: self._slice(counted, chosen_agents) for name, (counted, chosen_agents) in members.items()}
 
     def _slice(self, counted, agents):
@@ -242,9 +248,11 @@ class Coverage:
 
 
 class SessionMatcher:
-    def __init__(self, session_log, evidence):
+    def __init__(self, session_log, evidence, since=None):
+        """`since` (a datetime) also makes every session whose last activity is on or after it a candidate."""
         self.session_log = session_log
         self.evidence = evidence
+        self.since = since
         self.missing = []
         self.coverage = Coverage()
 
@@ -267,11 +275,13 @@ class SessionMatcher:
         return {"features": [_matched(name, sessions) for name, sessions in found.items()], "missing": self.missing}
 
     def _read(self, harness, session, found):
-        """Reads the usage of a session that names a feature or ran while a feature commit was made, and files its slices."""
+        """Reads the usage of a session that names a feature, ran while a feature commit was made or (given `since`) was active
+        on or after it, and files its slices; the evidence rules then decide which prompts count."""
         prompts = PROMPT_SEPARATOR.join(prompt for prompt in session.get("prompts") or [] if isinstance(prompt, str))
         start, last_activity = _moment(session.get("startedAt")), _moment(session.get("lastActivityAt"))
         ran_over_commit = None not in (start, last_activity) and self.evidence.touches(start, last_activity)
-        if not ran_over_commit and not self.evidence.named(prompts):
+        recent = self.since is not None and last_activity is not None and last_activity >= self.since
+        if not (ran_over_commit or recent or self.evidence.named(prompts)):
             return
         session_id = session["id"]
         usage, failure = self.session_log.usage(harness, session_id)
@@ -285,7 +295,8 @@ class SessionMatcher:
                 found[name].append(entry)
             return
         self.coverage.add(start, last_activity)
-        names = [name for name in found if name in self.evidence.of_prompt(prompts, start, last_activity)]
+        end = last_activity if start is not None else None  # without a start, no commit time falls in the session
+        names = [name for name in found if name in self.evidence.of_prompt(prompts, start, end)]
         if names:
             entry = reply.whole()
             for name in names:

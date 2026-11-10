@@ -24,6 +24,7 @@ AUTO_REVIEW_PAGE = "https://www.getmaxim.ai/bifrost/llm-cost-calculator/provider
 OPUS_5_5_FAST = (8, 40, 0.4, 10, 16)
 OPUS_5_FAST = (10, 50, 1, 12.5, 20)
 OPUS_4_7_FAST = (30, 150, 3, 37.5, 60)
+FABLE_5_2_FAST = (16, 80, 0.4, 20, 32)
 GPT_5_FAST = (2.5, 20, 0.25, 0, 0)
 COMPOSER_FAST = (3, 15, 0.5, 0, 0)
 # prefix -> (normal, fast or None) in USD per million tokens, typed from the three official pages and, for AUTO_REVIEW, its page
@@ -44,6 +45,8 @@ PUBLISHED = {
     "claude-sonnet-4-6": ((3, 15, 0.3, 3.75, 6), None),
     "claude-sonnet-4-5": ((3, 15, 0.3, 3.75, 6), None),
     "claude-sonnet-4": ((3, 15, 0.3, 3.75, 6), None),
+    "claude-fable-5-2": ((8, 40, 0.2, 10, 16), FABLE_5_2_FAST),
+    "claude-mythos-5-2": ((8, 40, 0.2, 10, 16), FABLE_5_2_FAST),
     "claude-fable-5-1": ((10, 50, 0.25, 12.5, 20), None),
     "claude-mythos-5-1": ((10, 50, 0.25, 12.5, 20), None),
     "claude-fable-5": ((10, 50, 1, 12.5, 20), None),
@@ -52,6 +55,7 @@ PUBLISHED = {
     "claude-haiku-5-5": ((0.1, 0.5, 0.01, 0.125, 0.2), None),
     "gpt-6-astra": ((10, 50, 1, 12.5, 25), None),
     "gpt-6.1-sol": ((2, 10, 0.1, 2.5, 5), None),
+    "gpt-6.1-terra": ((1, 5, 0.05, 1.25, 2.5), None),
     "gpt-6-sol": ((2, 10, 0.2, 2.5, 5), None),
     "gpt-6-luna": ((0.1, 0.5, 0.01, 0.125, 0.25), None),
     "gpt-5.6-sol": ((4, 20, 0.4, 5, 10), None),

@@ -420,6 +420,18 @@ class OmpWrittenPathsTest(unittest.TestCase):
                              assistant_record(12, "", response_id="r1", content=[tool_call("write", path="late.md")], stop="toolUse", done=1))
         self.assertEqual(("late.md",), prompts[0].written_paths)
 
+    def test_the_transcript_collects_the_paths_of_all_its_active_replies_prompted_or_not_once_each_in_order(self):
+        first = chained(None, user_record(10, "first"), assistant_record(11, "", content=[tool_call("write", path="b.md")], stop="toolUse", usage=usage_of(1, 1), done=1))
+        old = chained("a11", user_record(20, "old"), assistant_record(21, "", content=[tool_call("write", path="old.md")], stop="toolUse", usage=usage_of(7, 1), done=1))
+        new = chained("a11", user_record(30, "new"), assistant_record(31, "", content=[tool_call("write", path="a.md"), tool_call("write", path="b.md")],
+                                                                  stop="toolUse", usage=usage_of(9, 1), done=1))
+        transcript = parse(header_record(SESSION_ID), *first, *old, *new)
+        self.assertEqual(("b.md", "a.md"), transcript.written_paths)
+
+    def test_the_transcript_keeps_the_paths_of_a_reply_that_falls_under_no_prompt(self):
+        transcript = parse(header_record(SESSION_ID), assistant_record(11, "", content=[tool_call("write", path="lone.md")], stop="toolUse", done=1))
+        self.assertEqual(("lone.md",), transcript.written_paths)
+
 
 class OmpTimeTest(unittest.TestCase):
     """What counts as a time: a positive number of epoch milliseconds or an aware ISO-8601 text."""

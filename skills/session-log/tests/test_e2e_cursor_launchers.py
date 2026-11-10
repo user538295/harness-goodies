@@ -25,7 +25,7 @@ folder but holds no interpreter at all. The sandbox is one folder: the install, 
 log per run. The containers get it mounted at `/sandbox`, run without network and as the host user.
 
 The last test runs the real entry script (the whole skill but its tests, and a `python3` link to the interpreter that runs the suite)
-under sh and zsh on the host: `sessionStart` syncs, writes no record and prints nothing, and once logging is off the five hooks write
+under sh and zsh on the host: `sessionStart` syncs, writes no record and prints nothing, and once logging is off the six hooks write
 nothing. The suite itself needs Python 3.14 or newer, so the fish and pwsh images carry no Python; what the shell changes is how the
 launcher reaches an interpreter, and that is proven there with the stubs.
 

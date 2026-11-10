@@ -121,10 +121,13 @@ def prompt_row(at, text, seconds=60, total=100, cost=0.5, complete=True, models=
     return row
 
 
-def agent_row(started_at, total=100, cost=0.5, complete=True, agent_id="agent", depth=0, models=(AGENT_MODEL,)):
-    """One C1 sub-agent row started at `started_at` (UTC ISO)."""
-    return {"id": agent_id, "type": "task", "startedAt": started_at, "depth": depth, "tokens": tokens_of(total), "costUsd": cost,
-            "costComplete": complete, "models": list(models)}
+def agent_row(started_at, total=100, cost=0.5, complete=True, agent_id="agent", depth=0, models=(AGENT_MODEL,), written=None):
+    """One C1 sub-agent row started at `started_at` (UTC ISO); `written` (the files its tool calls wrote) is `writtenPaths` when given."""
+    row = {"id": agent_id, "type": "task", "startedAt": started_at, "depth": depth, "tokens": tokens_of(total), "costUsd": cost,
+           "costComplete": complete, "models": list(models)}
+    if written is not None:
+        row["writtenPaths"] = written
+    return row
 
 
 def list_entry(harness, session_id, started, last_activity, prompts, path=None, log=None):

@@ -2,6 +2,7 @@
 `~/.local/share/opencode`, with the injected clock before the fixture's times. The database is built here from text; the real one is never
 opened. `OpenCodeEntryTestCase` is also the base of the database-choice tests (S39, `test_opencode_database_choice`)."""
 import io
+import json
 import os
 import shutil
 import tempfile
@@ -86,6 +87,20 @@ class OpenCodeEntryTest(OpenCodeEntryTestCase):
         self.assertIn(TOTAL_TOKENS, stdout)
         self.assertFalse(os.path.exists(self.log_root))
         self.assertEqual(before, folder_snapshot(self.data))
+
+    def test_usage_json_lists_the_files_each_prompt_wrote_and_not_those_of_its_sub_agent(self):
+        def writing(second, *calls):
+            data = assistant_data(second, text="r", tokens=(1, 1))
+            data["content"] += [{"type": "tool", "name": name, "state": {"status": "completed", "input": {"path": path}}} for name, path in calls]
+            return data
+
+        self.database.add_message(ROOT_ID, 5, "assistant", writing(32, ("write", "/brief.md"), ("edit", "/brief.md"), ("read", "/other.md")))
+        self.database.add_message(CHILD_ID, 3, "assistant", writing(33, ("write", "/child.md")))
+        code, stdout, _ = self.run_main(["opencode", "usage", "--json", ROOT_ID[:8]])
+        self.assertEqual(0, code)
+        result = json.loads(stdout)
+        self.assertEqual([[], ["/brief.md"]], [row["writtenPaths"] for row in result["prompts"]])
+        self.assertEqual([(CHILD_ID, ["/child.md"])], [(row["id"], row["writtenPaths"]) for row in result["subAgents"]])
 
     def test_database_opened_read_only_by_a_whole_run_nothing_is_written_to_the_store(self):
         before = folder_snapshot(self.data)

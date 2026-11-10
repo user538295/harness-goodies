@@ -24,13 +24,18 @@ A sub-agent may run as a conversation of its own, its hooks filed under its own 
 is neither archived nor a candidate for `usage --latest`, while the parent keeps its sub-agent row. Nothing marks a conversation as a
 child before that record arrives, so until then it is read like any other (and stays archived if it was); a conversation never counts as
 its own child. The named children are learned from the `subagentStop` records alone, once per scan; a record that cannot be opened names
-nobody, so a conversation is never hidden by a guess."""
+nobody, so a conversation is never hidden by a guess.
+
+The files a sub-agent wrote are the `afterFileEdit` records in its own conversation's folder, which `read` opens for every child its
+conversation names (a child folder that is a link, has no safe id or is missing adds none; one that cannot be read makes the parent
+unreadable under it, because the parent's fingerprint does not change when only the child's records do). Edits made after the parent's
+last record, in a child it already named, show with the parent's next record."""
 import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Dict, List, NamedTuple, Optional, Set, Tuple, Union
 
-from .cursor_conversation import SUBAGENT_EVENT, build_session, child_of
+from .cursor_conversation import FILE_EDIT_EVENT, SUBAGENT_EVENT, build_session, child_of
 from .cursor_records import INVALID_FOLDER, RECORD_FILE_NAME, HookRecord, moment_of_ns, nanoseconds_of, parse_record
 from .model import Harness, is_safe_id
 from .reader_port import (CANNOT_BE_OPENED_REASON, CANNOT_BE_PARSED_REASON, NOT_A_REGULAR_FILE_REASON, UNSAFE_ID_REASON, ReadResult, ScanResult,
@@ -222,6 +227,20 @@ class CursorReader:
         if isinstance(listing, UnreadableSource):
             return ReadResult(unreadable=(listing,))
         files, _ = _record_files(listing)
+        records = self._read_records(unit.key, files)
+        if isinstance(records, UnreadableSource):
+            return ReadResult(unreadable=(records,))
+        if files and not records:
+            return ReadResult(unreadable=(_FILES.unreadable(unit.key, CANNOT_BE_PARSED_REASON),))
+        child_edits = self._child_edits(root_id, records)
+        if isinstance(child_edits, UnreadableSource):
+            return ReadResult(unreadable=(child_edits,))
+        return ReadResult(session=build_session(root_id, records, child_edits))
+
+    @staticmethod
+    def _read_records(folder: str, files: List[_RecordFile]) -> Union[List[HookRecord], UnreadableSource]:
+        """The parsed records of `files`, all in `folder`, in their order; a record that cannot be decoded or parsed is skipped, and one that
+        cannot be opened makes the folder unreadable (a FIFO or device, the file itself)."""
         records: List[HookRecord] = []
         for file in files:
             try:
@@ -230,15 +249,31 @@ class CursorReader:
             except (UnicodeDecodeError, FileNotFoundError):
                 continue
             except NotARegularFileError:
-                return ReadResult(unreadable=(_FILES.unreadable(file.path, NOT_A_REGULAR_FILE_REASON),))
+                return _FILES.unreadable(file.path, NOT_A_REGULAR_FILE_REASON)
             except OSError:
-                return ReadResult(unreadable=(_FILES.unreadable(unit.key, CANNOT_BE_OPENED_REASON),))
+                return _FILES.unreadable(folder, CANNOT_BE_OPENED_REASON)
             record = parse_record(text)
             if record is not None:
                 records.append(record)
-        if files and not records:
-            return ReadResult(unreadable=(_FILES.unreadable(unit.key, CANNOT_BE_PARSED_REASON),))
-        return ReadResult(session=build_session(root_id, records))
+        return records
+
+    def _child_edits(self, root_id: str, records: List[HookRecord]) -> Union[Dict[str, List[HookRecord]], UnreadableSource]:
+        """The `afterFileEdit` records of the conversation of each sub-agent that `records` name (never the conversation itself, a folder that
+        is no real SafeId folder, or one with no record: those wrote nothing). A folder or record that cannot be read makes the parent
+        unreadable under it, so sync retries: the parent's own fingerprint does not change when the child's records do."""
+        edits: Dict[str, List[HookRecord]] = {}
+        for child in {child_of(record) for record in records} - {None, root_id}:
+            folder = os.path.join(self._records, child)
+            if not is_safe_id(child) or is_link(folder):
+                continue
+            listing = _FILES.list_dir(folder)
+            if isinstance(listing, UnreadableSource):
+                return listing
+            read = self._read_records(folder, [file for file in _record_files(listing)[0] if file.event == FILE_EDIT_EVENT])
+            if isinstance(read, UnreadableSource):
+                return read
+            edits[child] = read
+        return edits
 
 
 class CursorHookActivity:

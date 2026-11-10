@@ -1,6 +1,6 @@
 ---
 name: estimate
-description: Story Point estimation of a brief, plan, task list, epic or single task, calculated from planned hours at the scale's anchor or else placed by blind comparison with the project's delivered features, kept with their real effort in `.harness-goodies/estimations/`. Commands `/estimate <file.md> [--from <source.md>]` (estimate a document), `/estimate init` (collect delivered features as references), `/estimate report` (offline HTML accuracy report). Use when the user runs /estimate, asks how big planned work is, asks how good the estimates are, or a planning skill or /implement calls it.
+description: Story Point estimation of a brief, plan, task list, epic or single task, calculated from planned hours at the scale's anchor or else placed by blind comparison with the project's delivered features, kept with their real effort in `.harness-goodies/estimations/`. Commands `/estimate <file.md> [--from <source.md>]` (estimate a document), `/estimate init` (collect delivered features as references), `/estimate usage <file.md>` (attach the sessions that worked on a feature to its stored estimate), `/estimate report` (offline HTML accuracy report). Use when the user runs /estimate, asks how big planned work is, asks how good the estimates are, or a planning skill or /implement calls it.
 ---
 
 # /estimate
@@ -37,6 +37,7 @@ python3 "$BASE/estimate.py" doc-stats <file.md> [--plan-progress <path>]
 python3 "$BASE/estimate.py" check-text <texts-json | ->
 python3 "$BASE/estimate.py" git-stats <features-json | ->
 python3 "$BASE/estimate.py" match-sessions <features-json | -> --session-log "$SESSION_LOG_DIR/session_log.py"
+python3 "$BASE/estimate.py" usage <file.md> --session-log "$SESSION_LOG_DIR/session_log.py"
 python3 "$BASE/estimate.py" record-commit <plan-file> <commit> --harness <harness> [--session-log "$SESSION_LOG_DIR/session_log.py" --session-dir "$SESSION_DIR"]
 python3 "$BASE/estimate.py" estimator --harness <harness> [--session-log "$SESSION_LOG_DIR/session_log.py" --session-dir "$SESSION_DIR"]
 python3 "$BASE/estimate.py" calculate <features-json | ->
@@ -62,6 +63,7 @@ Run from the user's repository, never from `$BASE`. Output is JSON on stdout; `-
 | `check-text` | `{"description","effort"}` (one or both) → `{"problems": [...]}`, `[]` when they pass. Rewrite until empty; `save` refuses the same problems. |
 | `git-stats` | `{"features": [{"name","id","docs","taskIds","commits"}]}`, all features at once → per feature `{"name","commits","count","linesAdded","linesRemoved","candidates"}`. `commits` (optional): full hashes a check accepted, passed back as given (a short hash fails). `candidates` (`[{"hash","subject"}]`) are unclaimed commits naming the `id`; they count only once accepted and passed back as `commits`. |
 | `match-sessions` | Same input as `git-stats`, once over all features; needs `--session-log` (without session-log, skip it and save no `usage` or `sessions`) → `{"features": [{"name","matchedBy","sessions","usage"}], "missing"}`. Save `sessions` as `sources.sessions` and `matchedBy` as `usage.matchedBy`; report `usage` (agent time, tokens, cost) and `matchedBy`. `missing`: failed calls, sessions without prompt rows, commits made outside any matched session. |
+| `usage <file.md>` | The feature listing `<file.md>`; needs `--session-log` → `{"feature","matchedBy","sessions","usage","missing"}`, the values saved in that feature (`none` when nothing is stored): runs `match-sessions`' rule over every stored feature and merges that feature's `sources.sessions` and `usage.matchedBy` into the stored ones, never dropping a stored session (see "/estimate usage <file.md>"). |
 | `record-commit` | Adds one task commit to the feature listing `<plan-file>` → `{"feature","needsResize","missing"}` (see "Record a commit"). |
 | `calculate` | `{"features": [{"name","id","description","effort","tasks","estimatedHours"}]}` (cards) → `{"features": [{"name","hours","sp","missing"}], "pool": [...]}`: `sp` as `anchor` gives it, null with the reason in `missing`; `pool` is the features with an `sp`, to pass as `pool` below. |
 | `neighbours` | `{"name", "pool"?}`; `pool` (items `{name,id,description,effort,sp,tasks,estimatedHours}`) replaces the references (the first `init` has none saved) → `{"picks","groups","missing"}`. `picks`, each `{name,id,description,effort,tasks,estimatedHours}`, are the features to compare with; give judges `picks` as printed, never SP, `groups` or `missing`. |
@@ -125,6 +127,18 @@ Builds the references from the delivered features, one per planning-doc set as `
 8. Report every value that could not be found (from `find-sets`, the sub-agents, `git-stats`, `match-sessions`, `calculate`, `neighbours`, `place`, `anchor`), e.g. "P2-03: no session found for 14 of 14 commits".
 
 Running `init` again adds newly delivered features and refreshes the actuals of the others, also of estimated features finished outside `/implement`; it never changes a saved `updatedStoryPoints`.
+
+## `/estimate usage <file.md>`
+
+Attaches the sessions that worked on a feature to its stored estimate before any commit exists (a feature estimated from a brief or plan otherwise has `usage: null` until delivery). Use it when the user asks to update the estimate's usage or sessions. Needs `$SESSION_LOG_DIR`: without it say so and stop. No harness is needed: the matcher reads the sessions of all five.
+
+1. Run `usage <file.md> --session-log "$SESSION_LOG_DIR/session_log.py"`. `<file.md>` must be listed in one feature's `sources.docs`; on `no feature lists <file.md>; run /estimate <file.md> first`, tell the user to estimate it first.
+2. It matches the sessions against every stored feature (docs and recorded commits, so names and commits shared with another feature stay unattributed) and merges the result into that feature's `sources.sessions` and `usage.matchedBy`: a matched session is added, or replaces the stored one of the same id only when it counts every prompt the stored one counts. It never drops a stored session, so a failed `session-log` call, a session the harness rotated out or the sessions `/implement` recorded are never lost; when the stored `usage.matchedBy` is `implement` it saves nothing. It also saves nothing, and says so in `missing`, when no session matches. Running it again is safe. The script exits 1 without `session-log` (unlike `match-sessions`, which names the failed call in `missing`): `usage` has no other work, so nothing is saved and you stop as above.
+3. Report the saved values it prints (`matchedBy`, `sessions` with their `usage`: agent time, tokens, cost): they describe the stored file, which may hold sessions this run did not match, and `matchedBy` is `none` when nothing is stored. Report every `missing` line too (the lines naming other features' commits come from the matcher's run over all features).
+
+Limits: sessions are chosen by date: every session of the project active since the feature's first day (the day in its file name, less 14 hours for time zones) is read, so a doc written long before the feature was first estimated is missed. Task IDs are not stored with the feature, so only its docs and recorded commits count as evidence, never a task ID in a prompt.
+
+**Never assign sessions by hand**: not by editing the feature file, not by `save` with sessions you picked. If `usage` finds none, report that.
 
 ## `/estimate report`
 

@@ -26,7 +26,9 @@ RECORDS_FOLDER = ".records"
 INVALID_FOLDER = ".invalid"
 LEGACY_FLAG = ".enabled"
 SILENT_SUCCESS = (0, "", "")
-RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop")
+RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop", "afterFileEdit")
+SECRET_OLD = "the edited code before"
+SECRET_NEW = "the edited code after"
 CONVERSATION = "conv-1"
 OTHER_CONVERSATION = "conv-2"
 FIXED_PID = 4242
@@ -183,6 +185,33 @@ class RecordWritingTests(CursorHookCase):
         self.assertEqual(len(names), len({RECORD_NAME.fullmatch(name).group(1) for name in names}))
         for name in names:
             self.assertEqual(RECORD_NAME.fullmatch(name).group(2), self.read_record(CONVERSATION, name)["event"])
+
+    def test_an_edit_record_keeps_what_the_reader_joins_by_and_never_the_edited_text(self):
+        self.turn_logging_on()
+        raw = payload(conversation_id=CONVERSATION, generation_id="g1", file_path="/work/proj/a.md", workspace_roots=["/work/proj"],
+                      transcript_path="/work/t.jsonl", model="m", edits=[{"old_string": SECRET_OLD, "new_string": SECRET_NEW}])
+        self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("afterFileEdit", raw))
+        name, record = self.only_record(CONVERSATION)
+        self.assertEqual({"conversation_id": CONVERSATION, "generation_id": "g1", "file_path": "/work/proj/a.md", "workspace_roots": ["/work/proj"],
+                          "transcript_path": "/work/t.jsonl"}, json.loads(record["rawInput"]))
+        with open(os.path.join(self.records, CONVERSATION, name), "rb") as stream:
+            content = stream.read().decode("utf-8")
+        self.assertEqual((False, False), (SECRET_OLD in content, SECRET_NEW in content))
+
+    def test_an_edit_without_a_usable_conversation_id_is_filed_as_invalid_without_its_edited_text_too(self):
+        self.turn_logging_on()
+        raw = payload(generation_id="g1", file_path="/work/proj/a.md", edits=[{"old_string": SECRET_OLD, "new_string": SECRET_NEW}])
+        self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook("afterFileEdit", raw))
+        self.assertEqual({"generation_id": "g1", "file_path": "/work/proj/a.md"}, json.loads(self.only_record(INVALID_FOLDER)[1]["rawInput"]))
+
+    def test_the_other_events_keep_their_whole_input(self):
+        self.turn_logging_on()
+        raw = payload(conversation_id=CONVERSATION, generation_id="g1", prompt=NON_ASCII_TEXT, edits=[{"old_string": SECRET_OLD}])
+        for event in RECORD_EVENTS:
+            if event != "afterFileEdit":
+                self.assertEqual(SILENT_SUCCESS, self.run_cursor_hook(event, raw))
+        folder = os.path.join(self.records, CONVERSATION)
+        self.assertEqual({raw.decode("utf-8")}, {self.read_record(CONVERSATION, name)["rawInput"] for name in os.listdir(folder)})
 
     def test_record_keeps_the_input_unparsed_beyond_the_conversation_id(self):
         self.turn_logging_on()
@@ -367,8 +396,8 @@ class GateTests(CursorHookCase):
                 self.assertEqual(before, self.snapshot())
 
     def test_every_cursor_event_is_registered(self):
-        self.assertEqual(RECORD_EVENTS, cursor_records.RECORD_EVENTS)  # the entry cannot import the package to share the list
-        self.assertEqual(RECORD_EVENTS, session_log.CURSOR_RECORD_EVENTS)
+        self.assertEqual(set(RECORD_EVENTS), set(cursor_records.RECORD_EVENTS))  # the entry cannot import the package to share the list
+        self.assertEqual(set(RECORD_EVENTS), set(session_log.CURSOR_RECORD_EVENTS))
         for event in RECORD_EVENTS + ("sessionStart",):
             self.assertIn(("cursor", event), session_log.HOOK_HANDLERS)
 

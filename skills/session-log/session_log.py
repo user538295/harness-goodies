@@ -29,7 +29,7 @@ JSON_COMMANDS = ("usage", "list")
 SUPPORTED_HARNESS_ROOTS = {"claude": (".claude",), "codex": (".codex",), "cursor": (".cursor",), "omp": (".omp", "agent"),
                            "opencode": (".config", "opencode")}
 CURSOR_HARNESS = "cursor"
-CURSOR_RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop")
+CURSOR_RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop", "afterFileEdit")
 OPENCODE_DATA_HOME = (".local", "share")
 OPENCODE_DATA_FOLDER = OPENCODE_DATA_HOME + ("opencode",)
 LOG_FOLDER_NAME = "prompt-logs"
@@ -371,7 +371,7 @@ def _cursor_records_when_on(environment):
 
 
 def _cursor_record_handler(event):
-    """Hook handler of one Cursor event that is recorded: one record file holding the raw input, while logging is on."""
+    """Hook handler of one Cursor event that is recorded: one record file holding the raw input (an `afterFileEdit` without its edited code), while logging is on."""
     def handler(harness, environment):
         records = _cursor_records_when_on(environment)
         if records is not None:

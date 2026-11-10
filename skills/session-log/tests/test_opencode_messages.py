@@ -284,5 +284,84 @@ class MigratedCompletionTest(unittest.TestCase):
         self.assertEqual(at(11 + MIGRATION_LAG_SECONDS), prompt.reply_at)
 
 
+def call(name, tool_input, status="completed"):
+    return {"type": "tool", "name": name, "state": {"status": status, "input": tool_input}}
+
+
+def written_by(*blocks, finish="stop"):
+    reply = assistant_data(11, finish=finish, tokens=(1, 1))
+    reply["content"] = list(blocks)
+    (prompt,) = parse_messages([row("user", user_data(10)), row("assistant", reply)]).prompts
+    return prompt.written_paths
+
+
+class WrittenPathsTest(unittest.TestCase):
+    """The `write` and `edit` blocks are the shapes of real rows (opencode.db, checked 2026-11: since 2026-09-11 `state.input.path`, before it
+    `state.input.filePath`, never both). The `multiedit`, `apply_patch` and `patch` blocks are UNVERIFIED: the real database holds none."""
+
+    def test_write_edit_and_multiedit_calls_name_their_path_in_order(self):
+        self.assertEqual(("/a.md", "/b.py", "/c.py"), written_by(call("write", {"path": "/a.md", "content": "x"}),
+                                                                 call("edit", {"path": "/b.py", "oldString": "1", "newString": "2"}),
+                                                                 call("multiedit", {"path": "/c.py", "edits": []})))
+
+    def test_the_file_path_field_of_the_rows_before_september_2026_names_the_file_too(self):
+        self.assertEqual(("/a.md", "/b.py", "/c.py"), written_by(call("write", {"filePath": "/a.md", "content": "x"}),
+                                                                 call("edit", {"filePath": "/b.py", "oldString": "1", "newString": "2"}),
+                                                                 call("multiedit", {"filePath": "/c.py", "edits": []})))
+
+    def test_a_relative_path_stays_as_the_call_gave_it(self):
+        self.assertEqual(("docs/a.md",), written_by(call("edit", {"path": "docs/a.md"})))
+
+    def test_a_path_wins_over_a_file_path_and_an_unusable_path_falls_back_to_it(self):
+        self.assertEqual(("/new.md", "/fallback.md"), written_by(call("write", {"path": "/new.md", "filePath": "/old.md"}),
+                                                                  call("edit", {"path": "", "filePath": "/fallback.md"})))
+
+    def test_apply_patch_names_the_files_of_its_add_update_and_move_headers(self):
+        patch = "*** Begin Patch\n*** Add File: /new.md\n+x\n*** Update File: /old.py\n*** Move to: /moved.py\n@@\n-a\n+b\n*** Delete File: /gone.py\n*** End Patch"
+        self.assertEqual(("/new.md", "/old.py", "/moved.py"), written_by(call("apply_patch", {"patchText": patch}), call("patch", {"patchText": patch})))
+
+    def test_a_file_written_again_counts_once_even_across_replies_of_the_turn(self):
+        first = assistant_data(11, finish="tool-calls", tokens=(1, 1))
+        first["content"] = [call("write", {"path": "/a.md"}), call("edit", {"path": "/b.md"})]
+        second = assistant_data(14, "done", tokens=(1, 1))
+        second["content"] = [call("edit", {"path": "/a.md"}), call("edit", {"path": "/c.md"})]
+        (prompt,) = parse_messages([row("user", user_data(10)), row("assistant", first), row("assistant", second)]).prompts
+        self.assertEqual(("/a.md", "/b.md", "/c.md"), prompt.written_paths)
+
+    def test_reads_searches_shell_and_sub_agent_calls_write_nothing(self):
+        self.assertEqual((), written_by(call("read", {"path": "/a.md"}), call("grep", {"pattern": "x", "path": "/a"}),
+                                        call("glob", {"pattern": "*.md"}), call("bash", {"command": "echo x > /a.md"}),
+                                        call("subagent", {"path": "/a.md"}), call("task", {"filePath": "/a.md"})))
+
+    def test_an_attempted_call_that_failed_still_names_its_file_as_the_other_readers_count_it(self):
+        self.assertEqual(("/a.md",), written_by(call("edit", {"path": "/a.md"}, status="error")))
+
+    def test_calls_without_a_usable_path_or_a_streamed_call_without_input_are_skipped(self):
+        broken = {"type": "tool", "name": "write", "state": {"status": "error", "input": {}, "error": {"message": "stream ended"}}}
+        self.assertEqual((), written_by(broken, {"type": "tool", "name": "write"}, call("write", {"path": ""}), call("write", {"path": 7}),
+                                        call("write", {"filePath": ""}), call("write", {"filePath": 7}), call("edit", ["/a.md"]), "write",
+                                        {"type": "text", "name": "write", "state": {"input": {"path": "/a"}}}, call("apply_patch", {"patchText": 5}),
+                                        call(["write"], {"path": "/a.md"})))
+
+    def test_the_paths_of_a_turn_without_a_stopping_reply_still_belong_to_its_prompt(self):
+        self.assertEqual(("/a.md",), written_by(call("write", {"path": "/a.md"}), finish="tool-calls"))
+
+
+class TranscriptWrittenPathsTest(unittest.TestCase):
+    @staticmethod
+    def _reply(second, *paths):
+        data = assistant_data(second, finish="tool-calls", tokens=(1, 1))
+        data["content"] = [call("write", {"path": path}) for path in paths]
+        return row("assistant", data)
+
+    def test_the_transcript_lists_every_file_its_assistant_rows_wrote_even_without_a_prompt_once_each_in_order(self):
+        transcript = parse_messages([self._reply(11, "/a.md", "/b.md"), row("user", user_data(12)), self._reply(13, "/a.md", "/c.md")])
+        self.assertEqual(("/a.md", "/b.md", "/c.md"), transcript.written_paths)
+
+    def test_the_files_of_rows_under_no_prompt_are_the_unprompted_ones(self):
+        transcript = parse_messages([self._reply(11, "/a.md", "/b.md"), self._reply(12, "/a.md", "/c.md")])
+        self.assertEqual((("/a.md", "/b.md", "/c.md"), ()), (transcript.unprompted_written_paths, tuple(p.written_paths for p in transcript.prompts)))
+
+
 if __name__ == "__main__":
     unittest.main()

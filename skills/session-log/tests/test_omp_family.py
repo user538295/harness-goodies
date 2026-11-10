@@ -6,7 +6,7 @@ from datetime import timedelta
 from sessionlog.model import Harness
 from sessionlog.omp_family import Member, build_session, cyclic_keys
 from sessionlog.prompt_turns import NO_PROMPT_TEXT
-from tests.omp_records import assistant_record, at, header_record, helper_record, init_record, parse, usage_of, user_record
+from tests.omp_records import assistant_record, at, header_record, helper_record, init_record, parse, tool_call, usage_of, user_record
 
 ROOT_STEM = "2026-10-13T08-42-00-000Z_root-id"
 ROOT_ID = "root-id"
@@ -88,6 +88,21 @@ class RootSessionTest(unittest.TestCase):
         self.assertEqual((Harness.OMP, ROOT_ID, at(2), "/work/proj", None, ["ask"]),
                          (session.harness, session.session_id, session.started_at, session.project_dir, session.orphan_of_parent_id, [p.text for p in session.prompts]))
         self.assertEqual([("Early-id", ["Inner-id"]), ("Late-id", [])], [(a.agent_id, [g.agent_id for g in a.sub_agents]) for a in session.sub_agents])
+
+    def test_a_sub_agent_reports_the_paths_its_own_replies_wrote_and_not_those_of_its_children(self):
+        child = member("Writer", user_record(9, "task"), assistant_record(10, "", content=[tool_call("write", path="out/found.md")], stop="toolUse", done=1),
+                       parent=ROOT_STEM)
+        grandchild = member("Inner", assistant_record(12, "", content=[tool_call("write", path="inner.md")], stop="toolUse", done=1), parent="Writer")
+        session = build_session(ROOT_ID, ROOT_STEM, root_member(user_record(10, "ask")), [child, grandchild])
+        (writer,) = session.sub_agents
+        self.assertEqual((("out/found.md",), ("inner.md",)), (writer.written_paths, writer.sub_agents[0].written_paths))
+
+    def test_the_session_made_of_a_promoted_orphan_keeps_the_paths_of_its_prompts_and_gives_the_others_theirs(self):
+        promoted = member("Asked", user_record(12, "child prompt"), assistant_record(13, "", content=[tool_call("write", path="p.md")], stop="toolUse", done=1),
+                          parent=ROOT_STEM)
+        other = member("Other", assistant_record(15, "", content=[tool_call("write", path="o.md")], stop="toolUse", done=1), parent=ROOT_STEM)
+        session = build_session(ROOT_ID, ROOT_STEM, None, [promoted, other])
+        self.assertEqual((("p.md",), ("o.md",)), (session.prompts[0].written_paths, session.sub_agents[0].written_paths))
 
     def test_sub_agents_that_start_together_are_ordered_by_id(self):
         children = [member(name, activity(10), parent=ROOT_STEM) for name in ("B", "A", "C")]

@@ -6,8 +6,8 @@ body) names the feature's own id (the `task_ids` boundary rule, in any case) and
 for a checker to accept or reject by the feature's name and description (`test(e2e): …` names the id `e2e` but is other work).
 Task IDs find no commit, since every plan reuses `BE-1`. A prompt is evidence for the features its text names (a doc path, a doc
 basename or a task ID), else for the feature(s) with the most claimed commits authored while it ran (from its submission to its
-last reply). A prompt is also evidence for the features whose docs its tool calls wrote (never task IDs, and never a doc it only
-read). A name, task ID or commit that more than one feature claims ties nothing to any of them: a task ID two plans list, or
+last reply). A prompt is also evidence for the features whose docs its tool calls, or those of the sub-agents that started under it, wrote
+(never task IDs, and never a doc only read). A name, task ID or commit that more than one feature claims ties nothing to any of them: a task ID two plans list, or
 a commit that archives two features' docs, is no evidence. A prompt without evidence belongs to the features of the prompt before
 it, and prompts before the first evidence to the first evidence's features; a sub-agent belongs to the prompt it started under.
 Clearing the context ends a run: the first prompt after a clear opens a segment, and a prompt follows or precedes evidence only
@@ -167,16 +167,18 @@ class Evidence:
 
     def wrote(self, paths):
         """{feature: the docs of it that `paths` (the files written) hold, sorted}: a doc is held by a path that is it or ends with
-        it after a `/` (a doc path under a folder, or a doc basename), never by a longer name that merely contains it."""
+        it after a `/` (a doc path under a folder, or a doc basename), never by a longer name that merely contains it; a Windows
+        path's backslashes count as slashes."""
+        slashed = [path.replace("\\", "/") for path in paths]
         found = {}
         for needle, name in self._names.items():
-            if any(path == needle or path.endswith("/" + needle) for path in paths):
+            if any(path == needle or path.endswith("/" + needle) for path in slashed):
                 found.setdefault(name, set()).add(needle)
         return self._outermost(found)
 
     def of_prompt(self, text, start, end, written=()):
         """{feature: why} of the features a prompt (or a whole session) is evidence for: those its text names (`names <what>`) and
-        those whose docs its tool calls wrote (`writes <what>`; `written` holds the written paths; both reasons when both hold),
+        those whose docs its tool calls (or its sub-agents') wrote (`writes <what>`; `written` holds the written paths; both reasons when both hold),
         else those with the most commits authored from `start` to `end` (`made <n> of its commits`; none without an end)."""
         reasons = {name: NAMES % ", ".join(needles) for name, needles in self.naming(text).items()}
         for name, needles in self.wrote(written).items():

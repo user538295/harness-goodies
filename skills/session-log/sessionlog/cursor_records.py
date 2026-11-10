@@ -11,7 +11,7 @@ from .temp_files import STALE_TEMP_TAIL
 RECORDS_FOLDER = ".records"
 INVALID_FOLDER = ".invalid"
 RECORD_SUFFIX = ".json"
-RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop")
+RECORD_EVENTS = ("beforeSubmitPrompt", "afterAgentResponse", "stop", "subagentStop", "afterFileEdit")
 _RECORD_NAME = "%d-%s-%d" + RECORD_SUFFIX
 # Longer arrivals are no record (and `int` refuses more than 4300 digits); a time a datetime cannot hold is still a record.
 MAX_ARRIVAL_DIGITS = 30
@@ -26,8 +26,16 @@ CONVERSATION_ID_KEY = "conversationId"
 RECEIVED_AT_NS_KEY = "receivedAtNs"
 PID_KEY = "pid"
 RAW_INPUT_KEY = "rawInput"
-# The key of Cursor's own hook input that names the conversation; the hook reads it, and only it, to file a record.
+# The keys of Cursor's own hook input that name the conversation (the hook reads it to file a record) and that the reader joins by.
 HOOK_CONVERSATION_ID_KEY = "conversation_id"
+HOOK_GENERATION_ID_KEY = "generation_id"
+HOOK_FILE_PATH_KEY = "file_path"
+HOOK_WORKSPACE_ROOTS_KEY = "workspace_roots"
+HOOK_TRANSCRIPT_PATH_KEY = "transcript_path"
+# Events whose record keeps only these keys of the input: an `afterFileEdit` input carries the edited code (`edits`), which no reader needs.
+# The ids and the path say which file which generation edited; the roots and the transcript path are read from the records of every event.
+RETAINED_INPUT_KEYS = {"afterFileEdit": (HOOK_CONVERSATION_ID_KEY, HOOK_GENERATION_ID_KEY, HOOK_FILE_PATH_KEY, HOOK_WORKSPACE_ROOTS_KEY,
+                                         HOOK_TRANSCRIPT_PATH_KEY)}
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _NANOSECONDS_PER_MICROSECOND = 1000

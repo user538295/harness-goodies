@@ -29,6 +29,7 @@ COMMANDS = {
     "doc-stats": Spec(("<file.md>",), {"--plan-progress": Kind.SINGLE}),
     "git-stats": Spec(("<features-json | ->",), {}),
     "match-sessions": Spec(("<features-json | ->",), {"--session-log": Kind.REQUIRED}),
+    "usage": Spec(("<file.md>",), {"--session-log": Kind.REQUIRED}),
     "record-commit": Spec(("<plan-file>", "<commit>"), {HARNESS_OPTION: Kind.REQUIRED, "--session-log": Kind.SINGLE,
                                                         "--session-dir": Kind.SINGLE}),
     "estimator": Spec((), {HARNESS_OPTION: Kind.REQUIRED, "--session-log": Kind.SINGLE, "--session-dir": Kind.SINGLE}),

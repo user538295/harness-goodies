@@ -3,6 +3,7 @@ that reads the estimate files also warns about each name, id and doc that severa
 import json
 import math
 import os
+from datetime import datetime, time, timedelta, timezone
 
 from estimation.anchor import ANCHOR_KEY, hours_size, off_reason
 from estimation.calculation import calculate, check_cards
@@ -10,12 +11,13 @@ from estimation.doc_sets import doc_sets
 from estimation.doc_stats import doc_stats
 from estimation.errors import ArgumentError, EstimateError
 from estimation.evidence import Evidence, FeatureClaim, feature_commits
-from estimation.features import (DELIVERED, EFFORT_KEY, FILE_KEY, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, Upsert,
+from estimation.features import (DELIVERED, EFFORT_KEY, FILE_KEY, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, MATCH_PROMPT, Upsert,
                                  check_entry_shape, derive_usage, duplicates, files_of, is_number, is_reference, merge_plan,
-                                 scale_element, stored_matched_by, upsert_session, weakest)
+                                 scale_element, session_entry, stored_matched_by, upsert_session, weakest)
 from estimation.findings import texts
 from estimation.first_day import first_day
 from estimation.git_history import GitHistory
+from estimation.naming import day_of_file
 from estimation.neighbours import pick
 from estimation.placement import place
 from estimation.report_data import analyse
@@ -27,6 +29,8 @@ from estimation.text_rules import check_texts, problems
 STDIN_MARK = "-"
 NO_PROMPT_OF_FEATURE = "the latest %s session %s shows no prompt of %s"
 SHARED_COMMITS = "commits that several features claim count for none: %s"
+NO_SESSION_OF_FEATURE = "no session names or wrote a document of %s: nothing saved"
+IMPLEMENT_KEPT = "the sessions of %s were recorded by implement: kept, nothing saved"
 SHORT_HASH = 8
 LATEST_USAGE = "session-log %s usage --latest"
 LATEST_NAMED_NO_SESSION = LATEST_USAGE + " named no session"
@@ -40,6 +44,7 @@ PICK_FIELDS = ("name", "pool")
 PLACE_FIELDS = ("hours", "verdicts", "pickVerdicts")
 NUMERIC_SCALE = "%s needs a numeric scale (every value a number); found %s"
 OFF_SCALE = "sp %s%s is not in the scale %s"
+TIMEZONE_MARGIN = timedelta(hours=14)  # a file name's day is local; session times are UTC (UTC+14 is the furthest zone ahead)
 
 
 def _check_size(scale, value, owner=""):
@@ -53,6 +58,26 @@ def _pool_item(reference):
     return {"name": reference["name"], "id": reference["id"], "description": reference["description"],
             "effort": reference.get(EFFORT_KEY), "sp": reference["updatedStoryPoints"], "tasks": reference["plan"]["tasks"],
             "estimatedHours": reference["plan"]["estimatedHours"]}
+
+
+def _prompt_numbers(session):
+    return {prompt["number"] for prompt in session["prompts"] or ()}
+
+
+def _may_replace(stored, entry):
+    """Whether `entry` may replace the `stored` session of its harness and id without losing anything: it counts every prompt the
+    stored one counts (a stored whole session, with no prompts, only yields to another whole session)."""
+    if stored["prompts"] is None:
+        return entry["prompts"] is None
+    return _prompt_numbers(stored) <= _prompt_numbers(entry)
+
+
+def _not_shrinking(feature, entries):
+    """The `entries` to merge into the feature: new sessions, and refreshes of stored ones that `_may_replace` them. This also
+    keeps the sessions `implement` recorded under a `prompt` label, which are stored sessions like any other."""
+    stored = {(session["harness"], session["id"]): session for session in feature["sources"]["sessions"]}
+    return [entry for entry in entries
+            if (entry["harness"], entry["id"]) not in stored or _may_replace(stored[(entry["harness"], entry["id"])], entry)]
 
 
 class Commands:
@@ -174,37 +199,82 @@ class Commands:
         return owners[0]
 
     @staticmethod
-    def _stored_evidence(document, history):
-        """The evidence of every stored feature: its docs and its recorded commits (no task IDs are stored)."""
+    def _stored_authored(document, history):
+        """{feature name: {recorded commit: author time}} of every stored feature."""
         features = document["features"]
         times = history.authored_at([commit for feature in features for commit in feature["sources"]["commits"]])
-        return Evidence([FeatureClaim(feature["name"], tuple(feature["sources"]["docs"]), ()) for feature in features],
-                        {feature["name"]: {commit: times[commit] for commit in feature["sources"]["commits"] if commit in times}
-                         for feature in features})
+        return {feature["name"]: {commit: times[commit] for commit in feature["sources"]["commits"] if commit in times}
+                for feature in features}
 
-    def _record_latest_session(self, document, feature, history, harness, session_log, session_dir, missing):
-        """Upserts the feature's slice of the harness's latest session of the session folder (matched by implement); returns the
-        feature's new label."""
+    @staticmethod
+    def _stored_evidence(document, authored):
+        """The evidence of every stored feature: its docs and its recorded commits `authored` (no task IDs are stored)."""
+        return Evidence([FeatureClaim(feature["name"], tuple(feature["sources"]["docs"]), ()) for feature in document["features"]],
+                        authored)
+
+    @staticmethod
+    def _attach_sessions(feature, entries, matched_by):
+        """Adds `entries` to the feature's sessions (one of the same harness and id is replaced, none is ever dropped) and derives
+        its usage for `matched_by`: the one way `usage`, `record-commit` and `implement`'s latest session store sessions."""
+        for entry in entries:
+            upsert_session(feature, entry)
+        derive_usage(feature, matched_by)
+
+    def _latest_session_entries(self, document, feature, history, harness, session_log, session_dir, missing):
+        """([the feature's slice of the harness's latest session of the session folder, if any], the feature's new label): the
+        session is matched by implement."""
         matched_by = stored_matched_by(feature)
         if session_log is None:
             missing.append("session numbers not recorded: no --session-log")
-            return matched_by
+            return [], matched_by
         usage, failure = self._session_log(session_log, session_dir).latest_usage(harness)
         session_id = usage.get("id") if isinstance(usage, dict) else None
         if failure or not isinstance(session_id, str):
             missing.append(failure or LATEST_NAMED_NO_SESSION % harness)
-            return matched_by
+            return [], matched_by
         reply = SessionUsage(LATEST_USAGE % harness, harness, session_id, usage)
         if reply.rows is None:
             entry = reply.whole()
             missing.append(NO_ROWS % (reply.label, feature["name"]))
         else:
-            entry = reply.slices(self._stored_evidence(document, history)).get(feature["name"])
+            entry = reply.slices(self._stored_evidence(document, self._stored_authored(document, history))).get(feature["name"])
         if entry is None:
             missing.append(NO_PROMPT_OF_FEATURE % (harness, session_id, feature["name"]))
-            return matched_by
-        upsert_session(feature, entry)
-        return MATCH_IMPLEMENT if matched_by in (None, MATCH_NONE) else weakest([matched_by, MATCH_IMPLEMENT])
+            return [], matched_by
+        return [entry], MATCH_IMPLEMENT if matched_by in (None, MATCH_NONE) else weakest([matched_by, MATCH_IMPLEMENT])
+
+    @staticmethod
+    def _session_search_start(feature):
+        """The moment from which `usage` reads sessions: the first day of the feature's file at 00:00 UTC, less the margin."""
+        return datetime.combine(day_of_file(feature[FILE_KEY]), time.min, timezone.utc) - TIMEZONE_MARGIN
+
+    def usage(self, doc, session_log):
+        """Attaches the sessions that worked on the feature listing `doc` to its stored file, before any commit exists: the
+        `match-sessions` rule over every stored feature (so names and commits shared with another stay unattributed), merged into
+        the stored sessions as `record-commit` merges its own. Never drops or shrinks a stored session (so none is lost to a failed
+        call or a session the harness rotated out), saves nothing without a matched session, nor over sessions `implement`
+        recorded. The result describes the saved file."""
+        stored_doc = self.project.stored(doc)
+        document, warnings = self._load()
+        feature = self._plan_owner(document, stored_doc, doc)
+        script = self.project.absolute(session_log)
+        if not os.path.isfile(script):
+            raise EstimateError("session-log not found: %s" % session_log)
+        authored = self._stored_authored(document, self._history())
+        evidence = self._stored_evidence(document, authored)
+        matched = SessionMatcher(self._session_log(session_log), evidence, self._session_search_start(feature)).match(authored)
+        found = next(item for item in matched["features"] if item["name"] == feature["name"])
+        missing = list(matched["missing"])
+        if not found["sessions"]:
+            missing.append(NO_SESSION_OF_FEATURE % feature["name"])
+        elif stored_matched_by(feature) == MATCH_IMPLEMENT:
+            missing.append(IMPLEMENT_KEPT % feature["name"])
+        else:
+            entries = [session_entry(session) for session in found["sessions"]]
+            self._attach_sessions(feature, _not_shrinking(feature, entries), MATCH_PROMPT)
+            feature[FILE_KEY] = self.store.update(feature)
+        return {"feature": feature, "matchedBy": stored_matched_by(feature) or MATCH_NONE, "sessions": feature["sources"]["sessions"],
+                "usage": feature["usage"], "missing": missing}, warnings
 
     def record_commit(self, plan, commit, harness, session_log=None, session_dir=None):
         stored_plan = self.project.stored(plan)
@@ -221,7 +291,8 @@ class Commands:
         stats = doc_stats(self.project.absolute(plan), self.plan_progress, self.environment.run)
         merge_plan(feature["plan"], stats)
         missing = list(stats["missing"])
-        derive_usage(feature, self._record_latest_session(document, feature, history, harness, session_log, session_dir, missing))
+        entries, matched_by = self._latest_session_entries(document, feature, history, harness, session_log, session_dir, missing)
+        self._attach_sessions(feature, entries, matched_by)
         all_ticked = stats["tasks"] is not None and stats["completed"] == stats["tasks"]
         feature["status"] = DELIVERED if all_ticked else IN_PROGRESS
         feature[FILE_KEY] = self.store.update(feature)

@@ -124,8 +124,16 @@ def _header(started_at=BASE, parent=ROOT, helper=False) -> RolloutMeta:
                        started_at=started_at, project_dir="/child")
 
 
-def _parsed(meta, first=None, last=None, requests=(), prompts=()) -> Rollout:
-    return Rollout(meta=meta, prompts=tuple(prompts), unparsable=False, requests=tuple(requests), last_moment=last, first_moment=first)
+def _parsed(meta, first=None, last=None, requests=(), prompts=(), written=()) -> Rollout:
+    return Rollout(meta=meta, prompts=tuple(prompts), unparsable=False, requests=tuple(requests), last_moment=last, first_moment=first,
+                   written_paths=tuple(written))
+
+
+def _patching(at, *paths) -> dict:
+    """A call that applies a patch adding each of `paths`."""
+    patch = "*** Begin Patch\n%s*** End Patch\n" % "".join("*** Add File: %s\n+x\n" % path for path in paths)
+    return {"timestamp": _stamp(at), "type": "response_item",
+            "payload": {"type": "custom_tool_call", "status": "completed", "call_id": "call", "name": "apply_patch", "input": patch}}
 
 
 class ThreadOfRolloutTest(unittest.TestCase):
@@ -142,6 +150,11 @@ class ThreadOfRolloutTest(unittest.TestCase):
                           prompts=[_asked("review")])
         thread = thread_of_rollout(rollout, FILE_TIME)
         self.assertEqual(((), (_request(1),)), (thread.prompts, thread.requests))
+
+    def test_a_thread_carries_the_files_its_rollout_wrote_and_a_helper_thread_carries_none(self):
+        rollout = lambda meta: _parsed(meta, first=BASE, written=["/w/a.md", "/w/b.md"])
+        self.assertEqual((("/w/a.md", "/w/b.md"), ()), (thread_of_rollout(rollout(_header()), FILE_TIME).written_paths,
+                                                       thread_of_rollout(rollout(_header(helper=True)), FILE_TIME).written_paths))
 
     def test_a_thread_starts_with_its_first_record_after_the_header_and_works_until_its_newest_record(self):
         thread = thread_of_rollout(_parsed(_header(BASE + 20 * ONE_SECOND), first=BASE + 140 * ONE_SECOND, last=BASE + 150 * ONE_SECOND), FILE_TIME)
@@ -216,6 +229,16 @@ class CodexSubAgentReadTest(_FamilyReaderTestCase):
         self.assertIn("TOTAL (1 requests, 3 sub-agents)", report)
         total_line = [line for line in report if line.startswith("est. used token:")][-1]
         self.assertTrue(total_line.startswith("est. used token: input: 657, output: 66, cache_create: 0, cache_read: 0, total_tokens: 723,"), total_line)
+
+    def test_each_sub_agent_carries_its_own_written_paths_and_a_grandchild_keeps_its_own(self):
+        self._put(ROOT, records=[_prompt(10, "ask"), _patching(11, "/w/root.md")])
+        self._put(CHILD, parent=ROOT, start=20, records=[_patching(21, "/w/a.md", "/w/b.md"), _patching(22, "/w/a.md")])
+        self._put(GRAND, parent=CHILD, start=23, records=[_patching(24, "/w/deep.md")])
+        session = self._read().session
+        (child,) = session.sub_agents
+        (grand,) = child.sub_agents
+        self.assertEqual((("/w/a.md", "/w/b.md"), ("/w/deep.md",), [("/w/root.md",)]),
+                         (child.written_paths, grand.written_paths, [prompt.written_paths for prompt in session.prompts]))
 
     def test_a_sub_agent_without_any_prompt_keeps_its_tokens_and_the_session_activity_follows_its_last_record(self):
         self._put(ROOT, records=[_prompt(10, "ask"), _used(11, 1, 1)])
@@ -728,6 +751,20 @@ class CodexSubAgentSyncTest(CodexEntryTestCase):
                                       records=[_used(self.OLD + 2 * ONE_SECOND, 1, 1)]), self.OLD)  # another old child of the old session
         self.assertEqual(0, self.run_main(["codex", "status"], now=self.ACTIVE + timedelta(hours=1))[0])
         self.assertEqual(before, self.snapshot())
+
+
+class CodexSubAgentUsageJsonTest(CodexEntryTestCase):
+    def test_usage_json_lists_the_files_each_sub_agent_wrote(self):
+        for thread, parent, start, records in ((ROOT, None, 0, [_prompt(10, "ask"), _used(11, 1, 1)]),
+                                               (CHILD, ROOT, 20, [_patching(21, "/w/child.md")]),
+                                               (GRAND, CHILD, 23, [_patching(24, "/w/grand.md")])):
+            path = os.path.join(self.day, _name(thread))
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(_rollout(thread, parent=parent, start=start, records=records))
+        code, stdout, stderr = self.run_main(["codex", "usage", "--json", ROOT[:8]])
+        self.assertEqual((0, ""), (code, stderr))
+        rows = json.loads(stdout)["subAgents"]
+        self.assertEqual([(CHILD, ["/w/child.md"]), (GRAND, ["/w/grand.md"])], [(row["id"], row["writtenPaths"]) for row in rows])
 
 
 if __name__ == "__main__":

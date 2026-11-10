@@ -132,6 +132,26 @@
     },
     {
       "prefixes": [
+        "claude-fable-5-2",
+        "claude-mythos-5-2"
+      ],
+      "in": 8,
+      "out": 40,
+      "cache_read": 0.2,
+      "cache_write_5m": 10,
+      "cache_write_1h": 16,
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "as_of": "2026-11-10",
+      "fast": {
+        "in": 16,
+        "out": 80,
+        "cache_read": 0.4,
+        "cache_write_5m": 20,
+        "cache_write_1h": 32
+      }
+    },
+    {
+      "prefixes": [
         "claude-fable-5-1",
         "claude-mythos-5-1"
       ],
@@ -211,6 +231,26 @@
       "cache_write_1h": 5,
       "source": "https://developers.openai.com/api/docs/pricing",
       "as_of": "2026-10-21"
+    },
+    {
+      "prefixes": [
+        "gpt-6.1-terra"
+      ],
+      "in": 1,
+      "out": 5,
+      "cache_read": 0.05,
+      "cache_write_5m": 1.25,
+      "cache_write_1h": 2.5,
+      "long_prompt": {
+        "over_prompt_tokens": 272000,
+        "in": 2,
+        "out": 7.5,
+        "cache_read": 0.1,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 5
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "as_of": "2026-11-10"
     },
     {
       "prefixes": [

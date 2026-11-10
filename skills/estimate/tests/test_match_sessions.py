@@ -80,6 +80,12 @@ class MatchSessionsTest(ProjectTestCase):
         self.assertEqual([], output["missing"])
         self.assertNotIn(["claude", "usage", "wider-id", "--json"], self.usage_calls())
 
+    def test_a_session_that_only_wrote_a_doc_is_not_read_without_a_commit_or_a_name(self):
+        self.session("omp", "writer", [prompt_row(at("10:00:00"), "write the brief", written=[EXPORT_BRIEF])])
+        output = self.match(EXPORT)
+        self.assertEqual([], self.usage_calls())
+        self.assertEqual({"Export": {}}, self.slices(output))
+
     def test_a_session_is_split_between_the_features_its_prompts_worked_on(self):
         rows = [prompt_row(at("10:00:00"), "/implement docs/export-brief.md", seconds=600, total=100, cost=1.0),
                 prompt_row(at("10:20:00"), "go", seconds=300, total=200, cost=2.0),
@@ -179,11 +185,48 @@ class MatchSessionsTest(ProjectTestCase):
         self.assertEqual({"Export": {"s1": [(1, "names docs/export-brief.md"), (2, "follows prompt 1"), (4, "made 1 of its commits")]},
                           "Import": {"s1": [(3, "writes docs/import-brief.md")]}}, self.slices(self.match(EXPORT, IMPORT)))
 
+    def test_a_written_windows_path_counts_like_the_same_path_with_slashes(self):
+        self.edit(EXPORT_BRIEF, at("12:30:00"))
+        self.session("omp", "s1", [prompt_row(at("10:00:00"), "docs/export-brief.md", written=[r"docs\old-import-brief.md"]),
+                                   prompt_row(at("10:10:00"), "next", written=[r"C:\work\project\docs\import-brief.md"]),
+                                   prompt_row(at("10:20:00"), "last", written=[r"docs\import-brief.md"]),
+                                   prompt_row(at("12:00:00"), "end", seconds=3600)])
+        self.assertEqual({"Export": {"s1": [(1, "names docs/export-brief.md"), (4, "made 1 of its commits")]},
+                          "Import": {"s1": [(2, "writes docs/import-brief.md"), (3, "writes docs/import-brief.md")]}},
+                         self.slices(self.match(EXPORT, IMPORT)))
+
     def test_a_doc_two_features_list_is_no_evidence_when_written_either(self):
         export = {"name": "Export", "docs": [EXPORT_BRIEF, "docs/shared-plan.md"], "taskIds": []}
         imported = {"name": "Import", "docs": [IMPORT_BRIEF, "docs/shared-plan.md"], "taskIds": []}
         self.edit("docs/shared-plan.md", at("09:05:00"))
         self.session("omp", "s1", [prompt_row(at("09:00:00"), "go", seconds=600, written=["docs/shared-plan.md"])])
+        self.assertEqual({"Export": {}, "Import": {}}, self.slices(self.match(export, imported)))
+
+    def test_a_doc_an_agent_wrote_is_evidence_for_the_prompt_it_started_under(self):
+        self.edit(IMPORT_BRIEF, at("10:05:00"))
+        self.session("omp", "s1", [prompt_row(at("10:00:00"), "hello"), prompt_row(at("10:10:00"), "go")],
+                     [agent_row(at("10:12:00"), written=["/abs/project/docs/import-brief.md"])])
+        self.assertEqual({"Import": {"s1": [(1, "before prompt 2"), (2, "writes docs/import-brief.md")]}}, self.slices(self.match(IMPORT)))
+
+    def test_an_agent_started_before_the_first_prompt_is_evidence_for_prompt_1(self):
+        self.edit(IMPORT_BRIEF, at("10:05:00"))
+        self.session("omp", "s1", [prompt_row(at("10:00:00"), "hello"), prompt_row(at("10:10:00"), "go")],
+                     [agent_row(at("09:00:00"), written=[IMPORT_BRIEF])])
+        self.assertEqual({"Import": {"s1": [(1, "writes docs/import-brief.md"), (2, "follows prompt 1")]}},
+                         self.slices(self.match(IMPORT)))
+
+    def test_an_agents_paths_that_are_no_feature_doc_or_not_a_list_of_texts_change_nothing(self):
+        self.session("omp", "s1", [prompt_row(at("10:00:00"), "docs/export-brief.md"), prompt_row(at("10:10:00"), "go")],
+                     [agent_row(at("10:12:00"), written=["src/other.py"]), agent_row(at("10:13:00"), written="docs/import-brief.md"),
+                      agent_row(at("10:14:00"), written=[7, None, ""]), agent_row(at("10:15:00"))])
+        self.assertEqual({"Export": {"s1": [(1, "names docs/export-brief.md"), (2, "follows prompt 1")]}, "Import": {}},
+                         self.slices(self.match(EXPORT, IMPORT)))
+
+    def test_a_shared_doc_an_agent_wrote_ties_nothing(self):
+        export = {"name": "Export", "docs": [EXPORT_BRIEF, "docs/shared-plan.md"], "taskIds": []}
+        imported = {"name": "Import", "docs": [IMPORT_BRIEF, "docs/shared-plan.md"], "taskIds": []}
+        self.session("omp", "s1", [prompt_row(at("09:00:00"), "go", seconds=600)],
+                     [agent_row(at("09:01:00"), written=["docs/shared-plan.md"])])
         self.assertEqual({"Export": {}, "Import": {}}, self.slices(self.match(export, imported)))
 
     def test_an_accepted_commit_made_while_a_prompt_ran_is_evidence_and_a_candidate_is_not(self):

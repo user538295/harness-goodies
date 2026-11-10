@@ -430,13 +430,16 @@ class MessageRequest:
 
     message_id: Optional[str]
     usage: RequestUsage
+    written_paths: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class SubAgentTranscript:
     """`started_at` is the earliest timestamp of any record, in UTC; `working_time` runs from it to the last assistant
     output (0 without any); `requests` are the assistant messages in order of first appearance, a streamed message once
-    with its last copy. `unparsable`: the text has lines, none of them a JSON object."""
+    with its last copy. A request carries the paths its message's tool calls wrote or edited (`written_paths`, each once in order), taken
+    from every record of the message, also one without usage; a message with no usage in any record is no request and carries none.
+    `unparsable`: the text has lines, none of them a JSON object."""
 
     started_at: Optional[datetime]
     working_time: timedelta
@@ -452,6 +455,7 @@ class _SubAgentFolder(_RecordFolder):
         self._started_at: Optional[datetime] = None
         self._last_output: Optional[datetime] = None
         self._requests: Dict[_MessageKey, RequestUsage] = {}
+        self._written: Dict[_MessageKey, List[str]] = {}
 
     def _add_record(self, line_number: int, record: Record) -> None:
         moment = _moment(record)
@@ -459,14 +463,17 @@ class _SubAgentFolder(_RecordFolder):
         if record.get("type") != _ASSISTANT or _is_synthetic(record):
             return
         self._last_output = _latest(self._last_output, moment)
+        key = _message_key(record, line_number)
+        self._written.setdefault(key, []).extend(_written_paths(record))
         request = _request_of(record)
         if request is not None:
-            self._requests[_message_key(record, line_number)] = request
+            self._requests[key] = request
 
     def transcript(self) -> SubAgentTranscript:
         started_at = self._started_at.astimezone(timezone.utc) if self._started_at else None
         working_time = self._last_output - started_at if self._last_output else timedelta(0)
-        requests = tuple(MessageRequest(key if isinstance(key, str) else None, request) for key, request in self._requests.items())
+        requests = tuple(MessageRequest(key if isinstance(key, str) else None, request, tuple(dict.fromkeys(self._written[key])))
+                         for key, request in self._requests.items())
         return SubAgentTranscript(started_at, working_time, requests, unparsable=self._unparsable)
 
 

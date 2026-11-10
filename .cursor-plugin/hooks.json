@@ -19,6 +19,12 @@
         "timeout": 30
       }
     ],
+    "afterFileEdit": [
+      {
+        "command": "\"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook\" cursor afterFileEdit",
+        "timeout": 30
+      }
+    ],
     "subagentStop": [
       {
         "command": "\"${CURSOR_PLUGIN_ROOT}/skills/session-log/hook\" cursor subagentStop",

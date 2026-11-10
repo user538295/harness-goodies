@@ -35,6 +35,12 @@ def stop_input(generation, **fields):
     return {"conversation_id": CONVERSATION, "generation_id": generation, "status": "completed", **fields}
 
 
+def file_edit_input(generation, path, **fields):
+    """The input of an `afterFileEdit` hook: the absolute path the agent edited and its edits, under the generation of the prompt."""
+    return {"conversation_id": CONVERSATION, "generation_id": generation, "file_path": path,
+            "edits": [{"old_string": "old", "new_string": "new"}], **fields}
+
+
 def subagent_input(child, **fields):
     return {"conversation_id": CONVERSATION, "child_conversation_id": child, **fields}
 

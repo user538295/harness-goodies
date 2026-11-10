@@ -1,4 +1,4 @@
-"""CursorHooksConfig (BE-33): .cursor-plugin/hooks.json registers the five Cursor events, each through the `hook` launcher with the
+"""CursorHooksConfig (BE-33): .cursor-plugin/hooks.json registers the six Cursor events, each through the `hook` launcher with the
 braced plugin-root variable and nothing after the event name; `hook` is committed executable."""
 import json
 import shutil
@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[3]
 HOOKS_JSON = REPO / ".cursor-plugin" / "hooks.json"
 LAUNCHER_RELATIVE = "skills/session-log/hook"
 PLUGIN_ROOT_VARIABLE = "${CURSOR_PLUGIN_ROOT}"
-EVENTS = ("sessionStart", "beforeSubmitPrompt", "afterAgentResponse", "subagentStop", "stop")
+EVENTS = ("sessionStart", "beforeSubmitPrompt", "afterAgentResponse", "afterFileEdit", "subagentStop", "stop")
 CONFIG_VERSION = 1
 HOOK_TIMEOUT_SECONDS = 30
 GIT_EXECUTABLE_MODE = "100755"
@@ -24,7 +24,7 @@ def command_for(event):
 
 
 class CursorHooksConfigTests(unittest.TestCase):
-    def test_cursor_hooks_json_five_events_exact_braced_command_nothing_after_it_timeout_30(self):
+    def test_cursor_hooks_json_six_events_exact_braced_command_nothing_after_it_timeout_30(self):
         config = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
         self.assertEqual({"version", "hooks"}, set(config))
         self.assertEqual(CONFIG_VERSION, config["version"])

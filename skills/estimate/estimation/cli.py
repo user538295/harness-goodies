@@ -52,6 +52,7 @@ def _dispatch(invocation, environment, skill_dir):
         "doc-stats": lambda: commands.doc_stats(positionals[0], options["--plan-progress"]),
         "git-stats": lambda: commands.git_stats(positionals[0]),
         "match-sessions": lambda: commands.match_sessions(positionals[0], options["--session-log"]),
+        "usage": lambda: commands.usage(positionals[0], options["--session-log"]),
         "record-commit": lambda: commands.record_commit(positionals[0], positionals[1], options["--harness"],
                                                         options["--session-log"], options["--session-dir"]),
         "estimator": lambda: commands.estimator(options["--harness"], options["--session-log"], options["--session-dir"]),

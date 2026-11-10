@@ -15,6 +15,14 @@ also kept in `reasoning_tokens`,
 the recorded cost is `data.cost` (0 means free; an absent or invalid cost is left to the price file), the model is `data.model`'s
 `providerID/id`. OpenCode records no effort. A request falls under the prompt before it, and those before the first prompt under the first.
 
+A prompt's `written_paths` are the files the `write`, `edit` and `multiedit` tool blocks of its assistant rows name (`state.input.path`, or
+`state.input.filePath` in the rows before 2026-09-11) and the `*** Add File:`, `*** Update File:` and `*** Move to:` headers of an
+`apply_patch` (or `patch`) block's `state.input.patchText` (`patch_headers`); any state counts (a failed call was an attempt, as in the
+other readers), a block without a usable input names nothing, and a sub-agent's calls are in its own session, not the prompt's. A path
+stays as the call gave it (some rows hold a relative one; the estimate command matches by tail). The real database (checked 2026-11) holds
+`write` and `edit` calls only, 1892 + 443 with `path` and 156 + 28 with `filePath`, none with both; its `multiedit`, `apply_patch` and
+`patch` shapes are assumed, not seen in real rows (UNVERIFIED), and its `exec` / `execute` JavaScript tools are not read.
+
 A prompt's reply is the last assistant row of its turn (up to the next `user` row) whose `finish` is `stop`: its text blocks joined by
 blank lines, its time `data.time.completed` (else `data.time.created`). A turn works from its prompt to the `data.time.completed` of
 its last assistant row, whatever its `finish` (`error`, `length`, an unfinished row), but not while the user was asked: a row with a
@@ -34,7 +42,8 @@ from typing import Any, Iterable, List, Optional, Tuple, Union
 
 from .json_records import (MAX_WHOLE_COUNT, Record, decode_record, model_label, parse_cost, parse_epoch_milliseconds,
                            whole_count)
-from .model import Prompt, RequestUsage
+from .model import Prompt, RequestUsage, unique_in_order
+from .patch_headers import patch_paths
 from .prompt_turns import Answer, Opening, group_turns
 
 # How long after the newest other time of a row its `completed` may lie. Far above the longest genuine lag of a real database (59
@@ -47,18 +56,26 @@ _TOOL_BLOCK = "tool"
 _WAIT_TOOLS = ("question", "confirm", "ask")
 _TEXT_BLOCK = "text"
 _REPLY_PARAGRAPH_SEPARATOR = "\n\n"
+# The tools that write a file, and the input fields that name it; `apply_patch` names its files in the headers of its `patchText` instead.
+_WRITING_TOOLS = frozenset({"write", "edit", "multiedit"})
+_PATH_FIELDS = ("path", "filePath")
+_PATCH_TOOLS = ("apply_patch", "patch")
+_PATCH_TEXT = "patchText"
 
 
 @dataclass(frozen=True)
 class Transcript:
     """The parse of one session's rows: its own `prompts`, every request it made (what a sub-agent reports), the `unprompted_requests`
     among them that fall under no prompt, and `last_moment`, the newest start or plausible completion time of any row; None without
-    one."""
+    one. `written_paths` are the files all its assistant rows' own tool calls wrote, in order of first write, each once (what a
+    sub-agent session reports); `unprompted_written_paths` are those of the rows under no prompt."""
 
     prompts: Tuple[Prompt, ...] = ()
     requests: Tuple[RequestUsage, ...] = ()
     unprompted_requests: Tuple[RequestUsage, ...] = ()
     last_moment: Optional[datetime] = None
+    written_paths: Tuple[str, ...] = ()
+    unprompted_written_paths: Tuple[str, ...] = ()
 
     def working_time_since(self, started_at: datetime) -> timedelta:
         """From `started_at` to the newest row; none without a row time, and never negative."""
@@ -135,13 +152,52 @@ def _asked_at(data: Record) -> Optional[datetime]:
     return _time_of(data, "streamed") or _time_of(data, "created")
 
 
+def _file_path(tool_input: Record) -> Optional[str]:
+    """The file a `write`, `edit` or `multiedit` input names: its `path` (the field of every real row since 2026-09-11), else its
+    `filePath` (the field of the earlier ones); None when neither is a non-empty string."""
+    for field in _PATH_FIELDS:
+        path = tool_input.get(field)
+        if isinstance(path, str) and path:
+            return path
+    return None
+
+
+def _is_writing_call(block: Record, tool_input: Record) -> bool:
+    name = block.get("name")
+    return isinstance(name, str) and name in _WRITING_TOOLS and _file_path(tool_input) is not None
+
+
+def _paths_of_tool_block(block: Any) -> Tuple[str, ...]:
+    """The files a tool block names: a writing tool's file, or the files of a patch tool's headers; none for any other block and for
+    one without a usable input (a stream that broke before it)."""
+    if not isinstance(block, dict) or block.get("type") != _TOOL_BLOCK:
+        return ()
+    state = block.get("state")
+    tool_input = state.get("input") if isinstance(state, dict) else None
+    if not isinstance(tool_input, dict):
+        return ()
+    if _is_writing_call(block, tool_input):
+        return (_file_path(tool_input),)
+    if block.get("name") in _PATCH_TOOLS:
+        return patch_paths(tool_input.get(_PATCH_TEXT))
+    return ()
+
+
+def _written_paths(data: Record) -> Tuple[str, ...]:
+    """The files the file-writing tool blocks of an assistant row name, each once, in order; a call counts whatever its state (attempted
+    calls count, as in the other readers), one without a usable path (a stream that broke before the input) names nothing."""
+    content = data.get("content")
+    return unique_in_order(path for block in (content if isinstance(content, list) else ()) for path in _paths_of_tool_block(block))
+
+
 def _answer_of(data: Record) -> Answer:
     """A row ends its work at its plausible completion; a stopping row that never completed is dated by its start, and a row that did
     not stop and never completed (still running) has no end."""
     is_stop = data.get("finish") == _STOP
     started_at = _time_of(data, "created")
     ended_at = _end_of(data) or (started_at if is_stop else None)
-    return Answer(_request_of(data), is_stop, _reply_text(data.get("content")) if is_stop else None, ended_at, started_at, _asked_at(data))
+    return Answer(_request_of(data), is_stop, _reply_text(data.get("content")) if is_stop else None, ended_at, started_at, _asked_at(data),
+                  _written_paths(data))
 
 
 def _events_of(rows: Iterable[Tuple[str, str]]) -> Tuple[List[_Event], Optional[datetime]]:
@@ -170,5 +226,7 @@ def _events_of(rows: Iterable[Tuple[str, str]]) -> Tuple[List[_Event], Optional[
 def parse_messages(rows: Iterable[Tuple[str, str]]) -> Transcript:
     """The prompts, requests and last moment of the `(type, data text)` rows of one session, in `seq` order."""
     events, last_moment = _events_of(rows)
-    prompts, requests, unprompted = group_turns(events)
-    return Transcript(prompts=prompts, requests=requests, unprompted_requests=unprompted, last_moment=last_moment)
+    prompts, requests, unprompted, unprompted_paths = group_turns(events)
+    written = unique_in_order(path for event in events if isinstance(event, Answer) for path in event.written_paths)
+    return Transcript(prompts=prompts, requests=requests, unprompted_requests=unprompted, last_moment=last_moment, written_paths=written,
+                      unprompted_written_paths=unprompted_paths)

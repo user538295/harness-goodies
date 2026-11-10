@@ -49,7 +49,7 @@ def root_id_for(session_id: str, parent_of: ParentOf, looping: Set[str]) -> str:
 def _thread_of(row: SessionRow, transcript: Transcript, default_start: datetime) -> Thread:
     started_at = row.created_at or default_start
     return Thread(thread_id=row.id, parent_thread_id=row.parent_id, agent_type=row.agent, started_at=started_at,
-                  working_time=transcript.working_time_since(started_at), requests=transcript.requests)
+                  working_time=transcript.working_time_since(started_at), requests=transcript.requests, written_paths=transcript.written_paths)
 
 
 def build_session(root: SessionRow, root_transcript: Transcript, parent_of: ParentOf,
@@ -61,6 +61,6 @@ def build_session(root: SessionRow, root_transcript: Transcript, parent_of: Pare
         return None
     threads = [_thread_of(row, transcript, root.created_at) for row, transcript in children]
     orphan_of_parent_id = root.parent_id if root.parent_id not in parent_of else None
-    prompts = with_unprompted(root_transcript.prompts, root_transcript.unprompted_requests, root.created_at)
+    prompts = with_unprompted(root_transcript.prompts, root_transcript.unprompted_requests, root.created_at, root_transcript.unprompted_written_paths)
     return Session(harness=Harness.OPENCODE, session_id=root.id, started_at=root.created_at, project_dir=root.directory,
                    orphan_of_parent_id=orphan_of_parent_id, prompts=prompts, sub_agents=nest_threads(threads))

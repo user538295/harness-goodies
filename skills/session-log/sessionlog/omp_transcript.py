@@ -29,7 +29,8 @@ count (`reasoning`) is kept apart as information only: OMP's `totalTokens` leave
 A `reset_boundary` record is what OMP writes into the same file when the user clears the context (`/clear`); the first prompt after
 one (on the active branch) is flagged `after_reset`. A prompt's `written_paths` are the files the `write` and `edit` tool calls of
 its replies named: a `write` or `edit` call's `path` argument and the `[path#tag]` headers of an edit's `input`; a call of a
-branch the conversation left counts nothing.
+branch the conversation left counts nothing. The transcript's own `written_paths` are those of all its active-branch replies, under
+a prompt or not (what a sub-agent reports).
 
 A prompt's reply is the last assistant message of its turn whose `stopReason` is `stop`: its text blocks joined by blank lines. A
 turn works from its prompt to the last assistant message it completed, whatever its `stopReason` (`toolUse` when a steering prompt cut
@@ -44,7 +45,7 @@ from .json_records import (Record, decode_record, model_label, parse_cost, parse
                            parse_whole_count)
 from .model import Prompt, RequestUsage
 from .omp_branches import SessionTree, Standing
-from .prompt_turns import Grouping, Opening, ResetMark, group_turns
+from .prompt_turns import Opening, ResetMark, group_turns
 
 _SESSION = "session"
 _SESSION_INIT = "session_init"
@@ -81,7 +82,7 @@ class Transcript:
     `parentSession` names, `header_moment` its `timestamp`. `first_moment` and `last_moment` bound the activity of the session: the
     start of its first `message`, `model_usage` or `custom_message` record and the newest end of any of them (an assistant
     message ends when it completes). `prompts` are the session's own prompts, `requests` every request it made and
-    `unprompted_requests` those of them that fall under no prompt."""
+    `unprompted_requests` those of them that fall under no prompt, `unprompted_written_paths` the files written under no prompt."""
 
     unparsable: bool = False
     header_id: Optional[str] = None
@@ -92,6 +93,8 @@ class Transcript:
     prompts: Tuple[Prompt, ...] = ()
     requests: Tuple[RequestUsage, ...] = ()
     unprompted_requests: Tuple[RequestUsage, ...] = ()
+    unprompted_written_paths: Tuple[str, ...] = ()
+    written_paths: Tuple[str, ...] = ()
     first_moment: Optional[datetime] = None
     last_moment: Optional[datetime] = None
 
@@ -230,8 +233,8 @@ def _written_paths(content: Any) -> Tuple[str, ...]:
     """The files the `write` and `edit` tool calls among the content blocks of an assistant message wrote or edited, each once, in
     order: a call's `path` argument, and the `[path#tag]` headers of an edit's `input` (OMP's hashline edit format, whose headers
     always carry the 4-hex tag; a bracketed row without one is no header). Other ways to change a file (`apply_patch`, a shell
-    command, a sub-agent's own calls) are not seen, and a call that failed still counts. Blocks and arguments that are not what is
-    expected are skipped."""
+    command) are not seen, and a call that failed still counts. A sub-agent's own calls are on its own transcript. Blocks and
+    arguments that are not what is expected are skipped."""
     paths: List[str] = []
     for block in content if isinstance(content, list) else ():
         if not _is_writing_call(block):
@@ -351,12 +354,9 @@ class _Collector:
                 (events if standing is Standing.SIBLING else waiting).append(request_only)
         return events + waiting
 
-    def _grouping(self) -> Grouping:
-        """The prompts, each with the answers that fall under its opening, every request and those under no prompt."""
-        return group_turns(self._active_events())
-
     def transcript(self) -> Transcript:
-        prompts, requests, unprompted = self._grouping()
+        events = self._active_events()
+        prompts, requests, unprompted, unprompted_paths = group_turns(events)
         header = self._header or {}
         return Transcript(
             header_id=_text(header.get("id")),
@@ -367,6 +367,8 @@ class _Collector:
             prompts=prompts,
             requests=requests,
             unprompted_requests=unprompted,
+            unprompted_written_paths=unprompted_paths,
+            written_paths=tuple(dict.fromkeys(path for event in events if isinstance(event, _Answer) for path in event.written_paths)),
             first_moment=self._first_moment,
             last_moment=self._last_moment,
         )

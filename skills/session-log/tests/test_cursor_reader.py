@@ -19,8 +19,8 @@ from sessionlog.reader_port import (CANNOT_BE_LISTED_REASON, CANNOT_BE_OPENED_RE
                                     UNSAFE_ID_REASON, SourceUnit, UnreadableSource,
                                     build_session_key)
 from sessionlog.safe_paths import LINK_REASON
-from tests.cursor_record_files import (CONVERSATION, WORKSPACE, at_ns, moment, prompt_input, response_input, stop_input, subagent_input,
-                                       write_record)
+from tests.cursor_record_files import (CONVERSATION, WORKSPACE, at_ns, file_edit_input, moment, prompt_input, response_input, stop_input,
+                                       subagent_input, write_record)
 from tests.store_fakes import JunctionEntry, scandir_wrapping
 
 MODEL = "claude-opus-5-5"
@@ -257,6 +257,93 @@ class ReadTest(CursorReaderTestCase):
             SubAgent(agent_id="child-a", type="explore", started_at=moment(3), working_time=timedelta(seconds=2), tokens_not_recorded=True),
             SubAgent(agent_id="child-b", type="generalPurpose", started_at=moment(8), working_time=timedelta(seconds=3), tokens_not_recorded=True),
         ), session.sub_agents)
+
+    def test_a_prompt_lists_the_files_its_generation_edited_each_once_in_order_of_first_edit(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1", "write the brief"))
+        self.write("afterFileEdit", 1, file_edit_input("g1", "/work/proj/b.md"))
+        self.write("afterFileEdit", 2, file_edit_input("g1", "/work/proj/a.md"))
+        self.write("afterFileEdit", 3, file_edit_input("g1", "/work/proj/b.md"))
+        self.write("stop", 5, stop_input("g1"))
+        self.write("beforeSubmitPrompt", 10, prompt_input("g2", "edit another file"))
+        self.write("afterFileEdit", 11, file_edit_input("g2", "/work/proj/other-generation.md"))
+        self.write("stop", 12, stop_input("g2"))
+        self.write("beforeSubmitPrompt", 20, prompt_input("g3", "no edits"))
+        self.write("stop", 21, stop_input("g3"))
+        first, second, third = self.session().prompts
+        self.assertEqual((("/work/proj/b.md", "/work/proj/a.md"), ("/work/proj/other-generation.md",), ()),
+                         (first.written_paths, second.written_paths, third.written_paths))
+
+    def test_an_edit_without_a_usable_path_or_generation_names_nothing(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1"))
+        for seconds, hook_input in enumerate((file_edit_input("g1", ""), file_edit_input("g1", 7), file_edit_input("g1", None),
+                                              {"conversation_id": CONVERSATION, "generation_id": "g1"},
+                                              file_edit_input("", "/work/proj/no-generation.md")), start=1):
+            self.write("afterFileEdit", seconds, hook_input)
+        self.write("stop", 9, stop_input("g1"))
+        self.assertEqual(((),), tuple(prompt.written_paths for prompt in self.session().prompts))
+
+    def test_a_cancelled_prompt_and_a_stop_without_a_prompt_keep_their_edits_while_an_edit_alone_is_no_turn(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g-cancelled"))
+        self.write("afterFileEdit", 1, file_edit_input("g-cancelled", "/work/proj/cancelled.md"))
+        self.write("afterFileEdit", 4, file_edit_input("g-lone", "/work/proj/lone.md"))
+        self.write("stop", 5, stop_input("g-lone"))
+        self.write("afterFileEdit", 6, file_edit_input("g-orphan", "/work/proj/orphan.md"))
+        self.assertEqual([("/work/proj/cancelled.md",), ("/work/proj/lone.md",)], [prompt.written_paths for prompt in self.session().prompts])
+
+    def write_child_edit(self, seconds, path, generation="g-child", child="child-1"):
+        self.write("afterFileEdit", seconds, file_edit_input(generation, path, conversation_id=child), conversation=child)
+
+    def test_edits_under_another_conversation_are_not_this_conversations_prompts(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1"))
+        self.write("stop", 2, stop_input("g1"))
+        self.write_child_run()
+        self.write_child_edit(4, "/work/proj/child.md")
+        self.assertEqual(((),), tuple(prompt.written_paths for prompt in self.session().prompts))
+
+    def test_a_sub_agent_lists_the_files_edited_in_its_own_conversation_once_each_in_order_of_arrival(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1"))
+        self.write_child_run()
+        self.write_child_edit(4, "/work/proj/b.md")
+        self.write_child_edit(5, "/work/proj/a.md", generation="g-child-2")  # another generation of the child
+        self.write_child_edit(6, "/work/proj/b.md")
+        self.write("afterAgentResponse", 7, response_input("g-child", "child reply", conversation_id="child-1"), conversation="child-1")
+        self.write("subagentStop", 8, subagent_input("child-1", subagent_type="explore", duration_ms=1000))
+        self.write("stop", 9, stop_input("g1"))
+        session = self.session()
+        self.assertEqual((("/work/proj/b.md", "/work/proj/a.md"), ((),)),
+                         (session.sub_agents[0].written_paths, tuple(prompt.written_paths for prompt in session.prompts)))
+
+    def test_a_child_edit_that_reuses_the_parents_generation_id_is_the_sub_agents_and_never_the_prompts(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1"))
+        self.write("afterFileEdit", 1, file_edit_input("g1", "/work/proj/parent.md"))
+        self.write_child_edit(4, "/work/proj/child.md", generation="g1")
+        self.write("subagentStop", 8, subagent_input("child-1", subagent_type="explore"))
+        self.write("stop", 9, stop_input("g1"))
+        session = self.session()
+        self.assertEqual((("/work/proj/parent.md",), ("/work/proj/child.md",)), (session.prompts[0].written_paths, session.sub_agents[0].written_paths))
+
+    def test_a_sub_agent_without_records_of_its_own_or_with_an_unsafe_id_lists_no_file(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1"))
+        self.write_child_edit(4, "/work/proj/unsafe.md", child="a.b")  # not a SafeId: the folder is never read
+        self.write("subagentStop", 5, subagent_input("nobody", subagent_type="explore"))
+        self.write("subagentStop", 6, subagent_input("a.b", subagent_type="explore"))
+        self.write("stop", 9, stop_input("g1"))
+        self.assertEqual([("a.b", ()), ("nobody", ())], sorted((agent.agent_id, agent.written_paths) for agent in self.session().sub_agents))
+
+    def test_a_sub_agent_edit_record_that_cannot_be_opened_makes_the_parent_unreadable_under_the_child_folder(self):
+        self.write("beforeSubmitPrompt", 0, prompt_input("g1"))
+        denied = self.write("afterFileEdit", 4, file_edit_input("g-child", "/work/proj/child.md", conversation_id="child-1"), conversation="child-1")
+        self.write("subagentStop", 8, subagent_input("child-1", subagent_type="explore"))
+        real_open = cursor_reader.open_text
+
+        def deny(path):
+            if path == denied:
+                raise PermissionError("denied")
+            return real_open(path)
+
+        with mock.patch.object(cursor_reader, "open_text", deny):
+            result = self.read()
+        self.assertEqual((None, (UnreadableSource(Harness.CURSOR, os.path.dirname(denied), CANNOT_BE_OPENED_REASON),)), (result.session, result.unreadable))
 
     def test_a_later_response_without_text_never_erases_the_reply_of_its_generation(self):
         self.write("beforeSubmitPrompt", 0, prompt_input("g1"))

@@ -11,6 +11,10 @@ OPUS_5_5 = Rates(4, 20, 0.2, 5, 8)
 SONNET_5_5 = Rates(2, 10, 0.1, 2.5, 4)
 SONNET_4 = Rates(3, 15, 0.3, 3.75, 6)
 FABLE_5_1 = Rates(10, 50, 0.25, 12.5, 20)
+FABLE_5_2 = Rates(8, 40, 0.2, 10, 16)
+GPT_6_1_TERRA = Rates(1, 5, 0.05, 1.25, 2.5)
+GPT_6_1_TERRA_LONG = Rates(2, 7.5, 0.1, 2.5, 5)
+GPT_LONG_CONTEXT_OVER = 272000  # OpenAI: short context is up to 272K input tokens, long context above
 HAIKU_4_5 = Rates(1, 5, 0.1, 1.25, 2)
 HAIKU_5_5 = Rates(0.1, 0.5, 0.01, 0.125, 0.2)
 HAIKU_5_5_OVER_100K = Rates(0.5, 2.5, 0.05, 0.625, 1)
@@ -32,6 +36,11 @@ REAL_IDS_PRICED = (
     ("claude-sonnet-4-6", SONNET_4),
     ("claude-fable-5-1", FABLE_5_1),
     ("claude-fable-5-1[1m]", FABLE_5_1),
+    ("claude-fable-5-2", FABLE_5_2),
+    ("claude-fable-5-2[1m]", FABLE_5_2),
+    ("claude-mythos-5-2", FABLE_5_2),
+    ("gpt-6.1-terra", GPT_6_1_TERRA),
+    ("openai-codex/gpt-6.1-terra", GPT_6_1_TERRA),
     ("claude-haiku-4-5-20251001", HAIKU_4_5),
     ("claude-opus-4-5-20251101", OPUS_5),
     ("gpt-5.5", GPT_5_5),
@@ -46,8 +55,8 @@ REAL_IDS_PRICED = (
     ("codex-auto-review", GPT_5_6_LUNA),  # Codex's guardian (auto-review) sub-agents
 )
 SIBLINGS_AND_SUCCESSORS = (
-    "gpt-5.7", "gpt-5.3", "gpt-5.5-mini", "gpt-6-sol-mini", "gpt-6.2-sol", "gpt-5.6-sol-mini",
-    "claude-opus-5-6", "claude-sonnet-4-7", "claude-sonnet-5-6", "claude-fable-5-2", "claude-haiku-4-6",
+    "gpt-5.7", "gpt-5.3", "gpt-5.5-mini", "gpt-6-sol-mini", "gpt-6.2-sol", "gpt-6.1-terra-mini", "gpt-5.6-sol-mini",
+    "claude-opus-5-6", "claude-sonnet-4-7", "claude-sonnet-5-6", "claude-fable-5-3", "claude-haiku-4-6",
     "gpt-55", "claude-opus-50", "openai-codex/gpt-5.7",
 )
 NEVER_PRICED = ("fable", "opus", "sonnet", "<synthetic>", "deepseek-v4-pro", "ollama-cloud/nemotron-3-ultra")
@@ -79,6 +88,16 @@ class RealStoreModelIdTests(unittest.TestCase):
                 with self.subTest(name=name, prompt_tokens=prompt_tokens):
                     self.assertEqual(self.book.rate_for(name, False, prompt_tokens), expected)
         self.assertIsNone(self.book.rate_for("claude-haiku-5-5", True, 0))  # Haiku 5.5 has no fast mode
+
+    def test_gpt_6_1_terra_is_priced_by_the_prompt_length_of_each_request(self):
+        for prompt_tokens, expected in ((0, GPT_6_1_TERRA), (GPT_LONG_CONTEXT_OVER, GPT_6_1_TERRA), (GPT_LONG_CONTEXT_OVER + 1, GPT_6_1_TERRA_LONG)):
+            with self.subTest(prompt_tokens=prompt_tokens):
+                self.assertEqual(self.book.rate_for("gpt-6.1-terra", False, prompt_tokens), expected)
+
+    def test_fable_and_mythos_5_2_keep_one_price_at_any_prompt_length(self):
+        for name in ("claude-fable-5-2", "claude-mythos-5-2"):
+            with self.subTest(name=name):
+                self.assertEqual(self.book.rate_for(name, False, 900000), FABLE_5_2)  # the Claude page: 1M context at standard pricing
 
 
 if __name__ == "__main__":

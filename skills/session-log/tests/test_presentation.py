@@ -207,7 +207,8 @@ class UsageJsonRenderingTest(unittest.TestCase):
                           requests=(request(input_tokens=1000, output_tokens=500, cache_read_tokens=2000, cache_write_5m_tokens=100),))
         unanswered = Prompt(submitted_at=ON_AT + timedelta(minutes=1), text="open", requests=(request("unpriced", input_tokens=5),),
                             after_reset=True, written_paths=("docs/a.md", "docs/b.md"))
-        child = SubAgent("child", "explore", ON_AT + timedelta(seconds=20), requests=(request(output_tokens=7, recorded_cost_usd=0.25),))
+        child = SubAgent("child", "explore", ON_AT + timedelta(seconds=20), requests=(request(output_tokens=7, recorded_cost_usd=0.25),),
+                         written_paths=("docs/c.md",))
         parent = SubAgent("parent", "worker", ON_AT + timedelta(seconds=10), requests=(request(recorded_cost_usd=0.5),),
                           tokens_not_recorded=True, sub_agents=(child,))
         session = Session(harness=Harness.CURSOR, session_id=SESSION_ID, started_at=ON_AT, prompts=(answered, unanswered),
@@ -226,10 +227,10 @@ class UsageJsonRenderingTest(unittest.TestCase):
         ], parsed["prompts"])
         self.assertEqual([
             {"id": "parent", "type": "worker", "startedAt": "2026-03-04T05:06:17+00:00", "depth": 0, "tokens": None,
-             "costUsd": 0.5, "costComplete": False, "models": ["known"]},
+             "costUsd": 0.5, "costComplete": False, "models": ["known"], "writtenPaths": []},
             {"id": "child", "type": "explore", "startedAt": "2026-03-04T05:06:27+00:00", "depth": 1,
              "tokens": {"input": 0, "output": 7, "reasoning": None, "cacheRead": 0, "cacheWrite": 0, "total": 7},
-             "costUsd": 0.25, "costComplete": True, "models": ["known"]},
+             "costUsd": 0.25, "costComplete": True, "models": ["known"], "writtenPaths": ["docs/c.md"]},
         ], parsed["subAgents"])
 
 

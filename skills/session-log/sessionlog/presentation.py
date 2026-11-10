@@ -131,7 +131,8 @@ def _prompt_json(prompt: Prompt, row: PromptRow) -> dict:
 
 def _sub_agent_json(row: SubAgentRow) -> dict:
     return {"id": row.agent_id, "type": row.type, "startedAt": _utc_text(row.started_at), "depth": row.depth,
-            "tokens": _tokens_json(row), **_cost_json(row), "models": list(model_list(row.model_names))}
+            "tokens": _tokens_json(row), **_cost_json(row), "models": list(model_list(row.model_names)),
+            "writtenPaths": list(row.written_paths)}
 
 
 def render_usage_json(result: UsageResult) -> str:

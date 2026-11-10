@@ -22,6 +22,7 @@ class Thread:
     working_time: timedelta
     requests: Tuple[RequestUsage, ...]
     prompts: Tuple[Prompt, ...] = ()
+    written_paths: Tuple[str, ...] = ()
     project_dir: Optional[str] = None
 
 
@@ -46,7 +47,8 @@ def _top_level(threads: Sequence[Thread]) -> List[Tuple[Thread, SubAgent]]:
     def build(index: int, children: Tuple[SubAgent, ...]) -> SubAgent:
         thread = threads[index]
         return SubAgent(agent_id=thread.thread_id, type=thread.agent_type or UNKNOWN_TYPE, started_at=thread.started_at,
-                        working_time=thread.working_time, requests=thread.requests, sub_agents=children)
+                        working_time=thread.working_time, requests=thread.requests, sub_agents=children,
+                        written_paths=thread.written_paths)
 
     top = [(threads[index], agent) for index, agent in build_tree(parent_of, depths_of(parent_of, len(threads)), build)]
     return sorted(top, key=lambda pair: (pair[1].started_at, pair[1].agent_id))

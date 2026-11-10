@@ -109,6 +109,7 @@ class SubAgentRow(Usage):
     started_at: datetime
     working_time: Optional[timedelta]
     transcript_path: Optional[str] = None
+    written_paths: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -208,7 +209,8 @@ class PricingRules:
             for agent in children:
                 agents.append(SubAgentRow(**self._usage(agent.requests, records_reasoning, agent.tokens_not_recorded),
                                           agent_id=agent.agent_id, type=agent.type, depth=depth, started_at=agent.started_at,
-                                          working_time=agent.working_time, transcript_path=agent.transcript_path))
+                                          working_time=agent.working_time, transcript_path=agent.transcript_path,
+                                          written_paths=agent.written_paths))
                 visit(agent.sub_agents, depth + 1)
 
         visit(session.sub_agents, 0)

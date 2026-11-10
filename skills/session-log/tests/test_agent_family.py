@@ -16,9 +16,9 @@ def _asked(text) -> Prompt:
     return Prompt(submitted_at=BASE, text=text)
 
 
-def _agent(agent_id, start=0, parent=None, requests=(), prompts=(), project_dir=None) -> Thread:
+def _agent(agent_id, start=0, parent=None, requests=(), prompts=(), project_dir=None, written=()) -> Thread:
     return Thread(thread_id=agent_id, parent_thread_id=parent, agent_type="worker", started_at=BASE + timedelta(seconds=start),
-                  working_time=ONE_SECOND, requests=tuple(requests), prompts=tuple(prompts), project_dir=project_dir)
+                  working_time=ONE_SECOND, requests=tuple(requests), prompts=tuple(prompts), project_dir=project_dir, written_paths=tuple(written))
 
 
 def _request(input_tokens) -> RequestUsage:
@@ -47,6 +47,11 @@ class NestingTest(unittest.TestCase):
         self.assertEqual(("u", "unknown"), (first.agent_id, first.type))
         self.assertEqual(("t", "worker", BASE + 7 * ONE_SECOND, ONE_SECOND, [1, 2]),
                          (second.agent_id, second.type, second.started_at, second.working_time, [r.input_tokens for r in second.requests]))
+
+
+    def test_an_agent_carries_the_paths_its_thread_wrote(self):
+        (agent,) = nest_threads([_agent("w", written=["a.md", "b.md"])])
+        self.assertEqual(("a.md", "b.md"), agent.written_paths)
 
     def test_no_threads_no_agents(self):
         self.assertEqual((), nest_threads([]))

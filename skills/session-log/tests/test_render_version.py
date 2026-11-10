@@ -25,7 +25,8 @@ PRICES_SHA256_BY_RENDER_VERSION = {1: "4fee2ad0869ca633220f3f0c4512af4fe74078086
                                     3: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5",
                                     4: "4fee2ad0869ca633220f3f0c4512af4fe74078086384a8c535301330855f02f5",
                                     5: "2ebe79c70982dfb02fa1f9104ccbb77136eda2803818a71092150876ca3ab1c2",
-                                    6: "4e92da06f9836b96b8217bb32ebf5b8b1a1e47feae0070e0a66215250afa1352"}
+                                    6: "4e92da06f9836b96b8217bb32ebf5b8b1a1e47feae0070e0a66215250afa1352",
+                                    7: "c6ee6b65df6bbc389b821ccfb08c4d3816c1631d8cb4f82ceeaef3e1cdb92063"}
 SPEC_HOOK_BUDGET_SECONDS = 20  # S47 and S65 name 20 s
 SESSION_IDS = ("s1", "s2", "s3", "s4")
 WRITE_TAKES_SECONDS = HOOK_SYNC_BUDGET_SECONDS / 2  # two of the four sessions fit in a hook budget

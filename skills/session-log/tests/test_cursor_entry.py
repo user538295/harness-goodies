@@ -7,7 +7,7 @@ import os
 import unittest
 
 import session_log
-from tests.cursor_record_files import prompt_input, response_input, stop_input, subagent_input, write_record
+from tests.cursor_record_files import file_edit_input, prompt_input, response_input, stop_input, subagent_input, write_record
 from tests.test_session_log import SandboxCase
 
 CURSOR_FOLDER = ".cursor"
@@ -58,6 +58,15 @@ class CursorEntryTest(CursorEntryTestCase):
         self.assertIn("first reply", log)
         self.assertIn(TOKEN_LINE, report)
         self.assertIn("sub-agent: explore (child-a)", report)
+
+    def test_usage_json_shows_the_files_each_prompt_edited(self):
+        self.install_conversation()
+        self.record("afterFileEdit", 1, file_edit_input("g1", "/work/proj/brief.md"))
+        self.record("beforeSubmitPrompt", 10, prompt_input("g2", "second prompt"))
+        self.record("stop", 12, stop_input("g2", **TOKENS))
+        code, stdout, stderr = self.run_main(["cursor", "usage", "--json", "conv-1"])
+        self.assertEqual((0, ""), (code, stderr))
+        self.assertEqual([["/work/proj/brief.md"], []], [row["writtenPaths"] for row in json.loads(stdout)["prompts"]])
 
     def test_usage_prints_the_saved_report_and_status_counts_the_archived_conversation(self):
         self.install_conversation()

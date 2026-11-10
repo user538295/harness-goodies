@@ -6,7 +6,7 @@ from typing import AbstractSet, Any, Dict, List, Optional, Sequence, Tuple
 
 from .agent_tree import UNKNOWN_TYPE, build_tree, depths_of, parent_indexes
 from .claude_transcript import TRANSCRIPT_SUFFIX, MessageRequest
-from .model import RequestUsage, SubAgent
+from .model import SubAgent
 
 AGENT_FILE_PREFIX = "agent-"
 META_FILE_SUFFIX = ".meta.json"
@@ -64,33 +64,35 @@ def parse_meta(text: str) -> SubAgentMeta:
     )
 
 
-def _requests_counted_once(agents: Sequence[ReadSubAgent], depths: Sequence[int], counted_ids: AbstractSet[str]) -> List[Tuple[RequestUsage, ...]]:
+def _requests_counted_once(agents: Sequence[ReadSubAgent], depths: Sequence[int], counted_ids: AbstractSet[str]) -> List[Tuple[MessageRequest, ...]]:
     """A forked agent replays messages of its parent, so one message id can sit in several files, and a fork starts with its
     parent's first record, so both can start at the same time. The id counts for the agent that started first, then the
     one nearer the top (the parent), then the smaller agent id, then file order; a later file drops its copy. Ids in
     `counted_ids` (the main session's) count for the main session."""
     owned = set(counted_ids)
-    kept: List[Tuple[RequestUsage, ...]] = [() for _ in agents]
+    kept: List[Tuple[MessageRequest, ...]] = [() for _ in agents]
     for index in sorted(range(len(agents)), key=lambda index: (agents[index].started_at, depths[index], agents[index].agent_id)):
         requests = [request for request in agents[index].requests if request.message_id not in owned]
         owned.update(request.message_id for request in requests if request.message_id is not None)
-        kept[index] = tuple(request.usage for request in requests)
+        kept[index] = tuple(requests)
     return kept
 
 
 def nest_sub_agents(agents: Sequence[ReadSubAgent], counted_message_ids: AbstractSet[str] = frozenset()) -> Tuple[SubAgent, ...]:
     """The agents of one session as a tree: each under the agent its meta names. An agent with no time at all has no row
     (the reader gives one a time whenever it has requests). Two files with one agent id are both kept, and children of
-    that id go to the first. A message counts once in the whole session (see `_requests_counted_once`). Tokens are never
+    that id go to the first. A message counts once in the whole session (see `_requests_counted_once`), with the paths its tool calls
+    wrote (a forked agent's replayed messages credit neither tokens nor writes to the child). Tokens are never
     missing: `tokens_not_recorded` stays false. The tree is built by `agent_tree.build_tree`, deepest agents first."""
     timed = [agent for agent in agents if agent.started_at is not None]
     parent_of = parent_indexes([agent.agent_id for agent in timed], [agent.meta.parent_agent_id for agent in timed])
     depths = depths_of(parent_of, len(timed))
-    usage = _requests_counted_once(timed, depths, counted_message_ids)
+    counted = _requests_counted_once(timed, depths, counted_message_ids)
 
     def build(index: int, children: Tuple[SubAgent, ...]) -> SubAgent:
         agent = timed[index]
         return SubAgent(agent_id=agent.agent_id, type=agent.meta.type, started_at=agent.started_at,
-                        working_time=agent.working_time, requests=usage[index], sub_agents=children)
+                        working_time=agent.working_time, requests=tuple(request.usage for request in counted[index]), sub_agents=children,
+                        written_paths=tuple(dict.fromkeys(path for request in counted[index] for path in request.written_paths)))
 
     return tuple(agent for _, agent in build_tree(parent_of, depths, build))
