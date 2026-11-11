@@ -13,7 +13,7 @@ import tempfile
 
 from estimation.anchor import ANCHOR_KEY, DEFAULT_ANCHOR, check
 from estimation.errors import EstimateError
-from estimation.features import FILE_KEY, ID_KEY
+from estimation.features import FILE_KEY, ID_KEY, SOURCE_KEYS
 from estimation.naming import FILE_SUFFIX, day_of_file, file_name
 
 DATA_FOLDER = ".harness-goodies"
@@ -104,7 +104,10 @@ class EstimationStore:
 
     def _feature(self, file):
         content = self._read(FEATURES_FOLDER, file)
-        return {**{key: value for key, value in content.items() if key != VERSION_KEY}, FILE_KEY: file}
+        feature = {**{key: value for key, value in content.items() if key != VERSION_KEY}, FILE_KEY: file}
+        if isinstance(feature.get("sources"), dict):  # a file an earlier version wrote lacks the lists added since
+            feature["sources"] = {**{key: [] for key in SOURCE_KEYS}, **feature["sources"]}
+        return feature
 
     def load(self):
         document = empty_document()

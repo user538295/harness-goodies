@@ -159,6 +159,23 @@ class FeatureSchemaTest(SchemaTestCase):
                 session["prompts"] = [broken]
                 self.assert_rejected(feature)
 
+    def test_a_prompt_share_is_a_number_above_zero_up_to_one(self):
+        feature = copy.deepcopy(self.delivered)
+        prompt = {"number": 1, "at": "2026-09-01T10:00:00+00:00", "text": "t", "reason": "names docs/x.md"}
+        for share in (0.3333, 1):
+            feature["sources"]["sessions"][0]["prompts"] = [{**prompt, "share": share}]
+            self.assert_valid(feature)
+        for share in (0, 1.5, "half", None):
+            with self.subTest(share=share):
+                feature["sources"]["sessions"][0]["prompts"] = [{**prompt, "share": share}]
+                self.assert_rejected(feature)
+
+    def test_related_files_are_an_optional_list_of_unique_text(self):
+        self.assert_valid({**self.delivered, "sources": {**self.delivered["sources"], "files": ["src/a.py"]}})
+        for value in ([""], ["a", "a"], 1):
+            with self.subTest(value=value):
+                self.assert_rejected({**self.delivered, "sources": {**self.delivered["sources"], "files": value}})
+
     def test_who_made_a_size_names_a_known_harness_and_its_models(self):
         maker = {"harness": "claude", "models": ["claude-opus-5-5"]}
         self.assert_valid({**self.delivered, "estimatedBy": maker, "updatedBy": {**maker, "models": None}})

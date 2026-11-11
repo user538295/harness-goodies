@@ -13,6 +13,7 @@ EXIT_RUNTIME_ERROR = 1
 EXIT_BAD_ARGUMENTS = 2
 ERROR_PREFIX = "estimate: "
 PLAN_PROGRESS_FROM_SKILL = (os.pardir, "implement", "scripts", "plan-progress.sh")
+SESSION_LOG_FROM_SKILL = (os.pardir, "session-log", "session_log.py")
 REPORT_ASSETS = "report"  # the skill's folder of the report template and the vendored Chart.js
 
 
@@ -42,7 +43,8 @@ def _dispatch(invocation, environment, skill_dir):
     check = SchemaCheck(skill_dir, environment.which, environment.run)
     commands = Commands(project, EstimationStore(project.root, check), environment,
                         os.path.normpath(os.path.join(skill_dir, *PLAN_PROGRESS_FROM_SKILL)),
-                        os.path.join(skill_dir, REPORT_ASSETS))
+                        os.path.join(skill_dir, REPORT_ASSETS),
+                        os.path.normpath(os.path.join(skill_dir, *SESSION_LOG_FROM_SKILL)))
     options = invocation.options
     positionals = invocation.positionals
     handlers = {
@@ -52,9 +54,8 @@ def _dispatch(invocation, environment, skill_dir):
         "doc-stats": lambda: commands.doc_stats(positionals[0], options["--plan-progress"]),
         "git-stats": lambda: commands.git_stats(positionals[0]),
         "match-sessions": lambda: commands.match_sessions(positionals[0], options["--session-log"]),
-        "usage": lambda: commands.usage(positionals[0], options["--session-log"]),
-        "record-commit": lambda: commands.record_commit(positionals[0], positionals[1], options["--harness"],
-                                                        options["--session-log"], options["--session-dir"]),
+        "collect": lambda: commands.collect(positionals[0], options["--harness"], options["--session-log"], options["--session-dir"],
+                                            options["--accept"]),
         "estimator": lambda: commands.estimator(options["--harness"], options["--session-log"], options["--session-dir"]),
         "neighbours": lambda: commands.neighbours(positionals[0]),
         "place": lambda: commands.place(positionals[0]),

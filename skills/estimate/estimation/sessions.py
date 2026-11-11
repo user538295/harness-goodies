@@ -1,14 +1,15 @@
 """Sessions through session-log's C1 JSON (`list --json`, `usage ... --json`), run as a subprocess in the project root, and
-`match-sessions`: each feature gets its slice of a session (the prompts the `evidence` rule gives it, each with its number, time,
-first 60 characters and reason, and the sub-agents started under them) as a C2 session entry, and the `usage` totals `save` derives
-from those entries. Every failed call, every session
-counted whole for want of prompt rows and every feature commit made while no listed prompt ran is named in `missing`, never guessed
-around."""
+`match-sessions` / `collect`: each feature gets its slice of a session (the prompts the `evidence` rule gives it, each with its
+number, time, first 60 characters, reason and share, and the sub-agents started under them) as a C2 session entry, and the `usage`
+totals `save` derives from those entries. A prompt that counts for several features is split equally between them: tokens add
+up exactly over the slices, minutes and cents are rounded per slice. Every failed call, every session counted whole for want of
+prompt rows and every feature commit made while no listed prompt ran is named in `missing`, never guessed around."""
 import json
 import os
 import re
 import sys
 from bisect import bisect_right
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -22,12 +23,15 @@ WHOLE = Decimal(1)
 CENT = Decimal("0.01")
 SESSION_LOG_SUCCESS = 0
 TOKEN_FIELDS = "tokens"
+TOKEN_COMPONENTS = ("input", "output", "cacheRead", "cacheWrite")
 PROMPT_SEPARATOR = "\n"
 PROMPT_HEAD_LENGTH = 60
+SHARE_DECIMALS = 4
 _TAG = re.compile(r"<[^>]*>")
 _LINE_BREAKS_AND_TABS = re.compile(r"[\r\n\t]")
 _SPACE_RUN = re.compile(r" +")
 NO_ROWS = "%s has no prompt rows; the whole session is counted for %s"
+NO_ROWS_SHARED = "%s has no prompt rows; the whole session is shared equally by %s"
 UNCOVERED_COMMITS = "%s: no session found for %d of %d commits"
 
 
@@ -63,6 +67,25 @@ def _known_sum(values):
     """The sum of the known values; null when none is known."""
     known = [value for value in values if value is not None]
     return sum(known) if known else None
+
+
+def _part(value, rank, count):
+    """The share of the whole number `value` that goes to the feature of `rank` among the `count` that share it: `value` split
+    equally, the rest going one each to the lowest ranks, so the shares add up to `value`; null stays null."""
+    if value is None:
+        return None
+    quotient, rest = divmod(int(value), count)
+    return quotient + (rank < rest)
+
+
+def _split_tokens(tokens, rank, count):
+    """The C1 `tokens` object for the feature of `rank` among `count`: each number by `_part`, and the total the sum of the split
+    components when the whole total is the sum of the whole components (`reasoning` is part of `output`)."""
+    split = {key: _part(value, rank, count) for key, value in tokens.items()}
+    components = [tokens.get(key) for key in TOKEN_COMPONENTS]
+    if tokens.get("total") is not None and None not in components and tokens["total"] == sum(components):
+        split["total"] = sum(split[key] for key in TOKEN_COMPONENTS)
+    return split
 
 
 @dataclass(frozen=True)
@@ -111,9 +134,9 @@ def _written_paths(row):
 
 
 def _rows(usage):
-    """(prompt rows, sub-agent rows) of a C1 usage reply; None when it has none or they cannot be read."""
+    """(prompt rows, sub-agent rows) of a C1 usage reply; None when it has no prompt rows or they cannot be read."""
     prompts, agents = usage.get("prompts"), usage.get("subAgents")
-    if not isinstance(prompts, list) or not isinstance(agents, list):
+    if not prompts or not isinstance(prompts, list) or not isinstance(agents, list):
         return None
     try:
         return ([PromptRow(datetime.fromisoformat(row["at"]), _moment(row.get("replyAt")), row["text"], int(row["agentTimeSeconds"]),
@@ -131,7 +154,7 @@ class SessionUsage:
         self.label = label
         self.harness = harness
         self.session_id = session_id
-        self.usage = usage or {}
+        self.usage = usage if isinstance(usage, dict) else {}
         self.listed = listed or {}
         self.rows = _rows(self.usage)
 
@@ -141,16 +164,29 @@ class SessionUsage:
                               "log": self.usage.get("log") or self.listed.get("log"), "prompts": prompts,
                               "agentTimeMinutes": agent_time_minutes, TOKEN_FIELDS: tokens, "costUsd": cost})
 
-    def whole(self):
-        """The C2 entry of the whole session from its totals (every number null when the call failed)."""
-        complete = self.usage.get("costComplete") is True
-        models = _model_list(self.usage.get("models"))
-        return self._entry(None if models is None else list(models), None, minutes(self.usage.get("agentTimeSeconds")),
-                           self.usage.get(TOKEN_FIELDS), self.usage.get("costUsd") if complete else None)
+    def _last_activity(self):
+        """The latest moment the session is known active: its listed last activity, else (the latest session, which is not
+        listed) its last row."""
+        listed = _moment(self.listed.get("lastActivityAt"))
+        prompts, agents = self.rows
+        return listed or max([prompt.reply_at or prompt.at for prompt in prompts] + [agent.started_at for agent in agents])
 
     def prompt_spans(self):
-        """(submitted, last reply) of each prompt."""
-        return [(prompt.at, prompt.reply_at) for prompt in self.rows[0]]
+        """(submitted, last reply) of each prompt; a prompt still running (no reply yet) lasts until the session's last activity."""
+        last_activity = self._last_activity()
+        return [(prompt.at, prompt.reply_at or last_activity) for prompt in self.rows[0]]
+
+    def whole(self, rank=0, count=1):
+        """The C2 entry of the whole session from its totals (every number null when the call failed); for the feature of `rank`
+        among the `count` that share the session (see `_part`)."""
+        complete = self.usage.get("costComplete") is True
+        models = _model_list(self.usage.get("models"))
+        seconds, tokens, cost = self.usage.get("agentTimeSeconds"), self.usage.get(TOKEN_FIELDS), self.usage.get("costUsd")
+        if count > 1:
+            seconds = None if seconds is None else Decimal(str(seconds)) / count
+            tokens = _split_tokens(tokens, rank, count) if isinstance(tokens, dict) else tokens
+            cost = None if cost is None else float((Decimal(str(cost)) / count).quantize(CENT, rounding=ROUND_HALF_UP))
+        return self._entry(None if models is None else list(models), None, minutes(seconds), tokens, cost if complete else None)
 
     def last_prompt_models(self):
         """The models of the session's last prompt (in a latest session, the prompt running now); None without one or without
@@ -161,7 +197,8 @@ class SessionUsage:
 
     def slices(self, evidence):
         """{feature name: the C2 entry of its slice} of a session with rows, by the `evidence` rule. A prompt's written files include
-        those of the sub-agents that started under it."""
+        those of the sub-agents that started under it. A prompt that counts for several features is shared equally by them, its
+        sub-agents too: tokens add up exactly over the slices, minutes and cents are rounded per slice (see `_part`)."""
         prompts, agents = self.rows
         starts = [prompt.at for prompt in prompts]
         agent_rows = {index: [] for index in range(len(prompts))}
@@ -172,25 +209,30 @@ class SessionUsage:
                             for index, prompt in enumerate(prompts)], [prompt.after_reset for prompt in prompts])
         members = {}
         for index, reasons in enumerate(owners):
-            for name, reason in reasons.items():
-                members.setdefault(name, ([], []))[0].append((index, reason))
-        for index, reasons in enumerate(owners):
-            for name in reasons:
-                members[name][1].extend(agent_rows[index])
+            for rank, name in enumerate(sorted(reasons)):
+                counted, chosen_agents = members.setdefault(name, ([], []))
+                counted.append((index, reasons[name], rank, len(reasons)))
+                chosen_agents.extend((agent, rank, len(reasons)) for agent in agent_rows[index])
         return {name: self._slice(counted, chosen_agents) for name, (counted, chosen_agents) in members.items()}
 
     def _slice(self, counted, agents):
-        """The C2 entry of the prompts `counted` ([(index, why it counts)]) and the sub-agents `agents`."""
-        prompts = [self.rows[0][index] for index, _ in counted]
-        numbers = [row.numbers for row in [*prompts, *agents]]
-        tokens = {key: _known_sum([row.tokens.get(key) for row in numbers if row.tokens is not None]) for key in TOKEN_KEYS}
-        complete = self.usage.get("costComplete") is True and all(row.complete for row in numbers)
-        cost = float(sum((row.cost for row in numbers), Decimal(0)).quantize(CENT, rounding=ROUND_HALF_UP)) if complete else None
-        known = [row.models for row in numbers if row.models is not None]
+        """The C2 entry of the prompts `counted` ([(index, why it counts, rank, how many features share it)]) and the sub-agents
+        `agents` ([(row, rank, how many share it)]); each row counts for 1 / that many of its numbers. The cost is known when every
+        row it sums is complete, whatever the rest of the session is."""
+        prompts = [self.rows[0][index] for index, *_ in counted]
+        parts = [(prompt.numbers, rank, count) for prompt, (_, _, rank, count) in zip(prompts, counted)]
+        parts += [(row.numbers, rank, count) for row, rank, count in agents]
+        split = [_split_tokens(numbers.tokens, rank, count) for numbers, rank, count in parts if numbers.tokens is not None]
+        tokens = {key: _known_sum([row.get(key) for row in split]) for key in TOKEN_KEYS}
+        cost = float(sum((numbers.cost / count for numbers, _, count in parts), Decimal(0)).quantize(CENT, rounding=ROUND_HALF_UP)) \
+            if all(numbers.complete for numbers, _, _ in parts) else None
+        known = [numbers.models for numbers, _, _ in parts if numbers.models is not None]
         models = sorted({name for names in known for name in names}) if known else None
-        entries = [{"number": index + 1, "at": prompt.at.isoformat(), "text": prompt_head(prompt.text), "reason": reason}
-                   for (index, reason), prompt in zip(counted, prompts)]
-        return self._entry(models, entries, minutes(sum(prompt.seconds for prompt in prompts)), tokens, cost)
+        entries = [{"number": index + 1, "at": prompt.at.isoformat(), "text": prompt_head(prompt.text), "reason": reason,
+                    "share": float(round(Decimal(1) / count, SHARE_DECIMALS))}
+                   for (index, reason, _, count), prompt in zip(counted, prompts)]
+        seconds = sum((Decimal(prompt.seconds) / count for prompt, (_, _, _, count) in zip(prompts, counted)), Decimal(0))
+        return self._entry(models, entries, minutes(seconds), tokens, cost)
 
 
 class SessionLog:
@@ -202,8 +244,9 @@ class SessionLog:
         self.run = run
         self.python = python
 
-    def call(self, *arguments):
-        """Returns (parsed JSON, None) or (None, the failure as one `missing` line)."""
+    def call(self, *arguments, as_object=False):
+        """Returns (parsed JSON, None) or (None, the failure as one `missing` line); with `as_object` a reply that is no JSON object
+        is a failure."""
         label = "session-log " + " ".join(argument for argument in arguments if argument != "--json")
         if not os.path.isfile(self.script):
             return None, "%s failed: %s not found" % (label, self.script)
@@ -211,18 +254,21 @@ class SessionLog:
         if result.code != SESSION_LOG_SUCCESS:
             return None, "%s failed (exit %d): %s" % (label, result.code, " ".join(result.stderr.split()) or "no message")
         try:
-            return json.loads(result.stdout), None
+            parsed = json.loads(result.stdout)
         except ValueError:
             return None, "%s failed: its output is not JSON" % label
+        if as_object and not isinstance(parsed, dict):
+            return None, "%s failed: its output is not a JSON object" % label
+        return parsed, None
 
     def listed(self, harness):
         return self.call(harness, "list", "--json")
 
     def usage(self, harness, session_id):
-        return self.call(harness, "usage", session_id, "--json")
+        return self.call(harness, "usage", session_id, "--json", as_object=True)
 
     def latest_usage(self, harness):
-        return self.call(harness, "usage", "--latest", "--json")
+        return self.call(harness, "usage", "--latest", "--json", as_object=True)
 
 
 class Coverage:
@@ -248,20 +294,24 @@ class Coverage:
 
 
 class SessionMatcher:
-    def __init__(self, session_log, evidence, since=None):
-        """`since` (a datetime) also makes every session whose last activity is on or after it a candidate."""
+    def __init__(self, session_log, evidence, since=None, covered=()):
+        """`since` (a datetime) also makes every session whose last activity is on or after it a candidate; `covered` holds the
+        (start, end) spans of prompts already read elsewhere, which also cover commits made while they ran."""
         self.session_log = session_log
         self.evidence = evidence
         self.since = since
         self.missing = []
         self.coverage = Coverage()
+        for start, end in covered:
+            self.coverage.add(start, end)
 
-    def match(self, authored):
+    def match(self, authored, reported=None):
         """The C3 `match-sessions` output for the features of `authored` ({feature name: {commit hash: author time}}, in input
-        order)."""
+        order); the commits no session covers are named for every feature, or for `reported` alone."""
         found = {name: [] for name in authored}
-        for harness in HARNESSES:
-            listed, failure = self.session_log.listed(harness)
+        with ThreadPoolExecutor(len(HARNESSES)) as pool:  # each call starts its own process, and listing is the slow part
+            listings = list(pool.map(self.session_log.listed, HARNESSES))
+        for harness, (listed, failure) in zip(HARNESSES, listings):
             if failure:
                 self.missing.append(failure)
                 continue
@@ -269,8 +319,7 @@ class SessionMatcher:
                 self._read(harness, session, found)
         covered = self.coverage.covers()
         for name, times in authored.items():
-            uncovered = sum(not covered(moment) for moment in times.values())
-            if uncovered:
+            if (reported is None or name == reported) and (uncovered := sum(not covered(moment) for moment in times.values())):
                 self.missing.append(UNCOVERED_COMMITS % (name, uncovered, len(times)))
         return {"features": [_matched(name, sessions) for name, sessions in found.items()], "missing": self.missing}
 
@@ -298,10 +347,10 @@ class SessionMatcher:
         end = last_activity if start is not None else None  # without a start, no commit time falls in the session
         names = [name for name in found if name in self.evidence.of_prompt(prompts, start, end)]
         if names:
-            entry = reply.whole()
-            for name in names:
-                found[name].append(entry)
-            self.missing.append(NO_ROWS % (reply.label, ", ".join(names)))
+            names = sorted(names)
+            for rank, name in enumerate(names):
+                found[name].append(reply.whole(rank, len(names)))
+            self.missing.append((NO_ROWS_SHARED if len(names) > 1 else NO_ROWS) % (reply.label, ", ".join(names)))
 
 
 def _matched(name, sessions):

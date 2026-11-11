@@ -15,13 +15,12 @@ FROZEN_STATUSES = (IN_PROGRESS, DELIVERED)
 HARNESSES = ("claude", "codex", "cursor", "omp", "opencode")
 MATCH_NONE = "none"
 MATCH_PROMPT = "prompt"
-MATCH_IMPLEMENT = "implement"
-MATCH_STRENGTH = (MATCH_PROMPT, MATCH_IMPLEMENT)  # weakest first
-MATCHED_BY_LABELS = MATCH_STRENGTH + (MATCH_NONE,)
+MATCH_IMPLEMENT = "implement"  # only in files an earlier version wrote; `collect` labels what it matches `prompt`
+MATCHED_BY_LABELS = (MATCH_PROMPT, MATCH_IMPLEMENT, MATCH_NONE)
 TOKEN_KEYS = ("input", "output", "reasoning", "cacheRead", "cacheWrite", "total")
 PLAN_KEYS = ("phases", "tasks", "estimatedHours")
 GIT_KEYS = ("commits", "linesAdded", "linesRemoved")
-SOURCE_KEYS = ("docs", "commits", "sessions")
+SOURCE_KEYS = ("docs", "files", "commits", "sessions")
 SESSION_KEYS = ("harness", "models", "id", "path", "log", "prompts", "agentTimeMinutes", "tokens", "costUsd")
 ENTRY_KEYS = ("id", "name", "description", "effort", "status", "storyPoints", "updatedStoryPoints", "estimatedAt", "estimatedBy",
               "updatedBy", "plan", "git", "usage", "sources")
@@ -68,11 +67,6 @@ def duplicates(features):
                 holders.setdefault(form(value), (value, []))[1].append(feature)
         warnings += ["duplicate %s: %s" % (label % value, files_of(held)) for value, held in holders.values() if len(held) > 1]
     return warnings
-
-
-def weakest(labels):
-    """The weakest of the match labels (implement > prompt)."""
-    return min(labels, key=MATCH_STRENGTH.index)
 
 
 def is_reference(feature):
@@ -154,7 +148,8 @@ def check_entry_shape(entry):
     sources = entry.get("sources", {})
     for key in SOURCE_KEYS:
         _require(isinstance(sources.get(key, []), list), "sources.%s must be a list" % key)
-    _require(all(isinstance(doc, str) and doc for doc in sources.get("docs", [])), "sources.docs must hold paths")
+    for key in ("docs", "files"):
+        _require(all(isinstance(value, str) and value for value in sources.get(key, [])), "sources.%s must hold paths" % key)
     _require(all(isinstance(commit, str) and FULL_HASH.fullmatch(commit) for commit in sources.get("commits", [])),
              "sources.commits must hold full commit hashes")
     _require(all(isinstance(session, dict) and isinstance(session.get("harness"), str) and isinstance(session.get("id"), str)
@@ -332,7 +327,8 @@ class Upsert:
     def _sources(self, feature):
         given = self.entry.get("sources", {})
         stored = feature["sources"]
-        stored["docs"] += [doc for doc in dict.fromkeys(given.get("docs", [])) if doc not in stored["docs"]]
+        for key in ("docs", "files"):
+            stored[key] += [value for value in dict.fromkeys(given.get(key, [])) if value not in stored[key]]
         if ("git" in self.entry) != ("commits" in given):
             raise EstimateError("git and sources.commits are saved together")
         if "git" in self.entry:

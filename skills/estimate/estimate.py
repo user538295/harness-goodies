@@ -1,4 +1,4 @@
-"""Entry script of the estimate skill: `estimate.py read|save|remove|doc-stats|git-stats|match-sessions|usage|record-commit|estimator|
+"""Entry script of the estimate skill: `estimate.py read|save|remove|doc-stats|git-stats|match-sessions|collect|estimator|
 neighbours|place|anchor|find-sets|check-text|calculate|report ...`.
 
 This file must parse on Python 3.4, so a Python that is too old gets a clear message instead of a SyntaxError: it uses no

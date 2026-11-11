@@ -1,5 +1,5 @@
 """Committed dependency files (line_kinds' vendored kind: node_modules and similar folders, lockfiles, minified files) never
-count as lines changed: `git-stats` and `record-commit` leave their numstat lines out, judging a renamed path by its new path
+count as lines changed: `git-stats` and `collect` leave their numstat lines out, judging a renamed path by its new path
 (`dir/{old => new}/f` and `old => new`), and keep every other file's lines."""
 import json
 import os
@@ -50,15 +50,17 @@ class DependencyLinesTest(ProjectTestCase):
         # c1: brief +3, app.js +10, old.js +10 (left-pad and the lockfile left out); c2: brief +1 −1, left-pad → src +1 −1.
         self.assertEqual(([c1, c2], 25, 2), (stats["commits"], stats["linesAdded"], stats["linesRemoved"]))
 
-    def test_record_commit_leaves_out_dependency_lines_and_judges_renames_by_the_new_path(self):
+    def test_collect_leaves_out_dependency_lines_and_judges_renames_by_the_new_path(self):
         self.commit("plan", {PLAN: TASKS_OPEN})
         self.seed(document(new_feature("X", storyPoints=5, estimatedAt="2026-10-01",
                                        sources={"docs": [PLAN], "commits": [], "sessions": []})))
-        for commit in (self.add_sources_and_dependencies({PLAN: TASKS_DONE}), self.move_into_and_out_of_node_modules()):
-            result = self.run_estimate("record-commit", PLAN, commit, "--harness", "claude")
-            self.assertEqual(EXIT_OK, result.code, result.err)
-        # add: tick +1 −1, app.js +10, old.js +10; move: left-pad → src +1 −1.
-        self.assertEqual({"commits": 2, "linesAdded": 22, "linesRemoved": 2}, self.feature("X")["git"])
+        self.add_sources_and_dependencies({PLAN: TASKS_DONE})
+        moved = self.move_into_and_out_of_node_modules()
+        result = self.run_estimate("collect", PLAN, "--harness", "claude", "--accept", moved, "--session-log",
+                                   self.fake_session_log().path)
+        self.assertEqual(EXIT_OK, result.code, result.err)
+        # plan: +5; add: tick +1 −1, app.js +10, old.js +10; move: left-pad → src +1 −1.
+        self.assertEqual({"commits": 3, "linesAdded": 27, "linesRemoved": 2}, self.feature("X")["git"])
 
 
 if __name__ == "__main__":

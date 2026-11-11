@@ -1,9 +1,9 @@
 """The project's git history through the injected process runner: every commit reachable from HEAD with its author time, message
 and numstat line counts; the commits that change a path, followed back through its moves and copies; the author times of given
-commits; the per-file changes of given commits; the author time of the commit that first added a path; one commit resolved to its
-full hash; the tracked and untracked-not-ignored files. Line counts (`commits()`, `line_counts()`) leave out committed dependency
-files (line_kinds' vendored kind), judging a renamed path by its new path; the per-file changes (`changes()`) keep every file, so
-the report can show those lines as not counted."""
+commits; the per-file changes of given commits; the author time of the commit that first added a path; the tracked and
+untracked-not-ignored files. Paths and hashes go to git in chunks of GIT_ARGUMENTS_PER_CALL. Line counts (`commits()`) leave out
+committed dependency files (line_kinds' vendored kind), judging a renamed path by its new path; the per-file changes (`changes()`)
+keep every file, so the report can show those lines as not counted."""
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +22,7 @@ BINARY_COUNT = "-"  # numstat's count of a binary file
 NUMSTAT_FIELDS = 3
 RENAME_ARROW = " => "
 BRACED_RENAME = re.compile(r"\{([^{}]*) => ([^{}]*)\}")  # numstat's `dir/{old => new}/file`
+GIT_ARGUMENTS_PER_CALL = 500  # paths or hashes given to one git call
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,25 @@ def _file_changes(numstat):
     return tuple(changes)
 
 
+def _chunks(values):
+    """`values` in lists of at most GIT_ARGUMENTS_PER_CALL, so one git call never gets more arguments than the system allows."""
+    return [values[start:start + GIT_ARGUMENTS_PER_CALL] for start in range(0, len(values), GIT_ARGUMENTS_PER_CALL)]
+
+
+def _record_paths(record):
+    """(hash, the paths) of one `log --name-status -z` record: `<hash> NUL LF <status> NUL <path> [NUL <path>] NUL ...`, a
+    rename or copy (status `R<score>`, `C<score>`) naming two paths, every other status one."""
+    commit_hash, *fields = record.split("\0")
+    if fields:
+        fields[0] = fields[0].lstrip("\n")
+    paths, index = set(), 0
+    while index < len(fields) and fields[index]:
+        count = 2 if fields[index][0] in "RC" else 1
+        paths.update(fields[index + 1:index + 1 + count])
+        index += 1 + count
+    return commit_hash, paths
+
+
 class GitHistory:
     def __init__(self, root, run):
         self.root = root
@@ -113,6 +133,21 @@ class GitHistory:
             return set()
         return set(self._git("log", "--follow", "--format=%H", "--", path).split())
 
+    def touching(self, paths):
+        """The hashes of the commits reachable from HEAD that change any of `paths` (root-relative)."""
+        if not paths or not self._has_commits():
+            return set()
+        return {commit_hash for chunk in _chunks(paths) for commit_hash in self._git("log", "--format=%H", "--", *chunk).split()}
+
+    def changed_paths(self, hashes):
+        """{hash: the root-relative paths the commit changes, both sides of a rename} of the given commits that the repository holds."""
+        changed = {}
+        for chunk in _chunks(hashes):
+            output = self._git("log", "--no-walk=unsorted", "--ignore-missing", "-M", "--name-status", "-z", "--format=%x1e%H",
+                               "--end-of-options", *chunk)
+            changed.update(_record_paths(record) for record in output.split(RECORD_MARK)[1:])
+        return changed
+
     def authored_at(self, hashes):
         """{hash: author time} of the given commits that the repository holds."""
         if not hashes:
@@ -141,14 +176,6 @@ class GitHistory:
             return None
         moments = self._git("log", "--follow", "--diff-filter=A", AUTHOR_TIME_FORMAT, "--", path).split()
         return min((datetime.fromisoformat(moment) for moment in moments), default=None)
-
-    def resolve(self, revision):
-        """The full hash of the commit `revision` names."""
-        return self._git("rev-parse", "--verify", "--end-of-options", revision + "^{commit}").strip()
-
-    def line_counts(self, commit_hash):
-        """(added, removed) of one commit, without committed dependency files."""
-        return _line_counts(self._git("show", "--numstat", "--format=", commit_hash))
 
     def files(self):
         """The root-relative paths of the tracked files and the untracked ones git does not ignore."""

@@ -38,7 +38,7 @@ class NewFeatureTest(SaveTestCase):
                                              "storyPoints": 8, "sources": {"docs": ["docs/export-brief.md"]}}))
         expected = new_feature("Export", file="2026-11-04-export.json", description="PDF export", effort="One renderer",
                                storyPoints=8, estimatedAt=TODAY.isoformat(),
-                               sources={"docs": ["docs/export-brief.md"], "commits": [], "sessions": []})
+                               sources={"docs": ["docs/export-brief.md"], "files": [], "commits": [], "sessions": []})
         self.assertEqual(expected, saved)
         self.assertEqual(document(expected, anchor=DEFAULT_ANCHOR), self.estimation())
 
@@ -466,6 +466,18 @@ class PathTest(SaveTestCase):
         os.makedirs(self.path("docs"))
         saved = self.assert_saved(self.save({"name": "A2", "sources": {"docs": ["a-brief.md"]}}, cwd=self.path("docs")))
         self.assertEqual("A2", saved["name"])
+
+    def test_related_files_join_the_stored_ones_without_repeats_and_are_stored_root_relative(self):
+        self.seed(document(new_feature("A", sources={"docs": [], "files": ["src/a.py"], "commits": [], "sessions": []})))
+        os.makedirs(self.path("docs"))
+        saved = self.assert_saved(self.save({"name": "A", "sources": {"files": ["../src/a.py", "../src/b.py"]}}, cwd=self.path("docs")))
+        self.assertEqual(["src/a.py", "src/b.py"], saved["sources"]["files"])
+
+    def test_related_files_must_be_a_list_of_text(self):
+        for value in ([""], [3], "src/a.py"):
+            with self.subTest(value=value):
+                self.assert_error(self.save({"name": "A", "description": "x", "sources": {"files": value}}), EXIT_BAD_ARGUMENTS,
+                                  "sources.files must")
 
 
 class GitTest(SaveTestCase):

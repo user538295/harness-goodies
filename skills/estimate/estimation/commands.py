@@ -11,15 +11,16 @@ from estimation.doc_sets import doc_sets
 from estimation.doc_stats import doc_stats
 from estimation.errors import ArgumentError, EstimateError
 from estimation.evidence import Evidence, FeatureClaim, feature_commits
-from estimation.features import (DELIVERED, EFFORT_KEY, FILE_KEY, IN_PROGRESS, MATCH_IMPLEMENT, MATCH_NONE, MATCH_PROMPT, Upsert,
+from estimation.features import (DELIVERED, EFFORT_KEY, FILE_KEY, FULL_HASH, ID_KEY, IN_PROGRESS, MATCH_PROMPT, Upsert,
                                  check_entry_shape, derive_usage, duplicates, files_of, is_number, is_reference, merge_plan,
-                                 scale_element, session_entry, stored_matched_by, upsert_session, weakest)
+                                 scale_element, session_entry, upsert_session)
 from estimation.findings import texts
 from estimation.first_day import first_day
 from estimation.git_history import GitHistory
 from estimation.naming import day_of_file
 from estimation.neighbours import pick
 from estimation.placement import place
+from estimation.related_files import linked_files
 from estimation.report_data import analyse
 from estimation.report_page import render
 from estimation.sessions import NO_ROWS, SessionLog, SessionMatcher, SessionUsage
@@ -29,8 +30,9 @@ from estimation.text_rules import check_texts, problems
 STDIN_MARK = "-"
 NO_PROMPT_OF_FEATURE = "the latest %s session %s shows no prompt of %s"
 SHARED_COMMITS = "commits that several features claim count for none: %s"
-NO_SESSION_OF_FEATURE = "no session names or wrote a document of %s: nothing saved"
-IMPLEMENT_KEPT = "the sessions of %s were recorded by implement: kept, nothing saved"
+NO_SESSION_OF_FEATURE = "no session names or wrote a document of %s: no session attached"
+NO_SESSION_LOG = "no session data: session-log not found (%s)"
+DROPPED_COMMITS = "%s: %d recorded commits are no longer in git and were dropped: %s"
 SHORT_HASH = 8
 LATEST_USAGE = "session-log %s usage --latest"
 LATEST_NAMED_NO_SESSION = LATEST_USAGE + " named no session"
@@ -65,30 +67,40 @@ def _prompt_numbers(session):
 
 
 def _may_replace(stored, entry):
-    """Whether `entry` may replace the `stored` session of its harness and id without losing anything: it counts every prompt the
-    stored one counts (a stored whole session, with no prompts, only yields to another whole session)."""
+    """Whether `entry` may replace the `stored` session of its harness and id without losing anything: a stored whole session (no
+    prompts) yields to any entry, a slice that counts prompts replaces a whole count; a stored slice yields only to an entry that
+    counts every prompt it counts, never to a whole session."""
     if stored["prompts"] is None:
-        return entry["prompts"] is None
+        return True
+    if entry["prompts"] is None:
+        return False
     return _prompt_numbers(stored) <= _prompt_numbers(entry)
+
+
+def _candidate(commit):
+    """A commit as `git-stats` and `collect` list a candidate."""
+    return {"hash": commit.hash, "subject": commit.message.split("\n", 1)[0]}
 
 
 def _not_shrinking(feature, entries):
     """The `entries` to merge into the feature: new sessions, and refreshes of stored ones that `_may_replace` them. This also
-    keeps the sessions `implement` recorded under a `prompt` label, which are stored sessions like any other."""
+    keeps the sessions an earlier version recorded under another label, which are stored sessions like any other."""
     stored = {(session["harness"], session["id"]): session for session in feature["sources"]["sessions"]}
     return [entry for entry in entries
             if (entry["harness"], entry["id"]) not in stored or _may_replace(stored[(entry["harness"], entry["id"])], entry)]
 
 
 class Commands:
-    def __init__(self, project, store, environment, plan_progress, report_assets):
+    def __init__(self, project, store, environment, plan_progress, report_assets, session_log):
         """`plan_progress` is the default `plan-progress.sh` (the /implement skill's, next to this skill); `report_assets` is the
-        folder of the report's page template and its vendored Chart.js."""
+        folder of the report's page template and its vendored Chart.js; `session_log` is the absolute path of the sibling
+        session-log skill's `session_log.py`, which runs unless a command is given another."""
         self.project = project
         self.store = store
         self.environment = environment
         self.plan_progress = plan_progress
         self.report_assets = report_assets
+        self.session_log = session_log
 
     def _json_argument(self, text, what):
         """The JSON of an argument (`-` reads stdin); unparseable JSON is a bad argument."""
@@ -114,8 +126,10 @@ class Commands:
         entry = self._json_argument(entry_text, "entry")
         check_entry_shape(entry)
         sources = entry.get("sources")
-        if sources and "docs" in sources:
-            sources["docs"] = [self.project.stored(doc) for doc in sources["docs"]]
+        if sources:
+            for key in ("docs", "files"):
+                if key in sources:
+                    sources[key] = [self.project.stored(path) for path in sources[key]]
         document, warnings = self._load()
         today = self.environment.today()
         upsert = Upsert(document, entry, today)
@@ -170,21 +184,24 @@ class Commands:
         stats = [{"name": name, "commits": [commit.hash for commit in commits], "count": len(commits),
                   "linesAdded": sum(commit.added for commit in commits),
                   "linesRemoved": sum(commit.removed for commit in commits),
-                  "candidates": [{"hash": commit.hash, "subject": commit.message.split("\n", 1)[0]}
-                                 for commit in claimed.candidates[name]]}
+                  "candidates": [_candidate(commit) for commit in claimed.candidates[name]]}
                  for name, commits in claimed.found.items()]
         shared = ", ".join(commit.hash[:SHORT_HASH] for commit in claimed.shared)
         return {"features": stats}, [SHARED_COMMITS % shared] if shared else []
 
-    def _session_log(self, script, session_dir=None):
+    def _session_script(self, given):
+        """The absolute path of the `session_log.py` to run: `given` (relative to the working folder), else the sibling skill's."""
+        return self.project.absolute(given) if given else self.session_log
+
+    def _session_log(self, given=None, session_dir=None):
         """session-log run in the project root, or in `session_dir` (relative to the working folder): the folder the running
         session was started in, where `usage --latest` finds that session even when the project is another folder."""
         folder = self.project.root if session_dir is None else self.project.absolute(session_dir)
         if not os.path.isdir(folder):
             raise ArgumentError("--session-dir %s is not a folder" % session_dir)
-        return SessionLog(self.project.absolute(script), folder, self.environment.run)
+        return SessionLog(self._session_script(given), folder, self.environment.run)
 
-    def match_sessions(self, features_text, session_log):
+    def match_sessions(self, features_text, session_log=None):
         features = self._features(features_text)
         authored = {name: {commit.hash: commit.authored_at for commit in commits}
                     for name, commits in feature_commits(self._history(), features).found.items()}
@@ -199,121 +216,186 @@ class Commands:
         return owners[0]
 
     @staticmethod
-    def _stored_authored(document, history):
-        """{feature name: {recorded commit: author time}} of every stored feature."""
-        features = document["features"]
-        times = history.authored_at([commit for feature in features for commit in feature["sources"]["commits"]])
-        return {feature["name"]: {commit: times[commit] for commit in feature["sources"]["commits"] if commit in times}
-                for feature in features}
-
-    @staticmethod
-    def _stored_evidence(document, authored):
-        """The evidence of every stored feature: its docs and its recorded commits `authored` (no task IDs are stored)."""
-        return Evidence([FeatureClaim(feature["name"], tuple(feature["sources"]["docs"]), ()) for feature in document["features"]],
-                        authored)
-
-    @staticmethod
-    def _attach_sessions(feature, entries, matched_by):
-        """Adds `entries` to the feature's sessions (one of the same harness and id is replaced, none is ever dropped) and derives
-        its usage for `matched_by`: the one way `usage`, `record-commit` and `implement`'s latest session store sessions."""
+    def _entries_without_repeats(entries):
+        """`entries` with one entry for each session: of two for the same harness and id, the one that counts every prompt the other
+        counts."""
+        kept = {}
         for entry in entries:
-            upsert_session(feature, entry)
-        derive_usage(feature, matched_by)
+            key = (entry["harness"], entry["id"])
+            if key not in kept or _may_replace(kept[key], entry):
+                kept[key] = entry
+        return list(kept.values())
 
-    def _latest_session_entries(self, document, feature, history, harness, session_log, session_dir, missing):
-        """([the feature's slice of the harness's latest session of the session folder, if any], the feature's new label): the
-        session is matched by implement."""
-        matched_by = stored_matched_by(feature)
-        if session_log is None:
-            missing.append("session numbers not recorded: no --session-log")
-            return [], matched_by
-        usage, failure = self._session_log(session_log, session_dir).latest_usage(harness)
+    def _work_start(self, feature, history):
+        """The moment from which a feature's sessions are read and commits touching its related files count: the earliest of its file
+        name's day, the day each of its docs was first added to git or created and the author day of each of its commits, at 00:00
+        UTC, less the margin."""
+        day = min(day_of_file(feature[FILE_KEY]), first_day(feature, self.project, history, self.environment.today()))
+        return datetime.combine(day, time.min, timezone.utc) - TIMEZONE_MARGIN
+
+    def _read_docs(self, feature, doc, history, document):
+        """Refreshes the related files of the feature's documents in its sources: `doc` and the other documents it lists. The files
+        are rebuilt from the documents' links when every listed document is readable; when one is gone (an archived plan) the
+        stored files stay, since its links are unknown, and the new ones are added. (`doc_stats` already failed on an unreadable
+        `doc`.)"""
+        sources = feature["sources"]
+        stored_doc = self.project.stored(doc)
+        paths = [self.project.absolute(doc)] + [self.project.located(stored) for stored in sources["docs"] if stored != stored_doc]
+        tracked = set(history.files()) if self.project.in_git else set()
+        documents = {stored for other in document["features"] for stored in other["sources"]["docs"]}
+        files, all_read = [], True
+        for absolute in paths:
+            try:
+                with open(absolute, encoding="utf-8", errors="replace") as handle:
+                    text = handle.read()
+            except OSError:
+                all_read = False
+                continue
+            files += [path for path in linked_files(text, os.path.dirname(absolute), self.project, tracked, documents)
+                      if path not in files]
+        sources["files"] = files if all_read else sources["files"] + [path for path in files if path not in sources["files"]]
+
+    def _claims(self, document, target, accepted, since):
+        """The FeatureClaims of every stored feature: its docs and recorded commits, no task IDs (a feature missing from the store
+        would not take its share of the prompts that name `BE-1`); only the `target` also has its id (so unclaimed commits naming it
+        become candidates), the `accepted` commits and, from `since`, its related files (so commits touching them become
+        candidates)."""
+        claims = []
+        for feature in document["features"]:
+            sources = feature["sources"]
+            is_target = feature is target
+            claims.append(FeatureClaim(feature["name"], tuple(sources["docs"]), (), feature[ID_KEY] if is_target else None,
+                                       tuple(dict.fromkeys([*sources["commits"], *(accepted if is_target else ())])),
+                                       tuple(sources["files"]) if is_target else (), since if is_target else None))
+        return claims
+
+    @staticmethod
+    def _accepted_commits(accept):
+        """The full hashes of an `--accept` value (comma-separated; none without one)."""
+        hashes = [] if accept is None else [value.strip() for value in accept.split(",") if value.strip()]
+        for value in hashes:
+            if not FULL_HASH.fullmatch(value):
+                raise ArgumentError("--accept holds '%s', which is not a full commit hash" % value)
+        return hashes
+
+    def _take_commits(self, document, feature, accepted, history, since, missing, warnings):
+        """Takes the feature's commits (the ones that change its docs, the recorded ones and the `accepted` ones that no other
+        feature claims) and their lines into `feature`, adds to `warnings` the shared commits the feature claims and to `missing`
+        the recorded commits of the feature that git no longer holds (no other feature is written, so none of theirs are named), and
+        returns (the evidence of every stored feature, {feature name: {commit: author time}}, the candidate commits of the feature)."""
+        claims = self._claims(document, feature, accepted, since)
+        if not self.project.in_git:
+            missing.append("not a git repository: no commits collected")
+            authored = {claim.name: {} for claim in claims}
+            return Evidence(claims, authored), authored, []
+        name = feature["name"]
+        claimed = feature_commits(history, claims, drop_unreachable=True, follow=name)
+        mine = claimed.found[name]
+        feature["sources"]["commits"] = [commit.hash for commit in mine]
+        feature["git"] = {"commits": len(mine), "linesAdded": sum(commit.added for commit in mine),
+                          "linesRemoved": sum(commit.removed for commit in mine)}
+        if claimed.shared_by[name]:
+            warnings.append(SHARED_COMMITS % ", ".join(commit.hash[:SHORT_HASH] for commit in claimed.shared_by[name]))
+        if name in claimed.dropped:
+            missing.append(DROPPED_COMMITS % (name, len(claimed.dropped[name]),
+                                              ", ".join(value[:SHORT_HASH] for value in claimed.dropped[name])))
+        authored = {name: {commit.hash: commit.authored_at for commit in commits} for name, commits in claimed.found.items()}
+        return Evidence(claims, authored), authored, claimed.candidates[name]
+
+    def _latest_session_entry(self, feature, evidence, harness, log, missing):
+        """(the feature's slice of the harness's latest session of the session folder (the running one), None without one; the
+        time spans in which its prompts ran)."""
+        usage, failure = log.latest_usage(harness)
         session_id = usage.get("id") if isinstance(usage, dict) else None
         if failure or not isinstance(session_id, str):
             missing.append(failure or LATEST_NAMED_NO_SESSION % harness)
-            return [], matched_by
+            return None, []
         reply = SessionUsage(LATEST_USAGE % harness, harness, session_id, usage)
         if reply.rows is None:
-            entry = reply.whole()
             missing.append(NO_ROWS % (reply.label, feature["name"]))
-        else:
-            entry = reply.slices(self._stored_evidence(document, self._stored_authored(document, history))).get(feature["name"])
+            return reply.whole(), []
+        entry = reply.slices(evidence).get(feature["name"])
         if entry is None:
             missing.append(NO_PROMPT_OF_FEATURE % (harness, session_id, feature["name"]))
-            return [], matched_by
-        return [entry], MATCH_IMPLEMENT if matched_by in (None, MATCH_NONE) else weakest([matched_by, MATCH_IMPLEMENT])
+        return entry, reply.prompt_spans()
+
+    def _own_sessions(self, feature, evidence, authored, since, harness, session_log, session_dir, missing):
+        """Adds the sessions that worked on the feature to it: every session of the project active since `since`, by the evidence
+        rule over every stored feature, and the running session. Never drops or shrinks a stored session (so none is lost to a
+        failed call or a session the harness rotated out), and derives the usage."""
+        script = self._session_script(session_log)
+        if not os.path.isfile(script):
+            missing.append(NO_SESSION_LOG % script)
+            return
+        folder_log = self._session_log(session_log, session_dir)
+        latest, spans = self._latest_session_entry(feature, evidence, harness, folder_log, missing)
+        log = folder_log if session_dir is None else self._session_log(session_log)  # the same folder: one SessionLog
+        matched = SessionMatcher(log, evidence, since, spans).match(authored, feature["name"])
+        missing.extend(matched["missing"])
+        found = next(item for item in matched["features"] if item["name"] == feature["name"])
+        entries = [session_entry(session) for session in found["sessions"]]
+        if latest is not None:
+            entries.append(latest)
+        for entry in _not_shrinking(feature, self._entries_without_repeats(entries)):
+            upsert_session(feature, entry)
+        if feature["sources"]["sessions"]:
+            derive_usage(feature, MATCH_PROMPT)
+        else:
+            missing.append(NO_SESSION_OF_FEATURE % feature["name"])
 
     @staticmethod
-    def _session_search_start(feature):
-        """The moment from which `usage` reads sessions: the first day of the feature's file at 00:00 UTC, less the margin."""
-        return datetime.combine(day_of_file(feature[FILE_KEY]), time.min, timezone.utc) - TIMEZONE_MARGIN
+    def _set_status(feature, stats):
+        """Moves the feature's status forward from the ticks of its tasks file: `in-progress` with the first ticked task,
+        `delivered` once every task is ticked. It never moves back (a feature with no ticked task keeps the status it has), and
+        counts the document does not give leave it as it is."""
+        if stats["tasks"] is None or stats["completed"] is None:
+            return
+        if stats["completed"] == stats["tasks"]:
+            feature["status"] = DELIVERED
+        elif stats["completed"]:
+            feature["status"] = IN_PROGRESS
 
-    def usage(self, doc, session_log):
-        """Attaches the sessions that worked on the feature listing `doc` to its stored file, before any commit exists: the
-        `match-sessions` rule over every stored feature (so names and commits shared with another stay unattributed), merged into
-        the stored sessions as `record-commit` merges its own. Never drops or shrinks a stored session (so none is lost to a failed
-        call or a session the harness rotated out), saves nothing without a matched session, nor over sessions `implement`
-        recorded. The result describes the saved file."""
-        stored_doc = self.project.stored(doc)
-        document, warnings = self._load()
-        feature = self._plan_owner(document, stored_doc, doc)
-        script = self.project.absolute(session_log)
-        if not os.path.isfile(script):
-            raise EstimateError("session-log not found: %s" % session_log)
-        authored = self._stored_authored(document, self._history())
-        evidence = self._stored_evidence(document, authored)
-        matched = SessionMatcher(self._session_log(session_log), evidence, self._session_search_start(feature)).match(authored)
-        found = next(item for item in matched["features"] if item["name"] == feature["name"])
-        missing = list(matched["missing"])
-        if not found["sessions"]:
-            missing.append(NO_SESSION_OF_FEATURE % feature["name"])
-        elif stored_matched_by(feature) == MATCH_IMPLEMENT:
-            missing.append(IMPLEMENT_KEPT % feature["name"])
-        else:
-            entries = [session_entry(session) for session in found["sessions"]]
-            self._attach_sessions(feature, _not_shrinking(feature, entries), MATCH_PROMPT)
-            feature[FILE_KEY] = self.store.update(feature)
-        return {"feature": feature, "matchedBy": stored_matched_by(feature) or MATCH_NONE, "sessions": feature["sources"]["sessions"],
-                "usage": feature["usage"], "missing": missing}, warnings
+    @staticmethod
+    def _needs_resize(feature, stats):
+        """Whether the feature was just delivered with no size set after delivery: every task ticked, no `updatedStoryPoints`."""
+        known = stats["tasks"] is not None and stats["completed"] is not None
+        return known and stats["completed"] == stats["tasks"] and feature["updatedStoryPoints"] is None
 
-    def record_commit(self, plan, commit, harness, session_log=None, session_dir=None):
-        stored_plan = self.project.stored(plan)
+    def collect(self, doc, harness, session_log=None, session_dir=None, accept=None):
+        """Refreshes everything the project knows about the feature listing `doc`: the plan's counts, its related files,
+        its commits and their lines (the commits that change its docs, the recorded and `accept`ed ones, each only when no other
+        feature claims it), its status from the ticked tasks, and the sessions that worked on it (every session since the feature
+        began, plus the running one) with their usage. `candidates` are the unclaimed commits that name its id or touch its related
+        files: they count only once a checker accepts them and a later call is given them as `accept`."""
         document, warnings = self._load()
-        feature = self._plan_owner(document, stored_plan, plan)
+        feature = self._plan_owner(document, self.project.stored(doc), doc)
+        accepted = self._accepted_commits(accept)
         history = self._history()
-        commit_hash = history.resolve(commit)
-        if commit_hash not in feature["sources"]["commits"]:
-            added, removed = history.line_counts(commit_hash)
-            feature["sources"]["commits"].append(commit_hash)
-            feature["git"]["commits"] += 1
-            feature["git"]["linesAdded"] += added
-            feature["git"]["linesRemoved"] += removed
-        stats = doc_stats(self.project.absolute(plan), self.plan_progress, self.environment.run)
+        missing = []
+        stats = doc_stats(self.project.absolute(doc), self.plan_progress, self.environment.run)
         merge_plan(feature["plan"], stats)
-        missing = list(stats["missing"])
-        entries, matched_by = self._latest_session_entries(document, feature, history, harness, session_log, session_dir, missing)
-        self._attach_sessions(feature, entries, matched_by)
-        all_ticked = stats["tasks"] is not None and stats["completed"] == stats["tasks"]
-        feature["status"] = DELIVERED if all_ticked else IN_PROGRESS
+        missing.extend(stats["missing"])
+        self._read_docs(feature, doc, history, document)
+        since = self._work_start(feature, history)
+        evidence, authored, candidates = self._take_commits(document, feature, accepted, history, since, missing, warnings)
+        self._own_sessions(feature, evidence, authored, since, harness, session_log, session_dir, missing)
+        self._set_status(feature, stats)
         feature[FILE_KEY] = self.store.update(feature)
-        return {"feature": feature, "needsResize": all_ticked and feature["updatedStoryPoints"] is None,
-                "missing": missing}, warnings
+        return {"feature": feature, "needsResize": self._needs_resize(feature, stats),
+                "candidates": [_candidate(commit) for commit in candidates], "missing": missing}, warnings
 
     def estimator(self, harness, session_log=None, session_dir=None):
         """Who estimates now (`{"estimator": {"harness", "models"}, "missing"}`): `harness` and the models of the last prompt of
         its latest session in the session folder (the project root by default), the prompt running now; null models when they
         cannot be read, named in `missing`."""
         models, missing = None, []
-        if session_log is None:
-            missing.append(NO_MODELS % "no --session-log")
+        usage, failure = self._session_log(session_log, session_dir).latest_usage(harness)
+        if failure:
+            missing.append(failure)
         else:
-            usage, failure = self._session_log(session_log, session_dir).latest_usage(harness)
-            if failure:
-                missing.append(failure)
-            else:
-                models = SessionUsage(LATEST_USAGE % harness, harness, None, usage).last_prompt_models()
-                if models is None:
-                    missing.append(NO_MODELS % (LAST_PROMPT_WITHOUT_MODELS % harness))
+            models = SessionUsage(LATEST_USAGE % harness, harness, None, usage).last_prompt_models()
+            if models is None:
+                missing.append(NO_MODELS % (LAST_PROMPT_WITHOUT_MODELS % harness))
         return {"estimator": {"harness": harness, "models": models}, "missing": missing}, []
 
     def _picked(self, command, request_text, fields):

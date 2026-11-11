@@ -34,9 +34,11 @@ class EstimatorCommandTest(ProjectTestCase):
             sub_agents=[agent_row(at("10:31:00"), models=("claude-haiku-5-5",))]))
         self.assertEqual({"estimator": {"harness": "claude", "models": ["claude-opus-5-5"]}, "missing": []}, self.with_session_log())
 
-    def test_without_a_session_log_the_models_are_null_and_named(self):
-        self.assertEqual({"estimator": {"harness": "claude", "models": None}, "missing": ["models not recorded: no --session-log"]},
-                         self.estimator())
+    def test_a_session_log_that_is_not_there_gives_null_models_and_names_the_failed_call(self):
+        absent = os.path.join(self.base, "nowhere", "session_log.py")
+        self.assertEqual({"estimator": {"harness": "claude", "models": None},
+                          "missing": ["session-log claude usage --latest failed: %s not found" % absent]},
+                         self.estimator("--session-log", absent))
 
     def test_a_failed_call_a_session_without_prompt_rows_or_a_last_prompt_without_models_gives_null_models(self):
         named_none = "models not recorded: session-log claude usage --latest names none for its last prompt"

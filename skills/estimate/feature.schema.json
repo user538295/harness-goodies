@@ -51,6 +51,10 @@
       "required": ["docs", "commits", "sessions"],
       "properties": {
         "docs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "files": {
+          "description": "The related files of the feature: the files its docs link (any tracked or untracked-not-ignored file that is not Markdown), root-relative. Commits touching them since the feature began are candidates for its commits; they are no evidence for a prompt.",
+          "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 }
+        },
         "commits": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" } },
         "sessions": { "type": "array", "items": { "$ref": "#/$defs/session" } }
       }
@@ -108,7 +112,11 @@
               "number": { "type": "integer", "minimum": 1 },
               "at": { "type": "string", "minLength": 1 },
               "text": { "type": "string" },
-              "reason": { "type": "string", "minLength": 1 }
+              "reason": { "type": "string", "minLength": 1 },
+              "share": {
+                "description": "The part of the prompt (and its sub-agents) this feature carries: 1 divided by the number of features the prompt counts for. Absent in files an earlier version wrote, where it counted whole for each feature.",
+                "type": "number", "exclusiveMinimum": 0, "maximum": 1
+              }
             }
           }
         },

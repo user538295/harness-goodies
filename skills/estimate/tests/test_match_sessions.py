@@ -100,14 +100,16 @@ class MatchSessionsTest(ProjectTestCase):
         self.assertEqual({"Export": [{"harness": "omp", "models": ["agent-model", "main-model"], "id": "s1", "path": "/abs/s1.jsonl",
                                       "log": "/abs/logs/s1.md",
                                       "prompts": [{"number": 1, "at": at("10:00:00"), "text": "/implement docs/export-brief.md",
-                                                   "reason": "names docs/export-brief.md"},
-                                                  {"number": 2, "at": at("10:20:00"), "text": "go", "reason": "follows prompt 1"}],
+                                                   "reason": "names docs/export-brief.md", "share": 1.0},
+                                                  {"number": 2, "at": at("10:20:00"), "text": "go", "reason": "follows prompt 1",
+                                                   "share": 1.0}],
                                       "agentTimeMinutes": 15, "tokens": tokens_of(4300), "costUsd": 43.0}],
                           "Import": [{"harness": "omp", "models": ["main-model", "review-model"], "id": "s1", "path": "/abs/s1.jsonl",
                                       "log": "/abs/logs/s1.md",
                                       "prompts": [{"number": 3, "at": at("11:00:00"), "text": "/plan-maker import-brief.md",
-                                                   "reason": "names import-brief.md"},
-                                                  {"number": 4, "at": at("11:30:00"), "text": "A", "reason": "follows prompt 3"}],
+                                                   "reason": "names import-brief.md", "share": 1.0},
+                                                  {"number": 4, "at": at("11:30:00"), "text": "A", "reason": "follows prompt 3",
+                                                   "share": 1.0}],
                                       "agentTimeMinutes": 21, "tokens": tokens_of(3200), "costUsd": 32.0}]},
                          self.sessions(output))
         self.assertEqual([["omp", "usage", "s1", "--json"]], self.usage_calls())
@@ -264,7 +266,7 @@ class MatchSessionsTest(ProjectTestCase):
         self.session("claude", "s1", [prompt_row(at("10:00:00"), text)])
         (prompt,) = self.sessions(self.match(EXPORT))["Export"][0]["prompts"]
         self.assertEqual({"number": 1, "at": at("10:00:00"), "text": "/implement docs/export-brief.md then run every remaining tas",
-                          "reason": "names docs/export-brief.md"}, prompt)
+                          "reason": "names docs/export-brief.md", "share": 1.0}, prompt)
 
     def test_names_and_commits_two_features_share_are_no_evidence(self):
         export = {"name": "Export", "docs": [EXPORT_BRIEF, "docs/shared-plan.md"], "taskIds": ["EX-1", "BE-1"]}
@@ -287,7 +289,7 @@ class MatchSessionsTest(ProjectTestCase):
     def test_slice_minutes_round_half_up_and_an_incomplete_cost_is_null(self):
         self.session("claude", "s1", [prompt_row(at("09:00:00"), "EX-1", seconds=89, cost=1.0),
                                       prompt_row(at("09:10:00"), "IM-1", seconds=90, cost=2.0, complete=False)])
-        self.session("cursor", "c1", [prompt_row(at("10:00:00"), "EX-1", seconds=150, cost=3.0)], cost_complete=False)
+        self.session("cursor", "c1", [prompt_row(at("10:00:00"), "EX-1", seconds=150, cost=3.0, complete=False)], cost_complete=False)
         sessions = self.sessions(self.match(EXPORT, IMPORT))
         self.assertEqual([("s1", 1, 1.0), ("c1", 3, None)],
                          [(entry["id"], entry["agentTimeMinutes"], entry["costUsd"]) for entry in sessions["Export"]])
@@ -308,7 +310,7 @@ class MatchSessionsTest(ProjectTestCase):
 
     def test_a_session_with_an_unknown_cost_makes_the_cost_total_null(self):
         self.session("claude", "s1", [prompt_row(at("09:00:00"), "EX-1", cost=1.0)])
-        self.session("cursor", "c1", [prompt_row(at("10:00:00"), "EX-1", cost=3.0)], cost_complete=False)
+        self.session("cursor", "c1", [prompt_row(at("10:00:00"), "EX-1", cost=3.0, complete=False)], cost_complete=False)
         self.assertIsNone(self.match(EXPORT)["features"][0]["usage"]["costUsd"])
 
     def test_save_stores_the_usage_match_sessions_printed(self):
@@ -360,7 +362,7 @@ class MatchSessionsTest(ProjectTestCase):
         os.makedirs(self.path("src"))
         self.match(EXPORT, cwd=self.path("src"))
         calls = self.session_log.calls()
-        self.assertEqual([[harness, "list", "--json"] for harness in HARNESSES], [call["argv"] for call in calls])
+        self.assertEqual(sorted([harness, "list", "--json"] for harness in HARNESSES), sorted(call["argv"] for call in calls))
         self.assertEqual({self.root}, {os.path.realpath(call["cwd"]) for call in calls})
 
     def test_the_features_can_come_from_stdin(self):
@@ -373,9 +375,6 @@ class MatchSessionsTest(ProjectTestCase):
         result = self.run_estimate("match-sessions", json.dumps({"features": [{"docs": []}]}), "--session-log",
                                    self.session_log.path)
         self.assert_error(result, EXIT_BAD_ARGUMENTS, "each feature needs a name")
-
-    def test_the_session_log_path_is_required(self):
-        self.assert_error(self.run_estimate("match-sessions", "-"), EXIT_BAD_ARGUMENTS, "--session-log")
 
 
 if __name__ == "__main__":

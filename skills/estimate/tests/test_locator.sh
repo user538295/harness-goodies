@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Tests for the fallback locator blocks in SKILL.md — run: bash skills/estimate/tests/test_locator.sh
 #
-# SKILL.md carries two copies of the shared harness-neutral locator loop (.claude/rules/skill-paths.md): one
-# prints this skill's directory (probe estimate.py, override ESTIMATE_HOME), one prints session-log's
-# (probe session_log.py, override SESSION_LOG_HOME). These tests extract each loop, and each whole bash block
-# around it, from SKILL.md verbatim and run them against fixture layouts under a sandbox $HOME, so the doc
-# and the code under test cannot drift apart.
+# SKILL.md carries one copy of the shared harness-neutral locator loop (.claude/rules/skill-paths.md): it prints
+# this skill's directory (probe estimate.py, override ESTIMATE_HOME). estimate.py finds the sibling session-log
+# skill itself, so SKILL.md has no second loop. These tests extract the loop, and the whole bash block around it,
+# from SKILL.md verbatim and run them against fixture layouts under a sandbox $HOME, so the doc and the code
+# under test cannot drift apart.
 set -u
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -141,11 +141,10 @@ run_suite() {
     assert_eq "$(cat "$BLOCK_STDERR")" "ERROR: $NAME not found in any known skills root — set $VAR=<skill dir>" )
 }
 
-( t "SKILL.md carries exactly two resolution loops"
-  assert_eq "$(resolution_loops "$SKILL_DIR/SKILL.md" | grep -c .)" "2" )
+( t "SKILL.md carries exactly one resolution loop"
+  assert_eq "$(resolution_loops "$SKILL_DIR/SKILL.md" | grep -c .)" "1" )
 
 run_suite estimate ESTIMATE_HOME estimate.py
-run_suite session-log SESSION_LOG_HOME session_log.py
 
 # ----------------------------------------------------------------
 

@@ -242,7 +242,7 @@ def new_feature(name, file=None, **fields):
                "storyPoints": None, "updatedStoryPoints": None, "estimatedAt": None, "estimatedBy": None, "updatedBy": None,
                "plan": {"phases": None, "tasks": None, "estimatedHours": None},
                "git": {"commits": 0, "linesAdded": 0, "linesRemoved": 0}, "usage": None,
-               "sources": {"docs": [], "commits": [], "sessions": []}}
+               "sources": {"docs": [], "files": [], "commits": [], "sessions": []}}
     feature.update(fields)
     feature["file"] = file or "%s-%s.json" % (SEEDED_DAY, name.lower().replace(" ", "-"))
     return feature
